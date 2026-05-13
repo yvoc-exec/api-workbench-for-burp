@@ -131,6 +131,9 @@ public class UniversalImporter {
             case "repeater":
                 api.repeater().sendToRepeater(tabName, httpRequest);
                 break;
+            case "intruder":
+                api.intruder().sendToIntruder(httpRequest);
+                break;
             case "sitemap":
                 sendToSitemap(service, rawRequest, req.name);
                 break;
