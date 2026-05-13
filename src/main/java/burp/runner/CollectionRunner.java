@@ -1,0 +1,358 @@
+package burp.runner;
+
+import burp.models.*;
+import burp.parser.VariableResolver;
+import burp.utils.HttpUtils;
+import burp.utils.ScriptEngine;
+import burp.utils.RequestBuilder;
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.core.ByteArray;
+import burp.auth.OAuth2Manager;
+import burp.auth.OAuth2Config;
+import burp.auth.TokenStore;
+
+import java.util.*;
+import java.util.concurrent.*;
+import javax.swing.SwingUtilities;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.*;
+
+/**
+ * Collection Runner - executes API requests sequentially with variable extraction.
+ * Like Postman Collection Runner but inside Burp Suite.
+ */
+public class CollectionRunner {
+    private final MontoyaApi api;
+    private final VariableResolver resolver;
+    private final RequestBuilder requestBuilder;
+    private final List<RunnerListener> listeners = new ArrayList<>();
+    private volatile boolean running = false;
+    private volatile boolean cancelled = false;
+    private int delayMs = 200;
+    private int maxRetries = 1;
+    private boolean stopOnError = false;
+    private boolean followRedirects = true;
+    private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
+    private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
+    private ScriptEngine scriptEngine;
+
+    private OAuth2Manager oauth2Manager;
+
+    public CollectionRunner(MontoyaApi api) {
+        this(api, null);
+    }
+
+    public CollectionRunner(MontoyaApi api, OAuth2Manager oauth2Manager) {
+        this.oauth2Manager = oauth2Manager;
+        this.api = api;
+        this.resolver = new VariableResolver();
+        this.requestBuilder = new RequestBuilder(api, resolver);
+        this.scriptEngine = new ScriptEngine(api, resolver);
+    }
+
+    public void addListener(RunnerListener listener) {
+        listeners.add(listener);
+    }
+
+    public void removeListener(RunnerListener listener) {
+        listeners.remove(listener);
+    }
+
+    public void setDelayMs(int delayMs) { this.delayMs = delayMs; }
+    public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+    public void setStopOnError(boolean stopOnError) { this.stopOnError = stopOnError; }
+    public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
+
+    public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
+                               Map<String, String> initialVars) {
+        if (running) return;
+        if (selectedRequests == null || selectedRequests.isEmpty()) {
+            fireOnError("No requests selected for runner");
+            return;
+        }
+        running = true;
+        cancelled = false;
+        results.clear();
+        extractedVars.clear();
+
+        // Seed resolver with collection + initial vars
+        resolver.clear();
+        resolver.addCollectionVariables(collection);
+        resolver.addAll(initialVars);
+
+        // Sort by sequence order if available
+        List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
+        ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        executor.submit(() -> {
+            try {
+                fireOnStart(collection.name, ordered.size());
+
+                for (int i = 0; i < ordered.size() && !cancelled; i++) {
+                    ApiRequest req = ordered.get(i);
+                    if (req.disabled) {
+                        fireOnSkip(req.name, "Request disabled");
+                        continue;
+                    }
+
+                    // Apply request-level variables
+                    resolver.addRequestVariables(req);
+                    // Apply any previously extracted vars
+                    resolver.addAll(extractedVars);
+
+                    RunnerResult result = executeRequest(req, i + 1, ordered.size());
+                    results.add(result);
+
+                    // Extract variables from response
+                    if (result.success) {
+                        Map<String, String> newVars = extractVariablesFromResponse(req, result, response);
+                        extractedVars.putAll(newVars);
+                        result.extractedVariables.putAll(newVars);
+                    }
+
+                    fireOnRequestComplete(result);
+
+                    if (!result.success && stopOnError) {
+                        fireOnError("Stopped on error: " + result.errorMessage);
+                        break;
+                    }
+
+                    // Delay between requests
+                    if (delayMs > 0 && i < ordered.size() - 1) {
+                        Thread.sleep(delayMs);
+                    }
+                }
+
+                fireOnComplete(results);
+            } catch (Exception e) {
+                fireOnError("Runner error: " + e.getMessage());
+            } finally {
+                running = false;
+                executor.shutdown();
+            }
+        });
+    }
+
+    private RunnerResult executeRequest(ApiRequest req, int current, int total) {
+        RunnerResult result = new RunnerResult();
+        result.requestName = req.name;
+        result.requestId = req.id;
+
+        int attempts = 0;
+        while (attempts < maxRetries) {
+            attempts++;
+            try {
+                // Refresh OAuth2 token if needed before executing
+                if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
+                    try {
+                        OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                        if (config.isValid()) {
+                            TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
+                            resolver.addCustomVariable("oauth2_access_token", entry.accessToken);
+                        }
+                    } catch (Exception e) {
+                        api.logging().logToOutput("OAuth2 refresh in runner failed: " + e.getMessage());
+                    }
+                }
+                byte[] rawRequest = requestBuilder.buildRequest(req);
+                String resolvedUrl = resolver.resolve(req.url);
+                HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
+
+                burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
+                        hostInfo.host, hostInfo.port, hostInfo.useHttps);
+
+                HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+
+                long startTime = System.currentTimeMillis();
+                HttpRequestResponse response = api.http().sendRequest(httpRequest);
+                long endTime = System.currentTimeMillis();
+
+                result.responseTimeMs = endTime - startTime;
+
+                if (response.response() != null) {
+                    result.success = true;
+                    result.statusCode = response.response().statusCode();
+                    result.responseSize = response.response().body().length();
+
+                    // Preview of response body (first 500 chars)
+                    String body = response.response().bodyToString();
+                    result.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
+
+                    // Add to sitemap
+                    api.siteMap().add(response);
+                } else {
+                    result.success = false;
+                    result.errorMessage = "No response received";
+                }
+
+                // Evaluate assertions
+                evaluateAssertions(req, result, response);
+
+                break; // Success, exit retry loop
+
+            } catch (Exception e) {
+                result.success = false;
+                result.errorMessage = extractCleanError(e);
+                if (attempts >= maxRetries) {
+                    break;
+                }
+                try {
+                    Thread.sleep(delayMs * attempts); // Exponential backoff
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private Map<String, String> extractVariablesFromResponse(ApiRequest req, RunnerResult result) {
+        Map<String, String> extracted = new HashMap<>();
+
+        // Parse post-response scripts for variable extraction patterns
+        // Support patterns like: pm.environment.set("token", jsonData.access_token)
+        // or: bru.setVar("token", res.body.access_token)
+        for (ApiRequest.Script script : req.postResponseScripts) {
+            if (script.exec == null) continue;
+
+            // Simple regex-based extraction for common patterns
+            // pm.environment.set("key", jsonData.path) or bru.setVar("key", res.body.path)
+            Pattern setVarPattern = Pattern.compile(
+                "(?:pm\.environment\.set|bru\.setVar|pm\.collectionVariables\.set)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(.+?)\s*\)"
+            );
+            Matcher matcher = setVarPattern.matcher(script.exec);
+            while (matcher.find()) {
+                String varName = matcher.group(1);
+                String expression = matcher.group(2).trim();
+
+                // Try to resolve simple expressions from response
+                String value = resolveExpression(expression, result);
+                if (value != null) {
+                    extracted.put(varName, value);
+                }
+            }
+
+            // Also support JSONPath-like extraction comments
+            // // extract: token = $.data.token
+            Pattern extractComment = Pattern.compile("//\s*extract:\s*(\w+)\s*=\s*(.+?)$", Pattern.MULTILINE);
+            Matcher extractMatcher = extractComment.matcher(script.exec);
+            while (extractMatcher.find()) {
+                String varName = extractMatcher.group(1);
+                String jsonPath = extractMatcher.group(2).trim();
+                String value = extractJsonPath(result.responseBodyPreview, jsonPath);
+                if (value != null) {
+                    extracted.put(varName, value);
+                }
+            }
+        }
+
+        return extracted;
+    }
+
+    private String resolveExpression(String expression, RunnerResult result) {
+        // Handle jsonData.xxx patterns
+        if (expression.startsWith("jsonData")) {
+            String path = expression.replace("jsonData", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
+            return extractJsonPath(result.responseBodyPreview, path);
+        }
+        // Handle res.body.xxx patterns
+        if (expression.startsWith("res.body")) {
+            String path = expression.replace("res.body", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
+            return extractJsonPath(result.responseBodyPreview, path);
+        }
+        // Direct string literal
+        if ((expression.startsWith(""") && expression.endsWith(""")) ||
+            (expression.startsWith("'") && expression.endsWith("'"))) {
+            return expression.substring(1, expression.length() - 1);
+        }
+        return null;
+    }
+
+    private String extractJsonPath(String json, String path) {
+        if (json == null || json.isEmpty()) return null;
+        try {
+            com.google.gson.JsonElement element = com.google.gson.JsonParser.parseString(json);
+            String[] parts = path.replace("$", "").split("\.");
+            com.google.gson.JsonElement current = element;
+            for (String part : parts) {
+                if (part.isEmpty()) continue;
+                if (current.isJsonObject()) {
+                    current = current.getAsJsonObject().get(part);
+                } else {
+                    return null;
+                }
+            }
+            if (current != null && current.isJsonPrimitive()) {
+                return current.getAsString();
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return null;
+    }
+
+    // Assertions are now handled by ScriptEngine in extractVariablesFromResponse()
+
+    private String extractCleanError(Exception e) {
+        String msg = e.getMessage();
+        if (msg == null) return e.getClass().getSimpleName();
+        if (msg.contains("UnknownHostException")) {
+            return "DNS resolution failed - check network/VPN";
+        }
+        if (msg.contains("ConnectException")) {
+            return "Connection refused - service may be down or firewalled";
+        }
+        if (msg.contains("SocketTimeoutException")) {
+            return "Connection timeout - target unresponsive";
+        }
+        return msg;
+    }
+
+    public void cancel() {
+        cancelled = true;
+    }
+
+    public boolean isRunning() { return running; }
+    public List<RunnerResult> getResults() { return new ArrayList<>(results); }
+    public Map<String, String> getExtractedVariables() { return new HashMap<>(extractedVars); }
+
+    // Listener notifications - all dispatched on EDT for Swing safety
+    private void fireOnStart(String collectionName, int totalRequests) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onStart(collectionName, totalRequests);
+        });
+    }
+    private void fireOnSkip(String requestName, String reason) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onSkip(requestName, reason);
+        });
+    }
+    private void fireOnRequestComplete(RunnerResult result) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onRequestComplete(result);
+        });
+    }
+    private void fireOnComplete(List<RunnerResult> results) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onComplete(results);
+        });
+    }
+    private void fireOnError(String message) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onError(message);
+        });
+    }
+
+    public interface RunnerListener {
+        void onStart(String collectionName, int totalRequests);
+        void onSkip(String requestName, String reason);
+        void onRequestComplete(RunnerResult result);
+        void onComplete(List<RunnerResult> results);
+        void onError(String message);
+    }
+}
