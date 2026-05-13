@@ -10,6 +10,7 @@ public class ApiRequest {
     public String id;
     public String name;
     public String path;           // folder/path hierarchy
+    public String sourceCollection; // which collection this request came from
     public String method;
     public String url;
     public String description;

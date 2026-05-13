@@ -82,6 +82,7 @@ public class OpenApiParser implements CollectionParser {
                             ApiRequest req = parseOpenApiOperation(
                                 method, path, (Map) methodEntry.getValue(), defaultBaseUrl
                             );
+                            req.sourceCollection = collection.name;
                             collection.requests.add(req);
                         }
                     }

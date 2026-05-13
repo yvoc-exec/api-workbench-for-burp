@@ -67,6 +67,7 @@ public class InsomniaParser implements CollectionParser {
             JsonObject res = r.getAsJsonObject();
             if (res.has("_type") && "request".equals(res.get("_type").getAsString())) {
                 ApiRequest req = parseInsomniaRequest(res, folderNames, folderParents);
+                req.sourceCollection = collection.name;
                 collection.requests.add(req);
             }
         }

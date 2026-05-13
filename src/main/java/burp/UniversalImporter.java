@@ -125,7 +125,7 @@ public class UniversalImporter {
             hostInfo.host, hostInfo.port, hostInfo.useHttps);
 
         HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
-        String tabName = generateUniqueTabName(req.name);
+        String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
 
         switch (destination.toLowerCase()) {
             case "repeater":
@@ -155,11 +155,16 @@ public class UniversalImporter {
         }
     }
 
-    private String generateUniqueTabName(String baseName) {
+    private String generateUniqueTabName(String baseName, String collectionName) {
         String tabName = baseName;
+        // If duplicate exists, prefix with collection name
+        if (existingTabs.contains(tabName)) {
+            tabName = collectionName + " - " + baseName;
+        }
+        // If still duplicate, add counter
         int counter = 1;
         while (existingTabs.contains(tabName)) {
-            tabName = baseName + " (" + counter++ + ")";
+            tabName = collectionName + " - " + baseName + " (" + counter++ + ")";
         }
         return tabName;
     }

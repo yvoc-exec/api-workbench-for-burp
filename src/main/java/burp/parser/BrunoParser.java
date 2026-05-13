@@ -43,6 +43,7 @@ public class BrunoParser implements CollectionParser {
                         String relativePath = file.toPath().relativize(path.getParent()).toString();
                         ApiRequest req = parseBruFile(path.toFile(), relativePath);
                         if (req != null) {
+                            req.sourceCollection = collection.name;
                             collection.requests.add(req);
                         }
                     } catch (Exception e) {
@@ -52,7 +53,10 @@ public class BrunoParser implements CollectionParser {
             });
         } else {
             ApiRequest req = parseBruFile(file, "");
-            if (req != null) collection.requests.add(req);
+            if (req != null) {
+                req.sourceCollection = collection.name;
+                collection.requests.add(req);
+            }
         }
 
         // Load bruno.json for collection metadata if present
