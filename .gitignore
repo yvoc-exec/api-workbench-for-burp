@@ -1,0 +1,7 @@
+target/
+*.iml
+.idea/
+*.class
+*.jar
+!target/*-jar-with-dependencies.jar
+.DS_Store
