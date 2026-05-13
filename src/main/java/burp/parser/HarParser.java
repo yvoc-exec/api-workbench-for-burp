@@ -43,6 +43,7 @@ public class HarParser implements CollectionParser {
             if (request == null) continue;
 
             ApiRequest req = new ApiRequest();
+            req.sourceCollection = collection.name;
             req.name = getString(request, "url", "Unnamed");
             // Truncate URL for name
             if (req.name.length() > 80) req.name = req.name.substring(0, 80) + "...";

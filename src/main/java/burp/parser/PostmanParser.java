@@ -89,6 +89,7 @@ public class PostmanParser implements CollectionParser {
 
             if (item.has("request") && item.get("request").isJsonObject()) {
                 ApiRequest req = parseRequest(item.getAsJsonObject("request"), name, currentPath);
+                req.sourceCollection = collection.name;
                 collection.requests.add(req);
             }
 

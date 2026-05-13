@@ -47,13 +47,24 @@ This Burp Suite extension bridges the gap between API development tools (Postman
 
 | Format | File Extension | Auto-Detect Key | Auth Support | Scripts |
 |--------|---------------|-----------------|--------------|---------|
-| Postman v2.0/v2.1 | `.json` | `info.schema` or `info._postman_id` | Bearer, Basic, API Key, OAuth2 | Pre-request, Tests |
-| Bruno | `.bru` (folder or file) | `.bru` file extension | Basic (native), Bearer (header) | Pre-request, Post-response |
-| OpenAPI 2.x/3.x | `.json`, `.yaml`, `.yml` | `openapi` or `swagger` key | Bearer (auto-detected) | No |
-| Insomnia v4 | `.json` | `__type` = export or `_type` = request | Bearer, Basic, API Key | No |
-| HAR | `.har` | `log.entries` array | Headers only | No |
+| Postman v2.0/v2.1 | `.json` | `info.schema` or `info._postman_id` | Bearer, Basic, API Key, OAuth2 | Pre-request, Tests | ✅ |
+| Bruno | `.bru` (folder or file) | `.bru` file extension | Basic (native), Bearer (header) | Pre-request, Post-response | ✅ |
+| OpenAPI 2.x/3.x | `.json`, `.yaml`, `.yml` | `openapi` or `swagger` key | Bearer (auto-detected) | No | ✅ |
+| Insomnia v4 | `.json` | `__type` = export or `_type` = request | Bearer, Basic, API Key | No | ✅ |
+| HAR | `.har` | `log.entries` array | Headers only | No | ✅ |
 
-### 2.2 Import Destinations
+### 2.2 Multi-Collection Support
+
+Load multiple collections simultaneously:
+- Click **+ Add Collection** to load additional collections
+- Collection list shows name, format, and request count
+- Remove individual collections with **- Remove**
+- Preview table shows requests from ALL loaded collections
+- **Source** column identifies which collection each request belongs to
+- Variables from all collections are merged (last-loaded wins on conflict)
+- Import/Runner operates on selected requests across all collections
+
+### 2.3 Import Destinations
 
 **Repeater Mode**
 - Creates Repeater tabs for each selected request
@@ -70,7 +81,7 @@ This Burp Suite extension bridges the gap between API development tools (Postman
 - Repeater tabs + live Sitemap entries
 - Delay applied between Sitemap requests only
 
-### 2.3 Collection Runner
+### 2.4 Collection Runner
 
 - **Sequential execution** with configurable inter-request delay
 - **Variable extraction** from JSON responses via scripts or comments
@@ -80,7 +91,7 @@ This Burp Suite extension bridges the gap between API development tools (Postman
 - **Real-time results** table with status, timing, size, assertion pass/fail
 - **Sitemap integration** — runner responses auto-populate Site map
 
-### 2.4 OAuth2 Token Management
+### 2.5 OAuth2 Token Management
 
 | Grant Type | Browser Required | Auto-Refresh | Use Case |
 |-----------|-----------------|--------------|----------|
@@ -89,7 +100,7 @@ This Burp Suite extension bridges the gap between API development tools (Postman
 | Authorization Code + PKCE | Yes | Yes | Modern web/mobile APIs |
 | Refresh Token | No | Yes | Session maintenance |
 
-### 2.5 Script Engine
+### 2.6 Script Engine
 
 - **Nashorn JavaScript** execution for pre/post request scripts
 - **Postman API** compatibility: `pm.environment.set()`, `pm.expect()`

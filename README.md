@@ -89,9 +89,9 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 ## Quick Start
 
 ### 1. Import a Collection
-1. Click **Browse** and select your collection file (or Bruno folder)
-2. (Optional) Select an environment JSON file
-3. Click **Preview** to load and inspect requests
+1. Click **+ Add Collection** and select your collection file (or Bruno folder). Repeat for multiple collections.
+2. (Optional) Select an environment JSON file (applies to all collections)
+3. Requests from all loaded collections appear in the preview table with a **Source** column
 4. Select requests in the table (checkboxes)
 5. Choose destination: **Repeater**, **Sitemap**, **Intruder**, or **Both**
 6. Click **Import Selected**

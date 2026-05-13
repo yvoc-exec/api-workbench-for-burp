@@ -7,7 +7,7 @@ import java.util.*;
 public class RequestPreviewTableModel extends AbstractTableModel {
     private final List<ApiRequest> requests = new ArrayList<>();
     private final List<Boolean> selected = new ArrayList<>();
-    private final String[] columns = {"Select", "Name", "Method", "URL", "Auth", "Body", "Vars"};
+    private final String[] columns = {"Select", "Name", "Method", "URL", "Auth", "Body", "Vars", "Source"};
 
     public void setRequests(List<ApiRequest> requests) {
         this.requests.clear();
@@ -67,6 +67,7 @@ public class RequestPreviewTableModel extends AbstractTableModel {
             case 4: return req.hasAuth() ? "Yes" : "No";
             case 5: return req.hasBody() ? "Yes" : "No";
             case 6: return req.variables.size() > 0 ? String.valueOf(req.variables.size()) : "";
+            case 7: return req.sourceCollection != null ? req.sourceCollection : "";
             default: return "";
         }
     }
