@@ -18,6 +18,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Import Destinations
 - **Repeater** — creates tabs for manual testing (no live requests)
 - **Sitemap** — sends live requests, populates Target/Sitemap with real responses
+- **Intruder** — sends raw request to Intruder for payload position configuration
 - **Both** — Repeater tabs + live Sitemap entries
 
 ### Variable Resolution
@@ -92,7 +93,7 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 2. (Optional) Select an environment JSON file
 3. Click **Preview** to load and inspect requests
 4. Select requests in the table (checkboxes)
-5. Choose destination: **Repeater**, **Sitemap**, or **Both**
+5. Choose destination: **Repeater**, **Sitemap**, **Intruder**, or **Both**
 6. Click **Import Selected**
 
 ### 2. Use the Collection Runner

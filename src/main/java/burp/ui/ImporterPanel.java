@@ -31,7 +31,7 @@ public class ImporterPanel {
     private JTextField envField;
     private JTable previewTable;
     private RequestPreviewTableModel previewModel;
-    private JRadioButton repeaterBtn, sitemapBtn, bothBtn;
+    private JRadioButton repeaterBtn, sitemapBtn, intruderBtn, bothBtn;
     private JSpinner delaySpinner;
     private JButton importBtn, previewBtn, runBtn;
     private File selectedCollection;
@@ -111,13 +111,17 @@ public class ImporterPanel {
         ButtonGroup destGroup = new ButtonGroup();
         repeaterBtn = new JRadioButton("Repeater", true);
         sitemapBtn = new JRadioButton("Sitemap (Live)");
+        intruderBtn = new JRadioButton("Intruder");
         bothBtn = new JRadioButton("Both");
         destGroup.add(repeaterBtn);
         destGroup.add(sitemapBtn);
+        destGroup.add(intruderBtn);
         destGroup.add(bothBtn);
         destPanel.add(repeaterBtn);
         destPanel.add(Box.createHorizontalStrut(10));
         destPanel.add(sitemapBtn);
+        destPanel.add(Box.createHorizontalStrut(10));
+        destPanel.add(intruderBtn);
         destPanel.add(Box.createHorizontalStrut(10));
         destPanel.add(bothBtn);
         filePanel.add(destPanel, gbc);
@@ -352,8 +356,11 @@ public class ImporterPanel {
             appendImportLog("No requests selected.");
             return;
         }
-        String destination = repeaterBtn.isSelected() ? "repeater" :
-                           sitemapBtn.isSelected() ? "sitemap" : "both";
+        String destination;
+        if (repeaterBtn.isSelected()) destination = "repeater";
+        else if (sitemapBtn.isSelected()) destination = "sitemap";
+        else if (intruderBtn.isSelected()) destination = "intruder";
+        else destination = "both";
         int delay = (Integer) delaySpinner.getValue();
 
         importer.importRequests(currentCollection, selected, selectedEnv, destination, delay, this::appendImportLog,

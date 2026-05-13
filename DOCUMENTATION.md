@@ -199,6 +199,7 @@ For each selected request:
     |
     v
     If Repeater: api.repeater().sendToRepeater(name, HttpRequest)
+    If Intruder: api.intruder().sendToIntruder(HttpRequest)
     If Sitemap: api.http().sendRequest(HttpRequest) -> add response to Site map
     |
     v
