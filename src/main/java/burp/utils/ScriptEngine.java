@@ -32,21 +32,7 @@ public class ScriptEngine {
         for (ApiRequest.Script script : request.preRequestScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
             try {
-                javax.script.ScriptEngine engine = engineManager.getEngineByName("nashorn");
-                if (engine == null) {
-                    // Try alternative names for standalone Nashorn on Java 17+
-                    engine = engineManager.getEngineByName("javascript");
-                }
-                if (engine == null) {
-                    // Try direct factory instantiation as last resort
-                    try {
-                        Class<?> factoryClass = Class.forName("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
-                        Object factory = factoryClass.getDeclaredConstructor().newInstance();
-                        engine = (javax.script.ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
-                    } catch (Exception ex) {
-                        // Factory not available
-                    }
-                }
+                javax.script.ScriptEngine engine = getNashornEngine();
                 if (engine == null) {
                     api.logging().logToOutput("Nashorn engine not available. Using regex fallback for scripts.");
                     return;
@@ -73,19 +59,7 @@ public class ScriptEngine {
         for (ApiRequest.Script script : request.postResponseScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
             try {
-                javax.script.ScriptEngine engine = engineManager.getEngineByName("nashorn");
-                if (engine == null) {
-                    engine = engineManager.getEngineByName("javascript");
-                }
-                if (engine == null) {
-                    try {
-                        Class<?> factoryClass = Class.forName("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
-                        Object factory = factoryClass.getDeclaredConstructor().newInstance();
-                        engine = (javax.script.ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
-                    } catch (Exception ex) {
-                        // Factory not available
-                    }
-                }
+                javax.script.ScriptEngine engine = getNashornEngine();
                 if (engine == null) {
                     api.logging().logToOutput("Nashorn engine not available. Using regex fallback for post-response script.");
                     regexFallbackExtract(script.exec, result, context);
@@ -120,6 +94,23 @@ public class ScriptEngine {
                 regexFallbackExtract(script.exec, result, context);
             }
         }
+    }
+
+    private javax.script.ScriptEngine getNashornEngine() {
+        javax.script.ScriptEngine engine = engineManager.getEngineByName("nashorn");
+        if (engine == null) {
+            engine = engineManager.getEngineByName("javascript");
+        }
+        if (engine == null) {
+            try {
+                Class<?> factoryClass = Class.forName("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
+                Object factory = factoryClass.getDeclaredConstructor().newInstance();
+                engine = (javax.script.ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
+            } catch (Exception ex) {
+                // Factory not available
+            }
+        }
+        return engine;
     }
 
     private Object parseJson(String json) {

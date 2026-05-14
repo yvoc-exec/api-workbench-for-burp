@@ -22,7 +22,7 @@ public class VariableResolver {
     public void addCollectionVariables(ApiCollection collection) {
         for (ApiRequest.Variable var : collection.variables) {
             if (var.value != null) {
-                variables.putIfAbsent(var.key, var.value);
+                variables.put(var.key, var.value);
             }
         }
     }
@@ -30,7 +30,7 @@ public class VariableResolver {
     public void addRequestVariables(ApiRequest request) {
         for (ApiRequest.Variable var : request.variables) {
             if (var.value != null) {
-                variables.putIfAbsent(var.key, var.value);
+                variables.put(var.key, var.value);
             }
         }
     }
