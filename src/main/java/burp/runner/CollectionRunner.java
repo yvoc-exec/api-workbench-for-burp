@@ -8,10 +8,11 @@ import burp.utils.RequestBuilder;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
-import burp.api.montoya.http.message.requests.HttpRequestOptions;
+import burp.api.montoya.http.RequestOptions;
+import burp.api.montoya.http.RedirectionMode;
 import burp.api.montoya.core.ByteArray;
-import burp.api.montoya.ui.contextmenu.Annotations;
-import burp.api.montoya.ui.contextmenu.HighlightColor;
+import burp.api.montoya.core.Annotations;
+import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
@@ -183,8 +184,8 @@ public class CollectionRunner {
                 }
 
                 long startTime = System.currentTimeMillis();
-                HttpRequestOptions options = HttpRequestOptions.httpRequestOptions()
-                        .withFollowRedirects(followRedirects);
+                RequestOptions options = RequestOptions.requestOptions()
+                        .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
                 HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
                 long endTime = System.currentTimeMillis();
 

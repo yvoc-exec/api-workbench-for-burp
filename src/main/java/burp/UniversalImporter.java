@@ -7,10 +7,11 @@ import burp.auth.OAuth2Manager;
 import burp.utils.*;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.requests.HttpRequest;
-import burp.api.montoya.http.message.requests.HttpRequestOptions;
+import burp.api.montoya.http.RequestOptions;
+import burp.api.montoya.http.RedirectionMode;
 import burp.api.montoya.core.ByteArray;
-import burp.api.montoya.ui.contextmenu.Annotations;
-import burp.api.montoya.ui.contextmenu.HighlightColor;
+import burp.api.montoya.core.Annotations;
+import burp.api.montoya.core.HighlightColor;
 
 import javax.swing.*;
 import java.io.*;
@@ -187,8 +188,8 @@ public class UniversalImporter {
     private void sendToSitemap(burp.api.montoya.http.HttpService service, byte[] request, String name) throws Exception {
         try {
             HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(request));
-            HttpRequestOptions options = HttpRequestOptions.httpRequestOptions()
-                    .withFollowRedirects(followRedirects);
+            RequestOptions options = RequestOptions.requestOptions()
+                    .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
             burp.api.montoya.http.message.HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
             if (response != null && response.response() != null) {
                 Annotations annotations = Annotations.annotations(
