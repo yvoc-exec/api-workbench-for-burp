@@ -44,6 +44,14 @@ public class CollectionRunner {
 
     private OAuth2Manager oauth2Manager;
 
+    private static final List<String> OAUTH2_CANONICAL_KEYS = Arrays.asList(
+        "oauth2_grant", "oauth2_token_url", "oauth2_auth_url",
+        "oauth2_client_id", "oauth2_client_secret", "oauth2_scope",
+        "oauth2_username", "oauth2_password", "oauth2_refresh_token",
+        "oauth2_code", "oauth2_redirect_uri", "oauth2_code_verifier",
+        "oauth2_client_auth", "oauth2_access_token"
+    );
+
     public CollectionRunner(MontoyaApi api) {
         this(api, null);
     }
@@ -150,13 +158,16 @@ public class CollectionRunner {
         result.requestId = req.id;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
+        // Snapshot current OAuth2 canonical values before this request
+        Map<String, String> oauth2Snapshot = snapshotOAuth2Vars();
+
         int attempts = 0;
         while (attempts < maxRetries) {
             attempts++;
             try {
-                // Normalize OAuth2 auth metadata into canonical runtime vars
+                // Apply current request's auth mapping with override so this request's auth wins
                 if (req.hasAuth()) {
-                    Map<String, String> authVars = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
+                    Map<String, String> authVars = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables(), true);
                     if (!authVars.isEmpty()) {
                         resolver.addAll(authVars);
                     }
@@ -252,7 +263,32 @@ public class CollectionRunner {
             }
         }
 
+        // Restore snapshot so next request starts clean for OAuth2 keys
+        restoreOAuth2Vars(oauth2Snapshot);
+
         return result;
+    }
+
+    private Map<String, String> snapshotOAuth2Vars() {
+        Map<String, String> snapshot = new HashMap<>();
+        Map<String, String> vars = resolver.getVariables();
+        for (String key : OAUTH2_CANONICAL_KEYS) {
+            if (vars.containsKey(key)) {
+                snapshot.put(key, vars.get(key));
+            }
+        }
+        return snapshot;
+    }
+
+    private void restoreOAuth2Vars(Map<String, String> snapshot) {
+        Map<String, String> vars = resolver.mutableVariables();
+        if (vars == null) return;
+        // Remove all canonical keys
+        for (String key : OAUTH2_CANONICAL_KEYS) {
+            vars.remove(key);
+        }
+        // Re-add snapped values
+        vars.putAll(snapshot);
     }
 
     private Map<String, String> extractVariablesFromResponse(ApiRequest req, RunnerResult result) {

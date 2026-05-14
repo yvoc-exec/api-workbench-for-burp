@@ -59,12 +59,25 @@ public class OAuth2RuntimeMapper {
 
     /**
      * Maps auth properties to canonical OAuth2 runtime variables.
+     * Does not overwrite already-populated canonical values (backward-compatible).
      *
      * @param auth          the parsed auth object (may be null)
      * @param existingVars  current variable map to check for existing values
      * @return a map of canonical variable names to values
      */
     public static Map<String, String> mapAuthToVars(ApiRequest.Auth auth, Map<String, String> existingVars) {
+        return mapAuthToVars(auth, existingVars, false);
+    }
+
+    /**
+     * Maps auth properties to canonical OAuth2 runtime variables.
+     *
+     * @param auth              the parsed auth object (may be null)
+     * @param existingVars      current variable map to check for existing values
+     * @param overrideExisting  if true, emit mapped values even if existing canonical value is non-empty
+     * @return a map of canonical variable names to values
+     */
+    public static Map<String, String> mapAuthToVars(ApiRequest.Auth auth, Map<String, String> existingVars, boolean overrideExisting) {
         Map<String, String> mapped = new HashMap<>();
         if (auth == null || auth.properties == null || auth.properties.isEmpty()) {
             return mapped;
@@ -82,10 +95,12 @@ public class OAuth2RuntimeMapper {
                 continue;
             }
 
-            // Do not overwrite already-populated canonical values unless empty
-            String existing = existingVars != null ? existingVars.get(canonical) : null;
-            if (existing != null && !existing.isEmpty()) {
-                continue;
+            if (!overrideExisting) {
+                // Do not overwrite already-populated canonical values unless empty
+                String existing = existingVars != null ? existingVars.get(canonical) : null;
+                if (existing != null && !existing.isEmpty()) {
+                    continue;
+                }
             }
 
             mapped.put(canonical, normalizeValue(canonical, value));
