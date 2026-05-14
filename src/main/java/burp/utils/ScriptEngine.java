@@ -160,7 +160,7 @@ public class ScriptEngine {
     private void regexFallbackExtract(String script, RunnerResult result, Map<String, String> context) {
         // pm.environment.set("key", jsonData.path)
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-            "(?:pm\\.environment\\.set|bru\\.setVar|bru\\.setEnvVar)\\s*\\(\\s*['"]([^'"]+)['"]\\s*,\\s*(.+?)\\s*\\)"
+            "(?:pm\\.environment\\.set|bru\\.setVar|bru\\.setEnvVar)\\s*\\(\\s*['\"]([^'\"]+)['\"]\\s*,\\s*(.+?)\\s*\\)"
         );
         java.util.regex.Matcher m = p.matcher(script);
         while (m.find()) {
@@ -176,7 +176,7 @@ public class ScriptEngine {
 
     private String resolveSimpleExpr(String expr, RunnerResult result) {
         // Handle string literals
-        if ((expr.startsWith(""") && expr.endsWith(""")) || (expr.startsWith("'") && expr.endsWith("'"))) {
+        if ((expr.startsWith("\"") && expr.endsWith("\"")) || (expr.startsWith("'") && expr.endsWith("'"))) {
             return expr.substring(1, expr.length() - 1);
         }
         // jsonData.xxx or responseBody patterns

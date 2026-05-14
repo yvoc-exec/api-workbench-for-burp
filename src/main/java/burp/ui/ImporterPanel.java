@@ -269,10 +269,7 @@ public class ImporterPanel {
 
         envVarsArea = new JTextArea(20, 60);
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        envVarsArea.setText("# Example:
-# base_url=http://localhost:8080
-# api_key=your_key_here
-# token={{auth_token}}");
+        envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
         JScrollPane scroll = new JScrollPane(envVarsArea);
         panel.add(scroll, BorderLayout.CENTER);
 
@@ -330,7 +327,7 @@ public class ImporterPanel {
                     loadedCollections.add(collection);
                     collectionListModel.addElement(collection.name + " (" + collection.format + ", " + collection.requests.size() + " reqs)");
                     refreshPreviewTable();
-                    appendImportLog("Loaded "" + collection.name + "" (" + collection.requests.size() + " requests)");
+                    appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
                     importBtn.setEnabled(true);
                     runBtn.setEnabled(true);
                     startRunnerBtn.setEnabled(true);
@@ -411,7 +408,7 @@ public class ImporterPanel {
                     this::appendImportLog,
                     result -> SwingUtilities.invokeLater(() -> {
                         importProgress.setValue(100);
-                        appendImportLog("Import complete for "" + targetCol.name + "": " + result.successCount + "/" + result.totalRequests + " succeeded.");
+                        appendImportLog("Import complete for \"" + targetCol.name + "\": " + result.successCount + "/" + result.totalRequests + " succeeded.");
                     })
                 );
             }
