@@ -145,14 +145,10 @@ public class BrunoParser implements CollectionParser {
                 }
             }
 
-            // Parse auth (basic auth in Bruno)
-            Pattern authPattern = Pattern.compile("auth\\s*\\{\\s*basic\\s*\\{\\s*username:\\s*(.+?)\\s*password:\\s*(.+?)\\s*\\}\\s*\\}");
-            Matcher authMatcher = authPattern.matcher(content);
-            if (authMatcher.find()) {
-                req.auth = new ApiRequest.Auth();
-                req.auth.type = "basic";
-                req.auth.properties.put("username", authMatcher.group(1).trim());
-                req.auth.properties.put("password", authMatcher.group(2).trim());
+            // Parse auth (basic, bearer, apikey, oauth2)
+            String authBlock = extractBlock(content, "auth");
+            if (authBlock != null) {
+                req.auth = parseBrunoAuthBlock(authBlock);
             }
 
             // Parse vars (pre-request variables)
@@ -204,6 +200,93 @@ public class BrunoParser implements CollectionParser {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Extracts the inner content of a named block by counting braces.
+     * Returns null if the block is not found.
+     */
+    private String extractBlock(String content, String blockName) {
+        Pattern startPattern = Pattern.compile("\\b" + blockName + "\\s*\\{", Pattern.CASE_INSENSITIVE);
+        Matcher m = startPattern.matcher(content);
+        if (!m.find()) return null;
+        int start = m.end() - 1; // position of opening brace
+        int braceCount = 0;
+        int i = start;
+        for (; i < content.length(); i++) {
+            char c = content.charAt(i);
+            if (c == '{') braceCount++;
+            else if (c == '}') {
+                braceCount--;
+                if (braceCount == 0) break;
+            }
+        }
+        if (braceCount != 0) return null;
+        return content.substring(start + 1, i).trim();
+    }
+
+    /**
+     * Parses a Bruno auth block content into an ApiRequest.Auth object.
+     */
+    private ApiRequest.Auth parseBrunoAuthBlock(String authContent) {
+        // Try basic
+        String basicBlock = extractBlock(authContent, "basic");
+        if (basicBlock != null) {
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "basic";
+            auth.properties.put("username", extractValue(basicBlock, "username"));
+            auth.properties.put("password", extractValue(basicBlock, "password"));
+            return auth;
+        }
+        // Try bearer
+        String bearerBlock = extractBlock(authContent, "bearer");
+        if (bearerBlock != null) {
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "bearer";
+            auth.properties.put("token", extractValue(bearerBlock, "token"));
+            return auth;
+        }
+        // Try apikey
+        String apikeyBlock = extractBlock(authContent, "apikey");
+        if (apikeyBlock != null) {
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "apikey";
+            auth.properties.put("key", extractValue(apikeyBlock, "key"));
+            auth.properties.put("value", extractValue(apikeyBlock, "value"));
+            String placement = extractValue(apikeyBlock, "placement");
+            auth.properties.put("in", placement != null ? placement : "header");
+            return auth;
+        }
+        // Try oauth2
+        String oauth2Block = extractBlock(authContent, "oauth2");
+        if (oauth2Block != null) {
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "oauth2";
+            String grantType = extractValue(oauth2Block, "grant_type");
+            auth.properties.put("grantType", grantType != null ? grantType : "client_credentials");
+            auth.properties.put("accessTokenUrl", extractValue(oauth2Block, "access_token_url"));
+            auth.properties.put("authorizationUrl", extractValue(oauth2Block, "authorization_url"));
+            auth.properties.put("clientId", extractValue(oauth2Block, "client_id"));
+            auth.properties.put("clientSecret", extractValue(oauth2Block, "client_secret"));
+            auth.properties.put("scope", extractValue(oauth2Block, "scope"));
+            auth.properties.put("accessToken", extractValue(oauth2Block, "access_token"));
+            return auth;
+        }
+        return null;
+    }
+
+    private String extractValue(String block, String key) {
+        Pattern p = Pattern.compile("^\\s*" + key + "\\s*:\\s*(.+?)\\s*$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(block);
+        if (m.find()) {
+            String val = m.group(1).trim();
+            // Remove surrounding quotes if present
+            if ((val.startsWith("\"") && val.endsWith("\"")) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.substring(1, val.length() - 1);
+            }
+            return val.isEmpty() ? null : val;
+        }
+        return null;
     }
 
     /**

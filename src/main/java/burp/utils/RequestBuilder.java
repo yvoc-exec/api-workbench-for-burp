@@ -110,7 +110,8 @@ public class RequestBuilder {
                 if (!hasHeader(headers, "Authorization")) {
                     String token = auth.properties.getOrDefault("token", auth.properties.get("value"));
                     if (token != null) {
-                        headers.add("Authorization: Bearer " + resolver.resolve(token));
+                        String prefix = auth.properties.getOrDefault("prefix", "Bearer");
+                        headers.add("Authorization: " + resolver.resolve(prefix) + " " + resolver.resolve(token));
                     }
                 }
                 break;
@@ -137,6 +138,17 @@ public class RequestBuilder {
                         requestTarget = requestTarget.contains("?")
                                 ? requestTarget + "&" + param
                                 : requestTarget + "?" + param;
+                    } else if ("cookie".equalsIgnoreCase(in)) {
+                        String cookieValue = resolver.resolve(keyName) + "=" + resolver.resolve(keyValue);
+                        Optional<String> existingCookie = headers.stream()
+                                .filter(h -> h.toLowerCase().startsWith("cookie:"))
+                                .findFirst();
+                        if (existingCookie.isPresent()) {
+                            int idx = headers.indexOf(existingCookie.get());
+                            headers.set(idx, existingCookie.get() + "; " + cookieValue);
+                        } else {
+                            headers.add("Cookie: " + cookieValue);
+                        }
                     } else {
                         headers.add(resolver.resolve(keyName) + ": " + resolver.resolve(keyValue));
                     }

@@ -48,9 +48,10 @@ public class InsomniaParser implements CollectionParser {
         JsonArray resources = obj.getAsJsonArray("resources");
         if (resources == null) return collection;
 
-        // Build ID -> name map for folders
+        // Build ID -> name/parent/auth maps for folders
         Map<String, String> folderNames = new HashMap<>();
         Map<String, String> folderParents = new HashMap<>();
+        Map<String, ApiRequest.Auth> folderAuths = new HashMap<>();
         for (JsonElement r : resources) {
             JsonObject res = r.getAsJsonObject();
             if (res.has("_type") && "request_group".equals(res.get("_type").getAsString())) {
@@ -59,6 +60,9 @@ public class InsomniaParser implements CollectionParser {
                 String parentId = getString(res, "parentId", "");
                 folderNames.put(id, name);
                 folderParents.put(id, parentId);
+                if (res.has("authentication") && res.get("authentication").isJsonObject()) {
+                    folderAuths.put(id, parseAuth(res.getAsJsonObject("authentication")));
+                }
             }
         }
 
@@ -66,7 +70,7 @@ public class InsomniaParser implements CollectionParser {
         for (JsonElement r : resources) {
             JsonObject res = r.getAsJsonObject();
             if (res.has("_type") && "request".equals(res.get("_type").getAsString())) {
-                ApiRequest req = parseInsomniaRequest(res, folderNames, folderParents);
+                ApiRequest req = parseInsomniaRequest(res, folderNames, folderParents, folderAuths);
                 req.sourceCollection = collection.name;
                 collection.requests.add(req);
             }
@@ -75,7 +79,9 @@ public class InsomniaParser implements CollectionParser {
         return collection;
     }
 
-    private ApiRequest parseInsomniaRequest(JsonObject res, Map<String, String> folderNames, Map<String, String> folderParents) {
+    private ApiRequest parseInsomniaRequest(JsonObject res, Map<String, String> folderNames,
+                                            Map<String, String> folderParents,
+                                            Map<String, ApiRequest.Auth> folderAuths) {
         ApiRequest req = new ApiRequest();
         req.id = getString(res, "_id", "");
         req.name = getString(res, "name", "Unnamed");
@@ -150,17 +156,60 @@ public class InsomniaParser implements CollectionParser {
 
         // Auth
         if (res.has("authentication") && res.get("authentication").isJsonObject()) {
-            JsonObject authObj = res.getAsJsonObject("authentication");
-            req.auth = new ApiRequest.Auth();
-            req.auth.type = getString(authObj, "type", "none");
-            for (Map.Entry<String, JsonElement> entry : authObj.entrySet()) {
-                if (!"type".equals(entry.getKey()) && entry.getValue().isJsonPrimitive()) {
-                    req.auth.properties.put(entry.getKey(), entry.getValue().getAsString());
-                }
+            req.auth = parseAuth(res.getAsJsonObject("authentication"));
+        }
+        // Inherit from parent groups if no local auth
+        if ((req.auth == null || req.auth.type == null || "none".equals(req.auth.type))) {
+            String folderId = getString(res, "parentId", "");
+            ApiRequest.Auth inherited = findInheritedAuth(folderId, folderParents, folderAuths);
+            if (inherited != null) {
+                req.auth = deepCopyAuth(inherited);
             }
         }
 
         return req;
+    }
+
+    private ApiRequest.Auth parseAuth(JsonObject authObj) {
+        ApiRequest.Auth auth = new ApiRequest.Auth();
+        auth.type = getString(authObj, "type", "none");
+        for (Map.Entry<String, JsonElement> entry : authObj.entrySet()) {
+            String key = entry.getKey();
+            if ("type".equals(key)) continue;
+            JsonElement value = entry.getValue();
+            if (value.isJsonPrimitive()) {
+                auth.properties.put(key, value.getAsString());
+            }
+        }
+        // Normalize Insomnia-specific property names
+        if (auth.properties.containsKey("addTo")) {
+            auth.properties.put("in", auth.properties.get("addTo"));
+        }
+        return auth;
+    }
+
+    private ApiRequest.Auth findInheritedAuth(String folderId, Map<String, String> folderParents,
+                                               Map<String, ApiRequest.Auth> folderAuths) {
+        Set<String> visited = new HashSet<>();
+        while (folderId != null && !folderId.isEmpty() && !visited.contains(folderId)) {
+            visited.add(folderId);
+            ApiRequest.Auth auth = folderAuths.get(folderId);
+            if (auth != null && auth.type != null && !"none".equals(auth.type)) {
+                return auth;
+            }
+            folderId = folderParents.getOrDefault(folderId, "");
+        }
+        return null;
+    }
+
+    private ApiRequest.Auth deepCopyAuth(ApiRequest.Auth src) {
+        if (src == null) return null;
+        ApiRequest.Auth copy = new ApiRequest.Auth();
+        copy.type = src.type;
+        if (src.properties != null) {
+            copy.properties.putAll(src.properties);
+        }
+        return copy;
     }
 
     private String getString(JsonObject obj, String key, String defaultValue) {
