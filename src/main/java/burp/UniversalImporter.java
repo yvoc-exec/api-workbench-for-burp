@@ -41,7 +41,7 @@ public class UniversalImporter {
     }
 
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
-                                File environmentFile, String destination, int delayMs,
+                                File environmentFile, List<String> destinations, int delayMs,
                                 LogCallback logCallback, ResultCallback resultCallback) {
 
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
@@ -136,13 +136,10 @@ public class UniversalImporter {
                 api.intruder().sendToIntruder(httpRequest);
                 break;
             case "sitemap":
-                sendToSitemap(service, rawRequest, req.name);
-                break;
-            case "both":
-                api.repeater().sendToRepeater(httpRequest, tabName);
                 if (delayMs > 0) Thread.sleep(delayMs);
                 sendToSitemap(service, rawRequest, req.name);
                 break;
+
         }
         existingTabs.add(tabName);
     }

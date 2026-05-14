@@ -143,6 +143,7 @@ public class CollectionRunner {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
+        result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
         int attempts = 0;
         while (attempts < maxRetries) {
@@ -163,6 +164,8 @@ public class CollectionRunner {
                 byte[] rawRequest = requestBuilder.buildRequest(req);
                 String resolvedUrl = resolver.resolve(req.url);
                 HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
+                result.host = hostInfo.host;
+                result.path = HttpUtils.extractPathFromUrl(resolvedUrl);
 
                 burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
                         hostInfo.host, hostInfo.port, hostInfo.useHttps);
@@ -182,6 +185,7 @@ public class CollectionRunner {
 
                     // Preview of response body (first 500 chars)
                     String body = response.response().bodyToString();
+                    result.responseBodyLength = body.length();
                     result.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
 
                     // Add to sitemap
