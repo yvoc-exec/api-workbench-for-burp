@@ -108,7 +108,7 @@ public class OpenApiParser implements CollectionParser {
                 String in = (String) param.get("in");
                 String paramName = (String) param.get("name");
                 if ("header".equals(in)) {
-                    req.headers.add(new ApiRequest.Header(paramName, (String) generateExampleValue(param)));
+                    req.headers.add(new ApiRequest.Header(paramName, String.valueOf(generateExampleValue(param))));
                 }
                 // Path/query params are embedded in URL or handled by variable resolver
             }

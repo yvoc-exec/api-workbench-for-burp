@@ -27,8 +27,9 @@ public class UniversalImporter {
     public UniversalImporter(MontoyaApi api) {
         this.api = api;
         this.resolver = new VariableResolver();
-        this.requestBuilder = new RequestBuilder(api, resolver);
-        this.ui = new ImporterPanel(this, new burp.runner.CollectionRunner(api), new OAuth2Manager(api));
+        OAuth2Manager oauth2Manager = new OAuth2Manager(api);
+        this.requestBuilder = new RequestBuilder(api, resolver, oauth2Manager);
+        this.ui = new ImporterPanel(this, new burp.runner.CollectionRunner(api, oauth2Manager), oauth2Manager);
     }
 
     public JPanel getMainPanel() {
@@ -184,6 +185,10 @@ public class UniversalImporter {
     public void clearVariables() {
         resolver.clear();
         existingTabs.clear();
+    }
+
+    public void cleanup() {
+        clearVariables();
     }
 
     // Callback interfaces

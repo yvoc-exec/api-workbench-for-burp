@@ -103,6 +103,9 @@ public class CollectionRunner {
                     // Apply any previously extracted vars
                     resolver.addAll(extractedVars);
 
+                    // Execute pre-request scripts
+                    scriptEngine.executePreRequest(req, extractedVars);
+
                     RunnerResult result = executeRequest(req, i + 1, ordered.size(), extractedVars);
                     results.add(result);
 
@@ -183,18 +186,16 @@ public class CollectionRunner {
 
                     // Add to sitemap
                     api.siteMap().add(response);
-                } else {
-                    result.success = false;
-                    result.errorMessage = "No response received";
-                }
 
-                // Execute post-response scripts (assertions + variable extraction)
-                if (response.response() != null) {
+                    // Execute post-response scripts (assertions + variable extraction)
                     Map<String, List<String>> headersMap = new HashMap<>();
                     for (var header : response.response().headers()) {
                         headersMap.computeIfAbsent(header.name(), k -> new ArrayList<>()).add(header.value());
                     }
                     scriptEngine.executePostResponse(req, result, extractedVars, body, result.statusCode, headersMap);
+                } else {
+                    result.success = false;
+                    result.errorMessage = "No response received";
                 }
 
                 break; // Success, exit retry loop

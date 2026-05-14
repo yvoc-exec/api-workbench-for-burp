@@ -37,7 +37,8 @@ public class BrunoParser implements CollectionParser {
 
         if (file.isDirectory()) {
             // Walk directory recursively
-            Files.walk(file.toPath()).forEach(path -> {
+            try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(file.toPath())) {
+            paths.forEach(path -> {
                 if (path.toString().endsWith(".bru")) {
                     try {
                         String relativePath = file.toPath().relativize(path.getParent()).toString();
@@ -51,6 +52,7 @@ public class BrunoParser implements CollectionParser {
                     }
                 }
             });
+            }
         } else {
             ApiRequest req = parseBruFile(file, "");
             if (req != null) {
