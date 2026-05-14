@@ -6,7 +6,7 @@ import java.util.*;
 
 public class RunnerResultTableModel extends AbstractTableModel {
     private final List<RunnerResult> results = new ArrayList<>();
-    private final String[] columns = {"#", "Name", "Status", "Time (ms)", "Size", "Assertions", "Extracted Vars"};
+    private final String[] columns = {"#", "Host", "Path", "Method", "Status", "Size", "Length", "Extracted Vars"};
 
     public void addResult(RunnerResult result) {
         results.add(result);
@@ -40,21 +40,20 @@ public class RunnerResultTableModel extends AbstractTableModel {
         RunnerResult r = results.get(row);
         switch (column) {
             case 0: return row + 1;
-            case 1: return r.requestName;
-            case 2: return r.success ? String.valueOf(r.statusCode) : "ERR";
-            case 3: return r.responseTimeMs;
-            case 4: return r.responseSize;
-            case 5:
-                long passed = r.assertions.stream().filter(a -> a.passed).count();
-                return passed + "/" + r.assertions.size();
-            case 6: return r.extractedVariables.isEmpty() ? "" : String.valueOf(r.extractedVariables.size());
+            case 1: return r.host != null ? r.host : "";
+            case 2: return r.path != null ? r.path : "";
+            case 3: return r.method != null ? r.method : "";
+            case 4: return r.success ? String.valueOf(r.statusCode) : "ERR";
+            case 5: return r.responseSize;
+            case 6: return r.responseBodyLength;
+            case 7: return r.extractedVariables.isEmpty() ? "" : String.valueOf(r.extractedVariables.size());
             default: return "";
         }
     }
 
     @Override
     public Class<?> getColumnClass(int column) {
-        if (column == 0 || column == 3 || column == 4) return Integer.class;
+        if (column == 0 || column == 5 || column == 6) return Integer.class;
         return String.class;
     }
 }

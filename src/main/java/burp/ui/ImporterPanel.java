@@ -33,7 +33,7 @@ public class ImporterPanel {
     private JTextField envField;
     private JTable previewTable;
     private RequestPreviewTableModel previewModel;
-    private JRadioButton repeaterBtn, sitemapBtn, intruderBtn, bothBtn;
+    private JCheckBox repeaterBtn, sitemapBtn, intruderBtn;
     private JSpinner delaySpinner;
     private JButton importBtn, previewBtn, runBtn, addCollectionBtn, removeCollectionBtn;
 
@@ -138,22 +138,14 @@ public class ImporterPanel {
         // Destination
         JPanel destPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         destPanel.setBorder(BorderFactory.createTitledBorder("Destination"));
-        ButtonGroup destGroup = new ButtonGroup();
-        repeaterBtn = new JRadioButton("Repeater", true);
-        sitemapBtn = new JRadioButton("Sitemap (Live)");
-        intruderBtn = new JRadioButton("Intruder");
-        bothBtn = new JRadioButton("Both");
-        destGroup.add(repeaterBtn);
-        destGroup.add(sitemapBtn);
-        destGroup.add(intruderBtn);
-        destGroup.add(bothBtn);
+        repeaterBtn = new JCheckBox("Repeater", true);
+        sitemapBtn = new JCheckBox("Sitemap (Live)");
+        intruderBtn = new JCheckBox("Intruder");
         destPanel.add(repeaterBtn);
         destPanel.add(Box.createHorizontalStrut(10));
         destPanel.add(sitemapBtn);
         destPanel.add(Box.createHorizontalStrut(10));
         destPanel.add(intruderBtn);
-        destPanel.add(Box.createHorizontalStrut(10));
-        destPanel.add(bothBtn);
 
         // Delay
         JPanel delayPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
@@ -383,11 +375,14 @@ public class ImporterPanel {
             return;
         }
 
-        String destination;
-        if (repeaterBtn.isSelected()) destination = "repeater";
-        else if (sitemapBtn.isSelected()) destination = "sitemap";
-        else if (intruderBtn.isSelected()) destination = "intruder";
-        else destination = "both";
+        List<String> destinations = new ArrayList<>();
+        if (repeaterBtn.isSelected()) destinations.add("repeater");
+        if (sitemapBtn.isSelected()) destinations.add("sitemap");
+        if (intruderBtn.isSelected()) destinations.add("intruder");
+        if (destinations.isEmpty()) {
+            appendImportLog("No destination selected.");
+            return;
+        }
         int delay = (Integer) delaySpinner.getValue();
 
         // Group requests by collection for import
@@ -404,7 +399,7 @@ public class ImporterPanel {
                 .findFirst()
                 .orElse(null);
             if (targetCol != null) {
-                importer.importRequests(targetCol, entry.getValue(), selectedEnv, destination, delay,
+                importer.importRequests(targetCol, entry.getValue(), selectedEnv, destinations, delay,
                     this::appendImportLog,
                     result -> SwingUtilities.invokeLater(() -> {
                         importProgress.setValue(100);
