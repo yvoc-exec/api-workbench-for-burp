@@ -129,7 +129,7 @@ public class UniversalImporter {
 
         switch (destination.toLowerCase()) {
             case "repeater":
-                api.repeater().sendToRepeater(tabName, httpRequest);
+                api.repeater().sendToRepeater(httpRequest, tabName);
                 break;
             case "intruder":
                 api.intruder().sendToIntruder(httpRequest);
@@ -138,7 +138,7 @@ public class UniversalImporter {
                 sendToSitemap(service, rawRequest, req.name);
                 break;
             case "both":
-                api.repeater().sendToRepeater(tabName, httpRequest);
+                api.repeater().sendToRepeater(httpRequest, tabName);
                 if (delayMs > 0) Thread.sleep(delayMs);
                 sendToSitemap(service, rawRequest, req.name);
                 break;

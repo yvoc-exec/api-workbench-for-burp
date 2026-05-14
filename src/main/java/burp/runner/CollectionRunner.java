@@ -103,7 +103,7 @@ public class CollectionRunner {
                     // Apply any previously extracted vars
                     resolver.addAll(extractedVars);
 
-                    RunnerResult result = executeRequest(req, i + 1, ordered.size());
+                    RunnerResult result = executeRequest(req, i + 1, ordered.size(), extractedVars);
                     results.add(result);
 
                     // Extract variables from response
@@ -136,7 +136,7 @@ public class CollectionRunner {
         });
     }
 
-    private RunnerResult executeRequest(ApiRequest req, int current, int total) {
+    private RunnerResult executeRequest(ApiRequest req, int current, int total, Map<String, String> extractedVars) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
@@ -188,8 +188,14 @@ public class CollectionRunner {
                     result.errorMessage = "No response received";
                 }
 
-                // Evaluate assertions
-                evaluateAssertions(req, result, response);
+                // Execute post-response scripts (assertions + variable extraction)
+                if (response.response() != null) {
+                    Map<String, List<String>> headersMap = new HashMap<>();
+                    for (var header : response.response().headers()) {
+                        headersMap.computeIfAbsent(header.name(), k -> new ArrayList<>()).add(header.value());
+                    }
+                    scriptEngine.executePostResponse(req, result, extractedVars, body, result.statusCode, headersMap);
+                }
 
                 break; // Success, exit retry loop
 
