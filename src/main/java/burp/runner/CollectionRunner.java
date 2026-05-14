@@ -223,7 +223,7 @@ public class CollectionRunner {
             // Simple regex-based extraction for common patterns
             // pm.environment.set("key", jsonData.path) or bru.setVar("key", res.body.path)
             Pattern setVarPattern = Pattern.compile(
-                "(?:pm\.environment\.set|bru\.setVar|pm\.collectionVariables\.set)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(.+?)\s*\)"
+                "(?:pm\\.environment\\.set|bru\\.setVar|pm\\.collectionVariables\\.set)\\s*\\(\\s*['"]([^'"]+)['"]\\s*,\\s*(.+?)\\s*\\)"
             );
             Matcher matcher = setVarPattern.matcher(script.exec);
             while (matcher.find()) {
@@ -239,7 +239,7 @@ public class CollectionRunner {
 
             // Also support JSONPath-like extraction comments
             // // extract: token = $.data.token
-            Pattern extractComment = Pattern.compile("//\s*extract:\s*(\w+)\s*=\s*(.+?)$", Pattern.MULTILINE);
+            Pattern extractComment = Pattern.compile("//\\s*extract:\\s*(\\w+)\\s*=\\s*(.+?)$", Pattern.MULTILINE);
             Matcher extractMatcher = extractComment.matcher(script.exec);
             while (extractMatcher.find()) {
                 String varName = extractMatcher.group(1);
@@ -277,7 +277,7 @@ public class CollectionRunner {
         if (json == null || json.isEmpty()) return null;
         try {
             com.google.gson.JsonElement element = com.google.gson.JsonParser.parseString(json);
-            String[] parts = path.replace("$", "").split("\.");
+            String[] parts = path.replace("$", "").split("\\.");
             com.google.gson.JsonElement current = element;
             for (String part : parts) {
                 if (part.isEmpty()) continue;

@@ -282,7 +282,7 @@ public class OpenApiParser implements CollectionParser {
     }
 
     private String getString(Map<String, Object> map, String keyPath, String defaultValue) {
-        String[] keys = keyPath.split("\.");
+        String[] keys = keyPath.split("\\.");
         Object current = map;
         for (String key : keys) {
             if (current instanceof Map) {

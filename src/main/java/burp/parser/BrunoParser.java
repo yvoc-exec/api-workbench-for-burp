@@ -81,7 +81,7 @@ public class BrunoParser implements CollectionParser {
             req.path = folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;
 
             // Parse meta block
-            Pattern metaPattern = Pattern.compile("meta\s*\{\s*name:\s*(.+?)\s*type:\s*(.+?)\s*seq:\s*(\d+)\s*\}");
+            Pattern metaPattern = Pattern.compile("meta\\s*\\{\\s*name:\\s*(.+?)\\s*type:\\s*(.+?)\\s*seq:\\s*(\\d+)\\s*\\}");
             Matcher metaMatcher = metaPattern.matcher(content);
             if (metaMatcher.find()) {
                 req.name = metaMatcher.group(1).trim();
@@ -89,7 +89,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse method from first line
-            Pattern methodPattern = Pattern.compile("^(get|post|put|delete|patch|head|options|trace)\s*([^\{\n]*?)$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+            Pattern methodPattern = Pattern.compile("^(get|post|put|delete|patch|head|options|trace)\\s*([^\\{\n]*?)$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
             Matcher methodMatcher = methodPattern.matcher(content);
             if (methodMatcher.find()) {
                 req.method = methodMatcher.group(1).toUpperCase();
@@ -101,14 +101,14 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Extract URL from url: line inside the method block
-            Pattern urlPattern = Pattern.compile("^\s*url\s*[:]?\s*(.+?)$", Pattern.MULTILINE);
+            Pattern urlPattern = Pattern.compile("^\\s*url\\s*[:]?\\s*(.+?)$", Pattern.MULTILINE);
             Matcher urlMatcher = urlPattern.matcher(content);
             if (urlMatcher.find()) {
                 req.url = urlMatcher.group(1).trim();
             }
 
             // Parse headers
-            Pattern headersPattern = Pattern.compile("headers\s*\{([^}]+)\}");
+            Pattern headersPattern = Pattern.compile("headers\\s*\\{([^}]+)\\}");
             Matcher headersMatcher = headersPattern.matcher(content);
             if (headersMatcher.find()) {
                 String headersBlock = headersMatcher.group(1);
@@ -125,7 +125,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse body
-            Pattern bodyPattern = Pattern.compile("body\s*[:]?\s*(?:\{([^}]+)\}|(none|json|xml|text|graphql|form|multipart))?", Pattern.CASE_INSENSITIVE);
+            Pattern bodyPattern = Pattern.compile("body\\s*[:]?\\s*(?:\\{([^}]+)\\}|(none|json|xml|text|graphql|form|multipart))?", Pattern.CASE_INSENSITIVE);
             Matcher bodyMatcher = bodyPattern.matcher(content);
             if (bodyMatcher.find()) {
                 String bodyBlock = bodyMatcher.group(1).trim();
@@ -144,7 +144,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse auth (basic auth in Bruno)
-            Pattern authPattern = Pattern.compile("auth\s*\{\s*basic\s*\{\s*username:\s*(.+?)\s*password:\s*(.+?)\s*\}\s*\}");
+            Pattern authPattern = Pattern.compile("auth\\s*\\{\\s*basic\\s*\\{\\s*username:\\s*(.+?)\\s*password:\\s*(.+?)\\s*\\}\\s*\\}");
             Matcher authMatcher = authPattern.matcher(content);
             if (authMatcher.find()) {
                 req.auth = new ApiRequest.Auth();
@@ -154,7 +154,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse vars (pre-request variables)
-            Pattern varsPattern = Pattern.compile("vars\s*\{([^}]+)\}");
+            Pattern varsPattern = Pattern.compile("vars\\s*\\{([^}]+)\\}");
             Matcher varsMatcher = varsPattern.matcher(content);
             if (varsMatcher.find()) {
                 String varsBlock = varsMatcher.group(1);
@@ -172,7 +172,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse assert (test scripts)
-            Pattern assertPattern = Pattern.compile("assert\s*\{([^}]+)\}");
+            Pattern assertPattern = Pattern.compile("assert\\s*\\{([^}]+)\\}");
             Matcher assertMatcher = assertPattern.matcher(content);
             if (assertMatcher.find()) {
                 String assertBlock = assertMatcher.group(1);
@@ -180,7 +180,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse script:pre-request
-            Pattern preScriptPattern = Pattern.compile("script:pre-request\s*\{([^}]+)\}");
+            Pattern preScriptPattern = Pattern.compile("script:pre-request\\s*\\{([^}]+)\\}");
             Matcher preScriptMatcher = preScriptPattern.matcher(content);
             if (preScriptMatcher.find()) {
                 String script = preScriptMatcher.group(1);
@@ -190,7 +190,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse script:post-response
-            Pattern postScriptPattern = Pattern.compile("script:post-response\s*\{([^}]+)\}");
+            Pattern postScriptPattern = Pattern.compile("script:post-response\\s*\\{([^}]+)\\}");
             Matcher postScriptMatcher = postScriptPattern.matcher(content);
             if (postScriptMatcher.find()) {
                 String script = postScriptMatcher.group(1);
@@ -211,13 +211,13 @@ public class BrunoParser implements CollectionParser {
     private String normalizeBrunoScript(String script) {
         if (script == null) return "";
         // Convert bru.setVar("key", value) -> pm.environment.set("key", value)
-        script = script.replaceAll("bru\.setVar\s*\(", "pm.environment.set(");
-        script = script.replaceAll("bru\.getVar\s*\(", "pm.environment.get(");
-        script = script.replaceAll("bru\.setEnvVar\s*\(", "pm.environment.set(");
-        script = script.replaceAll("bru\.getEnvVar\s*\(", "pm.environment.get(");
+        script = script.replaceAll("bru\\.setVar\\s*\\(", "pm.environment.set(");
+        script = script.replaceAll("bru\\.getVar\\s*\\(", "pm.environment.get(");
+        script = script.replaceAll("bru\\.setEnvVar\\s*\\(", "pm.environment.set(");
+        script = script.replaceAll("bru\\.getEnvVar\\s*\\(", "pm.environment.get(");
         // Convert res.body -> jsonData (for Postman-style test scripts)
-        script = script.replaceAll("(?<!\.)res\.body", "jsonData");
-        script = script.replaceAll("(?<!\.)res\.status", "responseCode.code");
+        script = script.replaceAll("(?<!\\.)res\\.body", "jsonData");
+        script = script.replaceAll("(?<!\\.)res\\.status", "responseCode.code");
         return script;
     }
 

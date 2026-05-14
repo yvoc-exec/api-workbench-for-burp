@@ -160,7 +160,7 @@ public class ScriptEngine {
     private void regexFallbackExtract(String script, RunnerResult result, Map<String, String> context) {
         // pm.environment.set("key", jsonData.path)
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-            "(?:pm\.environment\.set|bru\.setVar|bru\.setEnvVar)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(.+?)\s*\)"
+            "(?:pm\\.environment\\.set|bru\\.setVar|bru\\.setEnvVar)\\s*\\(\\s*['"]([^'"]+)['"]\\s*,\\s*(.+?)\\s*\\)"
         );
         java.util.regex.Matcher m = p.matcher(script);
         while (m.find()) {
@@ -183,7 +183,7 @@ public class ScriptEngine {
         if (result.responseBodyPreview != null) {
             try {
                 com.google.gson.JsonElement elem = com.google.gson.JsonParser.parseString(result.responseBodyPreview);
-                String[] parts = expr.replace("jsonData", "").replace("res.body", "").replace(".", "").split("\.");
+                String[] parts = expr.replace("jsonData", "").replace("res.body", "").replace(".", "").split("\\.");
                 com.google.gson.JsonElement current = elem;
                 for (String part : parts) {
                     if (part.isEmpty()) continue;
