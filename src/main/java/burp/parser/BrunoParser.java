@@ -77,7 +77,7 @@ public class BrunoParser implements CollectionParser {
 
     private ApiRequest parseBruFile(File file, String folderPath) {
         try {
-            String content = new String(Files.readAllBytes(file.toPath()));
+            String content = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
             ApiRequest req = new ApiRequest();
             req.name = file.getName().replace(".bru", "");
             req.path = folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;

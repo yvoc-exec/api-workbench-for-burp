@@ -154,6 +154,14 @@ public class CollectionRunner {
         while (attempts < maxRetries) {
             attempts++;
             try {
+                // Normalize OAuth2 auth metadata into canonical runtime vars
+                if (req.hasAuth()) {
+                    Map<String, String> authVars = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
+                    if (!authVars.isEmpty()) {
+                        resolver.addAll(authVars);
+                    }
+                }
+
                 // Refresh OAuth2 token if needed before executing
                 if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
                     try {
@@ -294,12 +302,18 @@ public class CollectionRunner {
         String sourceBody = result.responseBody != null ? result.responseBody : result.responseBodyPreview;
         // Handle jsonData.xxx patterns
         if (expression.startsWith("jsonData")) {
-            String path = expression.replace("jsonData", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
+            String path = expression;
+            if (path.startsWith("jsonData.")) path = path.substring("jsonData.".length());
+            else if (path.startsWith("jsonData")) path = path.substring("jsonData".length());
+            path = path.replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
             return extractJsonPath(sourceBody, path);
         }
         // Handle res.body.xxx patterns
         if (expression.startsWith("res.body")) {
-            String path = expression.replace("res.body", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
+            String path = expression;
+            if (path.startsWith("res.body.")) path = path.substring("res.body.".length());
+            else if (path.startsWith("res.body")) path = path.substring("res.body".length());
+            path = path.replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
             return extractJsonPath(sourceBody, path);
         }
         // Direct string literal
