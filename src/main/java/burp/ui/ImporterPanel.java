@@ -244,6 +244,8 @@ public class ImporterPanel {
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScroll, detailTabs);
         splitPane.setResizeWeight(0.5);
+        splitPane.setOneTouchExpandable(true);
+        splitPane.setContinuousLayout(true);
         panel.add(splitPane, BorderLayout.CENTER);
 
         // Selection listener to populate detail pane
