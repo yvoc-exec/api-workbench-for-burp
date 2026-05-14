@@ -223,7 +223,7 @@ public class CollectionRunner {
             // Simple regex-based extraction for common patterns
             // pm.environment.set("key", jsonData.path) or bru.setVar("key", res.body.path)
             Pattern setVarPattern = Pattern.compile(
-                "(?:pm\\.environment\\.set|bru\\.setVar|pm\\.collectionVariables\\.set)\\s*\\(\\s*['"]([^'"]+)['"]\\s*,\\s*(.+?)\\s*\\)"
+                "(?:pm\\.environment\\.set|bru\\.setVar|pm\\.collectionVariables\\.set)\\s*\\(\\s*['\"]([^'\"]+)['\"]\\s*,\\s*(.+?)\\s*\\)"
             );
             Matcher matcher = setVarPattern.matcher(script.exec);
             while (matcher.find()) {
@@ -266,7 +266,7 @@ public class CollectionRunner {
             return extractJsonPath(result.responseBodyPreview, path);
         }
         // Direct string literal
-        if ((expression.startsWith(""") && expression.endsWith(""")) ||
+        if ((expression.startsWith("\"") && expression.endsWith("\"")) ||
             (expression.startsWith("'") && expression.endsWith("'"))) {
             return expression.substring(1, expression.length() - 1);
         }
