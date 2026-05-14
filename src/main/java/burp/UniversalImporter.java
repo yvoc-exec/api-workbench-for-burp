@@ -7,7 +7,10 @@ import burp.auth.OAuth2Manager;
 import burp.utils.*;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.requests.HttpRequestOptions;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.ui.contextmenu.Annotations;
+import burp.api.montoya.ui.contextmenu.HighlightColor;
 
 import javax.swing.*;
 import java.io.*;
@@ -23,6 +26,7 @@ public class UniversalImporter {
     private final RequestBuilder requestBuilder;
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
+    private boolean followRedirects = true;
 
     public UniversalImporter(MontoyaApi api) {
         this.api = api;
@@ -40,9 +44,17 @@ public class UniversalImporter {
         return ui;
     }
 
+    public void setFollowRedirects(boolean followRedirects) {
+        this.followRedirects = followRedirects;
+    }
+
+    public boolean isFollowRedirects() {
+        return followRedirects;
+    }
+
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
-                                File environmentFile, List<String> destinations, int delayMs,
-                                LogCallback logCallback, ResultCallback resultCallback) {
+                               File environmentFile, List<String> destinations, int delayMs,
+                               LogCallback logCallback, ResultCallback resultCallback) {
 
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
             @Override
@@ -85,7 +97,7 @@ public class UniversalImporter {
                             publish("✓ " + req.name);
                         } catch (Exception e) {
                             result.failedRequestDetails.add(new ImportResult.FailedRequestInfo(
-                                req.name, req.path, e.getMessage(), req));
+                                    req.name, req.path, e.getMessage(), req));
                             result.failedRequests.add(req.name + ": " + e.getMessage());
                             publish("✗ " + req.name + " - " + e.getMessage());
                         }
@@ -117,6 +129,16 @@ public class UniversalImporter {
     }
 
     private void processRequest(ApiRequest req, String destination, int delayMs) throws Exception {
+        // FIX: Track existing variable keys to prevent leakage across requests
+        Set<String> preKeys = new HashSet<>();
+        try {
+            if (resolver.getVariables() != null) {
+                preKeys.addAll(resolver.getVariables().keySet());
+            }
+        } catch (Exception e) {
+            // getVariables() may not support keySet, skip tracking
+        }
+
         // Add request-level variables
         resolver.addRequestVariables(req);
 
@@ -125,7 +147,7 @@ public class UniversalImporter {
         HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
 
         burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-            hostInfo.host, hostInfo.port, hostInfo.useHttps);
+                hostInfo.host, hostInfo.port, hostInfo.useHttps);
 
         HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
         String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
@@ -141,17 +163,39 @@ public class UniversalImporter {
                 if (delayMs > 0) Thread.sleep(delayMs);
                 sendToSitemap(service, rawRequest, req.name);
                 break;
-
         }
-        existingTabs.add(tabName);
+
+        // FIX: Only track tab names for Repeater (meaningless for Sitemap/Intruder)
+        if ("repeater".equals(destination.toLowerCase())) {
+            existingTabs.add(tabName);
+        }
+
+        // FIX: Remove request-level variables so they don't leak to next request
+        try {
+            if (resolver.getVariables() != null) {
+                Set<String> postKeys = new HashSet<>(resolver.getVariables().keySet());
+                postKeys.removeAll(preKeys);
+                for (String key : postKeys) {
+                    resolver.getVariables().remove(key);
+                }
+            }
+        } catch (Exception e) {
+            // If map is unmodifiable, variables may leak (known limitation)
+        }
     }
 
     private void sendToSitemap(burp.api.montoya.http.HttpService service, byte[] request, String name) throws Exception {
         try {
             HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(request));
-            burp.api.montoya.http.message.HttpRequestResponse response = api.http().sendRequest(httpRequest);
+            HttpRequestOptions options = HttpRequestOptions.httpRequestOptions()
+                    .withFollowRedirects(followRedirects);
+            burp.api.montoya.http.message.HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
             if (response != null && response.response() != null) {
-                api.siteMap().add(response);
+                Annotations annotations = Annotations.annotations(
+                        "[Imported] " + name, HighlightColor.CYAN);
+                api.siteMap().add(response.withAnnotations(annotations));
+            } else {
+                throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
             }
         } catch (Exception e) {
             throw new Exception("Sitemap request failed: " + extractCleanError(e));
@@ -160,11 +204,9 @@ public class UniversalImporter {
 
     private String generateUniqueTabName(String baseName, String collectionName) {
         String tabName = baseName;
-        // If duplicate exists, prefix with collection name
         if (existingTabs.contains(tabName)) {
             tabName = collectionName + " - " + baseName;
         }
-        // If still duplicate, add counter
         int counter = 1;
         while (existingTabs.contains(tabName)) {
             tabName = collectionName + " - " + baseName + " (" + counter++ + ")";
@@ -190,7 +232,6 @@ public class UniversalImporter {
         clearVariables();
     }
 
-    // Callback interfaces
     public interface LogCallback {
         void log(String message);
     }

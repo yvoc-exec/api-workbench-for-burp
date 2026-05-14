@@ -46,7 +46,19 @@ public class HttpUtils {
 
     private static HostInfo parseUrlWithVariables(String urlString) {
         String host = "localhost";
+        // FIX: Detect protocol even when variables are present
+        boolean useHttps = false;
+        int port = 80;
         try {
+            String lowerUrl = urlString.toLowerCase();
+            if (lowerUrl.startsWith("https://")) {
+                useHttps = true;
+                port = 443;
+            } else if (lowerUrl.startsWith("http://")) {
+                useHttps = false;
+                port = 80;
+            }
+
             String withoutProtocol = urlString;
             if (urlString.contains("://")) {
                 withoutProtocol = urlString.substring(urlString.indexOf("://") + 3);
@@ -70,7 +82,7 @@ public class HttpUtils {
         } catch (Exception e) {
             // Keep default
         }
-        return new HostInfo(host, 80, false);
+        return new HostInfo(host, port, useHttps);
     }
 
     public static String extractPathFromUrl(String urlString) {

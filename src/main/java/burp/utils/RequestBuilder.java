@@ -10,12 +10,12 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
+import java.io.ByteArrayOutputStream;
 
 public class RequestBuilder {
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final boolean debugMode = false;
-
     private final OAuth2Manager oauth2Manager;
 
     public RequestBuilder(MontoyaApi api, VariableResolver resolver) {
@@ -68,8 +68,17 @@ public class RequestBuilder {
         // Body
         byte[] body = buildBody(request.body, headers);
 
-        String httpMessage = String.join("\r\n", headers) + "\r\n\r\n" + new String(body, StandardCharsets.UTF_8);
-        return httpMessage.getBytes(StandardCharsets.UTF_8);
+        // FIX: Add Content-Length if body exists and no Transfer-Encoding
+        if (body.length > 0 && !hasHeader(headers, "Content-Length") && !hasHeader(headers, "Transfer-Encoding")) {
+            headers.add("Content-Length: " + body.length);
+        }
+
+        // FIX: Build as bytes to preserve binary data (multipart, file uploads)
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write(String.join("\r\n", headers).getBytes(StandardCharsets.UTF_8));
+        baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+        baos.write(body);
+        return baos.toByteArray();
     }
 
     private void applyAuthentication(List<String> headers, ApiRequest.Auth auth) {
@@ -86,9 +95,10 @@ public class RequestBuilder {
                 String username = auth.properties.getOrDefault("username", auth.properties.get("user"));
                 String password = auth.properties.getOrDefault("password", auth.properties.get("pass"));
                 if (username != null || password != null) {
+                    // FIX: Use UTF-8 charset per RFC 7617
                     String credentials = (username != null ? resolver.resolve(username) : "") + ":" +
                             (password != null ? resolver.resolve(password) : "");
-                    String encoded = Base64.getEncoder().encodeToString(credentials.getBytes());
+                    String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
                     headers.add("Authorization: Basic " + encoded);
                 }
                 break;
@@ -101,7 +111,25 @@ public class RequestBuilder {
                 break;
             case "oauth2":
                 String accessToken = auth.properties.get("accessToken");
-                if (accessToken != null) {
+                // FIX: Auto-acquire live token if static token is missing/empty/templated
+                if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{")) && oauth2Manager != null) {
+                    try {
+                        OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                        if (config.isValid()) {
+                            TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
+                            accessToken = entry.accessToken;
+                        }
+                    } catch (Exception e) {
+                        if (api != null) {
+                            api.logging().logToOutput("OAuth2 auto-acquire failed: " + e.getMessage());
+                        }
+                    }
+                }
+                // Also check resolver variable injected by CollectionRunner
+                if ((accessToken == null || accessToken.isEmpty()) && resolver.getVariables() != null) {
+                    accessToken = resolver.getVariables().get("oauth2_access_token");
+                }
+                if (accessToken != null && !accessToken.isEmpty()) {
                     headers.add("Authorization: Bearer " + resolver.resolve(accessToken));
                 }
                 break;
@@ -198,7 +226,7 @@ public class RequestBuilder {
             baos.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
 
             // Check if value is a file path (Bruno/Postman file upload)
-            boolean isFile = resolvedValue != null && (resolvedValue.startsWith("/") || resolvedValue.startsWith("C:\\") || resolvedValue.startsWith("file://"));
+            boolean isFile = resolvedValue != null && (resolvedValue.startsWith("/") || resolvedValue.startsWith("C:\\\") || resolvedValue.startsWith("file://"));
             java.io.File file = isFile ? new java.io.File(resolvedValue.replace("file://", "")) : null;
             if (file != null && file.exists() && file.isFile()) {
                 // Security: Validate file path to prevent path traversal
@@ -226,5 +254,15 @@ public class RequestBuilder {
 
     private boolean hasContentType(List<String> headers) {
         return headers.stream().anyMatch(h -> h.toLowerCase().startsWith("content-type:"));
+    }
+
+    // Check for any header by name (case-insensitive)
+    private boolean hasHeader(List<String> headers, String headerName) {
+        String target = headerName.toLowerCase();
+        return headers.stream().anyMatch(h -> {
+            int colonIdx = h.indexOf(':');
+            if (colonIdx == -1) return false;
+            return h.substring(0, colonIdx).trim().toLowerCase().equals(target);
+        });
     }
 }
