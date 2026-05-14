@@ -4,7 +4,7 @@
 **Author:** yvoc-exec yvoc-exec  
 **License:** MIT  
 **Target Platform:** Burp Suite Professional / Community Edition  
-**Java Version:** 11+  
+**Java Version:** 17+  
 **Montoya API:** 2023.12.1+
 
 ---
@@ -21,10 +21,11 @@
 8. [Collection Runner](#8-collection-runner)
 9. [Script Engine](#9-script-engine)
 10. [Security Considerations](#10-security-considerations)
-11. [Error Handling](#11-error-handling)
-12. [Performance](#12-performance)
-13. [Extending the Extension](#13-extending-the-extension)
-14. [Troubleshooting](#14-troubleshooting)
+11. [Known Limitations & Code-Level Behaviors](#11-known-limitations--code-level-behaviors)
+12. [Error Handling](#12-error-handling)
+13. [Performance](#13-performance)
+14. [Extending the Extension](#14-extending-the-extension)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -268,7 +269,7 @@ Based on grant type:
     Refresh Token -> POST with refresh_token
     |
     v
-TokenStore.store(key, TokenEntry) -> in-memory only
+TokenStore.store(key, TokenEntry) -> in-memory only (static map, survives extension reloads in same JVM)
     |
     v
 Token auto-injected as {{oauth2_access_token}} in VariableResolver
@@ -583,7 +584,7 @@ public class TokenStore {
     }
 }
 ```
-- **In-memory only** — never persisted to disk
+- **In-memory only** — never persisted to disk, but stored in a `static ConcurrentHashMap` so tokens survive extension reloads within the same Burp JVM session
 - Key = `grantType|tokenUrl|clientId`
 - Buffer: 60 seconds before expiry for proactive refresh
 
@@ -811,18 +812,11 @@ When Nashorn is unavailable:
 
 ### 10.2 Client Secrets
 - Passed as variables (`{{client_secret}}`) — never hardcoded
-- `JPasswordField` used in UI (char[] instead of String)
+- `JTextField` used in UI (not `JPasswordField`)
 - Not logged to Burp output
 
 ### 10.3 Path Traversal Prevention
-```java
-String canonicalPath = file.getCanonicalPath();
-String canonicalBase = new File(".").getCanonicalPath();
-if (!canonicalPath.startsWith(canonicalBase) && 
-    !canonicalPath.startsWith(System.getProperty("user.home"))) {
-    throw new SecurityException("Path traversal detected: " + path);
-}
-```
+> **Not implemented.** The code shown above does not exist in the current codebase. File uploads read from paths specified in collections without path traversal validation.
 
 ### 10.4 OAuth2 Security
 - **PKCE** enforced for Authorization Code flow (S256 method)
@@ -832,13 +826,45 @@ if (!canonicalPath.startsWith(canonicalBase) &&
 - **Auto-shutdown** of listener after callback or timeout
 
 ### 10.5 Script Execution
-- Nashorn runs in **sandboxed** script engine (no filesystem/network access by default)
+- Nashorn runs with **no sandbox** — scripts can access any Java class via `Java.type()`
 - `console.log()` routed to Burp output (not system console)
 - No `eval()` of user input outside script contexts
+- **Warning**: Only run trusted collection scripts
 
 ---
 
-## 11. Error Handling
+## 11. Known Limitations & Code-Level Behaviors
+
+### 11.1 What Is Actually Implemented vs Documented
+
+| Claimed Feature | Actual Implementation | Status |
+|-----------------|----------------------|--------|
+| Path traversal prevention for file uploads | **Not implemented** — no validation exists | ❌ Missing |
+| `JPasswordField` for OAuth2 secrets | Uses `JTextField` (visible plaintext) | ⚠️ Incorrect UI |
+| Nashorn sandboxed execution | **No sandbox** — `Java.type()` gives full JVM access | ⚠️ Security risk |
+| Token storage "never persisted" | Static `ConcurrentHashMap` — survives extension reloads in same JVM | ⚠️ Misleading |
+| File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
+
+### 11.2 Architectural Limitations
+
+- **No script timeout**: Nashorn scripts run without timeout. An infinite loop will hang the Collection Runner thread permanently.
+- **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
+- **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
+- **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
+- **No tests**: Zero unit tests, zero integration tests. No test framework in `pom.xml`.
+- **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
+- **Runner executor not shut down**: `CollectionRunner` creates an `ExecutorService` but never shuts it down on extension unload.
+
+### 11.3 Parser Limitations
+
+- **Postman/Bruno file mode**: Uses platform default encoding (`FileReader`) instead of UTF-8. Non-ASCII characters may corrupt.
+- **Bruno parser**: Regex-based parsing (not a full parser). Complex nested braces in body content may fail.
+- **OpenAPI parser**: Generates examples for all schema types but casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
+- **Insomnia parser**: Only supports v4 exports. v3 or earlier are not detected.
+
+---
+
+## 12. Error Handling
 
 ### 11.1 Import Errors
 
@@ -873,26 +899,26 @@ if (!canonicalPath.startsWith(canonicalBase) &&
 
 ---
 
-## 12. Performance
+## 13. Performance
 
-### 12.1 Memory Management
+### 13.1 Memory Management
 
 | Component | Strategy |
 |-----------|----------|
 | Response body preview | Truncated to 500 characters |
 | OpenAPI example generation | Max 5 optional properties, depth 10 |
 | Runner results | CopyOnWriteArrayList (snapshot semantics) |
-| Token store | ConcurrentHashMap with expiry eviction |
+| Token store | Static `ConcurrentHashMap` — no automatic eviction |
 | Script engine | New engine per script execution (no pooling) |
 
-### 12.2 Rate Limiting
+### 13.2 Rate Limiting
 
 - **Import delay**: 0–5000ms between Sitemap requests
 - **Runner delay**: 0–5000ms between sequential requests
 - **Concurrent requests**: 1 (runner is strictly sequential)
 - **Retry backoff**: `delayMs x attempt_number`
 
-### 12.3 Scalability Limits
+### 13.3 Scalability Limits
 
 | Metric | Limit | Rationale |
 |--------|-------|-----------|
@@ -904,9 +930,9 @@ if (!canonicalPath.startsWith(canonicalBase) &&
 
 ---
 
-## 13. Extending the Extension
+## 14. Extending the Extension
 
-### 13.1 Adding a New Collection Format
+### 14.1 Adding a New Collection Format
 
 1. Implement `CollectionParser` interface:
 ```java
@@ -932,7 +958,7 @@ public ParserRegistry() {
 
 3. Normalize to `ApiRequest` / `ApiCollection` model
 
-### 13.2 Adding a New OAuth2 Grant Type
+### 14.2 Adding a New OAuth2 Grant Type
 
 1. Create handler class:
 ```java
@@ -947,7 +973,7 @@ public class MyGrantHandler {
 2. Add to `OAuth2Config.GrantType` enum
 3. Add case in `OAuth2Manager.acquireToken()`
 
-### 13.3 Adding Script APIs
+### 14.3 Adding Script APIs
 
 Extend `ScriptEngine.PostmanApi` or `ScriptEngine.BrunoApi`:
 ```java
@@ -961,28 +987,29 @@ public class PostmanApi {
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
-### 14.1 Extension Won't Load
+### 15.1 Extension Won't Load
 
 **Symptom:** "Extension failed to load" in Burp Extensions tab
 
 **Checks:**
-1. Verify Java 11+ in Burp: `Help > Diagnostics`
+1. Verify Java 17+ in Burp: `Help > Diagnostics`
 2. Check JAR is fat JAR (with dependencies): `mvn clean package`
 3. Verify Montoya API version compatibility
 4. Check Burp output for stack trace
 
-### 14.2 Nashorn Not Available
+### 15.2 Nashorn Not Available
 
 **Symptom:** "Nashorn engine not available" in logs
 
 **Resolution:**
-- Java 11–17: Should work with bundled Nashorn
-- Java 21+: Ensure `nashorn-core-15.4.jar` is in classpath
-- Alternative: Scripts will use regex fallback (limited functionality)
+- Java 17: Works with bundled `nashorn-core` dependency
+- Java 15+: Nashorn was **removed from the JDK**. The standalone `nashorn-core-15.4` dependency is bundled in the fat JAR
+- Java 21+: Standalone Nashorn may have compatibility issues; regex fallback will be used
+- Alternative: Scripts will use regex fallback (limited functionality — variable extraction only, no assertions)
 
-### 14.3 OAuth2 Browser Doesn't Open
+### 15.3 OAuth2 Browser Doesn't Open
 
 **Symptom:** Authorization Code flow hangs at "Opening browser"
 
@@ -992,7 +1019,7 @@ public class PostmanApi {
 3. Ensure `localhost:9876` is not blocked by firewall
 4. Use Client Credentials or Password grant as alternative
 
-### 14.4 Variables Not Resolving
+### 15.4 Variables Not Resolving
 
 **Symptom:** `{{variable}}` appears literally in requests
 
@@ -1002,7 +1029,7 @@ public class PostmanApi {
 3. Ensure no spaces in variable name
 4. Try with default: `{{variable|default_value}}`
 
-### 14.5 Import Creates Empty Repeater Tabs
+### 15.5 Import Creates Empty Repeater Tabs
 
 **Symptom:** Repeater tabs created but no request content
 
@@ -1083,7 +1110,7 @@ public class RunnerResult {
 
 | Method | Class | Usage |
 |--------|-------|-------|
-| `api.repeater().sendToRepeater(String, HttpRequest)` | Repeater | Create Repeater tab |
+| `api.repeater().sendToRepeater(HttpRequest, String)` | Repeater | Create Repeater tab |
 | `api.siteMap().add(HttpRequestResponse)` | SiteMap | Add to Target/Sitemap |
 | `api.http().sendRequest(HttpRequest)` | Http | Send HTTP request |
 | `HttpService.httpService(String, int, boolean)` | HttpService | Create service (host, port, https) |

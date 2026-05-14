@@ -53,11 +53,6 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Token storage in-memory only (never persisted to disk)
 - Auto-injects `Authorization: Bearer <token>` into requests
 
-### Real File Uploads
-- Multipart form-data reads actual file contents from disk
-- Auto-detects file paths in Bruno/Postman file upload fields
-- Uses `Files.probeContentType()` for correct MIME types
-
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
 - Handles `$ref`, `oneOf`, `anyOf`, `allOf`, `enum`, `format`
@@ -81,7 +76,7 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 
 ### Requirements
 - Burp Suite Professional or Community Edition
-- Java 11+ (Nashorn standalone bundled for Java 15+)
+- **Java 17+** (montoya-api 2023.12.1 requires Java 17)
 - Maven 3.6+
 
 ---
@@ -177,11 +172,19 @@ src/main/java/burp/
 
 ## Security Notes
 
-- **Tokens**: Stored in-memory only via `TokenStore`. Never written to disk.
-- **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded.
-- **PKCE**: Always used for Authorization Code flow (OAuth 2.1 compliant).
-- **Localhost listener**: Binds to `127.0.0.1` only, validates `state` parameter.
-- **File uploads**: Reads from local filesystem paths specified in collections.
+- **Tokens**: Stored in-memory via `TokenStore` (static `ConcurrentHashMap`). Cleared on extension unload or via OAuth2 panel. Survives extension reloads within the same Burp JVM session.
+- **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JTextField` (not `JPasswordField`).
+- **PKCE**: Used for Authorization Code flow (S256 method).
+- **Localhost listener**: Binds to `127.0.0.1:9876`, validates `state` parameter.
+
+## Known Limitations
+
+- **No sandbox**: Nashorn scripts can access any Java class via `Java.type()`. Only run trusted collection scripts.
+- **No script timeout**: Infinite loops in pre/post-request scripts will hang the runner thread.
+- **File uploads**: Multipart file upload code exists but end-to-end file reading from disk is not fully implemented/tested.
+- **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
+- **No tests**: Zero unit/integration tests.
+- **No extension unload cleanup for runner**: `CollectionRunner` executor service is not shut down on extension unload.
 
 ---
 
