@@ -78,7 +78,9 @@ public class UniversalImporter {
 
                         ApiRequest req = selectedRequests.get(i);
                         try {
-                            processRequest(req, destination, delayMs);
+                            for (String destination : destinations) {
+                                processRequest(req, destination, delayMs);
+                            }
                             result.successCount++;
                             publish("✓ " + req.name);
                         } catch (Exception e) {
