@@ -73,34 +73,46 @@ public class PostmanParser implements CollectionParser {
             }
         }
 
+        // Collection-level auth inheritance
+        ApiRequest.Auth collectionAuth = null;
+        if (collectionObj.has("auth") && collectionObj.get("auth").isJsonObject()) {
+            collectionAuth = parseAuth(collectionObj.getAsJsonObject("auth"));
+        }
+
         // Parse items recursively
         if (collectionObj.has("item") && collectionObj.get("item").isJsonArray()) {
-            parseItems(collectionObj.getAsJsonArray("item"), "", collection);
+            parseItems(collectionObj.getAsJsonArray("item"), "", collection, collectionAuth);
         }
 
         return collection;
     }
 
-    private void parseItems(JsonArray items, String path, ApiCollection collection) {
+    private void parseItems(JsonArray items, String path, ApiCollection collection, ApiRequest.Auth inheritedAuth) {
         for (JsonElement elem : items) {
             JsonObject item = elem.getAsJsonObject();
             String name = getString(item, "name", "Unnamed");
             String currentPath = path.isEmpty() ? name : path + "/" + name;
 
+            // Folder-level auth overrides collection-level auth
+            ApiRequest.Auth nextInherited = inheritedAuth;
+            if (item.has("auth") && item.get("auth").isJsonObject()) {
+                nextInherited = parseAuth(item.getAsJsonObject("auth"));
+            }
+
             if (item.has("request") && item.get("request").isJsonObject()) {
-                ApiRequest req = parseRequest(item.getAsJsonObject("request"), name, currentPath);
+                ApiRequest req = parseRequest(item.getAsJsonObject("request"), name, currentPath, nextInherited);
                 req.sourceCollection = collection.name;
                 collection.requests.add(req);
             }
 
             // Nested folders
             if (item.has("item") && item.get("item").isJsonArray()) {
-                parseItems(item.getAsJsonArray("item"), currentPath, collection);
+                parseItems(item.getAsJsonArray("item"), currentPath, collection, nextInherited);
             }
         }
     }
 
-    private ApiRequest parseRequest(JsonObject reqObj, String name, String path) {
+    private ApiRequest parseRequest(JsonObject reqObj, String name, String path, ApiRequest.Auth inheritedAuth) {
         ApiRequest req = new ApiRequest();
         req.name = name;
         req.path = path;
@@ -136,9 +148,12 @@ public class PostmanParser implements CollectionParser {
             req.body = parseBody(reqObj.getAsJsonObject("body"));
         }
 
-        // Auth
+        // Auth (inherit from folder/collection if request has none)
         if (reqObj.has("auth") && reqObj.get("auth").isJsonObject()) {
             req.auth = parseAuth(reqObj.getAsJsonObject("auth"));
+        }
+        if ((req.auth == null || req.auth.type == null || "none".equals(req.auth.type)) && inheritedAuth != null) {
+            req.auth = deepCopyAuth(inheritedAuth);
         }
 
         // Events (pre-request / test scripts)
@@ -254,6 +269,14 @@ public class PostmanParser implements CollectionParser {
             }
         }
         return auth;
+    }
+
+    private ApiRequest.Auth deepCopyAuth(ApiRequest.Auth src) {
+        if (src == null) return null;
+        ApiRequest.Auth copy = new ApiRequest.Auth();
+        copy.type = src.type;
+        copy.properties.putAll(src.properties);
+        return copy;
     }
 
     private String getString(JsonObject obj, String key, String defaultValue) {
