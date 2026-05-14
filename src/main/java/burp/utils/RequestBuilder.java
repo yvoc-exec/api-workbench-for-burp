@@ -78,7 +78,13 @@ public class RequestBuilder {
 
         // Override Content-Length to match exact body bytes; never emit Transfer-Encoding
         headers.removeIf(h -> h.toLowerCase().startsWith("content-length:") || h.toLowerCase().startsWith("transfer-encoding:"));
-        headers.add("Content-Length: " + body.length);
+        boolean shouldSendContentLength = body.length > 0
+                || method.equals("POST")
+                || method.equals("PUT")
+                || method.equals("PATCH");
+        if (shouldSendContentLength) {
+            headers.add("Content-Length: " + body.length);
+        }
 
         // Build raw request bytes preserving CRLF line endings
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
