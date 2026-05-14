@@ -182,7 +182,7 @@ public class RequestBuilder {
             if (!hasContentType(headers)) {
                 headers.add("Content-Type: application/json");
             }
-            return com.google.gson.GsonBuilder().serializeNulls().create().toJson(body).getBytes(StandardCharsets.UTF_8);
+            return new com.google.gson.GsonBuilder().serializeNulls().create().toJson(body).getBytes(StandardCharsets.UTF_8);
         } catch (Exception e) {
             return new byte[0];
         }

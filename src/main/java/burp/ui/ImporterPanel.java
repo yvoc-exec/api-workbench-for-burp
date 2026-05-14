@@ -18,7 +18,7 @@ public class ImporterPanel {
     private final UniversalImporter importer;
     private final CollectionRunner runner;
     private final JPanel mainPanel;
-    private final JTabbedPane tabbedPane;
+    private JTabbedPane tabbedPane;
 
     // Multi-collection support
     private final List<ApiCollection> loadedCollections = new ArrayList<>();
