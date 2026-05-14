@@ -53,6 +53,9 @@ public class ImporterPanel {
     private JTextArea detailResponseText;
     private JTextArea detailVarsText;
 
+    // Runner listener deduplication
+    private CollectionRunner.RunnerListener activeRunnerListener;
+
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
@@ -443,6 +446,12 @@ public class ImporterPanel {
         }
         int delay = (Integer) delaySpinner.getValue();
 
+        // Build initial variables from Variables tab + OAuth2 panel
+        Map<String, String> initialVars = parseEnvVarsMap();
+        if (oauth2Panel != null) {
+            initialVars.putAll(oauth2Panel.getVariables());
+        }
+
         // Group requests by collection for import
         Map<String, List<ApiRequest>> requestsByCollection = new HashMap<>();
         for (ApiRequest req : selected) {
@@ -458,6 +467,7 @@ public class ImporterPanel {
                 .orElse(null);
             if (targetCol != null) {
                 importer.importRequests(targetCol, entry.getValue(), selectedEnv, destinations, delay,
+                    initialVars,
                     this::appendImportLog,
                     result -> SwingUtilities.invokeLater(() -> {
                         importProgress.setValue(100);
@@ -509,7 +519,11 @@ public class ImporterPanel {
         runnerLog.setText("");
         runnerProgress.setValue(0);
 
-        runner.addListener(new CollectionRunner.RunnerListener() {
+        // Deduplicate: remove previous listener before adding new one
+        if (activeRunnerListener != null) {
+            runner.removeListener(activeRunnerListener);
+        }
+        activeRunnerListener = new CollectionRunner.RunnerListener() {
             @Override public void onStart(String name, int total) {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("▶ Starting runner (" + total + " requests from " + 
@@ -546,7 +560,8 @@ public class ImporterPanel {
             @Override public void onError(String message) {
                 SwingUtilities.invokeLater(() -> appendRunnerLog("ERROR: " + message));
             }
-        });
+        };
+        runner.addListener(activeRunnerListener);
 
         // Create a merged collection for the runner
         ApiCollection mergedCollection = new ApiCollection();
@@ -558,6 +573,7 @@ public class ImporterPanel {
 
         runner.runCollection(mergedCollection, selected, initialVars);
     }
+
 
     private Map<String, String> parseEnvVarsMap() {
         Map<String, String> vars = new HashMap<>();

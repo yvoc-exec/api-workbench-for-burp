@@ -15,7 +15,7 @@ public class HarParser implements CollectionParser {
     @Override
     public boolean canParse(File file) {
         if (!file.getName().endsWith(".har")) return false;
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
             return obj.has("log") && obj.getAsJsonObject("log").has("entries");
         } catch (Exception e) {
@@ -26,7 +26,7 @@ public class HarParser implements CollectionParser {
     @Override
     public ApiCollection parse(File file) throws Exception {
         JsonObject obj;
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             obj = JsonParser.parseReader(reader).getAsJsonObject();
         }
 

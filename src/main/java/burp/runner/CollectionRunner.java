@@ -219,7 +219,7 @@ public class CollectionRunner {
                     // Execute post-response scripts (assertions + variable extraction)
                     Map<String, List<String>> headersMap = new HashMap<>();
                     for (var header : response.response().headers()) {
-                        headersMap.computeIfAbsent(header.name(), k -> new ArrayList<>()).add(header.value());
+                        headersMap.computeIfAbsent(header.name().toLowerCase(), k -> new ArrayList<>()).add(header.value());
                     }
                     scriptEngine.executePostResponse(req, result, extractedVars, body, result.statusCode, headersMap);
                 } else {
@@ -280,7 +280,7 @@ public class CollectionRunner {
             while (extractMatcher.find()) {
                 String varName = extractMatcher.group(1);
                 String jsonPath = extractMatcher.group(2).trim();
-                String value = extractJsonPath(result.responseBodyPreview, jsonPath);
+                String value = extractJsonPath(result.responseBody != null ? result.responseBody : result.responseBodyPreview, jsonPath);
                 if (value != null) {
                     extracted.put(varName, value);
                 }
@@ -291,15 +291,16 @@ public class CollectionRunner {
     }
 
     private String resolveExpression(String expression, RunnerResult result) {
+        String sourceBody = result.responseBody != null ? result.responseBody : result.responseBodyPreview;
         // Handle jsonData.xxx patterns
         if (expression.startsWith("jsonData")) {
             String path = expression.replace("jsonData", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
-            return extractJsonPath(result.responseBodyPreview, path);
+            return extractJsonPath(sourceBody, path);
         }
         // Handle res.body.xxx patterns
         if (expression.startsWith("res.body")) {
             String path = expression.replace("res.body", "").replace(".", "").replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
-            return extractJsonPath(result.responseBodyPreview, path);
+            return extractJsonPath(sourceBody, path);
         }
         // Direct string literal
         if ((expression.startsWith("\"") && expression.endsWith("\"")) ||

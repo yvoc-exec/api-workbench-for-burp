@@ -64,7 +64,7 @@ public class BrunoParser implements CollectionParser {
         // Load bruno.json for collection metadata if present
         File brunoJson = new File(file.isDirectory() ? file : file.getParentFile(), "bruno.json");
         if (brunoJson.exists()) {
-            try (FileReader reader = new FileReader(brunoJson)) {
+            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(brunoJson), java.nio.charset.StandardCharsets.UTF_8)) {
                 com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
                 if (obj.has("name")) {
                     collection.name = obj.get("name").getAsString();
@@ -130,18 +130,25 @@ public class BrunoParser implements CollectionParser {
             Pattern bodyPattern = Pattern.compile("body\\s*[:]?\\s*(?:\\{([^}]+)\\}|(none|json|xml|text|graphql|form|multipart))?", Pattern.CASE_INSENSITIVE);
             Matcher bodyMatcher = bodyPattern.matcher(content);
             if (bodyMatcher.find()) {
-                String bodyBlock = bodyMatcher.group(1).trim();
-                req.body = new ApiRequest.Body();
-                req.body.mode = "raw";
-                req.body.raw = bodyBlock;
-                req.body.contentType = "text/plain";
+                String bodyBlock = bodyMatcher.group(1);
+                if (bodyBlock != null) {
+                    bodyBlock = bodyBlock.trim();
+                    req.body = new ApiRequest.Body();
+                    req.body.mode = "raw";
+                    req.body.raw = bodyBlock;
+                    req.body.contentType = "text/plain";
 
-                // Detect content type from headers
-                for (ApiRequest.Header h : req.headers) {
-                    if (h.key.equalsIgnoreCase("content-type")) {
-                        req.body.contentType = h.value;
-                        break;
+                    // Detect content type from headers
+                    for (ApiRequest.Header h : req.headers) {
+                        if (h.key.equalsIgnoreCase("content-type")) {
+                            req.body.contentType = h.value;
+                            break;
+                        }
                     }
+                } else if (bodyMatcher.group(2) != null) {
+                    // Mode-only body (e.g., body: none)
+                    req.body = new ApiRequest.Body();
+                    req.body.mode = "none";
                 }
             }
 

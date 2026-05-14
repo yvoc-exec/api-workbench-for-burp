@@ -15,7 +15,7 @@ public class InsomniaParser implements CollectionParser {
     @Override
     public boolean canParse(File file) {
         if (!file.getName().endsWith(".json")) return false;
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
             // Insomnia v4 has __type field or resources array
             if (obj.has("__type") && obj.get("__type").getAsString().contains("export")) return true;
@@ -37,7 +37,7 @@ public class InsomniaParser implements CollectionParser {
     @Override
     public ApiCollection parse(File file) throws Exception {
         JsonObject obj;
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             obj = JsonParser.parseReader(reader).getAsJsonObject();
         }
 

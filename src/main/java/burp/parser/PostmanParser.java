@@ -14,7 +14,7 @@ public class PostmanParser implements CollectionParser {
 
     @Override
     public boolean canParse(File file) {
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
             // Postman collection has info.schema or info._postman_id
             if (obj.has("info") && obj.get("info").isJsonObject()) {
@@ -37,7 +37,7 @@ public class PostmanParser implements CollectionParser {
     @Override
     public ApiCollection parse(File file) throws Exception {
         JsonObject jsonObject;
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             jsonObject = JsonParser.parseReader(reader).getAsJsonObject();
         }
 
@@ -100,8 +100,17 @@ public class PostmanParser implements CollectionParser {
             }
 
             if (item.has("request") && item.get("request").isJsonObject()) {
-                ApiRequest req = parseRequest(item.getAsJsonObject("request"), name, currentPath, nextInherited);
+                JsonObject reqObj = item.getAsJsonObject("request");
+                ApiRequest req = parseRequest(reqObj, name, currentPath, nextInherited);
                 req.sourceCollection = collection.name;
+
+                // Item-level events take priority; fall back to request-level events
+                if (item.has("event") && item.get("event").isJsonArray()) {
+                    parseEvents(item.getAsJsonArray("event"), req);
+                } else if (reqObj.has("event") && reqObj.get("event").isJsonArray()) {
+                    parseEvents(reqObj.getAsJsonArray("event"), req);
+                }
+
                 collection.requests.add(req);
             }
 
@@ -156,31 +165,39 @@ public class PostmanParser implements CollectionParser {
             req.auth = deepCopyAuth(inheritedAuth);
         }
 
-        // Events (pre-request / test scripts)
-        if (reqObj.has("event") && reqObj.get("event").isJsonArray()) {
-            for (JsonElement e : reqObj.getAsJsonArray("event")) {
-                JsonObject event = e.getAsJsonObject();
-                String listen = getString(event, "listen", "");
-                if (event.has("script") && event.get("script").isJsonObject()) {
-                    JsonObject script = event.getAsJsonObject("script");
-                    String exec = "";
-                    if (script.has("exec") && script.get("exec").isJsonArray()) {
-                        StringBuilder sb = new StringBuilder();
-                        for (JsonElement line : script.getAsJsonArray("exec")) {
-                            sb.append(line.getAsString()).append("\n");
-                        }
-                        exec = sb.toString();
+        // Events parsed outside parseRequest to allow item-level override
+
+        return req;
+    }
+
+    private void parseEvents(JsonArray events, ApiRequest req) {
+        Set<String> seen = new HashSet<>();
+        for (JsonElement e : events) {
+            JsonObject event = e.getAsJsonObject();
+            String listen = getString(event, "listen", "");
+            if (event.has("script") && event.get("script").isJsonObject()) {
+                JsonObject script = event.getAsJsonObject("script");
+                String exec = "";
+                if (script.has("exec") && script.get("exec").isJsonArray()) {
+                    StringBuilder sb = new StringBuilder();
+                    for (JsonElement line : script.getAsJsonArray("exec")) {
+                        sb.append(line.getAsString()).append("\n");
                     }
-                    if ("prerequest".equals(listen)) {
-                        req.preRequestScripts.add(new ApiRequest.Script("js", exec));
-                    } else if ("test".equals(listen)) {
-                        req.postResponseScripts.add(new ApiRequest.Script("js", exec));
-                    }
+                    exec = sb.toString();
+                } else if (script.has("exec") && script.get("exec").isJsonPrimitive()) {
+                    exec = script.get("exec").getAsString();
+                }
+                // Deduplicate by content hash
+                String hash = listen + "|" + exec.hashCode();
+                if (seen.contains(hash)) continue;
+                seen.add(hash);
+                if ("prerequest".equals(listen)) {
+                    req.preRequestScripts.add(new ApiRequest.Script("js", exec));
+                } else if ("test".equals(listen)) {
+                    req.postResponseScripts.add(new ApiRequest.Script("js", exec));
                 }
             }
         }
-
-        return req;
     }
 
     private ApiRequest.Body parseBody(JsonObject bodyObj) {

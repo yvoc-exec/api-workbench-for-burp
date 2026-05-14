@@ -76,7 +76,7 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 
 ### Requirements
 - Burp Suite Professional or Community Edition
-- **Java 17+** (montoya-api 2023.12.1 requires Java 17)
+- **Java 17+** (montoya-api 2024.12 requires Java 17)
 - Maven 3.6+
 
 ---
@@ -173,7 +173,7 @@ src/main/java/burp/
 ## Security Notes
 
 - **Tokens**: Stored in-memory via `TokenStore` (static `ConcurrentHashMap`). Cleared on extension unload or via OAuth2 panel. Survives extension reloads within the same Burp JVM session.
-- **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JTextField` (not `JPasswordField`).
+- **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JPasswordField` for secret fields.
 - **PKCE**: Used for Authorization Code flow (S256 method).
 - **Localhost listener**: Binds to `127.0.0.1:9876`, validates `state` parameter.
 
@@ -185,6 +185,7 @@ src/main/java/burp/
 - **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
 - **No tests**: Zero unit/integration tests.
 - **No extension unload cleanup for runner**: `CollectionRunner` executor service is not shut down on extension unload.
+- **Parser encoding**: All JSON/YAML/HAR parsers now use explicit UTF-8 readers.
 
 ---
 
