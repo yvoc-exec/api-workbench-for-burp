@@ -108,7 +108,7 @@ public class CollectionRunner {
 
                     // Extract variables from response
                     if (result.success) {
-                        Map<String, String> newVars = extractVariablesFromResponse(req, result, response);
+                        Map<String, String> newVars = extractVariablesFromResponse(req, result);
                         extractedVars.putAll(newVars);
                         result.extractedVariables.putAll(newVars);
                     }
