@@ -601,6 +601,9 @@ public class ImporterPanel {
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
+            @Override public void onDebug(String message) {
+                SwingUtilities.invokeLater(() -> appendRunnerLog(message));
+            }
             @Override public void onError(String message) {
                 SwingUtilities.invokeLater(() -> appendRunnerLog("ERROR: " + message));
             }
