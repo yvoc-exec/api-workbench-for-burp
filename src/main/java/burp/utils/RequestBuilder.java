@@ -226,7 +226,7 @@ public class RequestBuilder {
             baos.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
 
             // Check if value is a file path (Bruno/Postman file upload)
-            boolean isFile = resolvedValue != null && (resolvedValue.startsWith("/") || resolvedValue.startsWith("C:\\\") || resolvedValue.startsWith("file://"));
+            boolean isFile = resolvedValue != null && (resolvedValue.startsWith("/") || (resolvedValue.length() > 2 && resolvedValue.charAt(1) == ':' && resolvedValue.charAt(2) == '\\') || resolvedValue.startsWith("file://"));
             java.io.File file = isFile ? new java.io.File(resolvedValue.replace("file://", "")) : null;
             if (file != null && file.exists() && file.isFile()) {
                 // Security: Validate file path to prevent path traversal

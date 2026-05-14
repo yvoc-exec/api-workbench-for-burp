@@ -300,7 +300,7 @@ public class CollectionRunner {
             return extractJsonPath(result.responseBodyPreview, path);
         }
         // Direct string literal
-        if ((expression.startsWith("\\"") && expression.endsWith("\\"")) ||
+        if ((expression.startsWith("\"") && expression.endsWith("\"")) ||
             (expression.startsWith("'") && expression.endsWith("'"))) {
             return expression.substring(1, expression.length() - 1);
         }
