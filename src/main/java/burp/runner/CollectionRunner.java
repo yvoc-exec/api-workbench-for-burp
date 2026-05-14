@@ -167,12 +167,12 @@ public class CollectionRunner {
                 }
                 byte[] rawRequest = requestBuilder.buildRequest(req);
                 String resolvedUrl = resolver.resolve(req.url);
-                HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
-                result.host = hostInfo.host;
-                result.path = HttpUtils.extractPathFromUrl(resolvedUrl);
+                HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
+                result.host = parsed.host;
+                result.path = parsed.pathWithQuery;
 
                 burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                        hostInfo.host, hostInfo.port, hostInfo.useHttps);
+                        parsed.host, parsed.port, parsed.useHttps);
 
                 HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
 

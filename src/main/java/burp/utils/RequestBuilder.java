@@ -13,6 +13,13 @@ import java.util.Base64;
 import java.io.ByteArrayOutputStream;
 
 public class RequestBuilder {
+    /**
+     * Hop-by-hop and body-length headers that must be overridden to match
+     * the rebuilt request bytes. Burp normalises these too.
+     */
+    private static final Set<String> SKIP_HEADER_NAMES = Set.of(
+            "host", "content-length", "transfer-encoding", "connection", "proxy-connection"
+    );
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final boolean debugMode = false;
@@ -36,27 +43,28 @@ public class RequestBuilder {
             throw new IllegalArgumentException("Request URL cannot be null or empty");
         }
 
-        List<String> headers = new ArrayList<>();
-
-        // Resolve URL
+        // Resolve URL and parse target robustly
         String resolvedUrl = resolver.resolve(request.url);
         String method = request.method != null ? request.method.toUpperCase() : "GET";
-        String path = HttpUtils.extractPathFromUrl(resolvedUrl);
-        headers.add(method + " " + path + " HTTP/1.1");
+        HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
-        // Host header
-        HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
-        String host = HttpUtils.buildHostWithPort(hostInfo.host, hostInfo.port, hostInfo.useHttps);
-        headers.add("Host: " + host);
+        List<String> headers = new ArrayList<>();
 
-        // Custom headers
+        // Request line: METHOD <path> HTTP/1.1
+        headers.add(method + " " + parsed.pathWithQuery + " HTTP/1.1");
+
+        // Host header (only :port when non-default for scheme)
+        String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
+        headers.add("Host: " + hostValue);
+
+        // Custom headers (skip dangerous hop-by-hop / body-length headers)
         if (request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
                 if (!header.disabled && header.key != null && header.value != null) {
                     String key = resolver.resolve(header.key);
                     String value = resolver.resolve(header.value);
-                    if (!"Host".equalsIgnoreCase(key)) {
-                        headers.add(key + ": " + value);
+                    if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
+                        headers.add(key.trim() + ": " + value);
                     }
                 }
             }
@@ -68,12 +76,11 @@ public class RequestBuilder {
         // Body
         byte[] body = buildBody(request.body, headers);
 
-        // FIX: Add Content-Length if body exists and no Transfer-Encoding
-        if (body.length > 0 && !hasHeader(headers, "Content-Length") && !hasHeader(headers, "Transfer-Encoding")) {
-            headers.add("Content-Length: " + body.length);
-        }
+        // Override Content-Length to match exact body bytes; never emit Transfer-Encoding
+        headers.removeIf(h -> h.toLowerCase().startsWith("content-length:") || h.toLowerCase().startsWith("transfer-encoding:"));
+        headers.add("Content-Length: " + body.length);
 
-        // FIX: Build as bytes to preserve binary data (multipart, file uploads)
+        // Build raw request bytes preserving CRLF line endings
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         baos.write(String.join("\r\n", headers).getBytes(StandardCharsets.UTF_8));
         baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
