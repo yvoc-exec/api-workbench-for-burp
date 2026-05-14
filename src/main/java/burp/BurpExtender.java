@@ -43,14 +43,13 @@ public class BurpExtender implements BurpExtension {
             importer = new UniversalImporter(api);
             api.userInterface().registerSuiteTab("API Importer", importer.getMainPanel());
         });
-    }
 
-    @Override
-    public void extensionUnloaded() {
-        if (importer != null) {
-            importer.cleanup();
-        }
-        burp.auth.TokenStore.clearAll();
-        api.logging().logToOutput("Universal API Importer unloaded. Tokens cleared.");
+        api.extension().registerUnloadingHandler(() -> {
+            if (importer != null) {
+                importer.cleanup();
+            }
+            burp.auth.TokenStore.clearAll();
+            api.logging().logToOutput("Universal API Importer unloaded. Tokens cleared.");
+        });
     }
 }
