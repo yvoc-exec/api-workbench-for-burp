@@ -4,7 +4,7 @@ import java.net.URL;
 import java.util.regex.Pattern;
 
 public class HttpUtils {
-    private static final Pattern VARIABLE_PATTERN = Pattern.compile("\{\{(.+?)\}\}");
+    private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{(.+?)\\}\\}");
 
     public static class HostInfo {
         public final String host;
