@@ -8,7 +8,10 @@ import burp.utils.RequestBuilder;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.requests.HttpRequestOptions;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.ui.contextmenu.Annotations;
+import burp.api.montoya.ui.contextmenu.HighlightColor;
 import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
@@ -66,7 +69,7 @@ public class CollectionRunner {
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
 
     public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
-                               Map<String, String> initialVars) {
+                              Map<String, String> initialVars) {
         if (running) return;
         if (selectedRequests == null || selectedRequests.isEmpty()) {
             fireOnError("No requests selected for runner");
@@ -180,7 +183,9 @@ public class CollectionRunner {
                 }
 
                 long startTime = System.currentTimeMillis();
-                HttpRequestResponse response = api.http().sendRequest(httpRequest);
+                HttpRequestOptions options = HttpRequestOptions.httpRequestOptions()
+                        .withFollowRedirects(followRedirects);
+                HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
                 long endTime = System.currentTimeMillis();
 
                 result.responseTimeMs = endTime - startTime;
@@ -204,8 +209,10 @@ public class CollectionRunner {
                     }
                     result.responseHeaders = respHeaders.toString();
 
-                    // Add to sitemap
-                    api.siteMap().add(response);
+                    // Annotate sitemap entry for visibility
+                    Annotations annotations = Annotations.annotations(
+                            "[Runner] " + req.name, HighlightColor.CYAN);
+                    api.siteMap().add(response.withAnnotations(annotations));
 
                     // Execute post-response scripts (assertions + variable extraction)
                     Map<String, List<String>> headersMap = new HashMap<>();
@@ -293,7 +300,7 @@ public class CollectionRunner {
             return extractJsonPath(result.responseBodyPreview, path);
         }
         // Direct string literal
-        if ((expression.startsWith("\"") && expression.endsWith("\"")) ||
+        if ((expression.startsWith("\\"") && expression.endsWith("\\"")) ||
             (expression.startsWith("'") && expression.endsWith("'"))) {
             return expression.substring(1, expression.length() - 1);
         }
@@ -322,8 +329,6 @@ public class CollectionRunner {
         }
         return null;
     }
-
-    // Assertions are now handled by ScriptEngine in extractVariablesFromResponse()
 
     private String extractCleanError(Exception e) {
         String msg = e.getMessage();
