@@ -48,6 +48,11 @@ public class ImporterPanel {
     private JButton startRunnerBtn, cancelRunnerBtn;
     private JTextArea envVarsArea;
 
+    // Runner detail pane
+    private JTextArea detailRequestText;
+    private JTextArea detailResponseText;
+    private JTextArea detailVarsText;
+
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
@@ -212,13 +217,42 @@ public class ImporterPanel {
 
         panel.add(configPanel, BorderLayout.NORTH);
 
-        // Center: Results table
+        // Center: Results table + Detail pane split
         resultModel = new RunnerResultTableModel();
         resultTable = new JTable(resultModel);
         resultTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        resultTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         JScrollPane tableScroll = new JScrollPane(resultTable);
         tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Results"));
-        panel.add(tableScroll, BorderLayout.CENTER);
+
+        // Detail pane with tabs
+        JTabbedPane detailTabs = new JTabbedPane();
+        detailRequestText = new JTextArea();
+        detailRequestText.setEditable(false);
+        detailRequestText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        detailTabs.addTab("Request", new JScrollPane(detailRequestText));
+
+        detailResponseText = new JTextArea();
+        detailResponseText.setEditable(false);
+        detailResponseText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        detailTabs.addTab("Response", new JScrollPane(detailResponseText));
+
+        detailVarsText = new JTextArea();
+        detailVarsText.setEditable(false);
+        detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        detailTabs.addTab("Vars", new JScrollPane(detailVarsText));
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScroll, detailTabs);
+        splitPane.setResizeWeight(0.5);
+        panel.add(splitPane, BorderLayout.CENTER);
+
+        // Selection listener to populate detail pane
+        resultTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
+                RunnerResult r = resultModel.getResultAt(resultTable.getSelectedRow());
+                updateRunnerDetailPane(r);
+            }
+        });
 
         // Bottom: Log + Actions
         JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
@@ -543,6 +577,50 @@ public class ImporterPanel {
             runnerLog.append(msg + "\n");
             runnerLog.setCaretPosition(runnerLog.getDocument().getLength());
         });
+    }
+
+    private void updateRunnerDetailPane(RunnerResult r) {
+        if (r == null) return;
+
+        // Request tab
+        StringBuilder req = new StringBuilder();
+        req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\n");
+        req.append("Host: ").append(r.host != null ? r.host : "").append("\n");
+        if (r.requestHeaders != null) {
+            // Strip the first line (METHOD PATH HTTP/1.1) since we already showed it
+            String[] lines = r.requestHeaders.split("\n");
+            for (int i = 1; i < lines.length; i++) {
+                req.append(lines[i]).append("\n");
+            }
+        }
+        if (r.requestBody != null && !r.requestBody.isEmpty()) {
+            req.append("\n").append(r.requestBody);
+        }
+        detailRequestText.setText(req.toString());
+        detailRequestText.setCaretPosition(0);
+
+        // Response tab
+        StringBuilder resp = new StringBuilder();
+        if (r.responseHeaders != null) {
+            resp.append(r.responseHeaders).append("\n");
+        }
+        if (r.responseBody != null) {
+            resp.append(r.responseBody);
+        }
+        detailResponseText.setText(resp.toString());
+        detailResponseText.setCaretPosition(0);
+
+        // Vars tab
+        StringBuilder vars = new StringBuilder();
+        if (r.extractedVariables != null && !r.extractedVariables.isEmpty()) {
+            for (Map.Entry<String, String> entry : r.extractedVariables.entrySet()) {
+                vars.append(entry.getKey()).append(" = ").append(entry.getValue()).append("\n");
+            }
+        } else {
+            vars.append("No variables extracted.");
+        }
+        detailVarsText.setText(vars.toString());
+        detailVarsText.setCaretPosition(0);
     }
 
     public JPanel getPanel() { return mainPanel; }
