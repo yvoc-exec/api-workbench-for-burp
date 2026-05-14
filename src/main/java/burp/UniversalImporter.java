@@ -81,7 +81,8 @@ public class UniversalImporter {
                         }
                     }
 
-                    // Add collection variables
+                    // Add environment and collection variables
+                    resolver.addEnvironmentVariables(collection);
                     resolver.addCollectionVariables(collection);
 
                     publish("Processing " + selectedRequests.size() + " requests...");

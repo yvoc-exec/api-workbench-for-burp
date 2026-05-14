@@ -74,7 +74,10 @@ public class RequestBuilder {
         applyAuthentication(headers, request.auth);
 
         // Body
-        byte[] body = buildBody(request.body, headers);
+        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers);
+        if (body == null) {
+            body = buildBody(request.body, headers);
+        }
 
         // Override Content-Length to match exact body bytes; never emit Transfer-Encoding
         headers.removeIf(h -> h.toLowerCase().startsWith("content-length:") || h.toLowerCase().startsWith("transfer-encoding:"));
@@ -277,5 +280,85 @@ public class RequestBuilder {
             if (colonIdx == -1) return false;
             return h.substring(0, colonIdx).trim().toLowerCase().equals(target);
         });
+    }
+
+    /**
+     * Auto-builds an application/x-www-form-urlencoded OAuth2 token request body
+     * when the request URL matches oauth2_token_url and the body is empty.
+     * Returns null when no auto-build is needed.
+     */
+    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, List<String> headers) {
+        Map<String, String> vars = resolver.mutableVariables();
+        if (vars == null) return null;
+
+        String tokenUrl = vars.get("oauth2_token_url");
+        if (tokenUrl == null || tokenUrl.isBlank()) return null;
+
+        String resolvedTokenUrl = resolver.resolve(tokenUrl);
+        if (!"POST".equals(method) || !resolvedUrl.trim().equals(resolvedTokenUrl.trim())) {
+            return null;
+        }
+
+        if (!isBodyEmpty(request.body)) {
+            return null;
+        }
+
+        // Read OAuth2 variables
+        String grant = vars.getOrDefault("oauth2_grant", "client_credentials");
+        String clientId = vars.get("oauth2_client_id");
+        String clientSecret = vars.get("oauth2_client_secret");
+        String scope = vars.get("oauth2_scope");
+
+        // Normalize grant type
+        String normalizedGrant = grant.replace('-', '_').toLowerCase();
+        if (!"client_credentials".equals(normalizedGrant)) {
+            normalizedGrant = "client_credentials";
+        }
+
+        // Validate required fields
+        List<String> missing = new ArrayList<>();
+        if (clientId == null || clientId.isBlank()) {
+            missing.add("oauth2_client_id");
+        }
+        if ("client_credentials".equals(normalizedGrant) && (clientSecret == null || clientSecret.isBlank())) {
+            missing.add("oauth2_client_secret");
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "OAuth2 token request missing required variables: " + String.join(", ", missing));
+        }
+
+        // Build form-urlencoded body
+        List<String> params = new ArrayList<>();
+        params.add("grant_type=" + URLEncoder.encode(normalizedGrant, StandardCharsets.UTF_8));
+        params.add("client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8));
+        if (clientSecret != null && !clientSecret.isBlank()) {
+            params.add("client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8));
+        }
+        if (scope != null && !scope.isBlank()) {
+            params.add("scope=" + URLEncoder.encode(scope, StandardCharsets.UTF_8));
+        }
+
+        // Ensure correct Content-Type for the auto-built body
+        headers.removeIf(h -> h.toLowerCase().startsWith("content-type:"));
+        headers.add("Content-Type: application/x-www-form-urlencoded");
+
+        return String.join("&", params).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private boolean isBodyEmpty(ApiRequest.Body body) {
+        if (body == null || body.mode == null || "none".equals(body.mode)) {
+            return true;
+        }
+        switch (body.mode) {
+            case "raw":
+                return body.raw == null || body.raw.isBlank();
+            case "urlencoded":
+                return body.urlencoded == null || body.urlencoded.isEmpty();
+            case "formdata":
+                return body.formdata == null || body.formdata.isEmpty();
+            default:
+                return true;
+        }
     }
 }
