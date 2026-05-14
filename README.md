@@ -9,11 +9,11 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Multi-Format Import
 | Format | Extensions | Auto-Detect |
 |--------|-----------|-------------|
-| Postman | `.json` | ✅ v2.0 / v2.1 |
-| Bruno | `.bru` (folder or single file) | ✅ |
-| OpenAPI / Swagger | `.json`, `.yaml`, `.yml` | ✅ |
-| Insomnia v4 | `.json` | ✅ |
-| HAR | `.har` | ✅ |
+| Postman | `.json` | Yes — v2.0 / v2.1 |
+| Bruno | `.bru` (folder or single file) | Yes |
+| OpenAPI / Swagger | `.json`, `.yaml`, `.yml` | Yes |
+| Insomnia v4 | `.json` | Yes |
+| HAR | `.har` | Yes |
 
 ### Import Destinations
 - **Repeater** — creates tabs for manual testing (no live requests)
@@ -32,11 +32,12 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Collection Runner
 - Execute selected requests **sequentially** like Postman Collection Runner
 - Configurable **delay between requests** (rate limiting)
-- **Variable extraction** from responses (JSON path, script patterns)
+- **Variable extraction** from responses (JSON path, script patterns, nested dotted paths like `jsonData.data.token`)
 - **Assertions** (status code, headers, JSON properties)
 - **Stop on error** option
 - Results table with status, timing, size, assertion pass/fail
 - Auto-populates Sitemap with runner responses
+- Per-request OAuth2 auth scoping with automatic snapshot/restore to prevent cross-request contamination
 
 ### JavaScript Script Engine (Nashorn)
 - Executes **pre-request** and **post-response** scripts using Nashorn
@@ -52,6 +53,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Refresh Token** — auto-refresh before expiry
 - Token storage in-memory only (never persisted to disk)
 - Auto-injects `Authorization: Bearer <token>` into requests
+- Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -81,49 +83,104 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 
 ---
 
-## Quick Start
+## Operational Playbooks
 
-### 1. Import a Collection
-1. Click **+ Add Collection** and select your collection file (or Bruno folder). Repeat for multiple collections.
-2. (Optional) Select an environment JSON file (applies to all collections)
-3. Requests from all loaded collections appear in the preview table with a **Source** column
-4. Select requests in the table (checkboxes)
-5. Choose destination: **Repeater**, **Sitemap**, **Intruder**, or **Both**
-6. Click **Import Selected**
+### Playbook 1: Fast Manual Testing in Repeater
+1. Click **+ Add Collection** and select your collection file or Bruno folder.
+2. Select the requests you want in the preview table.
+3. Check **Repeater** as the destination.
+4. Click **Import Selected**.
+5. Find the created tabs in Burp Repeater, edit and send manually.
 
-### 2. Use the Collection Runner
-1. Import/preview a collection first
-2. Select requests you want to run
-3. Switch to the **Collection Runner** tab
-4. Configure delay, stop-on-error, redirect following
-5. (Optional) Add environment variables in the **Variables** tab
-6. Click **▶ Start Collection Runner**
-7. Watch results populate in real-time
+Repeater is best for manual tampering and iterative payload testing. No live traffic is sent during import.
 
-### 3. Configure OAuth2 (if needed)
-1. Switch to the **OAuth2** tab
-2. Select grant type and fill in endpoints + credentials
-3. Click **Acquire Token**
-4. Token auto-injects into requests with `auth.type = "oauth2"`
+### Playbook 2: Baseline Live Behavior via Sitemap
+1. Select requests in the preview table.
+2. Check **Sitemap** as the destination.
+3. Click **Import Selected**.
+4. Imported requests are sent live and responses appear in Target > Sitemap.
 
-### 4. Script Execution
-The runner automatically executes pre-request and post-response scripts:
+Use the delay spinner to pace live traffic and avoid rate-limiting.
 
-**Postman style:**
+### Playbook 3: Stateful Flow Testing in Collection Runner
+1. Load and select an ordered set of requests (e.g., login -> fetch -> update).
+2. Switch to the **Collection Runner** tab.
+3. Configure delay, stop-on-error, and follow-redirects as needed.
+4. Click **Start Collection Runner**.
+5. Results populate in real-time; extracted variables feed automatically into downstream requests.
+
+Post-response scripts can extract variables for downstream requests automatically. Use script syntax like:
 ```javascript
 pm.environment.set("auth_token", jsonData.access_token);
-pm.expect(pm.response.code).to.have.status(200);
 ```
-
-**Bruno style:**
-```javascript
-bru.setVar("auth_token", res.getBody().access_token);
-```
-
-**Comment-based extraction (works in any format):**
+or comment-based extraction:
 ```javascript
 // extract: auth_token = $.data.token
 ```
+
+### Playbook 4: Variables Tab Usage
+Open the **Variables** tab and enter variables in either format:
+
+**key=value lines:**
+```
+api_base=https://api.example.com
+token={{oauth2_access_token}}
+oauth2_client_id=my-client
+```
+
+**JSON object:**
+```json
+{
+  "api_base": "https://api.example.com",
+  "token": "{{oauth2_access_token}}",
+  "oauth2_client_id": "my-client"
+}
+```
+
+Precedence during runtime (highest to lowest):
+1. Runner-extracted variables from previous responses
+2. OAuth2 tab values
+3. Variables tab / environment file values
+4. Collection-level variables
+5. Request-level variables
+6. Default values in `{{var|default}}` syntax
+
+### Playbook 5: OAuth2 Tab Workflow
+1. Switch to the **OAuth2** tab.
+2. Select the grant type: Client Credentials, Password, Authorization Code, or Refresh Token.
+3. Fill the Token URL, Auth URL (for Authorization Code), Client ID, and Client Secret.
+4. For Password grant, add Username and Password.
+5. Click **Acquire Token**.
+6. The acquired token is injected into requests where `auth.type = "oauth2"`. The runtime manager can refresh it automatically before expiry.
+
+### Playbook 6: Imported OAuth2 Auth Compatibility
+When collections define OAuth2 metadata (endpoints, client ID, grant type, etc.), the extension normalizes parser-specific property names into canonical `oauth2_*` runtime variables at execution time.
+
+Supported mappings include:
+- `grantType` / `grant_type` -> `oauth2_grant`
+- `accessTokenUrl` / `access_token_url` -> `oauth2_token_url`
+- `clientId` / `client_id` -> `oauth2_client_id`
+- `clientSecret` / `client_secret` -> `oauth2_client_secret`
+- and others
+
+This applies across Postman, Bruno, OpenAPI, and Insomnia imports, and prevents missing-parameter body issues in token requests.
+
+### Playbook 7: Quick Triage for 400/401
+If a request returns 400 or 401, check in order:
+
+- **Token URL and grant type** - verify `oauth2_token_url` resolves to the correct endpoint and `oauth2_grant` matches the server expectation.
+- **Required body params** - Password grant needs `oauth2_username` + `oauth2_password`; Refresh Token needs `oauth2_refresh_token`; Authorization Code needs `oauth2_code`.
+- **Client auth mode** - `oauth2_client_auth` can be `body`, `basic`, or `prefer_basic`. Try switching if the server rejects client credentials placement.
+- **Unresolved variables** - check that `{{variable}}` placeholders have values in the Variables tab or OAuth2 tab.
+- **Nested extraction paths** - ensure script paths like `jsonData.data.token` use dot notation correctly; the runner and script engine support nested dotted paths.
+
+### Mode Selection Guide
+
+| Goal | Use | Why |
+|------|-----|-----|
+| Manual manipulation | Repeater | fastest iterative request editing |
+| Real endpoint behavior + history | Sitemap | live send + target visibility |
+| Multi-step automated flow | Collection Runner | sequencing + extraction + assertions |
 
 ---
 
@@ -165,7 +222,8 @@ src/main/java/burp/
 └── utils/
     ├── HttpUtils.java             # URL parsing utilities
     ├── RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
-    └── ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
+    ├── ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
+    └── OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
 ```
 
 ---
@@ -185,7 +243,7 @@ src/main/java/burp/
 - **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
 - **No tests**: Zero unit/integration tests.
 - **No extension unload cleanup for runner**: `CollectionRunner` executor service is not shut down on extension unload.
-- **Parser encoding**: All JSON/YAML/HAR parsers now use explicit UTF-8 readers.
+- **Parser encoding**: All JSON/YAML/HAR parsers and Bruno request decoding use explicit UTF-8.
 
 ---
 
