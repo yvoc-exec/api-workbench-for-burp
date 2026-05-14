@@ -81,8 +81,9 @@ public class CollectionRunner {
         results.clear();
         extractedVars.clear();
 
-        // Seed resolver with collection + initial vars
+        // Seed resolver with environment + collection + initial vars
         resolver.clear();
+        resolver.addEnvironmentVariables(collection);
         resolver.addCollectionVariables(collection);
         resolver.addAll(initialVars);
 
