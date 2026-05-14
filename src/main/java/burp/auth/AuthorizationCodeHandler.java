@@ -40,10 +40,10 @@ public class AuthorizationCodeHandler {
                 "&redirect_uri=" + URLEncoder.encode(config.redirectUri, StandardCharsets.UTF_8) +
                 "&state=" + URLEncoder.encode(state, StandardCharsets.UTF_8) +
                 "&code_challenge=" + URLEncoder.encode(codeChallenge, StandardCharsets.UTF_8) +
-                "&code_challenge_method=S256";
-        if (config.scope != null && !config.scope.isEmpty()) {
-            authUrl += "&scope=" + URLEncoder.encode(config.scope, StandardCharsets.UTF_8);
-        }
+                "&code_challenge_method=S256" +
+                (config.scope != null && !config.scope.isEmpty()
+                    ? "&scope=" + URLEncoder.encode(config.scope, StandardCharsets.UTF_8)
+                    : "");
 
         // Start localhost listener
         CompletableFuture<String> codeFuture = startCallbackListener(state);
