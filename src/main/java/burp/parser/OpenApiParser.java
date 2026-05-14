@@ -21,7 +21,7 @@ public class OpenApiParser implements CollectionParser {
         if (name.endsWith(".yaml") || name.endsWith(".yml")) return true;
         if (!name.endsWith(".json")) return false;
 
-        try (FileReader reader = new FileReader(file)) {
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
             JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
             return obj.has("openapi") || obj.has("swagger");
         } catch (Exception e) {
@@ -36,11 +36,11 @@ public class OpenApiParser implements CollectionParser {
 
         if (name.endsWith(".yaml") || name.endsWith(".yml")) {
             Yaml yaml = new Yaml();
-            try (FileReader reader = new FileReader(file)) {
+            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
                 spec = yaml.load(reader);
             }
         } else {
-            try (FileReader reader = new FileReader(file)) {
+            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
                 spec = gson.fromJson(reader, Map.class);
             }
         }
@@ -255,9 +255,9 @@ public class OpenApiParser implements CollectionParser {
                 if (!tokenUrl.isEmpty()) auth.properties.put("accessTokenUrl", tokenUrl);
                 String authUrl = getString(scheme, "authorizationUrl", "");
                 if (!authUrl.isEmpty()) auth.properties.put("authorizationUrl", authUrl);
-                if (scheme.containsKey("scopes") && scheme.get("scopes") instanceof List) {
-                    List<String> scopes = (List) scheme.get("scopes");
-                    if (!scopes.isEmpty()) auth.properties.put("scope", String.join(" ", scopes));
+                if (scheme.containsKey("scopes") && scheme.get("scopes") instanceof Map) {
+                    Map<String, Object> scopes = (Map) scheme.get("scopes");
+                    if (!scopes.isEmpty()) auth.properties.put("scope", String.join(" ", scopes.keySet()));
                 }
             }
             auth.properties.put("clientId", "{{oauth2_client_id}}");

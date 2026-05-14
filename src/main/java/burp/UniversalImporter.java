@@ -56,6 +56,14 @@ public class UniversalImporter {
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
                                File environmentFile, List<String> destinations, int delayMs,
                                LogCallback logCallback, ResultCallback resultCallback) {
+        importRequests(collection, selectedRequests, environmentFile, destinations, delayMs,
+                       Collections.emptyMap(), logCallback, resultCallback);
+    }
+
+    public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
+                               File environmentFile, List<String> destinations, int delayMs,
+                               Map<String, String> initialVars,
+                               LogCallback logCallback, ResultCallback resultCallback) {
 
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
             @Override
@@ -68,7 +76,7 @@ public class UniversalImporter {
                     // Load environment if provided
                     if (environmentFile != null) {
                         publish("Loading environment...");
-                        try (FileReader reader = new FileReader(environmentFile)) {
+                        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
                             com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
                             if (obj.has("values") && obj.get("values").isJsonArray()) {
                                 for (com.google.gson.JsonElement v : obj.getAsJsonArray("values")) {
@@ -80,6 +88,9 @@ public class UniversalImporter {
                             }
                         }
                     }
+
+                    // Seed initial vars (OAuth2 + Variables tab)
+                    resolver.addAll(initialVars);
 
                     // Add environment and collection variables
                     resolver.addEnvironmentVariables(collection);

@@ -5,7 +5,7 @@
 **License:** MIT  
 **Target Platform:** Burp Suite Professional / Community Edition  
 **Java Version:** 17+  
-**Montoya API:** 2023.12.1+
+**Montoya API:** 2024.12+
 
 ---
 
@@ -812,7 +812,7 @@ When Nashorn is unavailable:
 
 ### 10.2 Client Secrets
 - Passed as variables (`{{client_secret}}`) — never hardcoded
-- `JTextField` used in UI (not `JPasswordField`)
+- `JPasswordField` used in UI for client secret and password fields
 - Not logged to Burp output
 
 ### 10.3 Path Traversal Prevention
@@ -840,7 +840,7 @@ When Nashorn is unavailable:
 | Claimed Feature | Actual Implementation | Status |
 |-----------------|----------------------|--------|
 | Path traversal prevention for file uploads | **Not implemented** — no validation exists | ❌ Missing |
-| `JPasswordField` for OAuth2 secrets | Uses `JTextField` (visible plaintext) | ⚠️ Incorrect UI |
+| `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | ✅ Correct |
 | Nashorn sandboxed execution | **No sandbox** — `Java.type()` gives full JVM access | ⚠️ Security risk |
 | Token storage "never persisted" | Static `ConcurrentHashMap` — survives extension reloads in same JVM | ⚠️ Misleading |
 | File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
@@ -857,7 +857,7 @@ When Nashorn is unavailable:
 
 ### 11.3 Parser Limitations
 
-- **Postman/Bruno file mode**: Uses platform default encoding (`FileReader`) instead of UTF-8. Non-ASCII characters may corrupt.
+- **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
 - **Bruno parser**: Regex-based parsing (not a full parser). Complex nested braces in body content may fail.
 - **OpenAPI parser**: Generates examples for all schema types but casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
 - **Insomnia parser**: Only supports v4 exports. v3 or earlier are not detected.

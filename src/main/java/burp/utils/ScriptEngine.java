@@ -171,10 +171,17 @@ public class ScriptEngine {
             return expr.substring(1, expr.length() - 1);
         }
         // jsonData.xxx or responseBody patterns
-        if (result.responseBodyPreview != null) {
+        String sourceBody = result.responseBody != null ? result.responseBody : result.responseBodyPreview;
+        if (sourceBody != null) {
             try {
-                com.google.gson.JsonElement elem = com.google.gson.JsonParser.parseString(result.responseBodyPreview);
-                String[] parts = expr.replace("jsonData", "").replace("res.body", "").replace(".", "").split("\\.");
+                com.google.gson.JsonElement elem = com.google.gson.JsonParser.parseString(sourceBody);
+                // Strip prefix only, preserve path separators
+                String path = expr;
+                if (path.startsWith("jsonData.")) path = path.substring("jsonData.".length());
+                else if (path.startsWith("jsonData")) path = path.substring("jsonData".length());
+                else if (path.startsWith("res.body.")) path = path.substring("res.body.".length());
+                else if (path.startsWith("res.body")) path = path.substring("res.body".length());
+                String[] parts = path.split("\\.");
                 com.google.gson.JsonElement current = elem;
                 for (String part : parts) {
                     if (part.isEmpty()) continue;
