@@ -172,6 +172,13 @@ public class CollectionRunner {
 
                 HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
 
+                // Store request details for result pane
+                result.requestUrl = resolvedUrl;
+                result.requestHeaders = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
+                if (req.body != null && req.body.raw != null) {
+                    result.requestBody = req.body.raw;
+                }
+
                 long startTime = System.currentTimeMillis();
                 HttpRequestResponse response = api.http().sendRequest(httpRequest);
                 long endTime = System.currentTimeMillis();
@@ -185,8 +192,17 @@ public class CollectionRunner {
 
                     // Preview of response body (first 500 chars)
                     String body = response.response().bodyToString();
+                    result.responseBody = body;
                     result.responseBodyLength = body.length();
                     result.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
+
+                    // Store response headers
+                    StringBuilder respHeaders = new StringBuilder();
+                    respHeaders.append("HTTP/1.1 ").append(response.response().statusCode()).append(" OK\n");
+                    for (var header : response.response().headers()) {
+                        respHeaders.append(header.name()).append(": ").append(header.value()).append("\n");
+                    }
+                    result.responseHeaders = respHeaders.toString();
 
                     // Add to sitemap
                     api.siteMap().add(response);

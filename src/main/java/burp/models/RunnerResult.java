@@ -11,11 +11,16 @@ public class RunnerResult {
     public String host;
     public String path;
     public String method;
+    public String requestUrl;
+    public String requestHeaders;
+    public String requestBody;
     public boolean success;
     public int statusCode;
     public long responseTimeMs;
     public int responseSize;
     public int responseBodyLength;
+    public String responseHeaders;
+    public String responseBody;
     public String errorMessage;
     public String responseBodyPreview;
     public Map<String, String> extractedVariables = new HashMap<>();
