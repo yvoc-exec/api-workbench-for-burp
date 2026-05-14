@@ -3,6 +3,7 @@ package burp.ui;
 import burp.models.*;
 import burp.parser.*;
 import burp.runner.CollectionRunner;
+import burp.auth.OAuth2Manager;
 import burp.UniversalImporter;
 
 import javax.swing.*;
@@ -21,6 +22,7 @@ public class ImporterPanel {
 
     // Multi-collection support
     private final List<ApiCollection> loadedCollections = new ArrayList<>();
+    private OAuth2Panel oauth2Panel;
     private final DefaultListModel<String> collectionListModel = new DefaultListModel<>();
     private JList<String> collectionList;
     private File selectedEnv;
@@ -46,7 +48,8 @@ public class ImporterPanel {
     private JButton startRunnerBtn, cancelRunnerBtn;
     private JTextArea envVarsArea;
 
-    public ImporterPanel(UniversalImporter importer, CollectionRunner runner) {
+    public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
+        this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
         this.runner = runner;
         this.mainPanel = createUI();
@@ -60,6 +63,7 @@ public class ImporterPanel {
         tabbedPane.addTab("Import", createImportTab());
         tabbedPane.addTab("Collection Runner", createRunnerTab());
         tabbedPane.addTab("Variables", createVariablesTab());
+        tabbedPane.addTab("OAuth2", oauth2Panel);
 
         panel.add(tabbedPane, BorderLayout.CENTER);
         return panel;
@@ -434,6 +438,10 @@ public class ImporterPanel {
         }
 
         Map<String, String> initialVars = parseEnvVarsMap();
+        // Merge OAuth2 variables
+        if (oauth2Panel != null) {
+            initialVars.putAll(oauth2Panel.getVariables());
+        }
         // Merge collection variables from all loaded collections
         for (ApiCollection col : loadedCollections) {
             for (ApiRequest.Variable var : col.variables) {
