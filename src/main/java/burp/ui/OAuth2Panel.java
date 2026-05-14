@@ -25,6 +25,7 @@ public class OAuth2Panel extends JPanel {
     private JButton acquireBtn;
     private JButton refreshBtn;
     private JButton clearBtn;
+    private JButton populateBtn;
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
 
@@ -126,6 +127,8 @@ public class OAuth2Panel extends JPanel {
         btnPanel.add(acquireBtn);
         btnPanel.add(refreshBtn);
         btnPanel.add(clearBtn);
+        populateBtn = new JButton("Populate from Selected Request");
+        btnPanel.add(populateBtn);
         panel.add(btnPanel, gbc);
 
         return panel;
@@ -245,6 +248,46 @@ public class OAuth2Panel extends JPanel {
         config.scope = scopeField.getText().trim();
         config.usePkce = pkceBox.isSelected();
         return config;
+    }
+
+    public JButton getPopulateButton() {
+        return populateBtn;
+    }
+
+    public void populateFromOAuth2Map(Map<String, String> vars) {
+        SwingUtilities.invokeLater(() -> {
+            if (vars == null) return;
+
+            String grant = vars.get("oauth2_grant");
+            if (grant != null) {
+                switch (grant.toLowerCase()) {
+                    case "client_credentials":
+                        grantTypeBox.setSelectedItem("Client Credentials");
+                        break;
+                    case "password":
+                        grantTypeBox.setSelectedItem("Password");
+                        break;
+                    case "authorization_code":
+                        grantTypeBox.setSelectedItem("Authorization Code");
+                        break;
+                    case "refresh_token":
+                        grantTypeBox.setSelectedItem("Refresh Token");
+                        break;
+                }
+            }
+            if (vars.containsKey("oauth2_token_url")) tokenUrlField.setText(vars.get("oauth2_token_url"));
+            if (vars.containsKey("oauth2_auth_url")) authUrlField.setText(vars.get("oauth2_auth_url"));
+            if (vars.containsKey("oauth2_redirect_uri")) redirectUriField.setText(vars.get("oauth2_redirect_uri"));
+            if (vars.containsKey("oauth2_client_id")) clientIdField.setText(vars.get("oauth2_client_id"));
+            if (vars.containsKey("oauth2_client_secret")) clientSecretField.setText(vars.get("oauth2_client_secret"));
+            if (vars.containsKey("oauth2_username")) usernameField.setText(vars.get("oauth2_username"));
+            if (vars.containsKey("oauth2_password")) passwordField.setText(vars.get("oauth2_password"));
+            if (vars.containsKey("oauth2_scope")) scopeField.setText(vars.get("oauth2_scope"));
+            if (vars.containsKey("oauth2_use_pkce")) {
+                pkceBox.setSelected(Boolean.parseBoolean(vars.get("oauth2_use_pkce")));
+            }
+            updateFieldVisibility();
+        });
     }
 
     public Map<String, String> getVariables() {

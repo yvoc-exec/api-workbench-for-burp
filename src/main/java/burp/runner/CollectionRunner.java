@@ -38,6 +38,7 @@ public class CollectionRunner {
     private int maxRetries = 1;
     private boolean stopOnError = false;
     private boolean followRedirects = true;
+    private boolean debugRawRequest = false;
     private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
     private ScriptEngine scriptEngine;
@@ -76,6 +77,7 @@ public class CollectionRunner {
     public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
     public void setStopOnError(boolean stopOnError) { this.stopOnError = stopOnError; }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
+    public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
 
     public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
                               Map<String, String> initialVars) {
@@ -186,6 +188,10 @@ public class CollectionRunner {
                     }
                 }
                 byte[] rawRequest = requestBuilder.buildRequest(req);
+                if (debugRawRequest) {
+                    String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
+                    api.logging().logToOutput(debug);
+                }
                 String resolvedUrl = resolver.resolve(req.url);
                 HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
                 result.host = parsed.host;

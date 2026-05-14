@@ -38,6 +38,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Results table with status, timing, size, assertion pass/fail
 - Auto-populates Sitemap with runner responses
 - Per-request OAuth2 auth scoping with automatic snapshot/restore to prevent cross-request contamination
+- **Execution model**: pre/post scripts and response extraction/assertions run only in the Collection Runner, not during Import → Repeater/Sitemap
 
 ### JavaScript Script Engine (Nashorn)
 - Executes **pre-request** and **post-response** scripts using Nashorn
@@ -54,6 +55,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Token storage in-memory only (never persisted to disk)
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
+- **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support

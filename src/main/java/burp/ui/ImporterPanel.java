@@ -5,6 +5,7 @@ import burp.parser.*;
 import burp.runner.CollectionRunner;
 import burp.auth.OAuth2Manager;
 import burp.UniversalImporter;
+import burp.utils.OAuth2PopulateHelper;
 
 import javax.swing.*;
 import javax.swing.border.*;
@@ -36,6 +37,7 @@ public class ImporterPanel {
     private JCheckBox repeaterBtn, sitemapBtn, intruderBtn;
     private JSpinner delaySpinner;
     private JButton importBtn, previewBtn, runBtn, addCollectionBtn, removeCollectionBtn;
+    private JCheckBox debugRawRequestBox;
 
     // Runner tab
     private JTextArea runnerLog;
@@ -46,6 +48,7 @@ public class ImporterPanel {
     private JCheckBox stopOnErrorBox;
     private JCheckBox followRedirectsBox;
     private JButton startRunnerBtn, cancelRunnerBtn;
+    private JCheckBox runnerDebugRawRequestBox;
     private JTextArea envVarsArea;
 
     // Runner detail pane
@@ -61,6 +64,29 @@ public class ImporterPanel {
         this.importer = importer;
         this.runner = runner;
         this.mainPanel = createUI();
+        // Wire populate button after UI is created
+        if (oauth2Panel.getPopulateButton() != null) {
+            oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromSelectedRequest());
+        }
+    }
+
+    private void populateOAuth2FromSelectedRequest() {
+        List<ApiRequest> selected = previewModel.getSelectedRequests();
+        if (selected.isEmpty()) {
+            appendImportLog("Populate OAuth2: No request selected in preview table.");
+            return;
+        }
+        // Use first selected request
+        ApiRequest req = selected.get(0);
+        Map<String, String> extracted = OAuth2PopulateHelper.extractOAuth2Fields(req);
+        if (extracted.isEmpty()) {
+            appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data (auth, body, or headers).");
+            return;
+        }
+        // Merge with existing Variables tab values as fallback
+        Map<String, String> merged = OAuth2PopulateHelper.mergeWithExisting(extracted, parseEnvVarsMap());
+        oauth2Panel.populateFromOAuth2Map(merged);
+        appendImportLog("Populate OAuth2: Filled " + extracted.size() + " field(s) from request \"" + req.name + "\".");
     }
 
     private JPanel createUI() {
@@ -69,9 +95,9 @@ public class ImporterPanel {
 
         tabbedPane = new JTabbedPane();
         tabbedPane.addTab("Import", createImportTab());
-        tabbedPane.addTab("Collection Runner", createRunnerTab());
         tabbedPane.addTab("Variables", createVariablesTab());
         tabbedPane.addTab("OAuth2", oauth2Panel);
+        tabbedPane.addTab("Collection Runner", createRunnerTab());
 
         panel.add(tabbedPane, BorderLayout.CENTER);
         return panel;
@@ -158,6 +184,8 @@ public class ImporterPanel {
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
         delaySpinner.setMaximumSize(new Dimension(80, 25));
         configRow.add(delaySpinner);
+        debugRawRequestBox = new JCheckBox("Debug final raw request");
+        configRow.add(debugRawRequestBox);
         bottomPanel.add(configRow);
 
         // Row 2: Progress bar + Action buttons
@@ -218,6 +246,10 @@ public class ImporterPanel {
         gbc.gridx = 3;
         followRedirectsBox = new JCheckBox("Follow redirects", true);
         configPanel.add(followRedirectsBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 4;
+        runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
+        configPanel.add(runnerDebugRawRequestBox, gbc);
 
         panel.add(configPanel, BorderLayout.NORTH);
 
@@ -452,6 +484,8 @@ public class ImporterPanel {
             initialVars.putAll(oauth2Panel.getVariables());
         }
 
+        importer.setDebugRawRequest(debugRawRequestBox != null && debugRawRequestBox.isSelected());
+
         // Group requests by collection for import
         Map<String, List<ApiRequest>> requestsByCollection = new HashMap<>();
         for (ApiRequest req : selected) {
@@ -484,10 +518,19 @@ public class ImporterPanel {
             appendImportLog("No requests selected to send to runner.");
             return;
         }
-        tabbedPane.setSelectedIndex(1);
-        appendRunnerLog(selected.size() + " requests from " + 
-            selected.stream().map(r -> r.sourceCollection).distinct().count() + 
+        switchToTabByName("Collection Runner");
+        appendRunnerLog(selected.size() + " requests from " +
+            selected.stream().map(r -> r.sourceCollection).distinct().count() +
             " collection(s) queued in runner. Configure settings and press Start.");
+    }
+
+    private void switchToTabByName(String name) {
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            if (name.equals(tabbedPane.getTitleAt(i))) {
+                tabbedPane.setSelectedIndex(i);
+                return;
+            }
+        }
     }
 
     private void startRunner() {
@@ -514,6 +557,7 @@ public class ImporterPanel {
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
         runner.setStopOnError(stopOnErrorBox.isSelected());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
+        runner.setDebugRawRequest(runnerDebugRawRequestBox != null && runnerDebugRawRequestBox.isSelected());
 
         resultModel.clear();
         runnerLog.setText("");
@@ -661,6 +705,11 @@ public class ImporterPanel {
         }
         detailVarsText.setText(vars.toString());
         detailVarsText.setCaretPosition(0);
+    }
+
+    public boolean isDebugRawRequest() {
+        return (debugRawRequestBox != null && debugRawRequestBox.isSelected())
+            || (runnerDebugRawRequestBox != null && runnerDebugRawRequestBox.isSelected());
     }
 
     public JPanel getPanel() { return mainPanel; }
