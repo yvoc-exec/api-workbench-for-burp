@@ -51,6 +51,15 @@ public class OpenApiParser implements CollectionParser {
         collection.description = getString(spec, "info.description", "");
         collection.version = getString(spec, "openapi", getString(spec, "swagger", "3.0"));
 
+        // Extract security schemes (OAS3 or Swagger2)
+        Map<String, Map<String, Object>> securitySchemes = extractSecuritySchemes(spec);
+
+        // Top-level default security
+        List<Map<String, Object>> defaultSecurity = null;
+        if (spec.containsKey("security") && spec.get("security") instanceof List) {
+            defaultSecurity = (List) spec.get("security");
+        }
+
         // Extract servers/base URLs
         List<String> baseUrls = new ArrayList<>();
         if (spec.containsKey("servers") && spec.get("servers") instanceof List) {
@@ -80,7 +89,8 @@ public class OpenApiParser implements CollectionParser {
                         String method = methodEntry.getKey().toUpperCase();
                         if (isHttpMethod(method)) {
                             ApiRequest req = parseOpenApiOperation(
-                                method, path, (Map) methodEntry.getValue(), defaultBaseUrl
+                                method, path, (Map) methodEntry.getValue(), defaultBaseUrl,
+                                securitySchemes, defaultSecurity
                             );
                             req.sourceCollection = collection.name;
                             collection.requests.add(req);
@@ -93,7 +103,32 @@ public class OpenApiParser implements CollectionParser {
         return collection;
     }
 
-    private ApiRequest parseOpenApiOperation(String method, String path, Map<String, Object> op, String baseUrl) {
+    private Map<String, Map<String, Object>> extractSecuritySchemes(Map<String, Object> spec) {
+        Map<String, Map<String, Object>> schemes = new HashMap<>();
+        if (spec.containsKey("components") && spec.get("components") instanceof Map) {
+            Map<String, Object> components = (Map) spec.get("components");
+            if (components.containsKey("securitySchemes") && components.get("securitySchemes") instanceof Map) {
+                Map<String, Object> raw = (Map) components.get("securitySchemes");
+                for (Map.Entry<String, Object> e : raw.entrySet()) {
+                    if (e.getValue() instanceof Map) {
+                        schemes.put(e.getKey(), (Map) e.getValue());
+                    }
+                }
+            }
+        } else if (spec.containsKey("securityDefinitions") && spec.get("securityDefinitions") instanceof Map) {
+            Map<String, Object> raw = (Map) spec.get("securityDefinitions");
+            for (Map.Entry<String, Object> e : raw.entrySet()) {
+                if (e.getValue() instanceof Map) {
+                    schemes.put(e.getKey(), (Map) e.getValue());
+                }
+            }
+        }
+        return schemes;
+    }
+
+    private ApiRequest parseOpenApiOperation(String method, String path, Map<String, Object> op, String baseUrl,
+                                             Map<String, Map<String, Object>> securitySchemes,
+                                             List<Map<String, Object>> defaultSecurity) {
         ApiRequest req = new ApiRequest();
         req.method = method;
         req.name = getString(op, "operationId", method + " " + path);
@@ -149,16 +184,134 @@ public class OpenApiParser implements CollectionParser {
             }
         }
 
-        // Parse security/auth
+        // Parse security/auth with scheme resolution
+        List<Map<String, Object>> security = null;
         if (op.containsKey("security") && op.get("security") instanceof List) {
-            List<Map<String, Object>> security = (List) op.get("security");
-            if (!security.isEmpty()) {
-                req.auth = new ApiRequest.Auth();
-                req.auth.type = "bearer"; // Default assumption for OpenAPI security
-            }
+            security = (List) op.get("security");
+        } else {
+            security = defaultSecurity;
         }
+        req.auth = resolveSecurity(security, securitySchemes);
 
         return req;
+    }
+
+    private ApiRequest.Auth resolveSecurity(List<Map<String, Object>> security,
+                                            Map<String, Map<String, Object>> securitySchemes) {
+        if (security == null) return null;
+        if (security.isEmpty()) {
+            // Explicitly no auth (security: [])
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "none";
+            return auth;
+        }
+        // Use first security requirement
+        Map<String, Object> firstReq = security.get(0);
+        if (firstReq == null || firstReq.isEmpty()) return null;
+
+        String schemeName = firstReq.keySet().iterator().next();
+        Map<String, Object> scheme = securitySchemes.get(schemeName);
+        if (scheme == null) return null;
+
+        return mapSecurityScheme(scheme);
+    }
+
+    private ApiRequest.Auth mapSecurityScheme(Map<String, Object> scheme) {
+        ApiRequest.Auth auth = new ApiRequest.Auth();
+        String type = getString(scheme, "type", "");
+
+        if ("http".equalsIgnoreCase(type)) {
+            String schemeValue = getString(scheme, "scheme", "").toLowerCase();
+            if ("bearer".equals(schemeValue)) {
+                auth.type = "bearer";
+                auth.properties.put("token", "{{token}}");
+            } else if ("basic".equals(schemeValue)) {
+                auth.type = "basic";
+                auth.properties.put("username", "{{username}}");
+                auth.properties.put("password", "{{password}}");
+            }
+        } else if ("apiKey".equalsIgnoreCase(type)) {
+            String in = getString(scheme, "in", "header");
+            String name = getString(scheme, "name", "");
+            if ("cookie".equalsIgnoreCase(in)) {
+                auth.type = "cookie";
+                auth.properties.put("value", name + "={{api_key}}");
+            } else {
+                auth.type = "apikey";
+                auth.properties.put("key", name);
+                auth.properties.put("value", "{{api_key}}");
+                auth.properties.put("in", in);
+            }
+        } else if ("oauth2".equalsIgnoreCase(type)) {
+            auth.type = "oauth2";
+            if (scheme.containsKey("flows") && scheme.get("flows") instanceof Map) {
+                Map<String, Object> flows = (Map) scheme.get("flows");
+                extractOAuth2Flows(auth, flows);
+            } else {
+                // Swagger2 style
+                String flow = getString(scheme, "flow", "");
+                auth.properties.put("grantType", mapSwagger2Flow(flow));
+                String tokenUrl = getString(scheme, "tokenUrl", "");
+                if (!tokenUrl.isEmpty()) auth.properties.put("accessTokenUrl", tokenUrl);
+                String authUrl = getString(scheme, "authorizationUrl", "");
+                if (!authUrl.isEmpty()) auth.properties.put("authorizationUrl", authUrl);
+                if (scheme.containsKey("scopes") && scheme.get("scopes") instanceof List) {
+                    List<String> scopes = (List) scheme.get("scopes");
+                    if (!scopes.isEmpty()) auth.properties.put("scope", String.join(" ", scopes));
+                }
+            }
+            auth.properties.put("clientId", "{{oauth2_client_id}}");
+            auth.properties.put("clientSecret", "{{oauth2_client_secret}}");
+            auth.properties.put("accessToken", "{{oauth2_access_token}}");
+        } else if ("basic".equalsIgnoreCase(type)) {
+            // Swagger2 explicit basic
+            auth.type = "basic";
+            auth.properties.put("username", "{{username}}");
+            auth.properties.put("password", "{{password}}");
+        }
+
+        return auth.type != null ? auth : null;
+    }
+
+    private void extractOAuth2Flows(ApiRequest.Auth auth, Map<String, Object> flows) {
+        String[] flowTypes = {"clientCredentials", "password", "authorizationCode", "implicit"};
+        for (String flowType : flowTypes) {
+            if (flows.containsKey(flowType) && flows.get(flowType) instanceof Map) {
+                Map<String, Object> flow = (Map) flows.get(flowType);
+                auth.properties.put("grantType", mapOas3FlowType(flowType));
+                String tokenUrl = getString(flow, "tokenUrl", "");
+                if (!tokenUrl.isEmpty()) auth.properties.put("accessTokenUrl", tokenUrl);
+                String authUrl = getString(flow, "authorizationUrl", "");
+                if (!authUrl.isEmpty()) auth.properties.put("authorizationUrl", authUrl);
+                String refreshUrl = getString(flow, "refreshUrl", "");
+                if (!refreshUrl.isEmpty()) auth.properties.put("refreshTokenUrl", refreshUrl);
+                if (flow.containsKey("scopes") && flow.get("scopes") instanceof Map) {
+                    Map<String, Object> scopes = (Map) flow.get("scopes");
+                    if (!scopes.isEmpty()) {
+                        auth.properties.put("scope", String.join(" ", scopes.keySet()));
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    private String mapOas3FlowType(String flow) {
+        switch (flow) {
+            case "clientCredentials": return "client_credentials";
+            case "authorizationCode": return "authorization_code";
+            case "password": return "password";
+            case "implicit": return "implicit";
+            default: return flow;
+        }
+    }
+
+    private String mapSwagger2Flow(String flow) {
+        switch (flow) {
+            case "application": return "client_credentials";
+            case "accessCode": return "authorization_code";
+            default: return flow; // password, implicit
+        }
     }
 
     private String generateJsonExample(Map<String, Object> schema) {
