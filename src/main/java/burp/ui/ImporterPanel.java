@@ -86,7 +86,7 @@ public class ImporterPanel {
         collectionList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         collectionList.setVisibleRowCount(4);
         JScrollPane listScroll = new JScrollPane(collectionList);
-        listScroll.setPreferredSize(new Dimension(300, 100));
+        listScroll.setPreferredSize(new Dimension(300, 90));
         topPanel.add(listScroll, BorderLayout.CENTER);
 
         // Collection buttons
@@ -137,55 +137,56 @@ public class ImporterPanel {
         selectPanel.add(deselectAllBtn);
         panel.add(selectPanel, BorderLayout.WEST);
 
-        // Bottom: Destination + Actions + Log
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
+        // Bottom: Compact vertical stack
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
 
-        // Destination
-        JPanel destPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        destPanel.setBorder(BorderFactory.createTitledBorder("Destination"));
+        // Row 1: Destination checkboxes + Delay (compact)
+        JPanel configRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        configRow.setBorder(BorderFactory.createTitledBorder("Destination"));
         repeaterBtn = new JCheckBox("Repeater", true);
         sitemapBtn = new JCheckBox("Sitemap (Live)");
         intruderBtn = new JCheckBox("Intruder");
-        destPanel.add(repeaterBtn);
-        destPanel.add(Box.createHorizontalStrut(10));
-        destPanel.add(sitemapBtn);
-        destPanel.add(Box.createHorizontalStrut(10));
-        destPanel.add(intruderBtn);
-
-        // Delay
-        JPanel delayPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        delayPanel.add(new JLabel("Delay (ms):"));
+        configRow.add(repeaterBtn);
+        configRow.add(sitemapBtn);
+        configRow.add(intruderBtn);
+        configRow.add(Box.createHorizontalStrut(15));
+        configRow.add(new JLabel("Delay (ms):"));
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
-        delayPanel.add(delaySpinner);
+        delaySpinner.setMaximumSize(new Dimension(80, 25));
+        configRow.add(delaySpinner);
+        bottomPanel.add(configRow);
 
-        JPanel configPanel = new JPanel(new BorderLayout());
-        configPanel.add(destPanel, BorderLayout.NORTH);
-        configPanel.add(delayPanel, BorderLayout.SOUTH);
-        bottomPanel.add(configPanel, BorderLayout.NORTH);
+        // Row 2: Progress bar + Action buttons
+        JPanel actionRow = new JPanel(new BorderLayout(10, 0));
+        actionRow.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
 
-        // Actions
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        importProgress = new JProgressBar(0, 100);
+        importProgress.setStringPainted(true);
+        importProgress.setPreferredSize(new Dimension(180, 20));
+        actionRow.add(importProgress, BorderLayout.WEST);
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
         importBtn = new JButton("Import Selected");
         importBtn.setEnabled(false);
         importBtn.addActionListener(e -> startImport());
         runBtn = new JButton("Send to Runner →");
         runBtn.setEnabled(false);
         runBtn.addActionListener(e -> sendToRunner());
-        actionPanel.add(importBtn);
-        actionPanel.add(runBtn);
-        bottomPanel.add(actionPanel, BorderLayout.CENTER);
+        btnPanel.add(importBtn);
+        btnPanel.add(runBtn);
+        actionRow.add(btnPanel, BorderLayout.EAST);
+        bottomPanel.add(actionRow);
 
-        // Log
-        importLog = new JTextArea(6, 50);
+        // Row 3: Import Log (limited height)
+        importLog = new JTextArea(3, 50);
         importLog.setEditable(false);
         importLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         JScrollPane logScroll = new JScrollPane(importLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Import Log"));
-        bottomPanel.add(logScroll, BorderLayout.SOUTH);
-
-        importProgress = new JProgressBar(0, 100);
-        importProgress.setStringPainted(true);
-        bottomPanel.add(importProgress, BorderLayout.PAGE_END);
+        logScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
+        logScroll.setPreferredSize(new Dimension(400, 70));
+        bottomPanel.add(logScroll);
 
         panel.add(bottomPanel, BorderLayout.SOUTH);
         return panel;
@@ -224,23 +225,34 @@ public class ImporterPanel {
         resultTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         JScrollPane tableScroll = new JScrollPane(resultTable);
         tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Results"));
+        tableScroll.setPreferredSize(new Dimension(350, 250));
+        tableScroll.setMinimumSize(new Dimension(200, 150));
 
         // Detail pane with tabs
         JTabbedPane detailTabs = new JTabbedPane();
         detailRequestText = new JTextArea();
         detailRequestText.setEditable(false);
         detailRequestText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Request", new JScrollPane(detailRequestText));
+        JScrollPane reqScroll = new JScrollPane(detailRequestText);
+        reqScroll.setPreferredSize(new Dimension(300, 250));
+        reqScroll.setMinimumSize(new Dimension(150, 150));
+        detailTabs.addTab("Request", reqScroll);
 
         detailResponseText = new JTextArea();
         detailResponseText.setEditable(false);
         detailResponseText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Response", new JScrollPane(detailResponseText));
+        JScrollPane respScroll = new JScrollPane(detailResponseText);
+        respScroll.setPreferredSize(new Dimension(300, 250));
+        respScroll.setMinimumSize(new Dimension(150, 150));
+        detailTabs.addTab("Response", respScroll);
 
         detailVarsText = new JTextArea();
         detailVarsText.setEditable(false);
         detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Vars", new JScrollPane(detailVarsText));
+        JScrollPane varsScroll = new JScrollPane(detailVarsText);
+        varsScroll.setPreferredSize(new Dimension(300, 250));
+        varsScroll.setMinimumSize(new Dimension(150, 150));
+        detailTabs.addTab("Vars", varsScroll);
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScroll, detailTabs);
         splitPane.setResizeWeight(0.5);
@@ -256,36 +268,46 @@ public class ImporterPanel {
             }
         });
 
-        // Bottom: Log + Actions
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
+        // Bottom: Log + Actions (compact vertical stack)
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
 
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        // Row 1: Progress + Actions
+        JPanel actionRow = new JPanel(new BorderLayout(10, 0));
+        actionRow.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
+
+        runnerProgress = new JProgressBar(0, 100);
+        runnerProgress.setStringPainted(true);
+        runnerProgress.setPreferredSize(new Dimension(180, 20));
+        actionRow.add(runnerProgress, BorderLayout.WEST);
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        JButton clearBtn = new JButton("Clear");
+        clearBtn.addActionListener(e -> {
+            resultModel.clear();
+            runnerLog.setText("");
+        });
         startRunnerBtn = new JButton("▶ Start Collection Runner");
         startRunnerBtn.setEnabled(false);
         startRunnerBtn.addActionListener(e -> startRunner());
         cancelRunnerBtn = new JButton("⏹ Cancel");
         cancelRunnerBtn.setEnabled(false);
         cancelRunnerBtn.addActionListener(e -> runner.cancel());
-        JButton clearBtn = new JButton("Clear");
-        clearBtn.addActionListener(e -> {
-            resultModel.clear();
-            runnerLog.setText("");
-        });
-        actionPanel.add(clearBtn);
-        actionPanel.add(startRunnerBtn);
-        actionPanel.add(cancelRunnerBtn);
-        bottomPanel.add(actionPanel, BorderLayout.NORTH);
+        btnPanel.add(clearBtn);
+        btnPanel.add(startRunnerBtn);
+        btnPanel.add(cancelRunnerBtn);
+        actionRow.add(btnPanel, BorderLayout.EAST);
+        bottomPanel.add(actionRow);
 
-        runnerLog = new JTextArea(6, 50);
+        // Row 2: Runner Log (limited height)
+        runnerLog = new JTextArea(3, 50);
         runnerLog.setEditable(false);
         runnerLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         JScrollPane logScroll = new JScrollPane(runnerLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Runner Log"));
-        bottomPanel.add(logScroll, BorderLayout.CENTER);
-
-        runnerProgress = new JProgressBar(0, 100);
-        runnerProgress.setStringPainted(true);
-        bottomPanel.add(runnerProgress, BorderLayout.SOUTH);
+        logScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
+        logScroll.setPreferredSize(new Dimension(400, 70));
+        bottomPanel.add(logScroll);
 
         panel.add(bottomPanel, BorderLayout.SOUTH);
         return panel;
