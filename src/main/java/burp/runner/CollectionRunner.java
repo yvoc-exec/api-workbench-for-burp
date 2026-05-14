@@ -191,6 +191,7 @@ public class CollectionRunner {
                 if (debugRawRequest) {
                     String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
                     api.logging().logToOutput(debug);
+                    fireOnDebug(debug);
                 }
                 String resolvedUrl = resolver.resolve(req.url);
                 HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
@@ -433,6 +434,11 @@ public class CollectionRunner {
             for (RunnerListener l : listeners) l.onComplete(results);
         });
     }
+    private void fireOnDebug(String message) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onDebug(message);
+        });
+    }
     private void fireOnError(String message) {
         SwingUtilities.invokeLater(() -> {
             for (RunnerListener l : listeners) l.onError(message);
@@ -445,5 +451,6 @@ public class CollectionRunner {
         void onRequestComplete(RunnerResult result);
         void onComplete(List<RunnerResult> results);
         void onError(String message);
+        default void onDebug(String message) { }
     }
 }

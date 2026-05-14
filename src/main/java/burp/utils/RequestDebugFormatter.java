@@ -27,14 +27,15 @@ public class RequestDebugFormatter {
         sb.append("=== Debug Raw Request [").append(context).append("] ===\n");
         sb.append("Name: ").append(requestName != null ? requestName : "(unnamed)").append("\n");
 
-        int emptyLine = findEmptyLine(masked);
-        if (emptyLine > 0) {
-            String headers = masked.substring(0, emptyLine);
+        EmptyLineResult emptyLine = findEmptyLine(masked);
+        if (emptyLine.index > 0) {
+            String headers = masked.substring(0, emptyLine.index);
             sb.append(headers).append("\n");
 
-            if (emptyLine + 2 < masked.length()) {
-                String body = masked.substring(emptyLine + 2);
-                int bodyBytes = raw.length() - (emptyLine + 2);
+            int bodyStart = emptyLine.index + emptyLine.delimiterLength;
+            if (bodyStart < masked.length()) {
+                String body = masked.substring(bodyStart);
+                int bodyBytes = raw.length() - bodyStart;
                 sb.append("\n[Body: ").append(bodyBytes).append(" bytes]\n");
                 if (body.length() > MAX_BODY_PREVIEW) {
                     sb.append(body, 0, MAX_BODY_PREVIEW).append("\n... (truncated)");
@@ -52,12 +53,22 @@ public class RequestDebugFormatter {
     }
 
     private static String maskSecrets(String raw) {
-        String result = raw;
-        result = BEARER_PATTERN.matcher(result).replaceAll("$1" + maskToken("$2"));
-        result = CLIENT_SECRET_BODY_PATTERN.matcher(result).replaceAll("$1" + maskToken("$2"));
-        result = PASSWORD_BODY_PATTERN.matcher(result).replaceAll("$1" + maskToken("$2"));
-        result = BASIC_AUTH_PATTERN.matcher(result).replaceAll("$1" + maskToken("$2"));
+        String result = applyMask(BEARER_PATTERN, raw);
+        result = applyMask(CLIENT_SECRET_BODY_PATTERN, result);
+        result = applyMask(PASSWORD_BODY_PATTERN, result);
+        result = applyMask(BASIC_AUTH_PATTERN, result);
         return result;
+    }
+
+    private static String applyMask(Pattern pattern, String input) {
+        Matcher m = pattern.matcher(input);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String masked = maskToken(m.group(2));
+            m.appendReplacement(sb, Matcher.quoteReplacement(m.group(1) + masked));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     private static String maskToken(String token) {
@@ -67,11 +78,20 @@ public class RequestDebugFormatter {
         return token.substring(0, 6) + "***";
     }
 
-    private static int findEmptyLine(String text) {
+    private static EmptyLineResult findEmptyLine(String text) {
         int crlf = text.indexOf("\r\n\r\n");
-        if (crlf >= 0) return crlf;
+        if (crlf >= 0) return new EmptyLineResult(crlf, 4);
         int lf = text.indexOf("\n\n");
-        if (lf >= 0) return lf;
-        return -1;
+        if (lf >= 0) return new EmptyLineResult(lf, 2);
+        return new EmptyLineResult(-1, 0);
+    }
+
+    private static class EmptyLineResult {
+        final int index;
+        final int delimiterLength;
+        EmptyLineResult(int index, int delimiterLength) {
+            this.index = index;
+            this.delimiterLength = delimiterLength;
+        }
     }
 }
