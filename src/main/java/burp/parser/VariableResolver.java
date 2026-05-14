@@ -81,6 +81,14 @@ public class VariableResolver {
         return new HashMap<>(variables);
     }
 
+    /**
+     * Returns the live mutable variables map for callers that need to mutate
+     * (e.g., removing request-scoped variables after each request).
+     */
+    public Map<String, String> mutableVariables() {
+        return variables;
+    }
+
     public Set<String> findUnresolvedVariables(String input) {
         Set<String> unresolved = new HashSet<>();
         if (input == null) return unresolved;

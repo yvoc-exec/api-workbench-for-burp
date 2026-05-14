@@ -133,11 +133,12 @@ public class UniversalImporter {
         // FIX: Track existing variable keys to prevent leakage across requests
         Set<String> preKeys = new HashSet<>();
         try {
-            if (resolver.getVariables() != null) {
-                preKeys.addAll(resolver.getVariables().keySet());
+            Map<String, String> vars = resolver.mutableVariables();
+            if (vars != null) {
+                preKeys.addAll(vars.keySet());
             }
         } catch (Exception e) {
-            // getVariables() may not support keySet, skip tracking
+            // mutableVariables() may not be available, skip tracking
         }
 
         // Add request-level variables
@@ -145,10 +146,10 @@ public class UniversalImporter {
 
         byte[] rawRequest = requestBuilder.buildRequest(req);
         String resolvedUrl = resolver.resolve(req.url);
-        HttpUtils.HostInfo hostInfo = HttpUtils.parseUrl(resolvedUrl);
+        HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
         burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                hostInfo.host, hostInfo.port, hostInfo.useHttps);
+                parsed.host, parsed.port, parsed.useHttps);
 
         HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
         String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
@@ -173,15 +174,16 @@ public class UniversalImporter {
 
         // FIX: Remove request-level variables so they don't leak to next request
         try {
-            if (resolver.getVariables() != null) {
-                Set<String> postKeys = new HashSet<>(resolver.getVariables().keySet());
+            Map<String, String> liveVars = resolver.mutableVariables();
+            if (liveVars != null) {
+                Set<String> postKeys = new HashSet<>(liveVars.keySet());
                 postKeys.removeAll(preKeys);
                 for (String key : postKeys) {
-                    resolver.getVariables().remove(key);
+                    liveVars.remove(key);
                 }
             }
         } catch (Exception e) {
-            // If map is unmodifiable, variables may leak (known limitation)
+            // If mutable map is unavailable, variables may leak (known limitation)
         }
     }
 
