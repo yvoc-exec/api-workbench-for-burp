@@ -28,6 +28,7 @@ public class UniversalImporter {
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
     private boolean followRedirects = true;
+    private boolean debugRawRequest = false;
 
     public UniversalImporter(MontoyaApi api) {
         this.api = api;
@@ -51,6 +52,14 @@ public class UniversalImporter {
 
     public boolean isFollowRedirects() {
         return followRedirects;
+    }
+
+    public void setDebugRawRequest(boolean debugRawRequest) {
+        this.debugRawRequest = debugRawRequest;
+    }
+
+    public boolean isDebugRawRequest() {
+        return debugRawRequest;
     }
 
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
@@ -104,7 +113,7 @@ public class UniversalImporter {
                         ApiRequest req = selectedRequests.get(i);
                         try {
                             for (String destination : destinations) {
-                                processRequest(req, destination, delayMs);
+                                processRequest(req, destination, delayMs, logCallback);
                             }
                             result.successCount++;
                             publish("✓ " + req.name);
@@ -141,7 +150,7 @@ public class UniversalImporter {
         worker.execute();
     }
 
-    private void processRequest(ApiRequest req, String destination, int delayMs) throws Exception {
+    private void processRequest(ApiRequest req, String destination, int delayMs, LogCallback logCallback) throws Exception {
         // FIX: Track existing variable keys to prevent leakage across requests
         Set<String> preKeys = new HashSet<>();
         try {
@@ -165,6 +174,11 @@ public class UniversalImporter {
         }
 
         byte[] rawRequest = requestBuilder.buildRequest(req);
+        if (debugRawRequest) {
+            String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
+            logCallback.log(debug);
+            if (api != null) api.logging().logToOutput(debug);
+        }
         String resolvedUrl = resolver.resolve(req.url);
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 

@@ -226,9 +226,9 @@ public class RequestBuilder {
                     List<String> params = new ArrayList<>();
                     for (ApiRequest.Body.FormField param : body.urlencoded) {
                         if (param.key != null) {
-                            String key = URLEncoder.encode(resolver.resolve(param.key), "UTF-8");
+                            String key = URLEncoder.encode(resolver.resolve(param.key), StandardCharsets.UTF_8);
                             String value = param.value != null ?
-                                    URLEncoder.encode(resolver.resolve(param.value), "UTF-8") : "";
+                                    URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
                             params.add(key + "=" + value);
                         }
                     }
@@ -330,8 +330,34 @@ public class RequestBuilder {
     }
 
     /**
+     * Detects whether the current request targets an OAuth2 token endpoint.
+     * Primary: resolved URL matches resolved oauth2_token_url.
+     * Fallback: auth.type == oauth2 AND URL path contains /token.
+     */
+    private boolean isOAuth2TokenRequest(String method, String resolvedUrl, Map<String, String> vars, ApiRequest request) {
+        if (!"POST".equalsIgnoreCase(method)) return false;
+
+        String tokenUrl = vars != null ? vars.get("oauth2_token_url") : null;
+        if (tokenUrl != null && !tokenUrl.isBlank()) {
+            String resolvedTokenUrl = resolver.resolve(tokenUrl);
+            String compareTokenUrl = stripFragment(resolvedTokenUrl).trim();
+            String compareResolvedUrl = stripFragment(resolvedUrl).trim();
+            return compareResolvedUrl.equals(compareTokenUrl);
+        }
+
+        // Secondary fallback: auth.type == oauth2 and URL path contains /token
+        if (request != null && request.auth != null && "oauth2".equalsIgnoreCase(request.auth.type)) {
+            String path = HttpUtils.extractPathFromUrl(resolvedUrl);
+            return path != null && path.toLowerCase().contains("/token");
+        }
+        return false;
+    }
+
+    /**
      * Auto-builds an application/x-www-form-urlencoded OAuth2 token request body
-     * when the request URL matches oauth2_token_url and the body is empty.
+     * when the request URL matches oauth2_token_url.
+     * In strict mode (default), always overrides the imported body with a canonical
+     * form body built from oauth2_* variables. In lenient mode, only builds when body is empty.
      * Supports client_credentials, password, refresh_token, and authorization_code grants.
      * Returns null when no auto-build is needed.
      */
@@ -339,20 +365,22 @@ public class RequestBuilder {
         Map<String, String> vars = resolver.mutableVariables();
         if (vars == null) return null;
 
-        String tokenUrl = vars.get("oauth2_token_url");
-        if (tokenUrl == null || tokenUrl.isBlank()) return null;
+        boolean isTokenReq = isOAuth2TokenRequest(method, resolvedUrl, vars, request);
+        if (!isTokenReq) return null;
 
-        String resolvedTokenUrl = resolver.resolve(tokenUrl);
-        // Strip fragments for comparison consistency
-        resolvedTokenUrl = stripFragment(resolvedTokenUrl);
-        String compareUrl = stripFragment(resolvedUrl);
-        if (!"POST".equals(method) || !compareUrl.trim().equals(resolvedTokenUrl.trim())) {
-            return null;
+        boolean forceUrlEncoded = !"false".equalsIgnoreCase(vars.getOrDefault("oauth2_token_force_urlencoded", "true"));
+        boolean allowMultipart = "true".equalsIgnoreCase(vars.getOrDefault("oauth2_token_allow_multipart", "false"));
+
+        boolean shouldBuildBody;
+        if (forceUrlEncoded && !allowMultipart) {
+            // Strict mode: always override with canonical form body, ignoring imported body
+            shouldBuildBody = true;
+        } else {
+            // Lenient mode: only build when imported body is empty
+            shouldBuildBody = isBodyEmpty(request.body);
         }
 
-        if (!isBodyEmpty(request.body)) {
-            return null;
-        }
+        if (!shouldBuildBody) return null;
 
         // Read OAuth2 variables
         String grant = vars.getOrDefault("oauth2_grant", "client_credentials");
