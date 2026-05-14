@@ -252,16 +252,42 @@ public class OAuth2Panel extends JPanel {
         OAuth2Config config = buildConfig();
         if (config.clientId != null && !config.clientId.isEmpty()) {
             vars.put("oauth2_client_id", config.clientId);
-            vars.put("oauth2_client_secret", config.clientSecret);
-            vars.put("oauth2_token_url", config.tokenUrl);
-            vars.put("oauth2_scope", config.scope);
-            vars.put("oauth2_grant", config.grantType.name().toLowerCase().replace("_", "-"));
+            if (config.clientSecret != null) vars.put("oauth2_client_secret", config.clientSecret);
+            if (config.tokenUrl != null) vars.put("oauth2_token_url", config.tokenUrl);
+            if (config.scope != null) vars.put("oauth2_scope", config.scope);
+            // Normalize grant type to underscore style (client_credentials, authorization_code, etc.)
+            vars.put("oauth2_grant", config.grantType.name().toLowerCase().replace("-", "_"));
+
+            // Expanded field export
+            if (config.username != null && !config.username.isEmpty()) {
+                vars.put("oauth2_username", config.username);
+            }
+            if (config.password != null && !config.password.isEmpty()) {
+                vars.put("oauth2_password", config.password);
+            }
+            if (config.authUrl != null && !config.authUrl.isEmpty()) {
+                vars.put("oauth2_auth_url", config.authUrl);
+            }
+            if (config.redirectUri != null && !config.redirectUri.isEmpty()) {
+                vars.put("oauth2_redirect_uri", config.redirectUri);
+            }
+            if (config.refreshToken != null && !config.refreshToken.isEmpty()) {
+                vars.put("oauth2_refresh_token", config.refreshToken);
+            }
             // Inject current token if available
             String key = TokenStore.makeKey(config);
             TokenStore.TokenEntry entry = TokenStore.get(key);
-            if (entry != null && entry.accessToken != null) {
-                vars.put("oauth2_access_token", entry.accessToken);
+            if (entry != null) {
+                if (entry.accessToken != null) {
+                    vars.put("oauth2_access_token", entry.accessToken);
+                }
+                if (entry.refreshToken != null) {
+                    vars.put("oauth2_refresh_token", entry.refreshToken);
+                }
             }
+            vars.put("oauth2_use_pkce", String.valueOf(config.usePkce));
+            // Default client auth mode; extensions can override via vars tab
+            vars.putIfAbsent("oauth2_client_auth", "body");
         }
         return vars;
     }

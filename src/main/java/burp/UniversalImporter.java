@@ -156,6 +156,14 @@ public class UniversalImporter {
         // Add request-level variables
         resolver.addRequestVariables(req);
 
+        // Normalize OAuth2 auth metadata into canonical runtime vars
+        if (req.hasAuth()) {
+            Map<String, String> authVars = OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
+            if (!authVars.isEmpty()) {
+                resolver.addAll(authVars);
+            }
+        }
+
         byte[] rawRequest = requestBuilder.buildRequest(req);
         String resolvedUrl = resolver.resolve(req.url);
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
