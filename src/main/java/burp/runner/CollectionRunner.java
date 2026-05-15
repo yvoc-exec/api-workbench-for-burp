@@ -79,8 +79,19 @@ public class CollectionRunner {
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
 
+    /** Legacy single-collection runner (kept for compatibility). */
     public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
                               Map<String, String> initialVars) {
+        if (collection != null) {
+            collection.runtimeVars.putAll(initialVars);
+        }
+        runCollections(Collections.singletonList(collection), selectedRequests);
+    }
+
+    /**
+     * Multi-collection runner with per-collection scoped variable resolution.
+     */
+    public void runCollections(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
         if (running) return;
         if (selectedRequests == null || selectedRequests.isEmpty()) {
             fireOnError("No requests selected for runner");
@@ -91,11 +102,13 @@ public class CollectionRunner {
         results.clear();
         extractedVars.clear();
 
-        // Seed resolver with environment + collection + initial vars
-        resolver.clear();
-        resolver.addEnvironmentVariables(collection);
-        resolver.addCollectionVariables(collection);
-        resolver.addAll(initialVars);
+        // Build collection lookup map
+        Map<String, ApiCollection> colMap = new HashMap<>();
+        if (sourceCollections != null) {
+            for (ApiCollection c : sourceCollections) {
+                if (c != null && c.name != null) colMap.put(c.name, c);
+            }
+        }
 
         // Sort by sequence order if available
         List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
@@ -104,7 +117,7 @@ public class CollectionRunner {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.submit(() -> {
             try {
-                fireOnStart(collection.name, ordered.size());
+                fireOnStart("Runner", ordered.size());
 
                 for (int i = 0; i < ordered.size() && !cancelled; i++) {
                     ApiRequest req = ordered.get(i);
@@ -113,9 +126,20 @@ public class CollectionRunner {
                         continue;
                     }
 
+                    ApiCollection col = colMap.getOrDefault(req.sourceCollection, null);
+
+                    // Seed resolver with collection-scoped layers
+                    resolver.clear();
+                    if (col != null) {
+                        resolver.addEnvironmentVariables(col);
+                        resolver.addCollectionVariables(col);
+                        if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
+                        if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
+                    }
+
                     // Apply request-level variables
                     resolver.addRequestVariables(req);
-                    // Apply any previously extracted vars
+                    // Apply any previously extracted vars (highest precedence in runner)
                     resolver.addAll(extractedVars);
 
                     // Execute pre-request scripts

@@ -62,6 +62,7 @@ public class UniversalImporter {
         return debugRawRequest;
     }
 
+    /** Legacy single-collection import (kept for compatibility). */
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
                                File environmentFile, List<String> destinations, int delayMs,
                                LogCallback logCallback, ResultCallback resultCallback) {
@@ -69,62 +70,54 @@ public class UniversalImporter {
                        Collections.emptyMap(), logCallback, resultCallback);
     }
 
+    /** Legacy single-collection import (kept for compatibility). */
     public void importRequests(ApiCollection collection, List<ApiRequest> selectedRequests,
                                File environmentFile, List<String> destinations, int delayMs,
                                Map<String, String> initialVars,
                                LogCallback logCallback, ResultCallback resultCallback) {
+        // Bind env file into collection runtime vars for scoped behavior
+        if (environmentFile != null) {
+            loadEnvFileIntoMap(environmentFile, collection.runtimeVars);
+        }
+        collection.runtimeVars.putAll(initialVars);
+        List<QueuedRequest> queue = new ArrayList<>();
+        for (ApiRequest req : selectedRequests) {
+            queue.add(new QueuedRequest(collection, req));
+        }
+        importRequestsSequential(queue, destinations, delayMs, logCallback, resultCallback);
+    }
 
+    /**
+     * Deterministic sequential import across multiple collections.
+     * Each request resolves against its own source collection context.
+     */
+    public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
+                                          int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected ImportResult doInBackground() throws Exception {
                 ImportResult result = new ImportResult();
-                result.collectionName = collection.name;
-                result.totalRequests = selectedRequests.size();
+                result.totalRequests = queue.size();
 
                 try {
-                    // Start fresh for each import batch
-                    resolver.clear();
-
-                    // Base layer: collection environment + collection variables (lowest precedence)
-                    resolver.addEnvironmentVariables(collection);
-                    resolver.addCollectionVariables(collection);
-
-                    // User-supplied layer: environment file + runtime vars (overrides collection)
-                    if (environmentFile != null) {
-                        publish("Loading environment...");
-                        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
-                            com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
-                            if (obj.has("values") && obj.get("values").isJsonArray()) {
-                                for (com.google.gson.JsonElement v : obj.getAsJsonArray("values")) {
-                                    com.google.gson.JsonObject var = v.getAsJsonObject();
-                                    if (var.has("key") && var.has("value")) {
-                                        resolver.addCustomVariable(var.get("key").getAsString(), var.get("value").getAsString());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    resolver.addAll(initialVars);
-
-                    publish("Processing " + selectedRequests.size() + " requests...");
-
-                    for (int i = 0; i < selectedRequests.size(); i++) {
+                    publish("Processing " + queue.size() + " requests sequentially...");
+                    for (int i = 0; i < queue.size(); i++) {
                         if (isCancelled()) break;
-
-                        ApiRequest req = selectedRequests.get(i);
+                        QueuedRequest qr = queue.get(i);
                         try {
+                            seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(req, destination, delayMs, logCallback);
+                                processRequest(qr.request, destination, delayMs, logCallback);
                             }
                             result.successCount++;
-                            publish("✓ " + req.name);
+                            publish("✓ " + qr.request.name);
                         } catch (Exception e) {
                             result.failedRequestDetails.add(new ImportResult.FailedRequestInfo(
-                                    req.name, req.path, e.getMessage(), req));
-                            result.failedRequests.add(req.name + ": " + e.getMessage());
-                            publish("✗ " + req.name + " - " + e.getMessage());
+                                    qr.request.name, qr.request.path, e.getMessage(), qr.request));
+                            result.failedRequests.add(qr.request.name + ": " + e.getMessage());
+                            publish("✗ " + qr.request.name + " - " + e.getMessage());
                         }
-                        setProgress((i + 1) * 100 / selectedRequests.size());
+                        setProgress((i + 1) * 100 / queue.size());
                     }
                 } catch (Exception e) {
                     result.error = e.getMessage();
@@ -149,6 +142,65 @@ public class UniversalImporter {
             }
         };
         worker.execute();
+    }
+
+    /**
+     * Direct-send a single request from the Workbench editor, using its
+     * source collection context for variable resolution.
+     */
+    public burp.api.montoya.http.message.HttpRequestResponse sendSingleRequest(
+            ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
+        resolver.clear();
+        seedResolverForCollection(colContext);
+        resolver.addRequestVariables(req);
+        if (req.hasAuth()) {
+            Map<String, String> authVars = OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
+            if (!authVars.isEmpty()) resolver.addAll(authVars);
+        }
+        byte[] rawRequest = requestBuilder.buildRequest(req);
+        String resolvedUrl = resolver.resolve(req.url);
+        HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
+        burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
+                parsed.host, parsed.port, parsed.useHttps);
+        HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+        RequestOptions options = RequestOptions.requestOptions()
+                .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
+        return api.http().sendRequest(httpRequest, options);
+    }
+
+    private void seedResolverForCollection(ApiCollection collection) {
+        if (collection == null) return;
+        // Precedence (lowest -> highest): environment -> variables -> runtimeVars -> runtimeOAuth2
+        resolver.addEnvironmentVariables(collection);
+        resolver.addCollectionVariables(collection);
+        if (collection.runtimeVars != null) resolver.addAll(collection.runtimeVars);
+        if (collection.runtimeOAuth2 != null) resolver.addAll(collection.runtimeOAuth2);
+    }
+
+    public void loadEnvFileIntoMap(File environmentFile, Map<String, String> target) {
+        if (environmentFile == null || target == null) return;
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
+            com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
+            if (obj.has("values") && obj.get("values").isJsonArray()) {
+                for (com.google.gson.JsonElement v : obj.getAsJsonArray("values")) {
+                    com.google.gson.JsonObject var = v.getAsJsonObject();
+                    if (var.has("key") && var.has("value")) {
+                        target.put(var.get("key").getAsString(), var.get("value").getAsString());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // silently ignore malformed env file at binding time; UI should warn
+        }
+    }
+
+    public static class QueuedRequest {
+        public final ApiCollection collection;
+        public final ApiRequest request;
+        public QueuedRequest(ApiCollection collection, ApiRequest request) {
+            this.collection = collection;
+            this.request = request;
+        }
     }
 
     private void processRequest(ApiRequest req, String destination, int delayMs, LogCallback logCallback) throws Exception {

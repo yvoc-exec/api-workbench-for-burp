@@ -1,0 +1,355 @@
+package burp.ui;
+
+import burp.models.ApiRequest;
+
+import javax.swing.*;
+import javax.swing.border.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.util.*;
+import java.util.List;
+
+/**
+ * Postman-like request editor panel for the Workbench.
+ */
+public class RequestEditorPanel extends JPanel {
+    private JComboBox<String> methodBox;
+    private JTextField urlField;
+    private JTabbedPane tabs;
+
+    // Params
+    private DefaultTableModel paramsModel;
+    private JTable paramsTable;
+
+    // Auth
+    private JComboBox<String> authTypeBox;
+    private JPanel authFieldsPanel;
+    private Map<String, JTextField> authFields = new HashMap<>();
+
+    // Headers
+    private DefaultTableModel headersModel;
+    private JTable headersTable;
+
+    // Body
+    private JComboBox<String> bodyModeBox;
+    private JTextArea bodyRawArea;
+    private JTable bodyFormTable;
+    private DefaultTableModel bodyFormModel;
+
+    // Scripts
+    private JTextArea preScriptArea;
+    private JTextArea postScriptArea;
+
+    private ApiRequest currentRequest;
+
+    public RequestEditorPanel() {
+        setLayout(new BorderLayout(5, 5));
+        setBorder(BorderFactory.createTitledBorder("Request Editor"));
+        add(createTopBar(), BorderLayout.NORTH);
+        add(createTabs(), BorderLayout.CENTER);
+    }
+
+    private JPanel createTopBar() {
+        JPanel panel = new JPanel(new BorderLayout(5, 0));
+        methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
+        urlField = new JTextField();
+        urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        panel.add(methodBox, BorderLayout.WEST);
+        panel.add(urlField, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private JTabbedPane createTabs() {
+        tabs = new JTabbedPane();
+        tabs.addTab("Params", createParamsPanel());
+        tabs.addTab("Auth", createAuthPanel());
+        tabs.addTab("Headers", createHeadersPanel());
+        tabs.addTab("Body", createBodyPanel());
+        tabs.addTab("Scripts", createScriptsPanel());
+        return tabs;
+    }
+
+    private JPanel createParamsPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        paramsModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        paramsTable = new JTable(paramsModel);
+        panel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton addBtn = new JButton("+");
+        addBtn.addActionListener(e -> paramsModel.addRow(new Object[]{"", ""}));
+        JButton delBtn = new JButton("-");
+        delBtn.addActionListener(e -> {
+            int row = paramsTable.getSelectedRow();
+            if (row >= 0) paramsModel.removeRow(row);
+        });
+        btnPanel.add(addBtn);
+        btnPanel.add(delBtn);
+        panel.add(btnPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel createAuthPanel() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        authTypeBox = new JComboBox<>(new String[]{"none", "bearer", "basic", "apikey", "oauth2"});
+        authTypeBox.addActionListener(e -> rebuildAuthFields());
+        panel.add(authTypeBox, BorderLayout.NORTH);
+        authFieldsPanel = new JPanel(new GridLayout(0, 2, 5, 5));
+        panel.add(authFieldsPanel, BorderLayout.CENTER);
+        rebuildAuthFields();
+        return panel;
+    }
+
+    private void rebuildAuthFields() {
+        authFieldsPanel.removeAll();
+        authFields.clear();
+        String type = (String) authTypeBox.getSelectedItem();
+        if ("bearer".equals(type)) {
+            addAuthField("token", "Token");
+        } else if ("basic".equals(type)) {
+            addAuthField("username", "Username");
+            addAuthField("password", "Password");
+        } else if ("apikey".equals(type)) {
+            addAuthField("key", "Key Name");
+            addAuthField("value", "Key Value");
+            addAuthField("in", "In (header/query/cookie)");
+        } else if ("oauth2".equals(type)) {
+            addAuthField("grantType", "Grant Type");
+            addAuthField("accessTokenUrl", "Token URL");
+            addAuthField("clientId", "Client ID");
+            addAuthField("clientSecret", "Client Secret");
+            addAuthField("scope", "Scope");
+            addAuthField("accessToken", "Access Token");
+        }
+        authFieldsPanel.revalidate();
+        authFieldsPanel.repaint();
+    }
+
+    private void addAuthField(String key, String label) {
+        authFieldsPanel.add(new JLabel(label));
+        JTextField field = new JTextField();
+        authFields.put(key, field);
+        authFieldsPanel.add(field);
+    }
+
+    private JPanel createHeadersPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        headersModel = new DefaultTableModel(new Object[]{"Key", "Value", "Enabled"}, 0) {
+            @Override public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == 2 ? Boolean.class : String.class;
+            }
+        };
+        headersTable = new JTable(headersModel);
+        panel.add(new JScrollPane(headersTable), BorderLayout.CENTER);
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton addBtn = new JButton("+");
+        addBtn.addActionListener(e -> headersModel.addRow(new Object[]{"", "", true}));
+        JButton delBtn = new JButton("-");
+        delBtn.addActionListener(e -> {
+            int row = headersTable.getSelectedRow();
+            if (row >= 0) headersModel.removeRow(row);
+        });
+        btnPanel.add(addBtn);
+        btnPanel.add(delBtn);
+        panel.add(btnPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel createBodyPanel() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        bodyModeBox = new JComboBox<>(new String[]{"none", "raw", "urlencoded", "formdata"});
+        bodyModeBox.addActionListener(e -> updateBodyMode());
+        panel.add(bodyModeBox, BorderLayout.NORTH);
+
+        JPanel bodyContent = new JPanel(new CardLayout());
+        // Raw
+        bodyRawArea = new JTextArea(8, 40);
+        bodyRawArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        bodyContent.add(new JScrollPane(bodyRawArea), "raw");
+        // Form
+        bodyFormModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        bodyFormTable = new JTable(bodyFormModel);
+        JPanel formPanel = new JPanel(new BorderLayout());
+        formPanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
+        JPanel formBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton addFormBtn = new JButton("+");
+        addFormBtn.addActionListener(e -> bodyFormModel.addRow(new Object[]{"", ""}));
+        JButton delFormBtn = new JButton("-");
+        delFormBtn.addActionListener(e -> {
+            int row = bodyFormTable.getSelectedRow();
+            if (row >= 0) bodyFormModel.removeRow(row);
+        });
+        formBtnPanel.add(addFormBtn);
+        formBtnPanel.add(delFormBtn);
+        formPanel.add(formBtnPanel, BorderLayout.SOUTH);
+        bodyContent.add(formPanel, "form");
+        // Empty placeholder for none
+        bodyContent.add(new JLabel("No body"), "none");
+        panel.add(bodyContent, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private void updateBodyMode() {
+        String mode = (String) bodyModeBox.getSelectedItem();
+        CardLayout cl = (CardLayout) ((JPanel) bodyModeBox.getParent().getComponent(1)).getLayout();
+        if ("raw".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "raw");
+        else if ("none".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "none");
+        else cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "form");
+    }
+
+    private JPanel createScriptsPanel() {
+        JPanel panel = new JPanel(new GridLayout(2, 1, 5, 5));
+        preScriptArea = new JTextArea(5, 40);
+        preScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        preScriptArea.setBorder(BorderFactory.createTitledBorder("Pre-request Script"));
+        panel.add(new JScrollPane(preScriptArea));
+        postScriptArea = new JTextArea(5, 40);
+        postScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        postScriptArea.setBorder(BorderFactory.createTitledBorder("Post-response Script"));
+        panel.add(new JScrollPane(postScriptArea));
+        return panel;
+    }
+
+    public void loadRequest(ApiRequest req) {
+        this.currentRequest = req;
+        if (req == null) {
+            methodBox.setSelectedItem("GET");
+            urlField.setText("");
+            clearAll();
+            return;
+        }
+        methodBox.setSelectedItem(req.method != null ? req.method.toUpperCase() : "GET");
+        urlField.setText(req.url != null ? req.url : "");
+
+        // Params from URL
+        paramsModel.setRowCount(0);
+        // Auth
+        if (req.auth != null && req.auth.type != null) {
+            authTypeBox.setSelectedItem(req.auth.type.toLowerCase());
+            rebuildAuthFields();
+            for (Map.Entry<String, String> e : req.auth.properties.entrySet()) {
+                JTextField f = authFields.get(e.getKey());
+                if (f != null) f.setText(e.getValue());
+            }
+        } else {
+            authTypeBox.setSelectedItem("none");
+            rebuildAuthFields();
+        }
+        // Headers
+        headersModel.setRowCount(0);
+        if (req.headers != null) {
+            for (ApiRequest.Header h : req.headers) {
+                headersModel.addRow(new Object[]{h.key, h.value, !h.disabled});
+            }
+        }
+        // Body
+        if (req.body != null) {
+            bodyModeBox.setSelectedItem(req.body.mode != null ? req.body.mode : "none");
+            updateBodyMode();
+            if ("raw".equals(req.body.mode) && req.body.raw != null) {
+                bodyRawArea.setText(req.body.raw);
+            }
+            bodyFormModel.setRowCount(0);
+            if (req.body.urlencoded != null) {
+                for (ApiRequest.Body.FormField f : req.body.urlencoded) {
+                    bodyFormModel.addRow(new Object[]{f.key, f.value});
+                }
+            }
+            if (req.body.formdata != null) {
+                for (ApiRequest.Body.FormField f : req.body.formdata) {
+                    bodyFormModel.addRow(new Object[]{f.key, f.value});
+                }
+            }
+        } else {
+            bodyModeBox.setSelectedItem("none");
+            updateBodyMode();
+        }
+        // Scripts
+        preScriptArea.setText("");
+        postScriptArea.setText("");
+        if (req.preRequestScripts != null) {
+            for (ApiRequest.Script s : req.preRequestScripts) {
+                preScriptArea.append(s.exec != null ? s.exec : "");
+            }
+        }
+        if (req.postResponseScripts != null) {
+            for (ApiRequest.Script s : req.postResponseScripts) {
+                postScriptArea.append(s.exec != null ? s.exec : "");
+            }
+        }
+    }
+
+    public ApiRequest buildRequestFromUI() {
+        if (currentRequest == null) return null;
+        ApiRequest req = new ApiRequest();
+        req.name = currentRequest.name;
+        req.path = currentRequest.path;
+        req.sourceCollection = currentRequest.sourceCollection;
+        req.id = currentRequest.id;
+        req.sequenceOrder = currentRequest.sequenceOrder;
+        req.method = (String) methodBox.getSelectedItem();
+        req.url = urlField.getText();
+
+        // Auth
+        String authType = (String) authTypeBox.getSelectedItem();
+        if (!"none".equals(authType)) {
+            req.auth = new ApiRequest.Auth();
+            req.auth.type = authType;
+            for (Map.Entry<String, JTextField> e : authFields.entrySet()) {
+                String val = e.getValue().getText().trim();
+                if (!val.isEmpty()) req.auth.properties.put(e.getKey(), val);
+            }
+        }
+        // Headers
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            String value = (String) headersModel.getValueAt(i, 1);
+            Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
+            if (key != null && !key.trim().isEmpty()) {
+                req.headers.add(new ApiRequest.Header(key, value != null ? value : "", enabled == null || !enabled));
+            }
+        }
+        // Body
+        String bodyMode = (String) bodyModeBox.getSelectedItem();
+        if (!"none".equals(bodyMode)) {
+            req.body = new ApiRequest.Body();
+            req.body.mode = bodyMode;
+            if ("raw".equals(bodyMode)) {
+                req.body.raw = bodyRawArea.getText();
+            } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
+                List<ApiRequest.Body.FormField> fields = new ArrayList<>();
+                for (int i = 0; i < bodyFormModel.getRowCount(); i++) {
+                    String k = (String) bodyFormModel.getValueAt(i, 0);
+                    String v = (String) bodyFormModel.getValueAt(i, 1);
+                    if (k != null && !k.trim().isEmpty()) {
+                        fields.add(new ApiRequest.Body.FormField(k, v != null ? v : ""));
+                    }
+                }
+                if ("urlencoded".equals(bodyMode)) req.body.urlencoded = fields;
+                else req.body.formdata = fields;
+            }
+        }
+        // Scripts
+        String preScript = preScriptArea.getText().trim();
+        if (!preScript.isEmpty()) req.preRequestScripts.add(new ApiRequest.Script("js", preScript));
+        String postScript = postScriptArea.getText().trim();
+        if (!postScript.isEmpty()) req.postResponseScripts.add(new ApiRequest.Script("js", postScript));
+
+        return req;
+    }
+
+    public JTextField getUrlField() { return urlField; }
+    public JComboBox<String> getMethodBox() { return methodBox; }
+
+    private void clearAll() {
+        paramsModel.setRowCount(0);
+        authTypeBox.setSelectedItem("none");
+        rebuildAuthFields();
+        headersModel.setRowCount(0);
+        bodyModeBox.setSelectedItem("none");
+        updateBodyMode();
+        bodyRawArea.setText("");
+        bodyFormModel.setRowCount(0);
+        preScriptArea.setText("");
+        postScriptArea.setText("");
+    }
+}
