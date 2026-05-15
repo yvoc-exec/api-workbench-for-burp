@@ -66,16 +66,18 @@ public class AuthorizationCodeHandler {
         String code = codeFuture.get(5, TimeUnit.MINUTES);
 
         // Exchange code for token
-        String body = "grant_type=authorization_code" +
-                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8);
-        if (!ClientCredentialsHandler.isBasicAuth(config)) {
-            body += "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8);
+        ClientCredentialsHandler.validateBodySecretIfNeeded(config);
+        StringBuilder body = new StringBuilder();
+        ClientCredentialsHandler.appendFormParam(body, "grant_type", "authorization_code", true);
+        ClientCredentialsHandler.appendFormParam(body, "client_id", config.clientId, false);
+        if (ClientCredentialsHandler.isBodyClientSecret(config)) {
+            ClientCredentialsHandler.appendFormParam(body, "client_secret", config.clientSecret, false);
         }
-        body += "&code=" + URLEncoder.encode(code, StandardCharsets.UTF_8) +
-                "&redirect_uri=" + URLEncoder.encode(config.redirectUri, StandardCharsets.UTF_8) +
-                "&code_verifier=" + URLEncoder.encode(codeVerifier, StandardCharsets.UTF_8);
+        ClientCredentialsHandler.appendFormParam(body, "code", code, false);
+        ClientCredentialsHandler.appendFormParam(body, "redirect_uri", config.redirectUri, false);
+        ClientCredentialsHandler.appendFormParam(body, "code_verifier", codeVerifier, false);
 
-        return ClientCredentialsHandler.executeTokenRequest(config, body, api);
+        return ClientCredentialsHandler.executeTokenRequest(config, body.toString(), api);
     }
 
     private CompletableFuture<String> startCallbackListener(String expectedState) {
