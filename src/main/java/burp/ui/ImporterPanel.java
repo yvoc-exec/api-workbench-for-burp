@@ -565,7 +565,7 @@ public class ImporterPanel {
             Object child = parent.getChildAt(i);
             if (child instanceof CollectionTreeNode) {
                 CollectionTreeNode ctn = (CollectionTreeNode) child;
-                if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && segment.equals(ctn.getUserObject())) {
+                if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && cumulativePath.equals(ctn.folderPath)) {
                     return ctn;
                 }
             }
@@ -741,47 +741,53 @@ public class ImporterPanel {
 
     private void updateScopeControlState() {
         // Variables tab
-        String varsSelected = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
-        boolean varsHasTarget = varsSelected != null;
-        envVarsArea.setEnabled(varsHasTarget);
-        envVarsArea.setEditable(varsHasTarget);
-        if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
-        if (varsHintLabel != null) {
-            if (varsHasTarget) {
-                varsHintLabel.setText("Editing scoped variables for: " + varsSelected);
-                varsHintLabel.setForeground(Color.BLACK);
-            } else {
-                varsHintLabel.setText("Select a collection to edit scoped variables.");
-                varsHintLabel.setForeground(Color.GRAY);
+        if (varsCollectionCombo != null && envVarsArea != null) {
+            String varsSelected = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
+            boolean varsHasTarget = varsSelected != null;
+            envVarsArea.setEnabled(varsHasTarget);
+            envVarsArea.setEditable(varsHasTarget);
+            if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
+            if (varsHintLabel != null) {
+                if (varsHasTarget) {
+                    varsHintLabel.setText("Editing scoped variables for: " + varsSelected);
+                    varsHintLabel.setForeground(Color.BLACK);
+                } else {
+                    varsHintLabel.setText("Select a collection to edit scoped variables.");
+                    varsHintLabel.setForeground(Color.GRAY);
+                }
             }
         }
 
         // OAuth2 tab
-        String oauth2Selected = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
-        boolean oauth2HasTarget = oauth2Selected != null;
-        oauth2Panel.setEditable(oauth2HasTarget);
-        if (bindOAuth2Btn != null) bindOAuth2Btn.setEnabled(oauth2HasTarget);
-        if (oauth2HintLabel != null) {
-            if (oauth2HasTarget) {
-                oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Selected);
-                oauth2HintLabel.setForeground(Color.BLACK);
-            } else {
-                oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
-                oauth2HintLabel.setForeground(Color.GRAY);
+        if (oauth2CollectionCombo != null && oauth2Panel != null) {
+            String oauth2Selected = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+            boolean oauth2HasTarget = oauth2Selected != null;
+            oauth2Panel.setEditable(oauth2HasTarget);
+            if (bindOAuth2Btn != null) bindOAuth2Btn.setEnabled(oauth2HasTarget);
+            if (oauth2HintLabel != null) {
+                if (oauth2HasTarget) {
+                    oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Selected);
+                    oauth2HintLabel.setForeground(Color.BLACK);
+                } else {
+                    oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
+                    oauth2HintLabel.setForeground(Color.GRAY);
+                }
             }
         }
 
         // Env apply selected requires a collection selected in the tree
-        TreePath path = requestTree.getSelectionPath();
-        boolean treeHasCollection = false;
-        if (path != null) {
-            Object node = path.getLastPathComponent();
-            if (node instanceof CollectionTreeNode) {
-                ApiCollection col = findCollectionForNode((CollectionTreeNode) node);
-                treeHasCollection = col != null;
+        if (requestTree != null && envApplySelectedBtn != null) {
+            TreePath path = requestTree.getSelectionPath();
+            boolean treeHasCollection = false;
+            if (path != null) {
+                Object node = path.getLastPathComponent();
+                if (node instanceof CollectionTreeNode) {
+                    ApiCollection col = findCollectionForNode((CollectionTreeNode) node);
+                    treeHasCollection = col != null;
+                }
             }
+            envApplySelectedBtn.setEnabled(treeHasCollection && !loadedCollections.isEmpty());
         }
-        envApplySelectedBtn.setEnabled(treeHasCollection && !loadedCollections.isEmpty());
     }
 
     // ========================================================================
