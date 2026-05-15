@@ -1,6 +1,6 @@
 # Universal API Collection Importer & Runner for Burp Suite
 
-A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap — with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, **Nashorn JavaScript script execution**, and a **Workbench** for request editing and direct sending.
+A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap - with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, **Nashorn JavaScript script execution**, and a **Workbench** for request editing and direct sending.
 
 ---
 
@@ -9,24 +9,24 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Multi-Format Import
 | Format | Extensions | Auto-Detect |
 |--------|-----------|-------------|
-| Postman | `.json` | Yes — v2.0 / v2.1 |
+| Postman | `.json` | Yes - v2.0 / v2.1 |
 | Bruno | `.bru` (folder or single file) | Yes |
 | OpenAPI / Swagger | `.json`, `.yaml`, `.yml` | Yes |
 | Insomnia v4 | `.json` | Yes |
 | HAR | `.har` | Yes |
 
 ### Workbench
-- **Collection tree** — checkbox tree with Collection > Folder > Request hierarchy
-- **Env binding** — bind environment files to specific collections (or all) explicitly
-- **Request editor** — edit method, URL, headers, body, auth, and scripts inline
-- **Direct send** — execute edited request immediately and inspect response (Pretty/Raw/Hex)
-- **Import destinations** — Repeater, Sitemap, Intruder
+- **Collection tree** - checkbox tree with Collection > Folder > Request hierarchy
+- **Env binding** - bind environment files to specific collections (or all) explicitly
+- **Request editor** - edit method, URL, headers, body, auth, and scripts inline
+- **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex)
+- **Import destinations** - Repeater, Sitemap, Intruder
 
 ### Import Destinations
-- **Repeater** — creates tabs for manual testing (no live requests)
-- **Sitemap** — sends live requests, populates Target/Sitemap with real responses
-- **Intruder** — sends raw request to Intruder for payload position configuration
-- **Both** — Repeater tabs + live Sitemap entries
+- **Repeater** - creates tabs for manual testing (no live requests)
+- **Sitemap** - sends live requests, populates Target/Sitemap with real responses
+- **Intruder** - sends raw request to Intruder for payload position configuration
+- **Both** - Repeater tabs + live Sitemap entries
 
 ### Variable Resolution
 - Collection-level / global variables (source depends on format; see Playbook 4)
@@ -46,7 +46,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Results table with status, timing, size, assertion pass/fail
 - Auto-populates Sitemap with runner responses
 - Per-request OAuth2 auth scoping with automatic snapshot/restore to prevent cross-request contamination
-- **Execution model**: pre/post scripts and response extraction/assertions run only in the Collection Runner, not during Import → Repeater/Sitemap
+- **Execution model**: pre/post scripts and response extraction/assertions run only in the Collection Runner, not during Import -> Repeater/Sitemap
 
 ### JavaScript Script Engine (Nashorn)
 - Executes **pre-request** and **post-response** scripts using Nashorn
@@ -56,10 +56,10 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Variable extraction from JSON responses via script execution
 
 ### OAuth2 Token Management
-- **Client Credentials** — fully automated, no browser
-- **Password (ROPC)** — automated with username/password
-- **Authorization Code + PKCE** — opens browser, localhost callback listener
-- **Refresh Token** — auto-refresh before expiry
+- **Client Credentials** - fully automated, no browser
+- **Password (ROPC)** - automated with username/password
+- **Authorization Code + PKCE** - opens browser, localhost callback listener
+- **Refresh Token** - auto-refresh before expiry
 - Token storage in-memory only (never persisted to disk)
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
@@ -83,7 +83,7 @@ mvn clean package
 ```
 Load the fat JAR in Burp Suite:
 ```
-Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-dependencies.jar
+Extensions -> Add -> Select: target/universal-api-importer-2.0.0-jar-with-dependencies.jar
 ```
 
 ### Requirements
@@ -125,14 +125,16 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 3. Click **Send**.
 4. Inspect the response in Pretty, Raw, or Hex view.
 
-Post-response scripts can extract variables for downstream requests automatically. Use script syntax like:
-```javascript
-pm.environment.set("auth_token", jsonData.access_token);
-```
-or comment-based extraction:
-```javascript
-// extract: auth_token = $.data.token
-```
+> **Note:** Post-response scripts and variable extraction run only in the **Collection Runner**, not during direct Workbench Send.
+>
+> In the Collection Runner, use script syntax like:
+> ```javascript
+> pm.environment.set("auth_token", jsonData.access_token);
+> ```
+> or comment-based extraction:
+> ```javascript
+> // extract: auth_token = $.data.token
+> ```
 
 ### Playbook 4: Variables Tab Usage
 Open the **Variables** tab, select a target collection from the dropdown, and enter variables in either format:
@@ -165,11 +167,11 @@ Precedence during runtime (highest to lowest):
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
 
 **Format-specific collection/global variable sources:**
-- **Postman** — `collection.variable` array (objects/arrays serialized to JSON string)
-- **Insomnia** — `environment` resources in export (`resources[].data` key-value map)
-- **Bruno** — `bruno.json` top-level `vars` / `variables` / `env` / `presets` objects
-- **OpenAPI** — `servers[].variables` default values (populated as `collection.environment`)
-- **HAR** — no collection variable model; request values only
+- **Postman** - `collection.variable` array (objects/arrays serialized to JSON string)
+- **Insomnia** - `environment` resources in export (`resources[].data` key-value map)
+- **Bruno** - `bruno.json` top-level `vars` / `variables` / `env` / `presets` objects
+- **OpenAPI** - `servers[].variables` default values (populated as `collection.environment`)
+- **HAR** - no collection variable model; request values only
 
 ### Playbook 5: OAuth2 Tab Workflow
 1. Switch to the **OAuth2** tab.
@@ -280,12 +282,12 @@ src/main/java/burp/
 
 ## License
 
-MIT License — based on [API Workbench for Burp](https://github.com/API Workbench for Burp).
+MIT License - based on [API Workbench for Burp](https://github.com/API Workbench for Burp).
 
 ---
 
 ## Author
 
-**yvoc-exec yvoc-exec** — Cybersecurity Professional, Philippines
+**yvoc-exec yvoc-exec** - Cybersecurity Professional, Philippines
 
 Original Postman-only extension by **Abdulrahman Oyekunle** (@API Workbench for Burp).
