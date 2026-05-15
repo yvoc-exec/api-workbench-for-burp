@@ -5,6 +5,8 @@ import java.util.regex.Pattern;
 
 /**
  * Formats a variable snapshot for debug logging, masking sensitive values.
+ * Supports optional source-layer annotations to show which precedence level
+ * provided each resolved key.
  */
 public class VariableDebugFormatter {
     private static final int MAX_KEYS = 200;
@@ -14,6 +16,10 @@ public class VariableDebugFormatter {
     );
 
     public static String format(Map<String, String> vars, String context) {
+        return format(vars, null, context);
+    }
+
+    public static String format(Map<String, String> vars, Map<String, String> keySources, String context) {
         if (vars == null || vars.isEmpty()) {
             return "=== Vars [" + context + "] === (empty)\n=== End Vars ===\n";
         }
@@ -28,7 +34,11 @@ public class VariableDebugFormatter {
             String key = entry.getKey();
             String value = entry.getValue();
             String display = maskIfSensitive(key, value);
-            sb.append(key).append("=").append(display).append("\n");
+            sb.append(key).append("=").append(display);
+            if (keySources != null && keySources.containsKey(key)) {
+                sb.append("  [").append(keySources.get(key)).append("]");
+            }
+            sb.append("\n");
             count++;
         }
         sb.append("=== End Vars ===\n");

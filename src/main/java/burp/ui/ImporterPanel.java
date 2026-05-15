@@ -62,6 +62,13 @@ public class ImporterPanel {
     // Variables tab
     private JTextArea envVarsArea;
     private JComboBox<String> varsCollectionCombo;
+    private JButton bindVarsBtn;
+    private JLabel varsHintLabel;
+
+    // OAuth2 tab
+    private JComboBox<String> oauth2CollectionCombo;
+    private JButton bindOAuth2Btn;
+    private JLabel oauth2HintLabel;
 
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
@@ -83,7 +90,7 @@ public class ImporterPanel {
         tabbedPane = new JTabbedPane();
         tabbedPane.addTab("Workbench", createWorkbenchTab());
         tabbedPane.addTab("Variables", createVariablesTab());
-        tabbedPane.addTab("OAuth2", oauth2Panel);
+        tabbedPane.addTab("OAuth2", createOAuth2Tab());
         tabbedPane.addTab("Collection Runner", createRunnerTab());
 
         panel.add(tabbedPane, BorderLayout.CENTER);
@@ -144,6 +151,7 @@ public class ImporterPanel {
                     }
                 }
             }
+            updateScopeControlState();
         });
         JScrollPane treeScroll = new JScrollPane(requestTree);
         treeScroll.setBorder(BorderFactory.createTitledBorder("Request Tree"));
@@ -261,23 +269,125 @@ public class ImporterPanel {
 
         JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
 
+        // Hint label
+        varsHintLabel = new JLabel("Select a collection to edit scoped variables.");
+        varsHintLabel.setForeground(Color.GRAY);
+        bottomPanel.add(varsHintLabel, BorderLayout.CENTER);
+
         JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         varsCollectionCombo = new JComboBox<>();
         varsCollectionCombo.setPrototypeDisplayValue("Select collection...");
-        JButton bindBtn = new JButton("Bind to Collection");
-        bindBtn.addActionListener(e -> bindVarsToSelectedCollection());
+        varsCollectionCombo.addActionListener(e -> {
+            String selected = (String) varsCollectionCombo.getSelectedItem();
+            if (selected != null) {
+                ApiCollection col = findCollectionByName(selected);
+                if (col != null && col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
+                    StringBuilder sb = new StringBuilder();
+                    for (Map.Entry<String, String> entry : col.runtimeVars.entrySet()) {
+                        sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                    }
+                    envVarsArea.setText(sb.toString());
+                } else {
+                    envVarsArea.setText("");
+                }
+            } else {
+                envVarsArea.setText("");
+            }
+            updateScopeControlState();
+        });
+        bindVarsBtn = new JButton("Bind to Collection");
+        bindVarsBtn.addActionListener(e -> bindVarsToSelectedCollection());
+        JButton bindAllBtn = new JButton("Bind to All Collections");
+        bindAllBtn.addActionListener(e -> bindVarsToAllCollections());
         JButton parseBtn = new JButton("Parse Variables");
         parseBtn.addActionListener(e -> parseEnvVars());
         JButton clearBtn = new JButton("Clear");
         clearBtn.addActionListener(e -> envVarsArea.setText(""));
         bindPanel.add(new JLabel("Target:"));
         bindPanel.add(varsCollectionCombo);
-        bindPanel.add(bindBtn);
+        bindPanel.add(bindVarsBtn);
+        bindPanel.add(bindAllBtn);
         bindPanel.add(parseBtn);
         bindPanel.add(clearBtn);
         bottomPanel.add(bindPanel, BorderLayout.NORTH);
 
         panel.add(bottomPanel, BorderLayout.SOUTH);
+        updateScopeControlState();
+        return panel;
+    }
+
+    // ========================================================================
+    // OAuth2 Tab (wrapped with collection binding)
+    // ========================================================================
+    private JPanel createOAuth2Tab() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+
+        JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        oauth2CollectionCombo = new JComboBox<>();
+        oauth2CollectionCombo.setPrototypeDisplayValue("Select collection...");
+        oauth2HintLabel = new JLabel("Select a collection to bind OAuth2 settings.");
+        oauth2HintLabel.setForeground(Color.GRAY);
+        bindPanel.add(new JLabel("Target:"));
+        bindPanel.add(oauth2CollectionCombo);
+        bindOAuth2Btn = new JButton("Bind OAuth2 to Collection");
+        bindOAuth2Btn.addActionListener(e -> {
+            String colName = (String) oauth2CollectionCombo.getSelectedItem();
+            if (colName == null) {
+                appendImportLog("OAuth2: No collection selected for binding.");
+                return;
+            }
+            ApiCollection col = findCollectionByName(colName);
+            if (col == null) return;
+            Map<String, String> vars = oauth2Panel.getVariables();
+            col.runtimeOAuth2.putAll(vars);
+            appendImportLog("OAuth2 bound to \"" + colName + "\": " + vars.size() + " var(s).");
+        });
+        bindPanel.add(bindOAuth2Btn);
+        JButton bindAllBtn = new JButton("Bind OAuth2 to All");
+        bindAllBtn.addActionListener(e -> {
+            if (loadedCollections.isEmpty()) {
+                appendImportLog("OAuth2: No collections loaded.");
+                return;
+            }
+            int confirm = JOptionPane.showConfirmDialog(mainPanel,
+                "This will overwrite OAuth2 settings in ALL " + loadedCollections.size() + " collection(s). Continue?",
+                "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
+            if (confirm != JOptionPane.YES_OPTION) return;
+            Map<String, String> vars = oauth2Panel.getVariables();
+            for (ApiCollection col : loadedCollections) {
+                col.runtimeOAuth2.putAll(vars);
+            }
+            appendImportLog("OAuth2 bound to all " + loadedCollections.size() + " collection(s).");
+        });
+        bindPanel.add(bindAllBtn);
+        panel.add(bindPanel, BorderLayout.NORTH);
+        panel.add(oauth2Panel, BorderLayout.CENTER);
+        panel.add(oauth2HintLabel, BorderLayout.SOUTH);
+
+        // Keep combo in sync with loaded collections
+        tabbedPane.addChangeListener(e -> {
+            if (tabbedPane.getSelectedIndex() == 2) { // OAuth2 tab
+                String prev = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+                oauth2CollectionCombo.removeAllItems();
+                for (ApiCollection c : loadedCollections) {
+                    oauth2CollectionCombo.addItem(c.name);
+                }
+                if (prev != null) {
+                    for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
+                        if (prev.equals(oauth2CollectionCombo.getItemAt(i))) {
+                            oauth2CollectionCombo.setSelectedIndex(i);
+                            break;
+                        }
+                    }
+                }
+                updateScopeControlState();
+            }
+        });
+        oauth2CollectionCombo.addActionListener(e -> {
+            updateScopeControlState();
+        });
+        updateScopeControlState();
+
         return panel;
     }
 
@@ -409,7 +519,10 @@ public class ImporterPanel {
                 if (node instanceof CollectionTreeNode) {
                     CollectionTreeNode ctn = (CollectionTreeNode) node;
                     ctn.propagateCheck(!ctn.isChecked());
-                    ((CollectionTreeNode) ctn.getParent()).updateParentCheckState();
+                    javax.swing.tree.TreeNode parent = ctn.getParent();
+                    if (parent instanceof CollectionTreeNode) {
+                        ((CollectionTreeNode) parent).updateParentCheckState();
+                    }
                     requestTree.repaint();
                 }
             }
@@ -421,18 +534,22 @@ public class ImporterPanel {
         for (ApiCollection col : loadedCollections) {
             CollectionTreeNode colNode = new CollectionTreeNode(col);
             root.add(colNode);
-            Map<String, CollectionTreeNode> folderNodes = new HashMap<>();
             for (ApiRequest req : col.requests) {
                 String path = req.path != null ? req.path : "";
-                int lastSlash = path.lastIndexOf('/');
-                String folder = lastSlash > 0 ? path.substring(0, lastSlash) : "";
+                String[] parts = path.split("/");
+                java.util.List<String> segments = new java.util.ArrayList<>();
+                for (String p : parts) {
+                    if (!p.isEmpty()) segments.add(p);
+                }
+                boolean lastIsRequestName = !segments.isEmpty() && segments.get(segments.size() - 1).equals(req.name);
+                int folderCount = lastIsRequestName ? segments.size() - 1 : segments.size();
+
                 CollectionTreeNode parent = colNode;
-                if (!folder.isEmpty()) {
-                    parent = folderNodes.computeIfAbsent(folder, f -> {
-                        CollectionTreeNode fn = new CollectionTreeNode(f);
-                        colNode.add(fn);
-                        return fn;
-                    });
+                StringBuilder cumulative = new StringBuilder();
+                for (int i = 0; i < folderCount; i++) {
+                    if (cumulative.length() > 0) cumulative.append("/");
+                    cumulative.append(segments.get(i));
+                    parent = getOrCreateFolderNode(parent, segments.get(i), cumulative.toString());
                 }
                 parent.add(new CollectionTreeNode(req));
             }
@@ -441,6 +558,21 @@ public class ImporterPanel {
         for (int i = 0; i < requestTree.getRowCount(); i++) {
             requestTree.expandRow(i);
         }
+    }
+
+    private CollectionTreeNode getOrCreateFolderNode(CollectionTreeNode parent, String segment, String cumulativePath) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            Object child = parent.getChildAt(i);
+            if (child instanceof CollectionTreeNode) {
+                CollectionTreeNode ctn = (CollectionTreeNode) child;
+                if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && segment.equals(ctn.getUserObject())) {
+                    return ctn;
+                }
+            }
+        }
+        CollectionTreeNode folder = new CollectionTreeNode(cumulativePath);
+        parent.add(folder);
+        return folder;
     }
 
     private void setTreeCheckState(boolean checked) {
@@ -541,7 +673,6 @@ public class ImporterPanel {
                     sendToRunnerBtn.setEnabled(true);
                     startRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
-                    envApplySelectedBtn.setEnabled(true);
                     envApplyAllBtn.setEnabled(true);
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
@@ -571,7 +702,6 @@ public class ImporterPanel {
                     sendToRunnerBtn.setEnabled(false);
                     startRunnerBtn.setEnabled(false);
                     removeCollectionBtn.setEnabled(false);
-                    envApplySelectedBtn.setEnabled(false);
                     envApplyAllBtn.setEnabled(false);
                 }
             }
@@ -579,19 +709,79 @@ public class ImporterPanel {
     }
 
     private void refreshCollectionCombos() {
-        String prev = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
+        String prevVars = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
         varsCollectionCombo.removeAllItems();
         for (ApiCollection c : loadedCollections) {
             varsCollectionCombo.addItem(c.name);
         }
-        if (prev != null) {
+        if (prevVars != null) {
             for (int i = 0; i < varsCollectionCombo.getItemCount(); i++) {
-                if (prev.equals(varsCollectionCombo.getItemAt(i))) {
+                if (prevVars.equals(varsCollectionCombo.getItemAt(i))) {
                     varsCollectionCombo.setSelectedIndex(i);
                     break;
                 }
             }
         }
+
+        String prevOAuth2 = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+        oauth2CollectionCombo.removeAllItems();
+        for (ApiCollection c : loadedCollections) {
+            oauth2CollectionCombo.addItem(c.name);
+        }
+        if (prevOAuth2 != null) {
+            for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
+                if (prevOAuth2.equals(oauth2CollectionCombo.getItemAt(i))) {
+                    oauth2CollectionCombo.setSelectedIndex(i);
+                    break;
+                }
+            }
+        }
+        updateScopeControlState();
+    }
+
+    private void updateScopeControlState() {
+        // Variables tab
+        String varsSelected = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
+        boolean varsHasTarget = varsSelected != null;
+        envVarsArea.setEnabled(varsHasTarget);
+        envVarsArea.setEditable(varsHasTarget);
+        if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
+        if (varsHintLabel != null) {
+            if (varsHasTarget) {
+                varsHintLabel.setText("Editing scoped variables for: " + varsSelected);
+                varsHintLabel.setForeground(Color.BLACK);
+            } else {
+                varsHintLabel.setText("Select a collection to edit scoped variables.");
+                varsHintLabel.setForeground(Color.GRAY);
+            }
+        }
+
+        // OAuth2 tab
+        String oauth2Selected = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+        boolean oauth2HasTarget = oauth2Selected != null;
+        oauth2Panel.setEditable(oauth2HasTarget);
+        if (bindOAuth2Btn != null) bindOAuth2Btn.setEnabled(oauth2HasTarget);
+        if (oauth2HintLabel != null) {
+            if (oauth2HasTarget) {
+                oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Selected);
+                oauth2HintLabel.setForeground(Color.BLACK);
+            } else {
+                oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
+                oauth2HintLabel.setForeground(Color.GRAY);
+            }
+        }
+
+        // Env apply selected requires a collection selected in the tree
+        TreePath path = requestTree.getSelectionPath();
+        boolean treeHasCollection = false;
+        if (path != null) {
+            Object node = path.getLastPathComponent();
+            if (node instanceof CollectionTreeNode) {
+                ApiCollection col = findCollectionForNode((CollectionTreeNode) node);
+                treeHasCollection = col != null;
+            }
+        }
+        envApplySelectedBtn.setEnabled(treeHasCollection && !loadedCollections.isEmpty());
     }
 
     // ========================================================================
@@ -631,6 +821,10 @@ public class ImporterPanel {
             appendImportLog("No environment file selected. Browse first.");
             return;
         }
+        int confirm = JOptionPane.showConfirmDialog(mainPanel,
+            "This will bind the selected environment file to ALL " + loadedCollections.size() + " collection(s). Continue?",
+            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
         for (ApiCollection col : loadedCollections) {
             importer.loadEnvFileIntoMap(selectedEnv, col.runtimeVars);
         }
@@ -651,6 +845,22 @@ public class ImporterPanel {
         Map<String, String> vars = parseEnvVarsMap();
         col.runtimeVars.putAll(vars);
         appendImportLog("Variables bound to \"" + colName + "\": " + vars.size() + " var(s).");
+    }
+
+    private void bindVarsToAllCollections() {
+        if (loadedCollections.isEmpty()) {
+            appendImportLog("Variables: No collections loaded.");
+            return;
+        }
+        int confirm = JOptionPane.showConfirmDialog(mainPanel,
+            "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
+            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
+        Map<String, String> vars = parseEnvVarsMap();
+        for (ApiCollection col : loadedCollections) {
+            col.runtimeVars.putAll(vars);
+        }
+        appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
     }
 
     // ========================================================================

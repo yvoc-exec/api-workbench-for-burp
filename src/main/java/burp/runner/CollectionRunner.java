@@ -130,22 +130,41 @@ public class CollectionRunner {
 
                     // Seed resolver with collection-scoped layers
                     resolver.clear();
+                    Map<String, String> sources = new LinkedHashMap<>();
                     if (col != null) {
                         resolver.addEnvironmentVariables(col);
+                        if (col.environment != null) {
+                            for (String key : col.environment.keySet()) sources.put(key, "collection-env");
+                        }
                         resolver.addCollectionVariables(col);
-                        if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
-                        if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
+                        for (ApiRequest.Variable v : col.variables) {
+                            if (v.value != null) sources.put(v.key, "collection-var");
+                        }
+                        if (col.runtimeVars != null) {
+                            resolver.addAll(col.runtimeVars);
+                            for (String key : col.runtimeVars.keySet()) sources.put(key, "scoped-runtime");
+                        }
+                        if (col.runtimeOAuth2 != null) {
+                            resolver.addAll(col.runtimeOAuth2);
+                            for (String key : col.runtimeOAuth2.keySet()) sources.put(key, "scoped-oauth2");
+                        }
                     }
 
                     // Apply request-level variables
                     resolver.addRequestVariables(req);
+                    if (req.variables != null) {
+                        for (ApiRequest.Variable v : req.variables) {
+                            if (v.value != null) sources.put(v.key, "request-level");
+                        }
+                    }
                     // Apply any previously extracted vars (highest precedence in runner)
                     resolver.addAll(extractedVars);
+                    for (String key : extractedVars.keySet()) sources.put(key, "runner-extracted");
 
                     // Execute pre-request scripts
                     scriptEngine.executePreRequest(req, extractedVars);
 
-                    RunnerResult result = executeRequest(req, i + 1, ordered.size(), extractedVars);
+                    RunnerResult result = executeRequest(req, i + 1, ordered.size(), extractedVars, sources);
                     results.add(result);
 
                     // Extract variables from response
@@ -178,7 +197,7 @@ public class CollectionRunner {
         });
     }
 
-    private RunnerResult executeRequest(ApiRequest req, int current, int total, Map<String, String> extractedVars) {
+    private RunnerResult executeRequest(ApiRequest req, int current, int total, Map<String, String> extractedVars, Map<String, String> sources) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
@@ -216,7 +235,7 @@ public class CollectionRunner {
                     String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
                     api.logging().logToOutput(debug);
                     fireOnDebug(debug);
-                    String varsDebug = burp.utils.VariableDebugFormatter.format(resolver.getVariables(), "runner / " + req.name);
+                    String varsDebug = burp.utils.VariableDebugFormatter.format(resolver.getVariables(), sources, "runner / " + req.name);
                     api.logging().logToOutput(varsDebug);
                     fireOnDebug(varsDebug);
                 }

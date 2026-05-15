@@ -28,6 +28,7 @@ public class OAuth2Panel extends JPanel {
     private JButton populateBtn;
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
+    private boolean editable = true;
 
     public OAuth2Panel(OAuth2Manager manager) {
         this.manager = manager;
@@ -150,7 +151,31 @@ public class OAuth2Panel extends JPanel {
         return panel;
     }
 
+    public void setEditable(boolean editable) {
+        this.editable = editable;
+        grantTypeBox.setEnabled(editable);
+        tokenUrlField.setEnabled(editable);
+        authUrlField.setEnabled(editable);
+        redirectUriField.setEnabled(editable);
+        clientIdField.setEnabled(editable);
+        clientSecretField.setEnabled(editable);
+        usernameField.setEnabled(editable);
+        passwordField.setEnabled(editable);
+        scopeField.setEnabled(editable);
+        pkceBox.setEnabled(editable);
+        acquireBtn.setEnabled(editable);
+        clearBtn.setEnabled(editable);
+        populateBtn.setEnabled(editable);
+        if (!editable) {
+            refreshBtn.setEnabled(false);
+        }
+        if (editable) {
+            updateFieldVisibility();
+        }
+    }
+
     private void updateFieldVisibility() {
+        if (!editable) return;
         String grant = (String) grantTypeBox.getSelectedItem();
         boolean isAuthCode = "Authorization Code".equals(grant);
         boolean isPassword = "Password".equals(grant);
