@@ -1,6 +1,6 @@
 # Universal API Collection Importer & Runner for Burp Suite
 
-A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap — with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, and **Nashorn JavaScript script execution**.
+A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap — with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, **Nashorn JavaScript script execution**, and a **Workbench** for request editing and direct sending.
 
 ---
 
@@ -14,6 +14,13 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 | OpenAPI / Swagger | `.json`, `.yaml`, `.yml` | Yes |
 | Insomnia v4 | `.json` | Yes |
 | HAR | `.har` | Yes |
+
+### Workbench
+- **Collection tree** — checkbox tree with Collection > Folder > Request hierarchy
+- **Env binding** — bind environment files to specific collections (or all) explicitly
+- **Request editor** — edit method, URL, headers, body, auth, and scripts inline
+- **Direct send** — execute edited request immediately and inspect response (Pretty/Raw/Hex)
+- **Import destinations** — Repeater, Sitemap, Intruder
 
 ### Import Destinations
 - **Repeater** — creates tabs for manual testing (no live requests)
@@ -90,7 +97,7 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 
 ### Playbook 1: Fast Manual Testing in Repeater
 1. Click **+ Add Collection** and select your collection file or Bruno folder.
-2. Select the requests you want in the preview table.
+2. Check requests in the **Workbench** tree (collection, folder, or individual request level).
 3. Check **Repeater** as the destination.
 4. Click **Import Selected**.
 5. Find the created tabs in Burp Repeater, edit and send manually.
@@ -98,7 +105,7 @@ Extensions → Add → Select: target/universal-api-importer-2.0.0-jar-with-depe
 Repeater is best for manual tampering and iterative payload testing. No live traffic is sent during import.
 
 ### Playbook 2: Baseline Live Behavior via Sitemap
-1. Select requests in the preview table.
+1. Check requests in the Workbench tree.
 2. Check **Sitemap** as the destination.
 3. Click **Import Selected**.
 4. Imported requests are sent live and responses appear in Target > Sitemap.
@@ -106,11 +113,17 @@ Repeater is best for manual tampering and iterative payload testing. No live tra
 Use the delay spinner to pace live traffic and avoid rate-limiting.
 
 ### Playbook 3: Stateful Flow Testing in Collection Runner
-1. Load and select an ordered set of requests (e.g., login -> fetch -> update).
+1. Load and select an ordered set of requests in the Workbench tree.
 2. Switch to the **Collection Runner** tab.
 3. Configure delay, stop-on-error, and follow-redirects as needed.
 4. Click **Start Collection Runner**.
 5. Results populate in real-time; extracted variables feed automatically into downstream requests.
+
+### Playbook 3b: Direct Send from Workbench
+1. Click a request in the tree to load it into the editor.
+2. Edit method, URL, headers, body, or auth as needed.
+3. Click **Send**.
+4. Inspect the response in Pretty, Raw, or Hex view.
 
 Post-response scripts can extract variables for downstream requests automatically. Use script syntax like:
 ```javascript
@@ -122,7 +135,7 @@ or comment-based extraction:
 ```
 
 ### Playbook 4: Variables Tab Usage
-Open the **Variables** tab and enter variables in either format:
+Open the **Variables** tab, select a target collection from the dropdown, and enter variables in either format:
 
 **key=value lines:**
 ```
@@ -143,10 +156,13 @@ oauth2_client_id=my-client
 Precedence during runtime (highest to lowest):
 1. Runner-extracted variables from previous responses (Runner only)
 2. Request-level variables (`req.variables`)
-3. User-supplied runtime vars (Variables tab + OAuth2 tab + environment file)
+3. Collection-scoped runtime overrides (Variables tab / OAuth2 / env file bound to this collection)
 4. Collection-level variables (`collection.variables`)
 5. Collection environment map (`collection.environment`)
 6. Default values in `{{var|default}}` syntax
+
+**Collection-scoped isolation:**
+Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
 
 **Format-specific collection/global variable sources:**
 - **Postman** — `collection.variable` array (objects/arrays serialized to JSON string)
@@ -225,8 +241,13 @@ src/main/java/burp/
 ├── runner/
 │   └── CollectionRunner.java      # Sequential execution + JS engine
 ├── ui/
-│   ├── ImporterPanel.java         # Main Swing UI (4-tab)
+│   ├── ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
 │   ├── OAuth2Panel.java           # OAuth2 configuration UI
+│   ├── RequestEditorPanel.java    # Workbench request editor (method, url, headers, body, auth, scripts)
+│   ├── ResponsePane.java          # Workbench response display (Pretty/Raw/Hex)
+│   ├── tree/
+│   │   ├── CollectionTreeNode.java
+│   │   └── CheckBoxTreeCellRenderer.java
 │   ├── RequestPreviewTableModel.java
 │   └── RunnerResultTableModel.java
 └── utils/
