@@ -67,9 +67,11 @@ public class AuthorizationCodeHandler {
 
         // Exchange code for token
         String body = "grant_type=authorization_code" +
-                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8) +
-                "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8) +
-                "&code=" + URLEncoder.encode(code, StandardCharsets.UTF_8) +
+                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8);
+        if (!ClientCredentialsHandler.isBasicAuth(config)) {
+            body += "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8);
+        }
+        body += "&code=" + URLEncoder.encode(code, StandardCharsets.UTF_8) +
                 "&redirect_uri=" + URLEncoder.encode(config.redirectUri, StandardCharsets.UTF_8) +
                 "&code_verifier=" + URLEncoder.encode(codeVerifier, StandardCharsets.UTF_8);
 

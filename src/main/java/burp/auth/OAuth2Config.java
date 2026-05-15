@@ -54,6 +54,9 @@ public class OAuth2Config {
         if (clientId == null || clientId.isEmpty()) return false;
         switch (grantType) {
             case CLIENT_CREDENTIALS:
+                if (clientAuth != null && clientAuth.equalsIgnoreCase("none")) {
+                    return true;
+                }
                 return clientSecret != null && !clientSecret.isEmpty();
             case PASSWORD:
                 return username != null && password != null;
