@@ -151,6 +151,16 @@ public class UniversalImporter {
      */
     public burp.api.montoya.http.message.HttpRequestResponse sendSingleRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
+        SingleSendResult result = sendSingleRequestWithBuiltRequest(req, colContext, followRedirects);
+        return result.response;
+    }
+
+    /**
+     * Send a single request and also return the built HttpRequest (for Repeater duplication).
+     * Performs exactly one live HTTP send.
+     */
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
         resolver.clear();
         seedResolverForCollection(colContext);
         resolver.addRequestVariables(req);
@@ -166,7 +176,25 @@ public class UniversalImporter {
         HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
         RequestOptions options = RequestOptions.requestOptions()
                 .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
-        return api.http().sendRequest(httpRequest, options);
+        var response = api.http().sendRequest(httpRequest, options);
+        return new SingleSendResult(response, httpRequest);
+    }
+
+    public static class SingleSendResult {
+        public final burp.api.montoya.http.message.HttpRequestResponse response;
+        public final HttpRequest builtRequest;
+        public SingleSendResult(burp.api.montoya.http.message.HttpRequestResponse response, HttpRequest builtRequest) {
+            this.response = response;
+            this.builtRequest = builtRequest;
+        }
+    }
+
+    public void sendToRepeater(HttpRequest request, String tabName) {
+        api.repeater().sendToRepeater(request, tabName);
+    }
+
+    public String generateRepeaterTabName(String baseName, String collectionName) {
+        return generateUniqueTabName(baseName, collectionName);
     }
 
     private Map<String, String> buildSourceMap(ApiRequest req, Map<String, String> colSources) {

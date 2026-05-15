@@ -73,6 +73,10 @@ public class ImporterPanel {
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
 
+    // Split Send button mode
+    private enum SendMode { SEND_ONLY, SEND_AND_REPEATER }
+    private SendMode currentSendMode = SendMode.SEND_ONLY;
+
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
@@ -101,17 +105,24 @@ public class ImporterPanel {
     // Workbench Tab
     // ========================================================================
     private JPanel createWorkbenchTab() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
 
-        // Top: Collection controls
-        panel.add(createCollectionControls(), BorderLayout.NORTH);
+        // Main horizontal split: left (tree+controls) | right (editor/response)
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        mainSplit.setLeftComponent(createLeftWorkbenchPanel());
+        mainSplit.setRightComponent(createRightWorkbenchPanel());
+        mainSplit.setResizeWeight(0.30);
+        mainSplit.setOneTouchExpandable(true);
+        mainSplit.setContinuousLayout(true);
+        mainSplit.setDividerSize(8);
+        panel.add(mainSplit, BorderLayout.CENTER);
 
-        // Center: Tree + Config (vertical split)
-        JSplitPane centerSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
-        centerSplit.setTopComponent(createTreeAndConfigPanel());
-        centerSplit.setBottomComponent(createEditorAndResponsePanel());
-        centerSplit.setResizeWeight(0.45);
-        panel.add(centerSplit, BorderLayout.CENTER);
+        // Bottom full-width rows: env binding + destination/actions
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
+        bottomPanel.add(createEnvBindingRow());
+        bottomPanel.add(createDestinationRow());
+        panel.add(bottomPanel, BorderLayout.SOUTH);
 
         return panel;
     }
@@ -129,8 +140,12 @@ public class ImporterPanel {
         return panel;
     }
 
-    private JPanel createTreeAndConfigPanel() {
+    private JPanel createLeftWorkbenchPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
+        panel.setMinimumSize(new Dimension(220, 300));
+        panel.setPreferredSize(new Dimension(280, 500));
+
+        panel.add(createCollectionControls(), BorderLayout.NORTH);
 
         // Tree
         treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Collections"));
@@ -157,11 +172,7 @@ public class ImporterPanel {
         treeScroll.setBorder(BorderFactory.createTitledBorder("Request Tree"));
         panel.add(treeScroll, BorderLayout.CENTER);
 
-        // Bottom config panel
-        JPanel configPanel = new JPanel();
-        configPanel.setLayout(new BoxLayout(configPanel, BoxLayout.Y_AXIS));
-
-        // Select All / Deselect All
+        // Select controls
         JPanel selectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton selectAllBtn = new JButton("Select All");
         selectAllBtn.addActionListener(e -> setTreeCheckState(true));
@@ -169,11 +180,28 @@ public class ImporterPanel {
         deselectAllBtn.addActionListener(e -> setTreeCheckState(false));
         selectPanel.add(selectAllBtn);
         selectPanel.add(deselectAllBtn);
-        configPanel.add(selectPanel);
+        panel.add(selectPanel, BorderLayout.SOUTH);
 
-        // Env binding panel
-        JPanel envPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        envPanel.setBorder(BorderFactory.createTitledBorder("Environment Binding"));
+        return panel;
+    }
+
+    private JComponent createRightWorkbenchPanel() {
+        requestEditor = new RequestEditorPanel();
+        responsePane = new ResponsePane();
+
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        split.setTopComponent(requestEditor);
+        split.setBottomComponent(responsePane);
+        split.setResizeWeight(0.50);
+        split.setOneTouchExpandable(true);
+        split.setContinuousLayout(true);
+        split.setDividerSize(8);
+        return split;
+    }
+
+    private JPanel createEnvBindingRow() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+        panel.setBorder(BorderFactory.createTitledBorder("Environment Binding"));
         envField = new JTextField(20);
         envField.setEditable(false);
         envBrowseBtn = new JButton("Browse...");
@@ -184,16 +212,21 @@ public class ImporterPanel {
         envApplyAllBtn = new JButton("Apply to All Collections");
         envApplyAllBtn.setEnabled(false);
         envApplyAllBtn.addActionListener(e -> applyEnvToAllCollections());
-        envPanel.add(new JLabel("Env:"));
-        envPanel.add(envField);
-        envPanel.add(envBrowseBtn);
-        envPanel.add(envApplySelectedBtn);
-        envPanel.add(envApplyAllBtn);
-        configPanel.add(envPanel);
+        panel.add(new JLabel("Env:"));
+        panel.add(envField);
+        panel.add(envBrowseBtn);
+        panel.add(envApplySelectedBtn);
+        panel.add(envApplyAllBtn);
+        return panel;
+    }
 
-        // Destination + Delay + Buttons
+    private JPanel createDestinationRow() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createTitledBorder("Actions"));
+
+        // Destination + Delay + Debug
         JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
-        actionPanel.setBorder(BorderFactory.createTitledBorder("Destination"));
         repeaterBtn = new JCheckBox("Repeater", true);
         sitemapBtn = new JCheckBox("Sitemap (Live)");
         intruderBtn = new JCheckBox("Intruder");
@@ -207,9 +240,9 @@ public class ImporterPanel {
         actionPanel.add(delaySpinner);
         debugRawRequestBox = new JCheckBox("Debug final raw request");
         actionPanel.add(debugRawRequestBox);
-        configPanel.add(actionPanel);
+        panel.add(actionPanel);
 
-        // Import / Send buttons
+        // Import / Send / Send to Runner buttons
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 2));
         importBtn = new JButton("Import Selected");
         importBtn.setEnabled(false);
@@ -217,13 +250,12 @@ public class ImporterPanel {
         sendToRunnerBtn = new JButton("Send to Runner");
         sendToRunnerBtn.setEnabled(false);
         sendToRunnerBtn.addActionListener(e -> sendToRunner());
-        sendWorkbenchBtn = new JButton("Send");
-        sendWorkbenchBtn.setToolTipText("Send current edited request directly");
-        sendWorkbenchBtn.addActionListener(e -> sendWorkbenchRequest());
-        btnPanel.add(sendWorkbenchBtn);
+
+        JPanel sendSplitPanel = createSplitSendButton();
+        btnPanel.add(sendSplitPanel);
         btnPanel.add(importBtn);
         btnPanel.add(sendToRunnerBtn);
-        configPanel.add(btnPanel);
+        panel.add(btnPanel);
 
         // Progress + Log
         JPanel logPanel = new JPanel(new BorderLayout(5, 5));
@@ -238,21 +270,102 @@ public class ImporterPanel {
         logScroll.setBorder(BorderFactory.createTitledBorder("Workbench Log"));
         logScroll.setPreferredSize(new Dimension(400, 70));
         logPanel.add(logScroll, BorderLayout.CENTER);
-        configPanel.add(logPanel);
+        panel.add(logPanel);
 
-        panel.add(configPanel, BorderLayout.SOUTH);
         return panel;
     }
 
-    private JComponent createEditorAndResponsePanel() {
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        requestEditor = new RequestEditorPanel();
-        responsePane = new ResponsePane();
-        split.setLeftComponent(requestEditor);
-        split.setRightComponent(responsePane);
-        split.setResizeWeight(0.5);
-        return split;
+    private JPanel createSplitSendButton() {
+        JPanel panel = new JPanel(new BorderLayout(0, 0));
+
+        sendWorkbenchBtn = new JButton("Send");
+        sendWorkbenchBtn.setToolTipText("Send current edited request directly");
+        sendWorkbenchBtn.addActionListener(e -> executeWorkbenchSend());
+
+        JButton arrowBtn = new JButton("v");
+        arrowBtn.setPreferredSize(new Dimension(22, sendWorkbenchBtn.getPreferredSize().height));
+        arrowBtn.addActionListener(e -> {
+            JPopupMenu menu = new JPopupMenu();
+            JMenuItem sendOnlyItem = new JMenuItem("Send");
+            JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
+            sendOnlyItem.addActionListener(ev -> setSendMode(SendMode.SEND_ONLY));
+            sendRepeaterItem.addActionListener(ev -> setSendMode(SendMode.SEND_AND_REPEATER));
+            menu.add(sendOnlyItem);
+            menu.add(sendRepeaterItem);
+            menu.show(arrowBtn, 0, arrowBtn.getHeight());
+        });
+
+        panel.add(sendWorkbenchBtn, BorderLayout.CENTER);
+        panel.add(arrowBtn, BorderLayout.EAST);
+        return panel;
     }
+
+    private void setSendMode(SendMode mode) {
+        currentSendMode = mode;
+        if (mode == SendMode.SEND_ONLY) {
+            sendWorkbenchBtn.setText("Send");
+            sendWorkbenchBtn.setToolTipText("Send current edited request directly");
+        } else {
+            sendWorkbenchBtn.setText("Send + Repeater");
+            sendWorkbenchBtn.setToolTipText("Send request and also create Repeater tab");
+        }
+    }
+
+    private void executeWorkbenchSend() {
+        ApiRequest edited = requestEditor.buildRequestFromUI();
+        if (edited == null) {
+            appendImportLog("No request loaded in editor.");
+            return;
+        }
+        ApiCollection col = findCollectionByName(edited.sourceCollection);
+        SwingWorker<Void, String> worker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                try {
+                    publish("Sending: " + edited.method + " " + edited.url);
+                    boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
+
+                    var result = importer.sendSingleRequestWithBuiltRequest(edited, col, follow);
+                    var rr = result.response;
+
+                    if (rr != null && rr.response() != null) {
+                        var resp = rr.response();
+                        StringBuilder headers = new StringBuilder();
+                        headers.append("HTTP/1.1 ").append(resp.statusCode()).append("\n");
+                        for (var h : resp.headers()) {
+                            headers.append(h.name()).append(": ").append(h.value()).append("\n");
+                        }
+                        byte[] bodyBytes = resp.body().getBytes();
+                        SwingUtilities.invokeLater(() -> {
+                            responsePane.displayResponse(resp.statusCode(), 0, bodyBytes.length,
+                                headers.toString(), bodyBytes);
+                        });
+                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes)");
+                    } else {
+                        publish("No response received.");
+                    }
+
+                    if (currentSendMode == SendMode.SEND_AND_REPEATER && result.builtRequest != null) {
+                        String tabName = importer.generateRepeaterTabName(edited.name,
+                            edited.sourceCollection != null ? edited.sourceCollection : "Unknown");
+                        importer.sendToRepeater(result.builtRequest, tabName);
+                        publish("Sent to Repeater: " + tabName);
+                    }
+                } catch (Exception e) {
+                    publish("Send failed: " + e.getMessage());
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                for (String msg : chunks) appendImportLog(msg);
+            }
+        };
+        worker.execute();
+    }
+
+
 
     // ========================================================================
     // Variables Tab
@@ -916,52 +1029,6 @@ public class ImporterPanel {
         }
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
-    }
-
-    private void sendWorkbenchRequest() {
-        ApiRequest edited = requestEditor.buildRequestFromUI();
-        if (edited == null) {
-            appendImportLog("No request loaded in editor.");
-            return;
-        }
-        ApiCollection col = findCollectionByName(edited.sourceCollection);
-        SwingWorker<Void, String> worker = new SwingWorker<>() {
-            @Override
-            protected Void doInBackground() throws Exception {
-                try {
-                    publish("Sending: " + edited.method + " " + edited.url);
-                    boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    burp.api.montoya.http.message.HttpRequestResponse rr =
-                        importer.sendSingleRequest(edited, col, follow);
-                    if (rr != null && rr.response() != null) {
-                        var resp = rr.response();
-                        StringBuilder headers = new StringBuilder();
-                        headers.append("HTTP/1.1 ").append(resp.statusCode()).append("\n");
-                        for (var h : resp.headers()) {
-                            headers.append(h.name()).append(": ").append(h.value()).append("\n");
-                        }
-                        byte[] bodyBytes = resp.body().getBytes();
-                        long time = 0; // TODO: could instrument if needed
-                        SwingUtilities.invokeLater(() -> {
-                            responsePane.displayResponse(resp.statusCode(), time, bodyBytes.length,
-                                headers.toString(), bodyBytes);
-                        });
-                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes)");
-                    } else {
-                        publish("No response received.");
-                    }
-                } catch (Exception e) {
-                    publish("Send failed: " + e.getMessage());
-                }
-                return null;
-            }
-
-            @Override
-            protected void process(List<String> chunks) {
-                for (String msg : chunks) appendImportLog(msg);
-            }
-        };
-        worker.execute();
     }
 
     private void switchToTabByName(String name) {
