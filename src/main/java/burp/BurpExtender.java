@@ -32,11 +32,11 @@ public class BurpExtender implements BurpExtension {
 
         api.extension().setName("Universal API Importer & Runner");
 
-        api.logging().logToOutput("═══════════════════════════════════════════════════");
+        api.logging().logToOutput("===================================================");
         api.logging().logToOutput("  Universal API Importer & Runner v2.0.0");
         api.logging().logToOutput("  Supports: Postman, Bruno, OpenAPI, Insomnia, HAR");
         api.logging().logToOutput("  Features: Import + Collection Runner");
-        api.logging().logToOutput("═══════════════════════════════════════════════════");
+        api.logging().logToOutput("===================================================");
         api.logging().logToOutput("Extension loaded successfully!");
 
         SwingUtilities.invokeLater(() -> {
