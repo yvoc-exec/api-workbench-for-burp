@@ -102,11 +102,19 @@ public class CollectionRunner {
         results.clear();
         extractedVars.clear();
 
-        // Build collection lookup map
+        // Build collection lookup maps: identity map preferred, name fallback
+        Map<ApiRequest, ApiCollection> reqToColMap = new IdentityHashMap<>();
         Map<String, ApiCollection> colMap = new HashMap<>();
         if (sourceCollections != null) {
             for (ApiCollection c : sourceCollections) {
-                if (c != null && c.name != null) colMap.put(c.name, c);
+                if (c != null) {
+                    if (c.name != null) colMap.put(c.name, c);
+                    if (c.requests != null) {
+                        for (ApiRequest r : c.requests) {
+                            reqToColMap.put(r, c);
+                        }
+                    }
+                }
             }
         }
 
@@ -126,7 +134,10 @@ public class CollectionRunner {
                         continue;
                     }
 
-                    ApiCollection col = colMap.getOrDefault(req.sourceCollection, null);
+                    ApiCollection col = reqToColMap.get(req);
+                    if (col == null) {
+                        col = colMap.getOrDefault(req.sourceCollection, null);
+                    }
 
                     // Seed resolver with collection-scoped layers
                     resolver.clear();

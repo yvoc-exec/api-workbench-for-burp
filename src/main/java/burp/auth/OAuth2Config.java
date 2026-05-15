@@ -22,6 +22,7 @@ public class OAuth2Config {
     public String refreshToken;
     public boolean usePkce = true;
     public int tokenExpiryBuffer = 60; // seconds before expiry to refresh
+    public String clientAuth = "body"; // "body" or "basic"
 
     public static OAuth2Config fromVariables(Map<String, String> vars) {
         OAuth2Config config = new OAuth2Config();
@@ -35,6 +36,9 @@ public class OAuth2Config {
         config.authUrl = vars.get("oauth2_auth_url");
         config.clientId = vars.get("oauth2_client_id");
         config.clientSecret = vars.get("oauth2_client_secret");
+        if (vars.containsKey("oauth2_client_auth")) {
+            config.clientAuth = vars.get("oauth2_client_auth");
+        }
         config.username = vars.get("oauth2_username");
         config.password = vars.get("oauth2_password");
         config.scope = vars.get("oauth2_scope");

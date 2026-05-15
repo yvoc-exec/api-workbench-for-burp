@@ -105,6 +105,7 @@ public class UniversalImporter {
                         if (isCancelled()) break;
                         QueuedRequest qr = queue.get(i);
                         try {
+                            resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
                                 processRequest(qr.request, destination, delayMs, logCallback, colSources);

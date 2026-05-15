@@ -1,4 +1,4 @@
-# Universal API Collection Importer & Runner — Complete Documentation
+# Universal API Collection Importer & Runner - Complete Documentation
 
 **Version:** 2.0.0  
 **Author:** Sachinico De Leon  
@@ -90,7 +90,7 @@ Load multiple collections simultaneously:
 - **Auto-retry** with exponential backoff (delayMs x attempt number)
 - **Stop on error** option halts execution on first failure
 - **Real-time results** table with status, timing, size, assertion pass/fail
-- **Sitemap integration** — runner responses auto-populate Site map
+- **Sitemap integration** - runner responses auto-populate Site map
 
 ### 2.5 OAuth2 Token Management
 
@@ -312,7 +312,7 @@ Parser normalizes both formats into `ApiRequest.Auth.properties` map.
 | `urlencoded` | `body.urlencoded[]` | `application/x-www-form-urlencoded` |
 | `formdata` | `body.formdata[]` | `multipart/form-data` |
 | `graphql` | `body.graphql.query` + `body.graphql.variables` | `application/json` |
-| `file` | Not fully supported (placeholder) | — |
+| `file` | Not fully supported (placeholder) | - |
 
 ### 5.2 Bruno
 
@@ -396,10 +396,10 @@ Recursive traversal with type-aware defaults:
 | string | date-time | `2024-01-01T00:00:00Z` |
 | string | uri/url | `https://example.com` |
 | string | password | `SecureP@ss123` |
-| integer/number | — | `1` or `1.0` (respects minimum) |
-| boolean | — | `true` |
-| array | — | `[singleItemFromItemsSchema]` |
-| object | — | `{requiredProps + first 5 optional}` |
+| integer/number | - | `1` or `1.0` (respects minimum) |
+| boolean | - | `true` |
+| array | - | `[singleItemFromItemsSchema]` |
+| object | - | `{requiredProps + first 5 optional}` |
 
 **Cycle Protection:**
 - `visited` Set tracks `$ref` references
@@ -584,7 +584,7 @@ public class TokenStore {
     }
 }
 ```
-- **In-memory only** — never persisted to disk, but stored in a `static ConcurrentHashMap` so tokens survive extension reloads within the same Burp JVM session
+- **In-memory only** - never persisted to disk, but stored in a `static ConcurrentHashMap` so tokens survive extension reloads within the same Burp JVM session
 - Key = `grantType|tokenUrl|clientId`
 - Buffer: 60 seconds before expiry for proactive refresh
 
@@ -636,7 +636,7 @@ public void runCollection(ApiCollection collection,
                           List<ApiRequest> selectedRequests,
                           Map<String, String> initialVars) {
     // Single background thread (ExecutorService)
-    // Sequential execution — one request at a time
+    // Sequential execution - one request at a time
     // UI updates via SwingUtilities.invokeLater()
 }
 ```
@@ -811,7 +811,7 @@ When Nashorn is unavailable:
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`
 
 ### 10.2 Client Secrets
-- Passed as variables (`{{client_secret}}`) — never hardcoded
+- Passed as variables (`{{client_secret}}`) - never hardcoded
 - `JPasswordField` used in UI for client secret and password fields
 - Not logged to Burp output
 
@@ -821,12 +821,12 @@ When Nashorn is unavailable:
 ### 10.4 OAuth2 Security
 - **PKCE** enforced for Authorization Code flow (S256 method)
 - **State parameter** validated to prevent CSRF
-- **Localhost only** (`127.0.0.1`) — no remote callback exposure
+- **Localhost only** (`127.0.0.1`) - no remote callback exposure
 - **Random high port** (9876) with socket timeout
 - **Auto-shutdown** of listener after callback or timeout
 
 ### 10.5 Script Execution
-- Nashorn runs with **no sandbox** — scripts can access any Java class via `Java.type()`
+- Nashorn runs with **no sandbox** - scripts can access any Java class via `Java.type()`
 - `console.log()` routed to Burp output (not system console)
 - No `eval()` of user input outside script contexts
 - **Warning**: Only run trusted collection scripts
@@ -839,10 +839,10 @@ When Nashorn is unavailable:
 
 | Claimed Feature | Actual Implementation | Status |
 |-----------------|----------------------|--------|
-| Path traversal prevention for file uploads | **Not implemented** — no validation exists | ❌ Missing |
+| Path traversal prevention for file uploads | **Not implemented** - no validation exists | ❌ Missing |
 | `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | ✅ Correct |
-| Nashorn sandboxed execution | **No sandbox** — `Java.type()` gives full JVM access | ⚠️ Security risk |
-| Token storage "never persisted" | Static `ConcurrentHashMap` — survives extension reloads in same JVM | ⚠️ Misleading |
+| Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | ⚠️ Security risk |
+| Token storage "never persisted" | Static `ConcurrentHashMap` - survives extension reloads in same JVM | ⚠️ Misleading |
 | File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
 
 ### 11.2 Architectural Limitations
@@ -908,7 +908,7 @@ When Nashorn is unavailable:
 | Response body preview | Truncated to 500 characters |
 | OpenAPI example generation | Max 5 optional properties, depth 10 |
 | Runner results | CopyOnWriteArrayList (snapshot semantics) |
-| Token store | Static `ConcurrentHashMap` — no automatic eviction |
+| Token store | Static `ConcurrentHashMap` - no automatic eviction |
 | Script engine | New engine per script execution (no pooling) |
 
 ### 13.2 Rate Limiting
@@ -1007,7 +1007,7 @@ public class PostmanApi {
 - Java 17: Works with bundled `nashorn-core` dependency
 - Java 15+: Nashorn was **removed from the JDK**. The standalone `nashorn-core-15.4` dependency is bundled in the fat JAR
 - Java 21+: Standalone Nashorn may have compatibility issues; regex fallback will be used
-- Alternative: Scripts will use regex fallback (limited functionality — variable extraction only, no assertions)
+- Alternative: Scripts will use regex fallback (limited functionality - variable extraction only, no assertions)
 
 ### 15.3 OAuth2 Browser Doesn't Open
 

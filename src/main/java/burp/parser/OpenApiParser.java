@@ -83,7 +83,16 @@ public class OpenApiParser implements CollectionParser {
                 }
             }
         } else if (spec.containsKey("host")) {
-            String scheme = getString(spec, "schemes.0", "https");
+            String scheme = "https";
+            if (spec.containsKey("schemes") && spec.get("schemes") instanceof List) {
+                List<?> schemes = (List<?>) spec.get("schemes");
+                if (!schemes.isEmpty() && schemes.get(0) != null) {
+                    String first = schemes.get(0).toString().toLowerCase();
+                    if (first.equals("http") || first.equals("https")) {
+                        scheme = first;
+                    }
+                }
+            }
             String host = (String) spec.get("host");
             String basePath = getString(spec, "basePath", "");
             baseUrls.add(scheme + "://" + host + basePath);

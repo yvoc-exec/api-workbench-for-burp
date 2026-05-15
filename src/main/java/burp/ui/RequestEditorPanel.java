@@ -222,6 +222,8 @@ public class RequestEditorPanel extends JPanel {
 
         // Params from URL
         paramsModel.setRowCount(0);
+        parseQueryToTable(req.url);
+
         // Auth
         if (req.auth != null && req.auth.type != null) {
             authTypeBox.setSelectedItem(req.auth.type.toLowerCase());
@@ -287,7 +289,7 @@ public class RequestEditorPanel extends JPanel {
         req.id = currentRequest.id;
         req.sequenceOrder = currentRequest.sequenceOrder;
         req.method = (String) methodBox.getSelectedItem();
-        req.url = urlField.getText();
+        req.url = rebuildUrlWithParams(urlField.getText(), paramsModel);
 
         // Auth
         String authType = (String) authTypeBox.getSelectedItem();
@@ -339,6 +341,76 @@ public class RequestEditorPanel extends JPanel {
 
     public JTextField getUrlField() { return urlField; }
     public JComboBox<String> getMethodBox() { return methodBox; }
+
+    private void parseQueryToTable(String url) {
+        if (url == null) return;
+        int q = url.indexOf('?');
+        if (q < 0 || q + 1 >= url.length()) return;
+        String query = url.substring(q + 1);
+        // Preserve fragment if present in query portion (shouldn't happen normally)
+        int frag = query.indexOf('#');
+        if (frag >= 0) query = query.substring(0, frag);
+        for (String pair : query.split("&")) {
+            if (pair.isEmpty()) continue;
+            int eq = pair.indexOf('=');
+            if (eq < 0) {
+                paramsModel.addRow(new Object[]{pair, ""});
+            } else {
+                String key = pair.substring(0, eq);
+                String val = eq + 1 < pair.length() ? pair.substring(eq + 1) : "";
+                try {
+                    key = java.net.URLDecoder.decode(key, java.nio.charset.StandardCharsets.UTF_8);
+                    val = java.net.URLDecoder.decode(val, java.nio.charset.StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    // keep raw if decoding fails
+                }
+                paramsModel.addRow(new Object[]{key, val});
+            }
+        }
+    }
+
+    private String rebuildUrlWithParams(String urlBase, DefaultTableModel model) {
+        if (urlBase == null) urlBase = "";
+        // Strip existing query and fragment from urlField
+        String fragment = "";
+        int frag = urlBase.indexOf('#');
+        if (frag >= 0) {
+            fragment = urlBase.substring(frag);
+            urlBase = urlBase.substring(0, frag);
+        }
+        int q = urlBase.indexOf('?');
+        if (q >= 0) {
+            urlBase = urlBase.substring(0, q);
+        }
+        StringBuilder sb = new StringBuilder(urlBase);
+        boolean first = true;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            String value = (String) model.getValueAt(i, 1);
+            if (key == null || key.trim().isEmpty()) continue;
+            if (first) {
+                sb.append('?');
+                first = false;
+            } else {
+                sb.append('&');
+            }
+            try {
+                sb.append(java.net.URLEncoder.encode(key.trim(), java.nio.charset.StandardCharsets.UTF_8));
+                if (value != null && !value.isEmpty()) {
+                    sb.append('=');
+                    sb.append(java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
+                }
+            } catch (Exception e) {
+                // fallback raw
+                sb.append(key.trim());
+                if (value != null && !value.isEmpty()) {
+                    sb.append('=').append(value);
+                }
+            }
+        }
+        sb.append(fragment);
+        return sb.toString();
+    }
 
     private void clearAll() {
         paramsModel.setRowCount(0);

@@ -12,8 +12,10 @@ import java.nio.charset.StandardCharsets;
 public class ClientCredentialsHandler {
     public TokenStore.TokenEntry execute(OAuth2Config config, MontoyaApi api) throws Exception {
         String body = "grant_type=client_credentials" +
-                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8) +
-                "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8);
+                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8);
+        if (!isBasicAuth(config)) {
+            body += "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8);
+        }
         if (config.scope != null && !config.scope.isEmpty()) {
             body += "&scope=" + URLEncoder.encode(config.scope, StandardCharsets.UTF_8);
         }
@@ -23,9 +25,16 @@ public class ClientCredentialsHandler {
     static TokenStore.TokenEntry executeTokenRequest(OAuth2Config config, String body, MontoyaApi api) throws Exception {
         HttpService service = HttpService.httpService(extractHost(config.tokenUrl), extractPort(config.tokenUrl), config.tokenUrl.startsWith("https"));
         String path = extractPath(config.tokenUrl);
+        String authHeader = "";
+        if (isBasicAuth(config) && config.clientId != null && config.clientSecret != null) {
+            String creds = config.clientId + ":" + config.clientSecret;
+            String basic = java.util.Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
+            authHeader = "Authorization: Basic " + basic + "\r\n";
+        }
         String requestStr = "POST " + path + " HTTP/1.1\r\n" +
                 "Host: " + service.host() + (service.port() != 443 && service.port() != 80 ? ":" + service.port() : "") + "\r\n" +
                 "Content-Type: application/x-www-form-urlencoded\r\n" +
+                authHeader +
                 "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n" +
                 "\r\n" + body;
 
@@ -69,6 +78,11 @@ public class ClientCredentialsHandler {
         }
 
         return entry;
+    }
+
+    static boolean isBasicAuth(OAuth2Config config) {
+        return config.clientAuth != null &&
+               (config.clientAuth.equalsIgnoreCase("basic") || config.clientAuth.equalsIgnoreCase("prefer_basic"));
     }
 
     private static String extractHost(String url) {
