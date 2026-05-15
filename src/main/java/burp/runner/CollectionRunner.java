@@ -192,6 +192,9 @@ public class CollectionRunner {
                     String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
                     api.logging().logToOutput(debug);
                     fireOnDebug(debug);
+                    String varsDebug = burp.utils.VariableDebugFormatter.format(resolver.getVariables(), "runner / " + req.name);
+                    api.logging().logToOutput(varsDebug);
+                    fireOnDebug(varsDebug);
                 }
                 String resolvedUrl = resolver.resolve(req.url);
                 HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);

@@ -22,12 +22,13 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Both** — Repeater tabs + live Sitemap entries
 
 ### Variable Resolution
-- Collection-level variables
+- Collection-level / global variables (source depends on format; see Playbook 4)
 - Environment files (Postman environment JSON)
-- Request-level variables (Bruno `vars` block)
-- Custom manual variables
+- Request-level variables (Bruno `vars` block, Postman request vars)
+- Custom manual variables (Variables tab + OAuth2 tab)
 - Default values: `{{var|default}}`
 - Nested variable resolution
+- Unified precedence across Import and Runner flows
 
 ### Collection Runner
 - Execute selected requests **sequentially** like Postman Collection Runner
@@ -140,12 +141,19 @@ oauth2_client_id=my-client
 ```
 
 Precedence during runtime (highest to lowest):
-1. Runner-extracted variables from previous responses
-2. OAuth2 tab values
-3. Variables tab / environment file values
-4. Collection-level variables
-5. Request-level variables
+1. Runner-extracted variables from previous responses (Runner only)
+2. Request-level variables (`req.variables`)
+3. User-supplied runtime vars (Variables tab + OAuth2 tab + environment file)
+4. Collection-level variables (`collection.variables`)
+5. Collection environment map (`collection.environment`)
 6. Default values in `{{var|default}}` syntax
+
+**Format-specific collection/global variable sources:**
+- **Postman** — `collection.variable` array (objects/arrays serialized to JSON string)
+- **Insomnia** — `environment` resources in export (`resources[].data` key-value map)
+- **Bruno** — `bruno.json` top-level `vars` / `variables` / `env` / `presets` objects
+- **OpenAPI** — `servers[].variables` default values (populated as `collection.environment`)
+- **HAR** — no collection variable model; request values only
 
 ### Playbook 5: OAuth2 Tab Workflow
 1. Switch to the **OAuth2** tab.

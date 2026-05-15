@@ -66,6 +66,26 @@ public class InsomniaParser implements CollectionParser {
             }
         }
 
+        // Parse environment resources into collection.environment
+        for (JsonElement r : resources) {
+            JsonObject res = r.getAsJsonObject();
+            if (res.has("_type") && "environment".equals(res.get("_type").getAsString())) {
+                if (res.has("data") && res.get("data").isJsonObject()) {
+                    JsonObject data = res.getAsJsonObject("data");
+                    for (Map.Entry<String, com.google.gson.JsonElement> entry : data.entrySet()) {
+                        com.google.gson.JsonElement value = entry.getValue();
+                        if (value != null && !value.isJsonNull()) {
+                            if (value.isJsonPrimitive()) {
+                                collection.environment.put(entry.getKey(), value.getAsString());
+                            } else {
+                                collection.environment.put(entry.getKey(), value.toString());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Parse requests
         for (JsonElement r : resources) {
             JsonObject res = r.getAsJsonObject();

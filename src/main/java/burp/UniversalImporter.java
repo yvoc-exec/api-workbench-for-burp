@@ -82,7 +82,14 @@ public class UniversalImporter {
                 result.totalRequests = selectedRequests.size();
 
                 try {
-                    // Load environment if provided
+                    // Start fresh for each import batch
+                    resolver.clear();
+
+                    // Base layer: collection environment + collection variables (lowest precedence)
+                    resolver.addEnvironmentVariables(collection);
+                    resolver.addCollectionVariables(collection);
+
+                    // User-supplied layer: environment file + runtime vars (overrides collection)
                     if (environmentFile != null) {
                         publish("Loading environment...");
                         try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
@@ -97,13 +104,7 @@ public class UniversalImporter {
                             }
                         }
                     }
-
-                    // Seed initial vars (OAuth2 + Variables tab)
                     resolver.addAll(initialVars);
-
-                    // Add environment and collection variables
-                    resolver.addEnvironmentVariables(collection);
-                    resolver.addCollectionVariables(collection);
 
                     publish("Processing " + selectedRequests.size() + " requests...");
 
@@ -178,6 +179,9 @@ public class UniversalImporter {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
             logCallback.log(debug);
             if (api != null) api.logging().logToOutput(debug);
+            String varsDebug = VariableDebugFormatter.format(resolver.getVariables(), destination + " / " + req.name);
+            logCallback.log(varsDebug);
+            if (api != null) api.logging().logToOutput(varsDebug);
         }
         String resolvedUrl = resolver.resolve(req.url);
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
