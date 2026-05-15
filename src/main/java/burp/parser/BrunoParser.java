@@ -61,13 +61,45 @@ public class BrunoParser implements CollectionParser {
             }
         }
 
-        // Load bruno.json for collection metadata if present
+        // Load bruno.json for collection metadata and global vars if present
         File brunoJson = new File(file.isDirectory() ? file : file.getParentFile(), "bruno.json");
         if (brunoJson.exists()) {
             try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(brunoJson), java.nio.charset.StandardCharsets.UTF_8)) {
                 com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
                 if (obj.has("name")) {
                     collection.name = obj.get("name").getAsString();
+                }
+                // Parse common env-like config keys into collection.environment
+                String[] envKeys = {"vars", "variables", "env"};
+                for (String envKey : envKeys) {
+                    if (obj.has(envKey) && obj.get(envKey).isJsonObject()) {
+                        com.google.gson.JsonObject envObj = obj.getAsJsonObject(envKey);
+                        for (Map.Entry<String, com.google.gson.JsonElement> entry : envObj.entrySet()) {
+                            com.google.gson.JsonElement value = entry.getValue();
+                            if (value != null && !value.isJsonNull()) {
+                                if (value.isJsonPrimitive()) {
+                                    collection.environment.put(entry.getKey(), value.getAsString());
+                                } else {
+                                    collection.environment.put(entry.getKey(), value.toString());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Also check for a top-level "presets" or "default" block with vars
+                if (obj.has("presets") && obj.get("presets").isJsonObject()) {
+                    com.google.gson.JsonObject presets = obj.getAsJsonObject("presets");
+                    for (String presetKey : presets.keySet()) {
+                        if (presets.get(presetKey).isJsonObject()) {
+                            com.google.gson.JsonObject preset = presets.getAsJsonObject(presetKey);
+                            for (Map.Entry<String, com.google.gson.JsonElement> entry : preset.entrySet()) {
+                                com.google.gson.JsonElement value = entry.getValue();
+                                if (value != null && !value.isJsonNull() && value.isJsonPrimitive()) {
+                                    collection.environment.putIfAbsent(entry.getKey(), value.getAsString());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

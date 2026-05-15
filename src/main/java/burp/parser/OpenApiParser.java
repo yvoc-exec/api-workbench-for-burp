@@ -60,13 +60,26 @@ public class OpenApiParser implements CollectionParser {
             defaultSecurity = (List) spec.get("security");
         }
 
-        // Extract servers/base URLs
+        // Extract servers/base URLs and server variable defaults
         List<String> baseUrls = new ArrayList<>();
         if (spec.containsKey("servers") && spec.get("servers") instanceof List) {
             for (Object s : (List) spec.get("servers")) {
                 if (s instanceof Map) {
-                    String url = (String) ((Map) s).get("url");
+                    Map<String, Object> server = (Map) s;
+                    String url = (String) server.get("url");
                     if (url != null) baseUrls.add(url);
+                    // Extract variable defaults from servers[].variables
+                    if (server.containsKey("variables") && server.get("variables") instanceof Map) {
+                        Map<String, Object> vars = (Map) server.get("variables");
+                        for (Map.Entry<String, Object> ve : vars.entrySet()) {
+                            if (ve.getValue() instanceof Map) {
+                                Map<String, Object> varDef = (Map) ve.getValue();
+                                if (varDef.containsKey("default")) {
+                                    collection.environment.put(ve.getKey(), String.valueOf(varDef.get("default")));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } else if (spec.containsKey("host")) {

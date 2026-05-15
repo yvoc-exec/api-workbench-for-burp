@@ -67,7 +67,7 @@ public class PostmanParser implements CollectionParser {
                 JsonObject var = v.getAsJsonObject();
                 ApiRequest.Variable cv = new ApiRequest.Variable();
                 cv.key = getString(var, "key", "");
-                cv.value = getString(var, "value", "");
+                cv.value = extractVariableValue(var, "value");
                 cv.type = getString(var, "type", "string");
                 collection.variables.add(cv);
             }
@@ -302,6 +302,16 @@ public class PostmanParser implements CollectionParser {
             if (elem.isJsonPrimitive()) return elem.getAsString();
         }
         return defaultValue;
+    }
+
+    /**
+     * Extracts a variable value, serializing non-primitives (objects/arrays) to JSON string.
+     */
+    private String extractVariableValue(JsonObject var, String key) {
+        if (!var.has(key) || var.get(key).isJsonNull()) return "";
+        JsonElement elem = var.get(key);
+        if (elem.isJsonPrimitive()) return elem.getAsString();
+        return gson.toJson(elem);
     }
 
     @Override
