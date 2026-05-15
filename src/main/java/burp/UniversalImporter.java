@@ -105,9 +105,9 @@ public class UniversalImporter {
                         if (isCancelled()) break;
                         QueuedRequest qr = queue.get(i);
                         try {
-                            seedResolverForCollection(qr.collection);
+                            Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.request, destination, delayMs, logCallback);
+                                processRequest(qr.request, destination, delayMs, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("✓ " + qr.request.name);
@@ -168,13 +168,41 @@ public class UniversalImporter {
         return api.http().sendRequest(httpRequest, options);
     }
 
-    private void seedResolverForCollection(ApiCollection collection) {
-        if (collection == null) return;
+    private Map<String, String> buildSourceMap(ApiRequest req, Map<String, String> colSources) {
+        Map<String, String> sources = new LinkedHashMap<>();
+        if (colSources != null) sources.putAll(colSources);
+        Map<String, String> vars = resolver.getVariables();
+        for (String key : vars.keySet()) {
+            if (req.variables != null && req.variables.stream().anyMatch(v -> v.key.equals(key) && v.value != null)) {
+                sources.put(key, "request-level");
+            } else {
+                sources.putIfAbsent(key, "resolved");
+            }
+        }
+        return sources;
+    }
+
+    private Map<String, String> seedResolverForCollection(ApiCollection collection) {
+        Map<String, String> sources = new LinkedHashMap<>();
+        if (collection == null) return sources;
         // Precedence (lowest -> highest): environment -> variables -> runtimeVars -> runtimeOAuth2
         resolver.addEnvironmentVariables(collection);
+        if (collection.environment != null) {
+            for (String key : collection.environment.keySet()) sources.put(key, "collection-env");
+        }
         resolver.addCollectionVariables(collection);
-        if (collection.runtimeVars != null) resolver.addAll(collection.runtimeVars);
-        if (collection.runtimeOAuth2 != null) resolver.addAll(collection.runtimeOAuth2);
+        for (ApiRequest.Variable v : collection.variables) {
+            if (v.value != null) sources.put(v.key, "collection-var");
+        }
+        if (collection.runtimeVars != null) {
+            resolver.addAll(collection.runtimeVars);
+            for (String key : collection.runtimeVars.keySet()) sources.put(key, "scoped-runtime");
+        }
+        if (collection.runtimeOAuth2 != null) {
+            resolver.addAll(collection.runtimeOAuth2);
+            for (String key : collection.runtimeOAuth2.keySet()) sources.put(key, "scoped-oauth2");
+        }
+        return sources;
     }
 
     public void loadEnvFileIntoMap(File environmentFile, Map<String, String> target) {
@@ -203,7 +231,8 @@ public class UniversalImporter {
         }
     }
 
-    private void processRequest(ApiRequest req, String destination, int delayMs, LogCallback logCallback) throws Exception {
+    private void processRequest(ApiRequest req, String destination, int delayMs, LogCallback logCallback,
+                                Map<String, String> colSources) throws Exception {
         // FIX: Track existing variable keys to prevent leakage across requests
         Set<String> preKeys = new HashSet<>();
         try {
@@ -231,7 +260,8 @@ public class UniversalImporter {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
             logCallback.log(debug);
             if (api != null) api.logging().logToOutput(debug);
-            String varsDebug = VariableDebugFormatter.format(resolver.getVariables(), destination + " / " + req.name);
+            Map<String, String> sources = buildSourceMap(req, colSources);
+            String varsDebug = VariableDebugFormatter.format(resolver.getVariables(), sources, destination + " / " + req.name);
             logCallback.log(varsDebug);
             if (api != null) api.logging().logToOutput(varsDebug);
         }
