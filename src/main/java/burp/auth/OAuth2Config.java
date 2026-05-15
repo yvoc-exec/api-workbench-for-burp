@@ -52,20 +52,33 @@ public class OAuth2Config {
     public boolean isValid() {
         if (tokenUrl == null || tokenUrl.isEmpty()) return false;
         if (clientId == null || clientId.isEmpty()) return false;
+        String mode = normalizeClientAuthMode();
+        boolean secretRequired = !"none".equals(mode);
         switch (grantType) {
             case CLIENT_CREDENTIALS:
-                if (clientAuth != null && clientAuth.equalsIgnoreCase("none")) {
-                    return true;
-                }
-                return clientSecret != null && !clientSecret.isEmpty();
+                if (secretRequired && (clientSecret == null || clientSecret.isEmpty())) return false;
+                return true;
             case PASSWORD:
-                return username != null && password != null;
+                if (username == null || password == null) return false;
+                if (secretRequired && (clientSecret == null || clientSecret.isEmpty())) return false;
+                return true;
             case AUTHORIZATION_CODE:
-                return authUrl != null && !authUrl.isEmpty();
+                if (authUrl == null || authUrl.isEmpty()) return false;
+                if (secretRequired && (clientSecret == null || clientSecret.isEmpty())) return false;
+                return true;
             case REFRESH_TOKEN:
-                return refreshToken != null && !refreshToken.isEmpty();
+                if (refreshToken == null || refreshToken.isEmpty()) return false;
+                if (secretRequired && (clientSecret == null || clientSecret.isEmpty())) return false;
+                return true;
         }
         return false;
+    }
+
+    private String normalizeClientAuthMode() {
+        String mode = clientAuth == null ? "body" : clientAuth.trim().toLowerCase();
+        if ("prefer_basic".equals(mode)) mode = "basic";
+        if (!"basic".equals(mode) && !"none".equals(mode)) mode = "body";
+        return mode;
     }
 
     public String getVariablePrefix() {

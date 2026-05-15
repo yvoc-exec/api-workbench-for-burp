@@ -11,22 +11,32 @@ import java.nio.charset.StandardCharsets;
 
 public class ClientCredentialsHandler {
     public TokenStore.TokenEntry execute(OAuth2Config config, MontoyaApi api) throws Exception {
-        String body = "grant_type=client_credentials" +
-                "&client_id=" + URLEncoder.encode(config.clientId, StandardCharsets.UTF_8);
-        if (!isBasicAuth(config)) {
-            body += "&client_secret=" + URLEncoder.encode(config.clientSecret, StandardCharsets.UTF_8);
+        validateBodySecretIfNeeded(config);
+        StringBuilder body = new StringBuilder();
+        appendFormParam(body, "grant_type", "client_credentials", true);
+        appendFormParam(body, "client_id", config.clientId, false);
+        if (isBodyClientSecret(config)) {
+            appendFormParam(body, "client_secret", config.clientSecret, false);
         }
         if (config.scope != null && !config.scope.isEmpty()) {
-            body += "&scope=" + URLEncoder.encode(config.scope, StandardCharsets.UTF_8);
+            appendFormParam(body, "scope", config.scope, false);
         }
-        return executeTokenRequest(config, body, api);
+        return executeTokenRequest(config, body.toString(), api);
     }
 
     static TokenStore.TokenEntry executeTokenRequest(OAuth2Config config, String body, MontoyaApi api) throws Exception {
+        String mode = normalizeClientAuthMode(config);
+
+        if ("basic".equals(mode)) {
+            if (config.clientId == null || config.clientId.isEmpty() || config.clientSecret == null || config.clientSecret.isEmpty()) {
+                throw new Exception("OAuth2 client_auth=basic requires oauth2_client_id and oauth2_client_secret");
+            }
+        }
+
         HttpService service = HttpService.httpService(extractHost(config.tokenUrl), extractPort(config.tokenUrl), config.tokenUrl.startsWith("https"));
         String path = extractPath(config.tokenUrl);
         String authHeader = "";
-        if (isBasicAuth(config) && config.clientId != null && config.clientSecret != null) {
+        if ("basic".equals(mode)) {
             String creds = config.clientId + ":" + config.clientSecret;
             String basic = java.util.Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
             authHeader = "Authorization: Basic " + basic + "\r\n";
@@ -50,15 +60,14 @@ public class ClientCredentialsHandler {
         try {
             json = JsonParser.parseString(respBody).getAsJsonObject();
         } catch (Exception e) {
-            // Non-JSON response (e.g., HTML error page, WAF block)
             String preview = respBody.length() > 200 ? respBody.substring(0, 200) + "..." : respBody;
-            throw new Exception("OAuth2 token endpoint returned non-JSON response (status: " + 
+            throw new Exception("OAuth2 token endpoint returned non-JSON response (status: " +
                     response.response().statusCode() + "): " + preview);
         }
 
         if (json.has("error")) {
             String error = json.get("error").isJsonPrimitive() ? json.get("error").getAsString() : "unknown";
-            String desc = json.has("error_description") && json.get("error_description").isJsonPrimitive() 
+            String desc = json.has("error_description") && json.get("error_description").isJsonPrimitive()
                     ? json.get("error_description").getAsString() : "";
             throw new Exception("OAuth2 error: " + error + (desc.isEmpty() ? "" : " - " + desc));
         }
@@ -80,9 +89,42 @@ public class ClientCredentialsHandler {
         return entry;
     }
 
+    static String normalizeClientAuthMode(OAuth2Config config) {
+        String mode = config.clientAuth == null ? "body" : config.clientAuth.trim().toLowerCase();
+        if ("prefer_basic".equals(mode)) mode = "basic";
+        if (!"basic".equals(mode) && !"none".equals(mode)) mode = "body";
+        return mode;
+    }
+
     static boolean isBasicAuth(OAuth2Config config) {
-        return config.clientAuth != null &&
-               (config.clientAuth.equalsIgnoreCase("basic") || config.clientAuth.equalsIgnoreCase("prefer_basic"));
+        return "basic".equals(normalizeClientAuthMode(config));
+    }
+
+    static boolean isBodyClientSecret(OAuth2Config config) {
+        return "body".equals(normalizeClientAuthMode(config));
+    }
+
+    static boolean isNoClientAuth(OAuth2Config config) {
+        return "none".equals(normalizeClientAuthMode(config));
+    }
+
+    static void validateBodySecretIfNeeded(OAuth2Config config) throws Exception {
+        if (isBodyClientSecret(config) && (config.clientSecret == null || config.clientSecret.isEmpty())) {
+            throw new Exception("OAuth2 client_auth=body requires oauth2_client_secret");
+        }
+    }
+
+    static void appendFormParam(StringBuilder sb, String key, String value, boolean first) {
+        if (!first) sb.append('&');
+        try {
+            sb.append(URLEncoder.encode(key, StandardCharsets.UTF_8));
+            if (value != null) {
+                sb.append('=').append(URLEncoder.encode(value, StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            sb.append(key);
+            if (value != null) sb.append('=').append(value);
+        }
     }
 
     private static String extractHost(String url) {
