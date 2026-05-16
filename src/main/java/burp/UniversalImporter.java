@@ -31,10 +31,6 @@ public class UniversalImporter {
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
-    public UniversalImporter(MontoyaApi api) {
-        this(api, burp.utils.ScriptModeDetector.detect().mode);
-    }
-
     public UniversalImporter(MontoyaApi api, ScriptMode scriptMode) {
         this.api = api;
         this.resolver = new VariableResolver();
