@@ -1265,7 +1265,7 @@ public class ImporterPanel {
         }
         ApiCollection col = ref.collection;
         Map<String, String> vars = parseRuntimeOverrideSection();
-        col.putAllRuntimeVars(vars);
+        col.replaceRuntimeVars(vars);
         appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
         syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
@@ -1282,7 +1282,7 @@ public class ImporterPanel {
         if (confirm != JOptionPane.YES_OPTION) return;
         Map<String, String> vars = parseRuntimeOverrideSection();
         for (ApiCollection col : loadedCollections) {
-            col.putAllRuntimeVars(vars);
+            col.replaceRuntimeVars(vars);
         }
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();

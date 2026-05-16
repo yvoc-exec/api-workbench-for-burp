@@ -275,6 +275,10 @@ public class ScriptEngine {
             }
             public void unset(String key) {
                 context.remove(key);
+                Map<String, String> live = resolver.mutableVariables();
+                if (live != null) {
+                    live.remove(key);
+                }
             }
         }
 
