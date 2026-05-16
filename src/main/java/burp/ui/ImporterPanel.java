@@ -64,6 +64,7 @@ public class ImporterPanel {
     private JTable resultTable;
     private RunnerResultTableModel resultModel;
     private JSpinner runnerDelaySpinner;
+    private JSpinner runnerRetriesSpinner;
     private JCheckBox stopOnErrorBox;
     private JCheckBox followRedirectsBox;
     private JCheckBox runnerDebugRawRequestBox;
@@ -663,14 +664,21 @@ public class ImporterPanel {
         configPanel.add(runnerDelaySpinner, gbc);
 
         gbc.gridx = 2;
+        configPanel.add(new JLabel("Retries:"), gbc);
+
+        gbc.gridx = 3;
+        runnerRetriesSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 20, 1));
+        configPanel.add(runnerRetriesSpinner, gbc);
+
+        gbc.gridx = 4;
         stopOnErrorBox = new JCheckBox("Stop on error");
         configPanel.add(stopOnErrorBox, gbc);
 
-        gbc.gridx = 3;
+        gbc.gridx = 5;
         followRedirectsBox = new JCheckBox("Follow redirects", true);
         configPanel.add(followRedirectsBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 4;
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 6;
         runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
         configPanel.add(runnerDebugRawRequestBox, gbc);
 
@@ -1436,6 +1444,7 @@ public class ImporterPanel {
         }
 
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
+        runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
         runner.setStopOnError(stopOnErrorBox.isSelected());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
         runner.setDebugRawRequest(runnerDebugRawRequestBox.isSelected());

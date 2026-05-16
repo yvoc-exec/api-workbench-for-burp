@@ -7,6 +7,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
@@ -292,6 +294,51 @@ class RequestBuilderTest {
                 .filter(k -> k.equalsIgnoreCase("Content-Type"))
                 .count();
         assertThat(count).isEqualTo(1);
+    }
+
+    @Test
+    void formdataTreatsAbsolutePathAsTextUnlessExplicitFileUpload() throws Exception {
+        Path tempFile = Files.createTempFile(Path.of("target"), "request-builder-", ".txt").toAbsolutePath().normalize();
+        Files.writeString(tempFile, "secret-file-content", StandardCharsets.UTF_8);
+        tempFile.toFile().deleteOnExit();
+
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("upload", tempFile.toString()));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+
+        assertThat(body).contains(tempFile.toString());
+        assertThat(body).doesNotContain("secret-file-content");
+    }
+
+    @Test
+    void formdataExplicitFileUploadReadsFileContent() throws Exception {
+        Path tempFile = Files.createTempFile(Path.of("target"), "request-builder-upload-", ".txt").toAbsolutePath().normalize();
+        Files.writeString(tempFile, "uploaded-content", StandardCharsets.UTF_8);
+        tempFile.toFile().deleteOnExit();
+
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("upload", "");
+        field.fileUpload = true;
+        field.filePath = tempFile.toString();
+        req.body.formdata.add(field);
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+
+        assertThat(body).contains("filename=\"" + tempFile.getFileName() + "\"");
+        assertThat(body).contains("uploaded-content");
     }
 
     // ===================================================================

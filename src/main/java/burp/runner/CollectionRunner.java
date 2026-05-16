@@ -40,7 +40,11 @@ public class CollectionRunner {
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
     private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
+    private final Map<ApiCollection, Map<String, String>> extractedVarsByCollection =
+            Collections.synchronizedMap(new IdentityHashMap<>());
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
+    private volatile ExecutorService activeExecutor;
+    private volatile Future<?> activeFuture;
 
     private OAuth2Manager oauth2Manager;
 
@@ -67,7 +71,7 @@ public class CollectionRunner {
     }
 
     public void setDelayMs(int delayMs) { this.delayMs = delayMs; }
-    public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+    public void setMaxRetries(int maxRetries) { this.maxRetries = Math.max(0, maxRetries); }
     public void setStopOnError(boolean stopOnError) { this.stopOnError = stopOnError; }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
@@ -94,6 +98,7 @@ public class CollectionRunner {
         cancelled = false;
         results.clear();
         extractedVars.clear();
+        extractedVarsByCollection.clear();
 
         // Build collection lookup maps: identity map preferred, name fallback
         Map<ApiRequest, ApiCollection> reqToColMap = new IdentityHashMap<>();
@@ -116,7 +121,8 @@ public class CollectionRunner {
         ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
-        executor.submit(() -> {
+        activeExecutor = executor;
+        Future<?> future = executor.submit(() -> {
             try {
                 fireOnStart("Runner", ordered.size());
 
@@ -133,8 +139,11 @@ public class CollectionRunner {
                     }
 
                     RunnerResult result = executeRequest(req, col);
-                    results.add(result);
+                    if (result == null || cancelled || Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
 
+                    results.add(result);
                     fireOnRequestComplete(result);
 
                     if (!result.success && stopOnError) {
@@ -148,14 +157,25 @@ public class CollectionRunner {
                     }
                 }
 
-                fireOnComplete(results);
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    fireOnDebug("Runner cancelled.");
+                } else {
+                    fireOnComplete(results);
+                }
             } catch (Exception e) {
-                fireOnError("Runner error: " + e.getMessage());
+                if (!cancelled && !Thread.currentThread().isInterrupted()) {
+                    fireOnError("Runner error: " + e.getMessage());
+                }
             } finally {
                 running = false;
+                if (activeExecutor == executor) {
+                    activeExecutor = null;
+                    activeFuture = null;
+                }
                 executor.shutdown();
             }
         });
+        activeFuture = future;
     }
 
     private RunnerResult executeRequest(ApiRequest req, ApiCollection col) {
@@ -164,16 +184,32 @@ public class CollectionRunner {
         result.requestId = req.id;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
-        // Merge previously extracted vars into collection runtime context so pipeline sees them
-        if (col != null && !extractedVars.isEmpty()) {
-            col.putAllRuntimeVars(extractedVars);
+        Map<String, String> scopedExtractedVars = extractedVars;
+        if (col != null) {
+            scopedExtractedVars = extractedVarsByCollection.computeIfAbsent(col, c -> new ConcurrentHashMap<>());
+            // Merge previously extracted vars only for the current collection so pipeline sees them.
+            if (!scopedExtractedVars.isEmpty()) {
+                col.putAllRuntimeVars(scopedExtractedVars);
+            }
         }
 
         int attempts = 0;
-        while (attempts < maxRetries) {
+        int maxAttempts = Math.max(1, maxRetries + 1);
+        while (attempts < maxAttempts && !cancelled) {
             attempts++;
             try {
                 ExecutionResult exec = pipeline.execute(req, col, followRedirects);
+
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    return null;
+                }
+                if (debugRawRequest && exec != null && exec.requestHeaders != null) {
+                    fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + exec.requestHeaders + "\n=== End Runner Raw Request ===");
+                }
+
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    return null;
+                }
 
                 if (exec.success && exec.response != null && exec.response.response() != null) {
                     var response = exec.response.response();
@@ -205,12 +241,14 @@ public class CollectionRunner {
                     result.path = parsed.pathWithQuery;
 
                     // Annotate sitemap entry for visibility
-                    Annotations annotations = Annotations.annotations(
-                            "[Runner] " + req.name, HighlightColor.CYAN);
-                    api.siteMap().add(exec.response.withAnnotations(annotations));
+                    if (api != null) {
+                        Annotations annotations = Annotations.annotations(
+                                "[Runner] " + req.name, HighlightColor.CYAN);
+                        api.siteMap().add(exec.response.withAnnotations(annotations));
+                    }
 
                     // Copy extracted vars and assertions for cross-request continuity
-                    mergeExecutionVariables(extractedVars, result, exec);
+                    mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
                     if (!exec.assertions.isEmpty()) {
                         result.assertions.addAll(exec.assertions);
                     }
@@ -219,27 +257,27 @@ public class CollectionRunner {
                 } else {
                     result.success = false;
                     result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
-                    if (attempts >= maxRetries) {
+                    if (attempts >= maxAttempts || cancelled) {
                         break;
                     }
                     try {
                         Thread.sleep(delayMs * attempts); // Exponential backoff
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        break;
+                        return null;
                     }
                 }
             } catch (Exception e) {
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
-                if (attempts >= maxRetries) {
+                if (attempts >= maxAttempts || cancelled) {
                     break;
                 }
                 try {
                     Thread.sleep(delayMs * attempts); // Exponential backoff
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    break;
+                    return null;
                 }
             }
         }
@@ -354,18 +392,31 @@ public class CollectionRunner {
         return msg;
     }
 
-    static void mergeExecutionVariables(Map<String, String> runnerExtractedVars, RunnerResult result, ExecutionResult exec) {
-        if (exec == null || result == null || runnerExtractedVars == null) {
+    static void mergeExecutionVariables(Map<String, String> scopedExtractedVars,
+                                        Map<String, String> aggregateExtractedVars,
+                                        RunnerResult result,
+                                        ExecutionResult exec) {
+        if (exec == null || result == null) {
             return;
         }
         if (exec.removedVars != null && !exec.removedVars.isEmpty()) {
             for (String key : exec.removedVars) {
-                runnerExtractedVars.remove(key);
+                if (scopedExtractedVars != null) {
+                    scopedExtractedVars.remove(key);
+                }
+                if (aggregateExtractedVars != null) {
+                    aggregateExtractedVars.remove(key);
+                }
                 result.extractedVariables.remove(key);
             }
         }
         if (!exec.extractedVars.isEmpty()) {
-            runnerExtractedVars.putAll(exec.extractedVars);
+            if (scopedExtractedVars != null) {
+                scopedExtractedVars.putAll(exec.extractedVars);
+            }
+            if (aggregateExtractedVars != null) {
+                aggregateExtractedVars.putAll(exec.extractedVars);
+            }
             result.extractedVariables.putAll(exec.extractedVars);
         }
     }
@@ -379,6 +430,14 @@ public class CollectionRunner {
 
     public void cancel() {
         cancelled = true;
+        Future<?> future = activeFuture;
+        if (future != null) {
+            future.cancel(true);
+        }
+        ExecutorService executor = activeExecutor;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
     }
 
     public boolean isRunning() { return running; }
