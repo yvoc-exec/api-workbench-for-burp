@@ -23,6 +23,7 @@ import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
@@ -51,7 +52,10 @@ public class ImporterPanel {
     private JTextField envField;
     private JButton envBrowseBtn, envApplySelectedBtn, envApplyAllBtn;
     private RequestEditorPanel requestEditor;
-    private ResponsePane responsePane;
+    private JTabbedPane workbenchDetailTabs;
+    private HttpRequestEditor workbenchRequestEditor;
+    private HttpResponseEditor workbenchResponseEditor;
+    private JTextArea workbenchMetaText;
     private JTextArea importLog;
 
     // Runner tab
@@ -231,18 +235,32 @@ public class ImporterPanel {
 
     private JComponent createRightWorkbenchPanel() {
         requestEditor = new RequestEditorPanel();
-        responsePane = new ResponsePane(importer.getApi());
 
         requestEditor.setSendActionListener(() -> executeWorkbenchSend());
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         split.setTopComponent(requestEditor);
-        split.setBottomComponent(responsePane);
+        split.setBottomComponent(createWorkbenchDetailTabs());
         split.setResizeWeight(0.50);
         split.setOneTouchExpandable(true);
         split.setContinuousLayout(true);
         split.setDividerSize(8);
         return split;
+    }
+
+    private JTabbedPane createWorkbenchDetailTabs() {
+        JTabbedPane tabs = new JTabbedPane();
+        workbenchRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
+        tabs.addTab("Request", workbenchRequestEditor.uiComponent());
+
+        workbenchResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
+        tabs.addTab("Response", workbenchResponseEditor.uiComponent());
+
+        workbenchMetaText = new JTextArea();
+        workbenchMetaText.setEditable(false);
+        workbenchMetaText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        tabs.addTab("Meta", new JScrollPane(workbenchMetaText));
+        return tabs;
     }
 
     private JPanel createEnvBindingRow() {
@@ -334,6 +352,7 @@ public class ImporterPanel {
             return;
         }
         final ApiCollection resolvedCol = col;
+        final String sendModeLabel = requestEditor.getSendModeLabel();
         requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
@@ -342,30 +361,28 @@ public class ImporterPanel {
                     publish("Sending: " + edited.method + " " + edited.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
 
-                    long startTime = System.currentTimeMillis();
                     var result = importer.sendSingleRequestWithBuiltRequest(edited, resolvedCol, follow);
-                    long elapsed = System.currentTimeMillis() - startTime;
                     var rr = result.response;
 
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
                         byte[] bodyBytes = resp.body().getBytes();
-                        SwingUtilities.invokeLater(() -> {
-                            responsePane.displayResponse(resp, elapsed);
-                        });
-                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + elapsed + " ms)");
+                        SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(edited, result, sendModeLabel));
+                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + result.elapsedMs + " ms)");
                     } else {
                         publish("No response received.");
                     }
 
-                    if ("Send + Repeater".equals(requestEditor.getSendModeLabel()) && result.builtRequest != null) {
+                    if ("Send + Repeater".equals(sendModeLabel) && result.builtRequest != null) {
                         String tabName = importer.generateRepeaterTabName(edited.name,
                             edited.sourceCollection != null ? edited.sourceCollection : "Unknown");
                         importer.sendToRepeater(result.builtRequest, tabName);
                         publish("Sent to Repeater: " + tabName);
                     }
                 } catch (Exception e) {
-                    publish("Send failed: " + e.getMessage());
+                    String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(edited, failureReason, sendModeLabel));
+                    publish("Send failed: " + failureReason);
                 }
                 return null;
             }
@@ -381,6 +398,62 @@ public class ImporterPanel {
             }
         };
         worker.execute();
+    }
+
+    private void updateWorkbenchDetailPaneSuccess(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel) {
+        if (workbenchRequestEditor != null) {
+            workbenchRequestEditor.setRequest(result.builtRequest != null ? result.builtRequest : HttpRequest.httpRequest());
+        }
+        if (workbenchResponseEditor != null) {
+            workbenchResponseEditor.setResponse(result.response != null ? result.response.response() : HttpResponse.httpResponse());
+        }
+        if (workbenchMetaText != null) {
+            workbenchMetaText.setText(buildWorkbenchMetaText(edited, result, sendModeLabel, null));
+            workbenchMetaText.setCaretPosition(0);
+        }
+    }
+
+    private void updateWorkbenchDetailPaneFailure(ApiRequest edited, String reason, String sendModeLabel) {
+        if (workbenchRequestEditor != null) {
+            workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
+        }
+        if (workbenchResponseEditor != null) {
+            workbenchResponseEditor.setResponse(HttpResponse.httpResponse());
+        }
+        if (workbenchMetaText != null) {
+            workbenchMetaText.setText(buildWorkbenchMetaText(edited, null, sendModeLabel, reason));
+            workbenchMetaText.setCaretPosition(0);
+        }
+    }
+
+    private String buildWorkbenchMetaText(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel, String failureReason) {
+        StringBuilder meta = new StringBuilder();
+        if (failureReason != null && !failureReason.isEmpty()) {
+            meta.append("Send failed: ").append(failureReason).append("\n");
+            return meta.toString();
+        }
+        String method = edited != null && edited.method != null ? edited.method : "GET";
+        String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
+        meta.append("Request: ").append(requestName).append(" [").append(method).append("]\n");
+        meta.append("Resolved URL: ").append(result != null && result.resolvedUrl != null ? result.resolvedUrl : "").append("\n");
+        int statusCode = 0;
+        int responseBytes = 0;
+        if (result != null && result.response != null && result.response.response() != null) {
+            var response = result.response.response();
+            statusCode = response.statusCode();
+            responseBytes = response.body() != null ? response.body().getBytes().length : 0;
+        }
+        meta.append("Status: ").append(statusCode).append("\n");
+        meta.append("Elapsed: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
+        meta.append("Response bytes: ").append(responseBytes).append("\n");
+        meta.append("Send mode: ").append(sendModeLabel != null ? sendModeLabel : "").append("\n");
+        if (result != null && result.rawRequestText != null) {
+            Set<String> unresolved = burp.utils.RequestBuilder.findUnresolvedTokens(result.rawRequestText.getBytes(StandardCharsets.UTF_8));
+            if (!unresolved.isEmpty()) {
+                meta.append("Unresolved tokens: ").append(String.join(", ", unresolved)).append("\n");
+            }
+        }
+        return meta.toString();
     }
 
 
