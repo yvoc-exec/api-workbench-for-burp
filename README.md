@@ -1,6 +1,8 @@
-# Universal API Collection Importer & Runner for Burp Suite
+# API Workbench for Burp Suite
 
 A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap - with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, **Nashorn JavaScript script execution**, and a **Workbench** for request editing and direct sending.
+
+Formerly known as *Universal API Collection Importer & Runner*.
 
 ---
 

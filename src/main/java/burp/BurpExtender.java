@@ -5,7 +5,7 @@ import burp.api.montoya.MontoyaApi;
 import javax.swing.*;
 
 /**
- * Universal API Collection Importer & Runner for Burp Suite
+ * API Workbench for Burp Suite
  *
  * Supports: Postman (v2.0/v2.1), Bruno (.bru), OpenAPI/Swagger (JSON/YAML),
  *           Insomnia (v4), HAR
@@ -30,18 +30,19 @@ public class BurpExtender implements BurpExtension {
     public void initialize(MontoyaApi api) {
         this.api = api;
 
-        api.extension().setName("Universal API Importer & Runner");
+        api.extension().setName("API Workbench for Burp");
 
         api.logging().logToOutput("===================================================");
-        api.logging().logToOutput("  Universal API Importer & Runner v2.0.0");
+        api.logging().logToOutput("  API Workbench for Burp v2.0.0");
         api.logging().logToOutput("  Supports: Postman, Bruno, OpenAPI, Insomnia, HAR");
-        api.logging().logToOutput("  Features: Import + Collection Runner");
+        api.logging().logToOutput("  Features: Import + Collection Runner + Workbench");
+        api.logging().logToOutput("  Based on API Workbench for Burp");
         api.logging().logToOutput("===================================================");
         api.logging().logToOutput("Extension loaded successfully!");
 
         SwingUtilities.invokeLater(() -> {
             importer = new UniversalImporter(api);
-            api.userInterface().registerSuiteTab("API Importer", importer.getMainPanel());
+            api.userInterface().registerSuiteTab("API Workbench", importer.getMainPanel());
         });
 
         api.extension().registerUnloadingHandler(() -> {
@@ -49,7 +50,7 @@ public class BurpExtender implements BurpExtension {
                 importer.cleanup();
             }
             burp.auth.TokenStore.clearAll();
-            api.logging().logToOutput("Universal API Importer unloaded. Tokens cleared.");
+            api.logging().logToOutput("API Workbench for Burp unloaded. Tokens cleared.");
         });
     }
 }

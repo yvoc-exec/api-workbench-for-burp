@@ -1,4 +1,4 @@
-# Universal API Collection Importer & Runner - Complete Documentation
+# API Workbench for Burp Suite - Complete Documentation
 
 **Version:** 2.0.0  
 **Author:** yvoc-exec yvoc-exec  

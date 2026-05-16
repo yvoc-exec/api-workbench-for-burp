@@ -9,7 +9,7 @@
     <version>2.0.0</version>
     <packaging>jar</packaging>
 
-    <name>Universal API Collection Importer &amp; Runner for Burp Suite</name>
+    <name>API Workbench for Burp Suite</name>
     <description>
         A Burp Suite extension that imports Postman, Bruno, OpenAPI, Insomnia, and HAR collections,
         and provides a Collection Runner for sequential API execution with variable extraction.
