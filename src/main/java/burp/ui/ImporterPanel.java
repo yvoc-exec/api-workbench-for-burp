@@ -7,6 +7,11 @@ import burp.auth.OAuth2Manager;
 import burp.UniversalImporter;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.CheckBoxTreeCellRenderer;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 
 import javax.swing.*;
 import javax.swing.border.*;
@@ -56,8 +61,8 @@ public class ImporterPanel {
     private JButton startRunnerBtn, cancelRunnerBtn;
 
     // Runner detail pane
-    private JTextArea detailRequestText;
-    private JTextArea detailResponseText;
+    private HttpRequestEditor detailRequestEditor;
+    private HttpResponseEditor detailResponseEditor;
     private JTextArea detailVarsText;
 
     // Variables tab
@@ -201,7 +206,7 @@ public class ImporterPanel {
 
     private JComponent createRightWorkbenchPanel() {
         requestEditor = new RequestEditorPanel();
-        responsePane = new ResponsePane();
+        responsePane = new ResponsePane(importer.getApi());
 
         requestEditor.setSendActionListener(() -> executeWorkbenchSend());
 
@@ -316,15 +321,9 @@ public class ImporterPanel {
 
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
-                        StringBuilder headers = new StringBuilder();
-                        headers.append("HTTP/1.1 ").append(resp.statusCode()).append("\n");
-                        for (var h : resp.headers()) {
-                            headers.append(h.name()).append(": ").append(h.value()).append("\n");
-                        }
                         byte[] bodyBytes = resp.body().getBytes();
                         SwingUtilities.invokeLater(() -> {
-                            responsePane.displayResponse(resp.statusCode(), elapsed, bodyBytes.length,
-                                headers.toString(), bodyBytes);
+                            responsePane.displayResponse(resp, elapsed);
                         });
                         publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + elapsed + " ms)");
                     } else {
@@ -524,15 +523,11 @@ public class ImporterPanel {
         tableScroll.setMinimumSize(new Dimension(200, 150));
 
         JTabbedPane detailTabs = new JTabbedPane();
-        detailRequestText = new JTextArea();
-        detailRequestText.setEditable(false);
-        detailRequestText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Request", new JScrollPane(detailRequestText));
+        detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
+        detailTabs.addTab("Request", detailRequestEditor.uiComponent());
 
-        detailResponseText = new JTextArea();
-        detailResponseText.setEditable(false);
-        detailResponseText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Response", new JScrollPane(detailResponseText));
+        detailResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
+        detailTabs.addTab("Response", detailResponseEditor.uiComponent());
 
         detailVarsText = new JTextArea();
         detailVarsText.setEditable(false);
@@ -1347,31 +1342,42 @@ public class ImporterPanel {
     }
 
     private void updateRunnerDetailPane(RunnerResult r) {
-        if (r == null) return;
+        if (r == null) {
+            if (detailRequestEditor != null) detailRequestEditor.setRequest(HttpRequest.httpRequest());
+            if (detailResponseEditor != null) detailResponseEditor.setResponse(HttpResponse.httpResponse());
+            detailVarsText.setText("");
+            return;
+        }
         StringBuilder req = new StringBuilder();
-        req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\n");
-        req.append("Host: ").append(r.host != null ? r.host : "").append("\n");
+        req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\r\n");
+        req.append("Host: ").append(r.host != null ? r.host : "").append("\r\n");
         if (r.requestHeaders != null) {
             String[] lines = r.requestHeaders.split("\n");
             for (int i = 1; i < lines.length; i++) {
-                req.append(lines[i]).append("\n");
+                req.append(lines[i]).append("\r\n");
             }
         }
         if (r.requestBody != null && !r.requestBody.isEmpty()) {
-            req.append("\n").append(r.requestBody);
+            req.append("\r\n").append(r.requestBody);
         }
-        detailRequestText.setText(req.toString());
-        detailRequestText.setCaretPosition(0);
+        if (detailRequestEditor != null) {
+            detailRequestEditor.setRequest(HttpRequest.httpRequest(req.toString()));
+        }
 
         StringBuilder resp = new StringBuilder();
-        if (r.responseHeaders != null) {
-            resp.append(r.responseHeaders).append("\n");
+        if (r.responseHeaders != null && !r.responseHeaders.trim().isEmpty()) {
+            resp.append(r.responseHeaders.trim());
+        } else {
+            int code = r.statusCode > 0 ? r.statusCode : 0;
+            resp.append("HTTP/1.1 ").append(code);
         }
-        if (r.responseBody != null) {
+        resp.append("\r\n\r\n");
+        if (r.responseBody != null && !r.responseBody.isEmpty()) {
             resp.append(r.responseBody);
         }
-        detailResponseText.setText(resp.toString());
-        detailResponseText.setCaretPosition(0);
+        if (detailResponseEditor != null) {
+            detailResponseEditor.setResponse(HttpResponse.httpResponse(resp.toString()));
+        }
 
         StringBuilder vars = new StringBuilder();
         if (r.extractedVariables != null && !r.extractedVariables.isEmpty()) {
