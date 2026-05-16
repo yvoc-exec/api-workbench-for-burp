@@ -210,8 +210,7 @@ public class CollectionRunner {
                     api.siteMap().add(exec.response.withAnnotations(annotations));
 
                     // Copy extracted vars and assertions for cross-request continuity
-                    extractedVars.putAll(exec.extractedVars);
-                    result.extractedVariables.putAll(exec.extractedVars);
+                    mergeExecutionVariables(extractedVars, result, exec);
                     if (!exec.assertions.isEmpty()) {
                         result.assertions.addAll(exec.assertions);
                     }
@@ -353,6 +352,22 @@ public class CollectionRunner {
             return "Connection timeout - target unresponsive";
         }
         return msg;
+    }
+
+    static void mergeExecutionVariables(Map<String, String> runnerExtractedVars, RunnerResult result, ExecutionResult exec) {
+        if (exec == null || result == null || runnerExtractedVars == null) {
+            return;
+        }
+        if (exec.removedVars != null && !exec.removedVars.isEmpty()) {
+            for (String key : exec.removedVars) {
+                runnerExtractedVars.remove(key);
+                result.extractedVariables.remove(key);
+            }
+        }
+        if (!exec.extractedVars.isEmpty()) {
+            runnerExtractedVars.putAll(exec.extractedVars);
+            result.extractedVariables.putAll(exec.extractedVars);
+        }
     }
 
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {

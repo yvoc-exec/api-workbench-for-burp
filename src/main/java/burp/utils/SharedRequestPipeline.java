@@ -47,6 +47,7 @@ public class SharedRequestPipeline {
         ExecutionResult result = new ExecutionResult();
         VariableResolver resolver = new VariableResolver();
         Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
+        Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
 
         try {
             // 1. Seed resolver in unified precedence order
@@ -147,6 +148,12 @@ public class SharedRequestPipeline {
             result.success = false;
             result.errorMessage = extractCleanError(e);
         } finally {
+            result.removedVars.clear();
+            for (String key : beforeScriptKeys) {
+                if (!scriptContext.containsKey(key)) {
+                    result.removedVars.add(key);
+                }
+            }
             // Commit script mutations back to collection runtime context via helper (fires change listeners)
             // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
             if (col != null) {
