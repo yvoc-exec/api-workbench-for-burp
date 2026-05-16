@@ -77,7 +77,10 @@ public class UniversalImporter {
                                LogCallback logCallback, ResultCallback resultCallback) {
         // Bind env file into collection runtime vars for scoped behavior
         if (environmentFile != null) {
-            loadEnvFileIntoMap(environmentFile, collection.runtimeVars);
+            EnvLoadResult result = loadEnvFileIntoMap(environmentFile, collection.runtimeVars);
+            if (!result.isSuccess() && ui != null) {
+                ui.appendImportLog("Env bind warning: " + result.errorMessage);
+            }
         }
         collection.runtimeVars.putAll(initialVars);
         List<QueuedRequest> queue = new ArrayList<>();
@@ -235,8 +238,21 @@ public class UniversalImporter {
         return sources;
     }
 
-    public void loadEnvFileIntoMap(File environmentFile, Map<String, String> target) {
-        if (environmentFile == null || target == null) return;
+    public static class EnvLoadResult {
+        public final int loadedCount;
+        public final String errorMessage;
+        public EnvLoadResult(int loadedCount, String errorMessage) {
+            this.loadedCount = loadedCount;
+            this.errorMessage = errorMessage;
+        }
+        public boolean isSuccess() { return errorMessage == null; }
+    }
+
+    public EnvLoadResult loadEnvFileIntoMap(File environmentFile, Map<String, String> target) {
+        if (environmentFile == null || target == null) {
+            return new EnvLoadResult(0, "Null file or target map");
+        }
+        int count = 0;
         try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
             com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
             if (obj.has("values") && obj.get("values").isJsonArray()) {
@@ -244,11 +260,13 @@ public class UniversalImporter {
                     com.google.gson.JsonObject var = v.getAsJsonObject();
                     if (var.has("key") && var.has("value")) {
                         target.put(var.get("key").getAsString(), var.get("value").getAsString());
+                        count++;
                     }
                 }
             }
+            return new EnvLoadResult(count, null);
         } catch (Exception e) {
-            // silently ignore malformed env file at binding time; UI should warn
+            return new EnvLoadResult(0, e.getMessage());
         }
     }
 
