@@ -14,6 +14,9 @@ public class OAuth2Panel extends JPanel {
     public interface VariablesChangeListener {
         void onVariablesChanged(Map<String, String> vars, boolean replaceMode);
     }
+    public interface AutoRefreshToggleListener {
+        void onToggleRequested();
+    }
 
     private final OAuth2Manager manager;
     private JComboBox<String> grantTypeBox;
@@ -30,11 +33,15 @@ public class OAuth2Panel extends JPanel {
     private JButton refreshBtn;
     private JButton clearBtn;
     private JButton populateBtn;
+    private JSpinner autoRefreshIntervalSpinner;
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
     private boolean editable = true;
     private boolean suppressChangeNotifications = false;
     private VariablesChangeListener variablesChangeListener;
+    private AutoRefreshToggleListener autoRefreshToggleListener;
+    private Color defaultRefreshBg;
+    private Color defaultRefreshFg;
 
     public OAuth2Panel(OAuth2Manager manager) {
         this.manager = manager;
@@ -122,9 +129,14 @@ public class OAuth2Panel extends JPanel {
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         acquireBtn = new JButton("Acquire Token");
         acquireBtn.addActionListener(e -> acquireToken());
-        refreshBtn = new JButton("Refresh Token");
-        refreshBtn.addActionListener(e -> refreshToken());
-        refreshBtn.setEnabled(false);
+        refreshBtn = new JButton("Start Auto Refresh");
+        refreshBtn.addActionListener(e -> {
+            if (autoRefreshToggleListener != null) {
+                autoRefreshToggleListener.onToggleRequested();
+            }
+        });
+        defaultRefreshBg = refreshBtn.getBackground();
+        defaultRefreshFg = refreshBtn.getForeground();
         clearBtn = new JButton("Clear Tokens");
         clearBtn.addActionListener(e -> {
             manager.clearTokens();
@@ -138,7 +150,16 @@ public class OAuth2Panel extends JPanel {
         btnPanel.add(clearBtn);
         populateBtn = new JButton("Populate from Selected Request");
         btnPanel.add(populateBtn);
+        gbc.gridy = 11;
         panel.add(btnPanel, gbc);
+
+        gbc.gridy = 10; gbc.gridwidth = 2;
+        JPanel autoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        autoPanel.add(new JLabel("Interval (seconds):"));
+        autoRefreshIntervalSpinner = new JSpinner(new SpinnerNumberModel(300, 30, 86400, 10));
+        autoRefreshIntervalSpinner.setPreferredSize(new Dimension(90, 24));
+        autoPanel.add(autoRefreshIntervalSpinner);
+        panel.add(autoPanel, gbc);
 
         return panel;
     }
@@ -172,11 +193,10 @@ public class OAuth2Panel extends JPanel {
         scopeField.setEnabled(editable);
         pkceBox.setEnabled(editable);
         acquireBtn.setEnabled(editable);
+        refreshBtn.setEnabled(editable);
         clearBtn.setEnabled(editable);
         populateBtn.setEnabled(editable);
-        if (!editable) {
-            refreshBtn.setEnabled(false);
-        }
+        autoRefreshIntervalSpinner.setEnabled(editable);
         if (editable) {
             updateFieldVisibility();
         }
@@ -252,40 +272,32 @@ public class OAuth2Panel extends JPanel {
         worker.execute();
     }
 
-    private void refreshToken() {
-        OAuth2Config config = buildConfig();
-        String key = TokenStore.makeKey(config);
-        TokenStore.TokenEntry existing = TokenStore.get(key);
-        if (existing == null || existing.refreshToken == null) {
-            updateStatus("No refresh token available");
-            return;
-        }
-        config.refreshToken = existing.refreshToken;
-        config.grantType = OAuth2Config.GrantType.REFRESH_TOKEN;
+    public int getAutoRefreshIntervalSeconds() {
+        Object v = autoRefreshIntervalSpinner.getValue();
+        return v instanceof Integer ? (Integer) v : 300;
+    }
 
-        SwingWorker<TokenStore.TokenEntry, String> worker = new SwingWorker<>() {
-            @Override
-            protected TokenStore.TokenEntry doInBackground() throws Exception {
-                publish("Refreshing token...");
-                return manager.acquireToken(config);
-            }
-            @Override
-            protected void done() {
-                try {
-                    TokenStore.TokenEntry entry = get();
-                    updateStatus("Token refreshed. New expiry: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
-                    if (entry != null && entry.accessToken != null) {
-                        String preview = entry.accessToken.substring(0, Math.min(20, entry.accessToken.length())) + "...";
-                        tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
-                    }
-                    refreshBtn.setEnabled(entry != null && entry.refreshToken != null);
-                    notifyVariablesChanged(true);
-                } catch (Exception e) {
-                    updateStatus("Refresh failed: " + e.getMessage());
-                }
-            }
-        };
-        worker.execute();
+    public void setAutoRefreshIntervalSeconds(int seconds) {
+        int clamped = Math.max(30, seconds);
+        autoRefreshIntervalSpinner.setValue(clamped);
+    }
+
+    public void setAutoRefreshActive(boolean active) {
+        if (active) {
+            refreshBtn.setText("Stop Auto Refresh");
+            refreshBtn.setBackground(new Color(46, 125, 50));
+            refreshBtn.setForeground(Color.WHITE);
+            refreshBtn.setOpaque(true);
+        } else {
+            refreshBtn.setText("Start Auto Refresh");
+            refreshBtn.setBackground(defaultRefreshBg);
+            refreshBtn.setForeground(defaultRefreshFg);
+            refreshBtn.setOpaque(true);
+        }
+    }
+
+    public void setAutoRefreshToggleListener(AutoRefreshToggleListener listener) {
+        this.autoRefreshToggleListener = listener;
     }
 
     private OAuth2Config buildConfig() {
@@ -363,6 +375,10 @@ public class OAuth2Panel extends JPanel {
 
     public void setVariablesChangeListener(VariablesChangeListener listener) {
         this.variablesChangeListener = listener;
+    }
+
+    public void appendStatus(String msg) {
+        updateStatus(msg);
     }
 
     private void notifyVariablesChanged(boolean replaceMode) {
