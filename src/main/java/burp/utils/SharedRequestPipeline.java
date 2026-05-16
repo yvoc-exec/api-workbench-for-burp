@@ -21,7 +21,7 @@ import java.util.*;
  * handles OAuth2 refresh, builds and sends the HTTP request, then runs post-response
  * scripts and merges extracted variables back into the collection runtime context.
  *
- * Precedence (lowest → highest, as added to resolver):
+ * Precedence (lowest -> highest, as added to resolver):
  *   1. Collection environment
  *   2. Collection definition variables
  *   3. Scoped OAuth2 runtime vars (runtimeOAuth2)
@@ -150,7 +150,7 @@ public class SharedRequestPipeline {
             // Commit script mutations back to collection runtime context via helper (fires change listeners)
             // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
             if (col != null) {
-                col.putAllRuntimeVars(scriptContext);
+                col.replaceRuntimeVars(scriptContext);
             }
         }
         return result;

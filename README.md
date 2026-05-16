@@ -45,7 +45,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Stop on error** option
 - Results table with status, timing, size, assertion pass/fail
 - Auto-populates Sitemap with runner responses
-- Per-request OAuth2 auth scoping with automatic snapshot/restore to prevent cross-request contamination
+- Per-request OAuth2 auth scoping is resolved per send through the shared pipeline's fresh resolver
 - **Execution model**: pre/post scripts and response extraction/assertions run in both Collection Runner and Workbench direct send via a shared pipeline
 
 ### Script Modes
@@ -226,47 +226,47 @@ If a request returns 400 or 401, check in order:
 
 ```
 src/main/java/burp/
-├── BurpExtender.java              # Extension entry point
-├── UniversalImporter.java         # Core import orchestrator
-├── auth/
-│   ├── OAuth2Config.java          # OAuth2 configuration model
-│   ├── OAuth2Manager.java         # Token lifecycle manager
-│   ├── TokenStore.java            # In-memory encrypted token cache
-│   ├── ClientCredentialsHandler.java
-│   ├── PasswordGrantHandler.java
-│   ├── RefreshTokenHandler.java
-│   └── AuthorizationCodeHandler.java  # PKCE + localhost callback
-├── models/
-│   ├── ApiRequest.java            # Unified request model
-│   ├── ApiCollection.java         # Unified collection model
-│   ├── ImportResult.java          # Import operation result
-│   └── RunnerResult.java          # Runner operation result
-├── parser/
-│   ├── CollectionParser.java      # Parser interface
-│   ├── ParserRegistry.java        # Auto-detect registry
-│   ├── PostmanParser.java         # Postman v2.0/v2.1
-│   ├── BrunoParser.java           # Bruno .bru files + JS normalization
-│   ├── OpenApiParser.java         # OpenAPI 2.x/3.x JSON+YAML
-│   ├── InsomniaParser.java        # Insomnia v4 JSON
-│   ├── HarParser.java             # HAR archives
-│   └── VariableResolver.java      # {{variable}} resolution engine
-├── runner/
-│   └── CollectionRunner.java      # Sequential execution + JS engine
-├── ui/
-│   ├── ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
-│   ├── OAuth2Panel.java           # OAuth2 configuration UI
-│   ├── RequestEditorPanel.java    # Workbench request editor (method, url, headers, body, auth, scripts)
-│   ├── ResponsePane.java          # Workbench response display (Pretty/Raw/Hex)
-│   ├── tree/
-│   │   ├── CollectionTreeNode.java
-│   │   └── CheckBoxTreeCellRenderer.java
-│   ├── RequestPreviewTableModel.java
-│   └── RunnerResultTableModel.java
-└── utils/
-    ├── HttpUtils.java             # URL parsing utilities
-    ├── RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
-    ├── ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
-    └── OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
+|-- BurpExtender.java              # Extension entry point
+|-- UniversalImporter.java         # Core import orchestrator
+|-- auth/
+|   |-- OAuth2Config.java          # OAuth2 configuration model
+|   |-- OAuth2Manager.java         # Token lifecycle manager
+|   |-- TokenStore.java            # In-memory encrypted token cache
+|   |-- ClientCredentialsHandler.java
+|   |-- PasswordGrantHandler.java
+|   |-- RefreshTokenHandler.java
+|   `-- AuthorizationCodeHandler.java  # PKCE + localhost callback
+|-- models/
+|   |-- ApiRequest.java            # Unified request model
+|   |-- ApiCollection.java         # Unified collection model
+|   |-- ImportResult.java          # Import operation result
+|   `-- RunnerResult.java          # Runner operation result
+|-- parser/
+|   |-- CollectionParser.java      # Parser interface
+|   |-- ParserRegistry.java        # Auto-detect registry
+|   |-- PostmanParser.java         # Postman v2.0/v2.1
+|   |-- BrunoParser.java           # Bruno .bru files + JS normalization
+|   |-- OpenApiParser.java         # OpenAPI 2.x/3.x JSON+YAML
+|   |-- InsomniaParser.java        # Insomnia v4 JSON
+|   |-- HarParser.java             # HAR archives
+|   `-- VariableResolver.java      # {{variable}} resolution engine
+|-- runner/
+|   `-- CollectionRunner.java      # Sequential execution + JS engine
+|-- ui/
+|   |-- ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
+|   |-- OAuth2Panel.java           # OAuth2 configuration UI
+|   |-- RequestEditorPanel.java    # Workbench request editor (method, url, headers, body, auth, scripts)
+|   |-- ResponsePane.java          # Workbench response display (Pretty/Raw/Hex)
+|   |-- tree/
+|   |   |-- CollectionTreeNode.java
+|   |   `-- CheckBoxTreeCellRenderer.java
+|   |-- RequestPreviewTableModel.java
+|   `-- RunnerResultTableModel.java
+`-- utils/
+    |-- HttpUtils.java             # URL parsing utilities
+    |-- RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
+    |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
+    `-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
 ```
 
 ---

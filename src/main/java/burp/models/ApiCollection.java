@@ -57,6 +57,14 @@ public class ApiCollection {
         }
     }
 
+    public void replaceRuntimeVars(Map<String, String> vars) {
+        runtimeVars.clear();
+        if (vars != null && !vars.isEmpty()) {
+            runtimeVars.putAll(vars);
+        }
+        fireChanged();
+    }
+
     public void putRuntimeOAuth2(String key, String value) {
         runtimeOAuth2.put(key, value);
         fireChanged();

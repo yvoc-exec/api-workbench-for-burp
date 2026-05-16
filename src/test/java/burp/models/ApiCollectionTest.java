@@ -23,6 +23,21 @@ class ApiCollectionTest {
     }
 
     @Test
+    void replaceRuntimeVarsRemovesStaleKeysAddsNewKeysAndNotifiesListeners() {
+        ApiCollection col = new ApiCollection();
+        AtomicInteger count = new AtomicInteger(0);
+        col.addChangeListener(count::incrementAndGet);
+        col.runtimeVars.put("stale", "old");
+
+        col.replaceRuntimeVars(Map.of("fresh", "new"));
+
+        assertThat(count.get()).isEqualTo(1);
+        assertThat(col.runtimeVars).containsEntry("fresh", "new");
+        assertThat(col.runtimeVars).doesNotContainKey("stale");
+        assertThat(col.runtimeVars).hasSize(1);
+    }
+
+    @Test
     void listenerFiresOnPutAllRuntimeOAuth2() {
         ApiCollection col = new ApiCollection();
         AtomicInteger count = new AtomicInteger(0);
