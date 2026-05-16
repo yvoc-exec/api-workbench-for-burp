@@ -18,6 +18,7 @@ import burp.api.montoya.ui.editor.HttpResponseEditor;
 import javax.swing.*;
 import javax.swing.border.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.table.DefaultTableModel;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -71,9 +72,15 @@ public class ImporterPanel {
 
     // Variables tab
     private JTextArea envVarsArea;
+    private JTable varsTable;
+    private DefaultTableModel varsTableModel;
+    private JPanel varsEditorCardPanel;
+    private JRadioButton varsRawViewBtn;
+    private JRadioButton varsTableViewBtn;
     private JComboBox<CollectionRef> varsCollectionCombo;
     private JButton bindVarsBtn;
     private JLabel varsHintLabel;
+    private String varsBaseLayerText = "";
 
     // OAuth2 tab
     private JComboBox<CollectionRef> oauth2CollectionCombo;
@@ -313,6 +320,9 @@ public class ImporterPanel {
     }
 
     private void executeWorkbenchSend() {
+        if (requestEditor != null) {
+            requestEditor.commitAllEdits();
+        }
         ApiRequest edited = requestEditor.buildRequestFromUI();
         if (edited == null) {
             appendImportLog("No request loaded in editor.");
@@ -385,8 +395,52 @@ public class ImporterPanel {
         envVarsArea = new JTextArea(20, 60);
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
-        JScrollPane scroll = new JScrollPane(envVarsArea);
-        panel.add(scroll, BorderLayout.CENTER);
+
+        varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        varsTable = new JTable(varsTableModel);
+        varsTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        varsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+        varsEditorCardPanel = new JPanel(new CardLayout());
+        varsEditorCardPanel.add(new JScrollPane(envVarsArea), "raw");
+
+        JPanel tablePanel = new JPanel(new BorderLayout(5, 5));
+        tablePanel.add(new JScrollPane(varsTable), BorderLayout.CENTER);
+        JPanel tableBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JButton addVarBtn = new JButton("+");
+        addVarBtn.addActionListener(e -> {
+            commitTableEdit(varsTable);
+            varsTableModel.addRow(new Object[]{"", ""});
+            syncRawFromVarsTable();
+        });
+        JButton delVarBtn = new JButton("-");
+        delVarBtn.addActionListener(e -> {
+            commitTableEdit(varsTable);
+            int row = resolveTargetRow(varsTable);
+            if (row >= 0) varsTableModel.removeRow(row);
+            syncRawFromVarsTable();
+        });
+        tableBtnPanel.add(addVarBtn);
+        tableBtnPanel.add(delVarBtn);
+        tablePanel.add(tableBtnPanel, BorderLayout.SOUTH);
+        varsEditorCardPanel.add(tablePanel, "table");
+
+        JPanel varsTopBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        varsRawViewBtn = new JRadioButton("Raw", true);
+        varsTableViewBtn = new JRadioButton("Table");
+        ButtonGroup varsViewGroup = new ButtonGroup();
+        varsViewGroup.add(varsRawViewBtn);
+        varsViewGroup.add(varsTableViewBtn);
+        varsRawViewBtn.addActionListener(e -> switchVarsView(false));
+        varsTableViewBtn.addActionListener(e -> switchVarsView(true));
+        varsTopBar.add(new JLabel("View:"));
+        varsTopBar.add(varsRawViewBtn);
+        varsTopBar.add(varsTableViewBtn);
+
+        JPanel centerWrap = new JPanel(new BorderLayout(5, 5));
+        centerWrap.add(varsTopBar, BorderLayout.NORTH);
+        centerWrap.add(varsEditorCardPanel, BorderLayout.CENTER);
+        panel.add(centerWrap, BorderLayout.CENTER);
 
         JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
 
@@ -807,50 +861,63 @@ public class ImporterPanel {
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
         if (ref != null) {
             ApiCollection col = ref.collection;
+            StringBuilder base = new StringBuilder();
             StringBuilder sb = new StringBuilder();
             boolean hasAny = false;
             // Layer 1: environment
             if (col.environment != null && !col.environment.isEmpty()) {
-                sb.append("# From collection environment (read-only base)\n");
+                base.append("# From collection environment (read-only base)\n");
                 for (Map.Entry<String, String> entry : new TreeMap<>(col.environment).entrySet()) {
-                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                    base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
                 }
-                sb.append("\n");
+                base.append("\n");
                 hasAny = true;
             }
             // Layer 2: collection variables
             if (col.variables != null && !col.variables.isEmpty()) {
-                sb.append("# From collection definition (read-only base)\n");
+                base.append("# From collection definition (read-only base)\n");
                 List<ApiRequest.Variable> sorted = new ArrayList<>(col.variables);
                 sorted.sort(Comparator.comparing(v -> v.key));
                 for (ApiRequest.Variable v : sorted) {
                     if (v.value != null) {
-                        sb.append(v.key).append("=").append(v.value).append("\n");
+                        base.append(v.key).append("=").append(v.value).append("\n");
                     }
                 }
-                sb.append("\n");
+                base.append("\n");
                 hasAny = true;
             }
             // Layer 3: scoped OAuth2 runtime (managed by OAuth2 tab / runtime refresh)
             if (col.runtimeOAuth2 != null && !col.runtimeOAuth2.isEmpty()) {
-                sb.append("# Scoped OAuth2 runtime (managed by OAuth2 tab)\n");
+                base.append("# Scoped OAuth2 runtime (managed by OAuth2 tab)\n");
                 for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeOAuth2).entrySet()) {
-                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                    base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
                 }
-                sb.append("\n");
+                base.append("\n");
                 hasAny = true;
             }
             // Layer 4: runtime overrides (editable layer)
+            sb.append(base);
+            varsBaseLayerText = base.toString().trim();
+            if (!varsBaseLayerText.isEmpty()) {
+                sb.append("\n");
+            }
             if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
                 sb.append("# Runtime overrides (edits apply here)\n");
                 for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
                     sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
                 }
                 hasAny = true;
+            } else if (hasAny) {
+                sb.append("# Runtime overrides (edits apply here)\n");
             }
             envVarsArea.setText(hasAny ? sb.toString() : "");
+            if (isVarsTableViewActive()) {
+                renderVarsTableFromRaw();
+            }
         } else {
             envVarsArea.setText("");
+            varsBaseLayerText = "";
+            if (varsTableModel != null) varsTableModel.setRowCount(0);
         }
     }
 
@@ -1010,6 +1077,9 @@ public class ImporterPanel {
             boolean varsHasTarget = varsRef != null;
             envVarsArea.setEnabled(varsHasTarget);
             envVarsArea.setEditable(varsHasTarget);
+            if (varsTable != null) varsTable.setEnabled(varsHasTarget);
+            if (varsRawViewBtn != null) varsRawViewBtn.setEnabled(varsHasTarget);
+            if (varsTableViewBtn != null) varsTableViewBtn.setEnabled(varsHasTarget);
             if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
             if (varsHintLabel != null) {
                 if (varsHasTarget) {
@@ -1109,6 +1179,81 @@ public class ImporterPanel {
         renderEffectiveVariablesForSelectedCollection();
     }
 
+    private void switchVarsView(boolean tableView) {
+        if (varsEditorCardPanel == null) return;
+        if (tableView) {
+            renderVarsTableFromRaw();
+        } else {
+            syncRawFromVarsTable();
+        }
+        CardLayout cl = (CardLayout) varsEditorCardPanel.getLayout();
+        cl.show(varsEditorCardPanel, tableView ? "table" : "raw");
+    }
+
+    private boolean isVarsTableViewActive() {
+        return varsTableViewBtn != null && varsTableViewBtn.isSelected();
+    }
+
+    private void renderVarsTableFromRaw() {
+        if (varsTableModel == null) return;
+        varsTableModel.setRowCount(0);
+        Map<String, String> vars = parseRuntimeOverrideFromRawText();
+        List<String> keys = new ArrayList<>(vars.keySet());
+        Collections.sort(keys);
+        for (String key : keys) {
+            varsTableModel.addRow(new Object[]{key, vars.get(key)});
+        }
+    }
+
+    private Map<String, String> parseVarsTableMap() {
+        Map<String, String> vars = new LinkedHashMap<>();
+        if (varsTableModel == null) return vars;
+        commitTableEdit(varsTable);
+        for (int i = 0; i < varsTableModel.getRowCount(); i++) {
+            String key = varsTableModel.getValueAt(i, 0) != null ? varsTableModel.getValueAt(i, 0).toString().trim() : "";
+            String value = varsTableModel.getValueAt(i, 1) != null ? varsTableModel.getValueAt(i, 1).toString() : "";
+            if (!key.isEmpty()) {
+                vars.put(key, value);
+            }
+        }
+        return vars;
+    }
+
+    private void syncRawFromVarsTable() {
+        if (envVarsArea == null || varsTableModel == null) return;
+        Map<String, String> vars = parseVarsTableMap();
+        StringBuilder sb = new StringBuilder();
+        if (varsBaseLayerText != null && !varsBaseLayerText.isEmpty()) {
+            sb.append(varsBaseLayerText);
+            if (!varsBaseLayerText.endsWith("\n")) sb.append("\n");
+            sb.append("\n");
+        }
+        sb.append("# Runtime overrides (edits apply here)\n");
+        for (Map.Entry<String, String> e : new TreeMap<>(vars).entrySet()) {
+            sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
+        }
+        envVarsArea.setText(sb.toString());
+    }
+
+    private int resolveTargetRow(JTable table) {
+        if (table == null) return -1;
+        int row = table.getSelectedRow();
+        if (row < 0 && table.isEditing()) row = table.getEditingRow();
+        return row;
+    }
+
+    private void commitTableEdit(JTable table) {
+        if (table != null && table.isEditing() && table.getCellEditor() != null) {
+            try {
+                table.getCellEditor().stopCellEditing();
+            } catch (Exception ignored) {
+                try {
+                    table.getCellEditor().cancelCellEditing();
+                } catch (Exception ignored2) {}
+            }
+        }
+    }
+
     // ========================================================================
     // Variables Tab Binding
     // ========================================================================
@@ -1148,6 +1293,9 @@ public class ImporterPanel {
     // Import / Destination Flow
     // ========================================================================
     private void startImport() {
+        if (requestEditor != null) {
+            requestEditor.commitAllEdits();
+        }
         List<ApiRequest> selected = getSelectedRequestsFromTree();
         if (selected.isEmpty()) {
             appendImportLog("No requests selected.");
@@ -1183,6 +1331,9 @@ public class ImporterPanel {
     }
 
     private void sendToRunner() {
+        if (requestEditor != null) {
+            requestEditor.commitAllEdits();
+        }
         List<ApiRequest> selected = getSelectedRequestsFromTree();
         if (selected.isEmpty()) {
             appendImportLog("No requests selected to send to runner.");
@@ -1495,6 +1646,9 @@ public class ImporterPanel {
     }
 
     private Map<String, String> parseEnvVarsMap() {
+        if (isVarsTableViewActive()) {
+            syncRawFromVarsTable();
+        }
         Map<String, String> vars = new HashMap<>();
         String text = envVarsArea.getText();
         try {
@@ -1517,11 +1671,7 @@ public class ImporterPanel {
         return vars;
     }
 
-    /**
-     * Parses only the "# Runtime overrides" section from the Variables tab.
-     * If the marker is absent, falls back to full-text parsing for backward compatibility.
-     */
-    private Map<String, String> parseRuntimeOverrideSection() {
+    private Map<String, String> parseRuntimeOverrideFromRawText() {
         Map<String, String> vars = new HashMap<>();
         String text = envVarsArea.getText();
         String marker = "# Runtime overrides (edits apply here)";
@@ -1547,6 +1697,17 @@ public class ImporterPanel {
             }
         }
         return vars;
+    }
+
+    /**
+     * Parses only the "# Runtime overrides" section from the Variables tab.
+     * If the marker is absent, falls back to full-text parsing for backward compatibility.
+     */
+    private Map<String, String> parseRuntimeOverrideSection() {
+        if (isVarsTableViewActive()) {
+            return parseVarsTableMap();
+        }
+        return parseRuntimeOverrideFromRawText();
     }
 
     public void appendImportLog(String msg) {
