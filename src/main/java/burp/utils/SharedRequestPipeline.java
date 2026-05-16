@@ -4,8 +4,6 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.RequestOptions;
 import burp.api.montoya.http.RedirectionMode;
-import burp.api.montoya.http.message.requests.HttpRequest;
-import burp.api.montoya.core.ByteArray;
 import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
@@ -45,6 +43,15 @@ public class SharedRequestPipeline {
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
         ExecutionResult result = new ExecutionResult();
+        return executeInternal(req, col, followRedirects, result, true);
+    }
+
+    public ExecutionResult build(ApiRequest req, ApiCollection col) {
+        return executeInternal(req, col, true, new ExecutionResult(), false);
+    }
+
+    private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                            ExecutionResult result, boolean sendRequest) {
         VariableResolver resolver = new VariableResolver();
         Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
@@ -91,18 +98,28 @@ public class SharedRequestPipeline {
 
             // 4. Build request
             byte[] rawRequest = requestBuilder.buildRequest(req, resolver);
+            result.rawRequestBytes = rawRequest;
+            result.resolvedVariables = new HashMap<>(resolver.getVariables());
             warnIfUnresolved(rawRequest, req.name);
 
             String resolvedUrl = resolver.resolve(req.url);
             result.resolvedUrl = resolvedUrl;
-            HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
-            HttpService service = HttpService.httpService(parsed.host, parsed.port, parsed.useHttps);
-            HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
-
             result.requestHeaders = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
             if (req.body != null && req.body.raw != null) {
                 result.requestBody = req.body.raw;
             }
+
+            if (!sendRequest) {
+                result.success = true;
+                result.response = null;
+                return result;
+            }
+            HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
+            HttpService service = HttpService.httpService(parsed.host, parsed.port, parsed.useHttps);
+
+            burp.api.montoya.http.message.requests.HttpRequest httpRequest =
+                    burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                            service, burp.api.montoya.core.ByteArray.byteArray(rawRequest));
             result.builtRequest = httpRequest;
 
             // 5. Send HTTP

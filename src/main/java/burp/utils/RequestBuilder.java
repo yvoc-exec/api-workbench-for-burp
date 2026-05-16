@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -425,18 +427,18 @@ public class RequestBuilder {
             if (field.key == null) continue;
             String resolvedKey = resolver != null ? resolver.resolve(field.key) : field.key;
             String resolvedValue = field.value != null ? (resolver != null ? resolver.resolve(field.value) : field.value) : "";
+            String uploadPath = field.fileUpload ? field.filePath : null;
+            File file = uploadPath != null ? new File(resolver != null ? resolver.resolve(uploadPath) : uploadPath) : null;
 
             baos.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
 
-            // Check if value is a file path (Bruno/Postman file upload)
-            boolean isFile = resolvedValue != null && (resolvedValue.startsWith("/") || (resolvedValue.length() > 2 && resolvedValue.charAt(1) == ':' && resolvedValue.charAt(2) == '\\') || resolvedValue.startsWith("file://"));
-            java.io.File file = isFile ? new java.io.File(resolvedValue.replace("file://", "")) : null;
             if (file != null && file.exists() && file.isFile()) {
                 // Security: Validate file path to prevent path traversal
-                String canonicalPath = file.getCanonicalPath();
-                String canonicalBase = new java.io.File(".").getCanonicalPath();
-                if (!canonicalPath.startsWith(canonicalBase) && !canonicalPath.startsWith(System.getProperty("user.home"))) {
-                    throw new SecurityException("Path traversal detected: " + resolvedValue);
+                Path canonicalPath = file.getCanonicalFile().toPath();
+                Path canonicalBase = new java.io.File(".").getCanonicalFile().toPath();
+                Path canonicalUserHome = new java.io.File(System.getProperty("user.home")).getCanonicalFile().toPath();
+                if (!canonicalPath.startsWith(canonicalBase) && !canonicalPath.startsWith(canonicalUserHome)) {
+                    throw new SecurityException("Path traversal detected: " + uploadPath);
                 }
                 String filename = file.getName();
                 baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"; filename=\"" + filename + "\"\r\n").getBytes(StandardCharsets.UTF_8));

@@ -43,6 +43,8 @@ public class ApiRequest {
             public String key;
             public String value;
             public String type;   // text, file
+            public boolean fileUpload;
+            public String filePath;
             public boolean disabled;
             public FormField(String key, String value) { this.key = key; this.value = value; }
         }

@@ -23,6 +23,8 @@ public class ExecutionResult {
     public final List<RunnerResult.AssertionResult> assertions = new ArrayList<>();
     public long elapsedMs;
     public String errorMessage;
+    public byte[] rawRequestBytes;
+    public Map<String, String> resolvedVariables = new HashMap<>();
     public String requestHeaders;
     public String requestBody;
     public String resolvedUrl;

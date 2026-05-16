@@ -239,10 +239,23 @@ public class PostmanParser implements CollectionParser {
                         JsonObject f = e.getAsJsonObject();
                         boolean disabled = f.has("disabled") && f.get("disabled").getAsBoolean();
                         if (!disabled) {
-                            body.formdata.add(new ApiRequest.Body.FormField(
-                                getString(f, "key", ""),
-                                getString(f, "value", "")
-                            ));
+                            String type = getString(f, "type", "");
+                            ApiRequest.Body.FormField field;
+                            if ("file".equalsIgnoreCase(type)) {
+                                field = new ApiRequest.Body.FormField(getString(f, "key", ""), "");
+                                field.type = "file";
+                                field.fileUpload = true;
+                                field.filePath = extractFormDataFilePath(f);
+                            } else {
+                                field = new ApiRequest.Body.FormField(
+                                    getString(f, "key", ""),
+                                    getString(f, "value", "")
+                                );
+                                if (!type.isEmpty()) {
+                                    field.type = type;
+                                }
+                            }
+                            body.formdata.add(field);
                         }
                     }
                 }
@@ -258,6 +271,24 @@ public class PostmanParser implements CollectionParser {
                 break;
         }
         return body;
+    }
+
+    private String extractFormDataFilePath(JsonObject fieldObj) {
+        if (fieldObj == null || !fieldObj.has("src") || fieldObj.get("src").isJsonNull()) {
+            return null;
+        }
+        JsonElement src = fieldObj.get("src");
+        if (src.isJsonPrimitive()) {
+            return src.getAsString();
+        }
+        if (src.isJsonArray()) {
+            for (JsonElement elem : src.getAsJsonArray()) {
+                if (elem != null && elem.isJsonPrimitive()) {
+                    return elem.getAsString();
+                }
+            }
+        }
+        return null;
     }
 
     private ApiRequest.Auth parseAuth(JsonObject authObj) {

@@ -121,7 +121,7 @@ public class UniversalImporter {
                             resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.request, destination, delayMs, logCallback, colSources);
+                                processRequest(qr.collection, qr.request, destination, delayMs, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("[OK] " + qr.request.name);
@@ -219,11 +219,13 @@ public class UniversalImporter {
         return generateUniqueTabName(baseName, collectionName);
     }
 
-    private Map<String, String> buildSourceMap(ApiRequest req, Map<String, String> colSources) {
+    private Map<String, String> buildSourceMap(ApiRequest req, Map<String, String> resolvedVars, Map<String, String> colSources) {
         Map<String, String> sources = new LinkedHashMap<>();
         if (colSources != null) sources.putAll(colSources);
-        Map<String, String> vars = resolver.getVariables();
-        for (String key : vars.keySet()) {
+        if (resolvedVars == null || resolvedVars.isEmpty()) {
+            return sources;
+        }
+        for (String key : resolvedVars.keySet()) {
             if (req.variables != null && req.variables.stream().anyMatch(v -> v.key.equals(key) && v.value != null)) {
                 sources.put(key, "request-level");
             } else {
@@ -297,80 +299,64 @@ public class UniversalImporter {
         }
     }
 
-    private void processRequest(ApiRequest req, String destination, int delayMs, LogCallback logCallback,
+    private void processRequest(ApiCollection collection, ApiRequest req, String destination, int delayMs,
+                                LogCallback logCallback,
                                 Map<String, String> colSources) throws Exception {
-        // FIX: Track existing variable keys to prevent leakage across requests
-        Set<String> preKeys = new HashSet<>();
-        try {
-            Map<String, String> vars = resolver.mutableVariables();
-            if (vars != null) {
-                preKeys.addAll(vars.keySet());
-            }
-        } catch (Exception e) {
-            // mutableVariables() may not be available, skip tracking
+        String destinationLower = destination.toLowerCase();
+        boolean liveSend = "sitemap".equals(destinationLower);
+        ExecutionResult exec = liveSend
+                ? pipeline.execute(req, collection, followRedirects)
+                : pipeline.build(req, collection);
+        if (exec == null || !exec.success || exec.requestHeaders == null) {
+            throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }
-
-        // Add request-level variables
-        resolver.addRequestVariables(req);
-
-        // Normalize OAuth2 auth metadata into canonical runtime vars
-        if (req.hasAuth()) {
-            Map<String, String> authVars = OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
-            if (!authVars.isEmpty()) {
-                resolver.addAll(authVars);
-            }
-        }
-
-        byte[] rawRequest = requestBuilder.buildRequest(req, resolver);
+        byte[] rawRequest = exec.rawRequestBytes != null
+                ? exec.rawRequestBytes
+                : (exec.requestHeaders != null
+                ? exec.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                : new byte[0]);
         warnIfUnresolved(rawRequest, req.name);
         if (debugRawRequest) {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
             logCallback.log(debug);
             if (api != null) api.logging().logToOutput(debug);
-            Map<String, String> sources = buildSourceMap(req, colSources);
-            String varsDebug = VariableDebugFormatter.format(resolver.getVariables(), sources, destination + " / " + req.name);
+            Map<String, String> resolvedVars = exec.resolvedVariables != null ? exec.resolvedVariables : Collections.emptyMap();
+            Map<String, String> sources = buildSourceMap(req, resolvedVars, colSources);
+            String varsDebug = VariableDebugFormatter.format(resolvedVars, sources, destination + " / " + req.name);
             logCallback.log(varsDebug);
             if (api != null) api.logging().logToOutput(varsDebug);
         }
-        String resolvedUrl = resolver.resolve(req.url);
+
+        if (liveSend) {
+            if (delayMs > 0) Thread.sleep(delayMs);
+            if (exec.response != null && exec.response.response() != null) {
+                Annotations annotations = Annotations.annotations(
+                        "[Imported] " + req.name, HighlightColor.CYAN);
+                api.siteMap().add(exec.response.withAnnotations(annotations));
+            } else {
+                throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
+            }
+            return;
+        }
+
+        String resolvedUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
         burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
                 parsed.host, parsed.port, parsed.useHttps);
 
-        HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+        HttpRequest httpRequest = exec.builtRequest != null ? exec.builtRequest
+                : HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
         String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
 
-        switch (destination.toLowerCase()) {
+        switch (destinationLower) {
             case "repeater":
                 api.repeater().sendToRepeater(httpRequest, tabName);
+                existingTabs.add(tabName);
                 break;
             case "intruder":
                 api.intruder().sendToIntruder(httpRequest);
                 break;
-            case "sitemap":
-                if (delayMs > 0) Thread.sleep(delayMs);
-                sendToSitemap(service, rawRequest, req.name);
-                break;
-        }
-
-        // FIX: Only track tab names for Repeater (meaningless for Sitemap/Intruder)
-        if ("repeater".equals(destination.toLowerCase())) {
-            existingTabs.add(tabName);
-        }
-
-        // FIX: Remove request-level variables so they don't leak to next request
-        try {
-            Map<String, String> liveVars = resolver.mutableVariables();
-            if (liveVars != null) {
-                Set<String> postKeys = new HashSet<>(liveVars.keySet());
-                postKeys.removeAll(preKeys);
-                for (String key : postKeys) {
-                    liveVars.remove(key);
-                }
-            }
-        } catch (Exception e) {
-            // If mutable map is unavailable, variables may leak (known limitation)
         }
     }
 
