@@ -4,7 +4,7 @@ import burp.models.ApiRequest;
 import burp.parser.VariableResolver;
 
 import javax.swing.*;
-import javax.swing.border.*;
+import javax.swing.border.Border;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
@@ -34,7 +34,9 @@ public class RequestEditorPanel extends JPanel {
     private JTable headersTable;
 
     // Body
-    private JComboBox<String> bodyModeBox;
+    private String bodyModeInternal = "none";
+    private final Map<String, JRadioButton> bodyModeButtons = new LinkedHashMap<>();
+    private JPanel bodyContentPanel;
     private JTextArea bodyRawArea;
     private JTable bodyFormTable;
     private DefaultTableModel bodyFormModel;
@@ -76,11 +78,12 @@ public class RequestEditorPanel extends JPanel {
         sendBtn = new JButton("Send");
         sendBtn.setToolTipText("Send current edited request directly");
         sendBtn.addActionListener(e -> {
+            commitAllEdits();
             if (sendActionListener != null) {
                 sendActionListener.onSend();
             }
         });
-        sendDropdownBtn = new JButton("\u25BC"); // Black down-pointing triangle
+        sendDropdownBtn = new JButton("\u25BC");
         sendDropdownBtn.setToolTipText("Select send mode");
         sendDropdownBtn.setPreferredSize(new Dimension(22, sendBtn.getPreferredSize().height));
         sendDropdownBtn.addActionListener(e -> {
@@ -141,13 +144,20 @@ public class RequestEditorPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout());
         paramsModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
         paramsTable = new JTable(paramsModel);
+        paramsTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        paramsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         panel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
+
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addBtn = new JButton("+");
-        addBtn.addActionListener(e -> paramsModel.addRow(new Object[]{"", ""}));
+        addBtn.addActionListener(e -> {
+            commitAllEdits();
+            paramsModel.addRow(new Object[]{"", ""});
+        });
         JButton delBtn = new JButton("-");
         delBtn.addActionListener(e -> {
-            int row = paramsTable.getSelectedRow();
+            commitAllEdits();
+            int row = resolveTargetRow(paramsTable);
             if (row >= 0) paramsModel.removeRow(row);
         });
         btnPanel.add(addBtn);
@@ -217,13 +227,20 @@ public class RequestEditorPanel extends JPanel {
             }
         };
         headersTable = new JTable(headersModel);
+        headersTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        headersTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         panel.add(new JScrollPane(headersTable), BorderLayout.CENTER);
+
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addBtn = new JButton("+");
-        addBtn.addActionListener(e -> headersModel.addRow(new Object[]{"", "", true}));
+        addBtn.addActionListener(e -> {
+            commitAllEdits();
+            headersModel.addRow(new Object[]{"", "", true});
+        });
         JButton delBtn = new JButton("-");
         delBtn.addActionListener(e -> {
-            int row = headersTable.getSelectedRow();
+            commitAllEdits();
+            int row = resolveTargetRow(headersTable);
             if (row >= 0) headersModel.removeRow(row);
         });
         btnPanel.add(addBtn);
@@ -234,45 +251,107 @@ public class RequestEditorPanel extends JPanel {
 
     private JPanel createBodyPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-        bodyModeBox = new JComboBox<>(new String[]{"none", "raw", "urlencoded", "formdata", "graphql", "file"});
-        bodyModeBox.addActionListener(e -> updateBodyMode());
-        panel.add(bodyModeBox, BorderLayout.NORTH);
+        panel.add(createBodyModeRadioPanel(), BorderLayout.NORTH);
 
-        JPanel bodyContent = new JPanel(new CardLayout());
+        bodyContentPanel = new JPanel(new CardLayout());
+
         // Raw
         bodyRawArea = new JTextArea(8, 40);
         bodyRawArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        bodyContent.add(new JScrollPane(bodyRawArea), "raw");
+        bodyContentPanel.add(new JScrollPane(bodyRawArea), "raw");
+
         // Form
         bodyFormModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
         bodyFormTable = new JTable(bodyFormModel);
+        bodyFormTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        bodyFormTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         JPanel formPanel = new JPanel(new BorderLayout());
         formPanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
         JPanel formBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addFormBtn = new JButton("+");
-        addFormBtn.addActionListener(e -> bodyFormModel.addRow(new Object[]{"", ""}));
+        addFormBtn.addActionListener(e -> {
+            commitAllEdits();
+            bodyFormModel.addRow(new Object[]{"", ""});
+        });
         JButton delFormBtn = new JButton("-");
         delFormBtn.addActionListener(e -> {
-            int row = bodyFormTable.getSelectedRow();
+            commitAllEdits();
+            int row = resolveTargetRow(bodyFormTable);
             if (row >= 0) bodyFormModel.removeRow(row);
         });
         formBtnPanel.add(addFormBtn);
         formBtnPanel.add(delFormBtn);
         formPanel.add(formBtnPanel, BorderLayout.SOUTH);
-        bodyContent.add(formPanel, "form");
-        // Empty placeholder for none
-        bodyContent.add(new JLabel("No body"), "none");
-        panel.add(bodyContent, BorderLayout.CENTER);
+        bodyContentPanel.add(formPanel, "form");
+
+        // Empty placeholder
+        JLabel noBodyLabel = new JLabel("No body");
+        noBodyLabel.setHorizontalAlignment(SwingConstants.LEFT);
+        Border margin = BorderFactory.createEmptyBorder(8, 8, 8, 8);
+        noBodyLabel.setBorder(margin);
+        bodyContentPanel.add(noBodyLabel, "none");
+
+        panel.add(bodyContentPanel, BorderLayout.CENTER);
+        setBodyModeInternal("none");
         return panel;
     }
 
+    private JPanel createBodyModeRadioPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        panel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
+
+        LinkedHashMap<String, String> uiToInternal = new LinkedHashMap<>();
+        uiToInternal.put("none", "none");
+        uiToInternal.put("form-data", "formdata");
+        uiToInternal.put("x-www-form-urlencoded", "urlencoded");
+        uiToInternal.put("raw", "raw");
+        uiToInternal.put("binary", "file");
+        uiToInternal.put("GraphQL", "graphql");
+
+        ButtonGroup group = new ButtonGroup();
+        for (Map.Entry<String, String> entry : uiToInternal.entrySet()) {
+            String label = entry.getKey();
+            String mode = entry.getValue();
+            JRadioButton btn = new JRadioButton(label);
+            btn.addActionListener(e -> {
+                bodyModeInternal = mode;
+                updateBodyMode();
+            });
+            group.add(btn);
+            panel.add(btn);
+            bodyModeButtons.put(mode, btn);
+        }
+        return panel;
+    }
+
+    private String getBodyModeInternal() {
+        return bodyModeInternal != null ? bodyModeInternal : "none";
+    }
+
+    private void setBodyModeInternal(String mode) {
+        if (mode == null || mode.isEmpty()) mode = "none";
+        if (!bodyModeButtons.containsKey(mode)) mode = "none";
+        bodyModeInternal = mode;
+        JRadioButton btn = bodyModeButtons.get(mode);
+        if (btn != null && !btn.isSelected()) {
+            btn.setSelected(true);
+        }
+        updateBodyMode();
+    }
+
     private void updateBodyMode() {
-        String mode = (String) bodyModeBox.getSelectedItem();
-        CardLayout cl = (CardLayout) ((JPanel) bodyModeBox.getParent().getComponent(1)).getLayout();
-        if ("raw".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "raw");
-        else if ("none".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "none");
-        else if ("graphql".equals(mode) || "file".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "raw");
-        else cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "form");
+        if (bodyContentPanel == null) return;
+        String mode = getBodyModeInternal();
+        CardLayout cl = (CardLayout) bodyContentPanel.getLayout();
+        if ("raw".equals(mode)) {
+            cl.show(bodyContentPanel, "raw");
+        } else if ("none".equals(mode)) {
+            cl.show(bodyContentPanel, "none");
+        } else if ("graphql".equals(mode) || "file".equals(mode)) {
+            cl.show(bodyContentPanel, "raw");
+        } else {
+            cl.show(bodyContentPanel, "form");
+        }
         refreshResolvedMirror();
     }
 
@@ -345,6 +424,7 @@ public class RequestEditorPanel extends JPanel {
             authTypeBox.setSelectedItem("none");
             rebuildAuthFields();
         }
+
         // Headers
         headersModel.setRowCount(0);
         if (req.headers != null) {
@@ -352,12 +432,12 @@ public class RequestEditorPanel extends JPanel {
                 headersModel.addRow(new Object[]{h.key, h.value, !h.disabled});
             }
         }
+
         // Body
         bodyRawArea.setText("");
         bodyFormModel.setRowCount(0);
         if (req.body != null) {
-            bodyModeBox.setSelectedItem(req.body.mode != null ? req.body.mode : "none");
-            updateBodyMode();
+            setBodyModeInternal(req.body.mode != null ? req.body.mode : "none");
             if ("raw".equals(req.body.mode) && req.body.raw != null) {
                 bodyRawArea.setText(req.body.raw);
             }
@@ -378,9 +458,9 @@ public class RequestEditorPanel extends JPanel {
                 }
             }
         } else {
-            bodyModeBox.setSelectedItem("none");
-            updateBodyMode();
+            setBodyModeInternal("none");
         }
+
         // Scripts
         preScriptArea.setText("");
         postScriptArea.setText("");
@@ -417,7 +497,37 @@ public class RequestEditorPanel extends JPanel {
         refreshResolvedMirror();
     }
 
+    public void commitAllEdits() {
+        commitTableEdit(paramsTable);
+        commitTableEdit(headersTable);
+        commitTableEdit(bodyFormTable);
+    }
+
+    private void commitTableEdit(JTable table) {
+        if (table != null && table.isEditing() && table.getCellEditor() != null) {
+            try {
+                table.getCellEditor().stopCellEditing();
+            } catch (Exception ignored) {
+                try {
+                    table.getCellEditor().cancelCellEditing();
+                } catch (Exception ignored2) {
+                    // no-op
+                }
+            }
+        }
+    }
+
+    private int resolveTargetRow(JTable table) {
+        if (table == null) return -1;
+        int row = table.getSelectedRow();
+        if (row < 0 && table.isEditing()) {
+            row = table.getEditingRow();
+        }
+        return row;
+    }
+
     public ApiRequest buildRequestFromUI() {
+        commitAllEdits();
         if (currentRequest == null) return null;
         ApiRequest req = new ApiRequest();
         req.name = currentRequest.name;
@@ -442,6 +552,7 @@ public class RequestEditorPanel extends JPanel {
                 else req.auth.properties.remove(e.getKey());
             }
         }
+
         // Headers
         for (int i = 0; i < headersModel.getRowCount(); i++) {
             String key = (String) headersModel.getValueAt(i, 0);
@@ -451,8 +562,9 @@ public class RequestEditorPanel extends JPanel {
                 req.headers.add(new ApiRequest.Header(key, value != null ? value : "", enabled == null || !enabled));
             }
         }
+
         // Body
-        String bodyMode = (String) bodyModeBox.getSelectedItem();
+        String bodyMode = getBodyModeInternal();
         if (!"none".equals(bodyMode)) {
             req.body = new ApiRequest.Body();
             req.body.mode = bodyMode;
@@ -488,6 +600,7 @@ public class RequestEditorPanel extends JPanel {
                 else req.body.formdata = fields;
             }
         }
+
         // Scripts
         String preScript = preScriptArea.getText().trim();
         if (!preScript.isEmpty()) req.preRequestScripts.add(new ApiRequest.Script("js", preScript));
@@ -524,6 +637,7 @@ public class RequestEditorPanel extends JPanel {
                 out.append(e.getKey()).append("=").append(vr.resolve(v)).append("\n");
             }
         }
+
         out.append("\nResolved Headers\n");
         out.append("----------------\n");
         for (int i = 0; i < headersModel.getRowCount(); i++) {
@@ -537,7 +651,7 @@ public class RequestEditorPanel extends JPanel {
 
         out.append("\nResolved Body\n");
         out.append("-------------\n");
-        String bodyMode = (String) bodyModeBox.getSelectedItem();
+        String bodyMode = getBodyModeInternal();
         out.append("mode=").append(bodyMode).append("\n");
         if ("raw".equals(bodyMode) || "graphql".equals(bodyMode) || "file".equals(bodyMode)) {
             out.append(vr.resolve(bodyRawArea.getText())).append("\n");
@@ -563,7 +677,6 @@ public class RequestEditorPanel extends JPanel {
         int q = url.indexOf('?');
         if (q < 0 || q + 1 >= url.length()) return;
         String query = url.substring(q + 1);
-        // Preserve fragment if present in query portion (shouldn't happen normally)
         int frag = query.indexOf('#');
         if (frag >= 0) query = query.substring(0, frag);
         for (String pair : query.split("&")) {
@@ -587,7 +700,6 @@ public class RequestEditorPanel extends JPanel {
 
     private String rebuildUrlWithParams(String urlBase, DefaultTableModel model) {
         if (urlBase == null) urlBase = "";
-        // Strip existing query and fragment from urlField
         String fragment = "";
         int frag = urlBase.indexOf('#');
         if (frag >= 0) {
@@ -617,7 +729,6 @@ public class RequestEditorPanel extends JPanel {
                     sb.append(java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
                 }
             } catch (Exception e) {
-                // fallback raw
                 sb.append(key.trim());
                 if (value != null && !value.isEmpty()) {
                     sb.append('=').append(value);
@@ -633,8 +744,7 @@ public class RequestEditorPanel extends JPanel {
         authTypeBox.setSelectedItem("none");
         rebuildAuthFields();
         headersModel.setRowCount(0);
-        bodyModeBox.setSelectedItem("none");
-        updateBodyMode();
+        setBodyModeInternal("none");
         bodyRawArea.setText("");
         bodyFormModel.setRowCount(0);
         preScriptArea.setText("");
