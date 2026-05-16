@@ -19,7 +19,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Collection tree** - checkbox tree with Collection > Folder > Request hierarchy
 - **Env binding** - bind environment files to specific collections (or all) explicitly
 - **Request editor** - edit method, URL, headers, body, auth, and scripts inline
-- **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex)
+- **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex); pre/post scripts run automatically (respecting script mode)
 - **Import destinations** - Repeater, Sitemap, Intruder
 
 ### Import Destinations
@@ -35,7 +35,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Custom manual variables (Variables tab + OAuth2 tab)
 - Default values: `{{var|default}}`
 - Nested variable resolution
-- Unified precedence across Import and Runner flows
+- Unified precedence across Workbench, Import, and Runner flows (see Playbook 4)
 
 ### Collection Runner
 - Execute selected requests **sequentially** like Postman Collection Runner
@@ -46,7 +46,14 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Results table with status, timing, size, assertion pass/fail
 - Auto-populates Sitemap with runner responses
 - Per-request OAuth2 auth scoping with automatic snapshot/restore to prevent cross-request contamination
-- **Execution model**: pre/post scripts and response extraction/assertions run only in the Collection Runner, not during Import -> Repeater/Sitemap
+- **Execution model**: pre/post scripts and response extraction/assertions run in both Collection Runner and Workbench direct send via a shared pipeline
+
+### Script Modes
+| Mode | Java Requirement | Behavior |
+|------|-----------------|----------|
+| Full JS | Java 17+ with Nashorn | Pre/post scripts execute fully via Nashorn |
+| Limited | Java 17+ but Nashorn probe failed | Post-response regex fallback only (no pre-script execution) |
+| Disabled | Java < 17 | Scripts skipped entirely |
 
 ### JavaScript Script Engine (Nashorn)
 - Executes **pre-request** and **post-response** scripts using Nashorn
@@ -54,6 +61,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Supports **Bruno** script API: `bru.setVar()`, `res.getBody()`, etc.
 - Regex fallback for environments where Nashorn is unavailable
 - Variable extraction from JSON responses via script execution
+- Script capability is probed at startup and shown in the UI status bar
 
 ### OAuth2 Token Management
 - **Client Credentials** - fully automated, no browser
@@ -156,12 +164,14 @@ oauth2_client_id=my-client
 ```
 
 Precedence during runtime (highest to lowest):
-1. Runner-extracted variables from previous responses (Runner only)
-2. Request-level variables (`req.variables`)
-3. Collection-scoped runtime overrides (Variables tab / OAuth2 / env file bound to this collection)
+1. Request-level variables (`req.variables`)
+2. Extracted / runtime variables (Variables tab + script extraction + runner-extracted vars)
+3. Scoped OAuth2 runtime vars (`runtimeOAuth2`, incl. `oauth2_access_token`)
 4. Collection-level variables (`collection.variables`)
 5. Collection environment map (`collection.environment`)
 6. Default values in `{{var|default}}` syntax
+
+> **Note:** Because runtime vars (level 2) take precedence over OAuth2 vars (level 3), a script can intentionally override `oauth2_access_token` if needed.
 
 **Collection-scoped isolation:**
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.

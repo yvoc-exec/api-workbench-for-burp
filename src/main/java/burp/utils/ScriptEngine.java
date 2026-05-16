@@ -13,28 +13,37 @@ import java.util.regex.Matcher;
 /**
  * Nashorn-based JavaScript execution engine for collection scripts.
  * Supports Postman (pm.*) and Bruno (bru.*) script APIs.
+ * Respects ScriptMode: FULL_JS runs Nashorn, LIMITED uses regex fallback, DISABLED skips entirely.
  */
 public class ScriptEngine {
     private final ScriptEngineManager engineManager;
     private final MontoyaApi api;
-    private final VariableResolver resolver;
+    private final ScriptMode scriptMode;
 
-    public ScriptEngine(MontoyaApi api, VariableResolver resolver) {
+    public ScriptEngine(MontoyaApi api, ScriptMode scriptMode) {
         this.api = api;
-        this.resolver = resolver;
+        this.scriptMode = scriptMode != null ? scriptMode : ScriptMode.DISABLED;
         this.engineManager = new ScriptEngineManager();
     }
 
     /**
      * Execute a pre-request script. Can modify variables before the request is sent.
      */
-    public void executePreRequest(ApiRequest request, Map<String, String> context) {
+    public void executePreRequest(ApiRequest request, VariableResolver resolver, Map<String, String> context) {
+        if (scriptMode == ScriptMode.DISABLED) {
+            logOncePerSend("Script execution disabled (Java 17+ required). Skipping pre-request scripts.");
+            return;
+        }
+        if (scriptMode == ScriptMode.LIMITED) {
+            // No regex fallback for pre-request scripts
+            return;
+        }
         for (ApiRequest.Script script : request.preRequestScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
             try {
                 javax.script.ScriptEngine engine = getNashornEngine();
                 if (engine == null) {
-                    api.logging().logToOutput("Nashorn engine not available. Using regex fallback for scripts.");
+                    if (api != null) api.logging().logToOutput("Nashorn engine not available. Using regex fallback for scripts.");
                     return;
                 }
 
@@ -45,7 +54,7 @@ public class ScriptEngine {
 
                 engine.eval(script.exec);
             } catch (Exception e) {
-                api.logging().logToOutput("Pre-request script error in '" + request.name + "': " + e.getMessage());
+                if (api != null) api.logging().logToOutput("Pre-request script error in '" + request.name + "': " + e.getMessage());
             }
         }
     }
@@ -53,15 +62,26 @@ public class ScriptEngine {
     /**
      * Execute a post-response script. Can extract variables and run assertions.
      */
-    public void executePostResponse(ApiRequest request, RunnerResult result,
-                                     Map<String, String> context, String responseBody,
+    public void executePostResponse(ApiRequest request, VariableResolver resolver, Map<String, String> context,
+                                     RunnerResult result, String responseBody,
                                      int statusCode, Map<String, List<String>> responseHeaders) {
+        if (scriptMode == ScriptMode.DISABLED) {
+            logOncePerSend("Script execution disabled (Java 17+ required). Skipping post-response scripts.");
+            return;
+        }
+        if (scriptMode == ScriptMode.LIMITED) {
+            for (ApiRequest.Script script : request.postResponseScripts) {
+                if (script.exec == null || script.exec.trim().isEmpty()) continue;
+                regexFallbackExtract(script.exec, result, context);
+            }
+            return;
+        }
         for (ApiRequest.Script script : request.postResponseScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
             try {
                 javax.script.ScriptEngine engine = getNashornEngine();
                 if (engine == null) {
-                    api.logging().logToOutput("Nashorn engine not available. Using regex fallback for post-response script.");
+                    if (api != null) api.logging().logToOutput("Nashorn engine not available. Using regex fallback for post-response script.");
                     regexFallbackExtract(script.exec, result, context);
                     return;
                 }
@@ -89,11 +109,17 @@ public class ScriptEngine {
                 }
 
             } catch (Exception e) {
-                api.logging().logToOutput("Post-response script error in '" + request.name + "': " + e.getMessage());
+                if (api != null) api.logging().logToOutput("Post-response script error in '" + request.name + "': " + e.getMessage());
                 // Fallback to regex extraction
                 regexFallbackExtract(script.exec, result, context);
             }
         }
+    }
+
+    private void logOncePerSend(String message) {
+        // In DISABLED mode, avoid flooding logs. A simple hash-set per session could be added,
+        // but for now we log every call since send frequency is human-paced.
+        if (api != null) api.logging().logToOutput("[ScriptMode] " + message);
     }
 
     private javax.script.ScriptEngine getNashornEngine() {
@@ -371,10 +397,10 @@ public class ScriptEngine {
         private final MontoyaApi api;
         public ConsoleApi(MontoyaApi api) { this.api = api; }
         public void log(Object msg) {
-            api.logging().logToOutput("[Script] " + (msg != null ? msg.toString() : "null"));
+            if (api != null) api.logging().logToOutput("[Script] " + (msg != null ? msg.toString() : "null"));
         }
         public void error(Object msg) {
-            api.logging().logToError("[Script] " + (msg != null ? msg.toString() : "null"));
+            if (api != null) api.logging().logToError("[Script] " + (msg != null ? msg.toString() : "null"));
         }
     }
 

@@ -20,12 +20,13 @@
 7. [Authentication & OAuth2](#7-authentication--oauth2)
 8. [Collection Runner](#8-collection-runner)
 9. [Script Engine](#9-script-engine)
-10. [Security Considerations](#10-security-considerations)
-11. [Known Limitations & Code-Level Behaviors](#11-known-limitations--code-level-behaviors)
-12. [Error Handling](#12-error-handling)
-13. [Performance](#13-performance)
-14. [Extending the Extension](#14-extending-the-extension)
-15. [Troubleshooting](#15-troubleshooting)
+10. [Live Sync / UI Mirroring](#10-live-sync--ui-mirroring)
+11. [Security Considerations](#11-security-considerations)
+12. [Known Limitations & Code-Level Behaviors](#12-known-limitations--code-level-behaviors)
+13. [Error Handling](#13-error-handling)
+14. [Performance](#14-performance)
+15. [Extending the Extension](#15-extending-the-extension)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -448,23 +449,27 @@ Variables use double-brace syntax: `{{variable_name}}`
 
 ### 6.2 Resolution Order (Precedence)
 
-1. **Runner extracted variables** (highest priority)
-   - Variables extracted from previous response scripts
-   - Stored in `CollectionRunner.extractedVars`
+Unified precedence across Workbench Send, Import, and Collection Runner (highest → lowest):
 
-2. **OAuth2 token variables**
-   - `oauth2_access_token` injected by `OAuth2Manager`
+1. **Request-level variables**
+   - Bruno: request `vars` block
+   - Postman: request-level variables
 
-3. **Environment file variables**
-   - Loaded from Postman environment JSON (`values[].key`, `values[].value`)
-   - Or manual Variables tab entries
+2. **Extracted / runtime variables**
+   - Variables extracted from post-response scripts
+   - Variables tab runtime overrides
+   - Runner-extracted variables from previous responses
+
+3. **Scoped OAuth2 runtime vars**
+   - `oauth2_access_token` and other canonical `oauth2_*` vars from the collection's `runtimeOAuth2`
 
 4. **Collection-level variables**
    - Postman: `collection.variable[]`
-   - Bruno: `vars` block (per-request)
+   - Bruno: collection `vars` block
 
-5. **Request-level variables**
-   - Bruno: request `vars` block
+5. **Collection environment**
+   - Loaded from Postman environment JSON (`values[].key`, `values[].value`)
+   - Or bound environment file
 
 6. **Default values** (lowest priority)
    - `{{var|default}}` uses `default` if `var` undefined
@@ -631,6 +636,8 @@ public class TokenStore {
 
 ### 8.1 Execution Model
 
+Both Workbench direct send and Collection Runner use a **shared request execution pipeline** (`SharedRequestPipeline`) to guarantee consistent behavior.
+
 ```java
 public void runCollection(ApiCollection collection, 
                           List<ApiRequest> selectedRequests,
@@ -651,22 +658,27 @@ public void runCollection(ApiCollection collection,
 
 ### 8.3 Request Lifecycle
 
+Shared pipeline steps (used by both Workbench Send and Collection Runner):
 ```
-1. Check cancelled flag
-2. Skip if req.disabled
-3. Execute pre-request scripts (ScriptEngine)
-4. Add request-level variables to resolver
-5. Add previously extracted variables to resolver
-6. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
-7. RequestBuilder.buildRequest() -> HTTP bytes
-8. api.http().sendRequest() -> HttpRequestResponse
-9. Measure response time
-10. Evaluate assertions (ScriptEngine)
-11. Execute post-response scripts -> extract variables
-12. Store extracted variables for next iteration
+1. Create fresh VariableResolver (no cross-request leakage)
+2. Seed resolver in unified precedence order
+   - collection.environment -> collection.variables -> runtimeOAuth2 -> runtimeVars -> request.vars
+3. Execute pre-request scripts (ScriptEngine, gated by ScriptMode)
+4. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
+5. RequestBuilder.buildRequest() -> HTTP bytes
+6. api.http().sendRequest() -> HttpRequestResponse
+7. Execute post-response scripts -> extract variables
+8. Merge extracted variables into collection.runtimeVars
+9. Fire collection change listeners -> UI refresh
+```
+
+Collection Runner specific (around the shared pipeline):
+```
+10. Retry loop with exponential backoff (maxRetries, delayMs)
+11. RunnerResult shaping (timing, headers, assertions)
+12. Add response to Site map
 13. Add to results table (via invokeLater)
-14. Add response to Site map
-15. Delay (if not last request)
+14. Delay (if not last request)
 ```
 
 ### 8.4 Retry Logic
@@ -722,6 +734,18 @@ public class AssertionResult {
 ---
 
 ## 9. Script Engine
+
+### 9.0 Script Mode Gating
+
+At startup, the extension probes the JVM to determine script execution capability:
+
+| Mode | Condition | Pre-request | Post-response |
+|------|-----------|-------------|---------------|
+| **FULL_JS** | Java >= 17 and Nashorn eval succeeds | Full Nashorn execution | Full Nashorn + assertions |
+| **LIMITED** | Java >= 17 but Nashorn probe failed | Skipped | Regex fallback extraction only |
+| **DISABLED** | Java < 17 | Skipped | Skipped |
+
+The detected mode is logged at startup and displayed in the UI status bar.
 
 ### 9.1 Nashorn Integration
 
@@ -801,30 +825,50 @@ When Nashorn is unavailable:
 
 ---
 
-## 10. Security Considerations
+## 10. Live Sync / UI Mirroring
 
-### 10.1 Token Storage
+All per-collection runtime mutations (variables, OAuth2, extracted vars) flow through `ApiCollection` helper methods that fire change listeners. This enables live UI refresh across tabs:
+
+- **Variables tab** automatically refreshes when a script (Workbench or Runner) extracts new variables into `collection.runtimeVars`.
+- **OAuth2 tab** refreshes when a token is acquired during pipeline execution and persisted into `collection.runtimeOAuth2`.
+- **Workbench** uses the same shared pipeline as the Runner, so variable extraction behavior is identical.
+
+### 10.1 Mutation Helpers
+
+All write paths must use these methods to guarantee listener coverage:
+- `putRuntimeVar(String, String)`
+- `putAllRuntimeVars(Map)`
+- `putRuntimeOAuth2(String, String)`
+- `putAllRuntimeOAuth2(Map)`
+
+Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohibited in new code.
+
+---
+
+## 11. Security Considerations
+
+### 11.1 Token Storage
 - **In-memory only** via `ConcurrentHashMap`
 - **Never persisted** to disk, Burp project files, or logs
 - **No encryption at rest** (not needed for transient memory)
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`
 
-### 10.2 Client Secrets
+### 11.2 Client Secrets
 - Passed as variables (`{{client_secret}}`) - never hardcoded
 - `JPasswordField` used in UI for client secret and password fields
 - Not logged to Burp output
 
-### 10.3 Path Traversal Prevention
+### 11.3 Path Traversal Prevention
 > **Not applicable.** File uploads are not fully implemented or tested in the current codebase, so path traversal via collection-defined file paths is not a current concern.
 
-### 10.4 OAuth2 Security
+### 11.4 OAuth2 Security
 - **PKCE** enforced for Authorization Code flow (S256 method)
 - **State parameter** validated to prevent CSRF
 - **Localhost only** (`127.0.0.1`) - no remote callback exposure
 - **Random high port** (9876) with socket timeout
 - **Auto-shutdown** of listener after callback or timeout
 
-### 10.5 Script Execution
+### 11.5 Script Execution
 - Nashorn runs with **no sandbox** - scripts can access any Java class via `Java.type()`
 - `console.log()` routed to Burp output (not system console)
 - No `eval()` of user input outside script contexts
@@ -832,9 +876,9 @@ When Nashorn is unavailable:
 
 ---
 
-## 11. Known Limitations & Code-Level Behaviors
+## 12. Known Limitations & Code-Level Behaviors
 
-### 11.1 What Is Actually Implemented vs Documented
+### 12.1 What Is Actually Implemented vs Documented
 
 | Claimed Feature | Actual Implementation | Status |
 |-----------------|----------------------|--------|
@@ -845,7 +889,7 @@ When Nashorn is unavailable:
 | File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
 | Automated test suite | JUnit 5 + Mockito + AssertJ; `RequestBuilderTest` (37), `VariableResolverTest` (13) | ✅ Present |
 
-### 11.2 Architectural Limitations
+### 12.2 Architectural Limitations
 
 - **No script timeout**: Nashorn scripts run without timeout. An infinite loop will hang the Collection Runner thread permanently.
 - **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
@@ -854,7 +898,7 @@ When Nashorn is unavailable:
 - **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` runs 50+ tests covering request building and variable resolution.
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
 
-### 11.3 Parser Limitations
+### 12.3 Parser Limitations
 
 - **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
 - **Bruno parser**: Regex-based parsing (not a full parser). Complex nested braces in body content may fail.
@@ -863,9 +907,9 @@ When Nashorn is unavailable:
 
 ---
 
-## 12. Error Handling
+## 13. Error Handling
 
-### 11.1 Import Errors
+### 13.1 Import Errors
 
 | Error | Cause | User Action |
 |-------|-------|-------------|
@@ -876,7 +920,7 @@ When Nashorn is unavailable:
 | "Connection refused" | Service down or wrong port | Verify target is running |
 | "Connection timeout" | Target unresponsive | Check firewall or increase timeout |
 
-### 11.2 Runner Errors
+### 13.2 Runner Errors
 
 | Error | Cause | Behavior |
 |-------|-------|----------|
@@ -886,7 +930,7 @@ When Nashorn is unavailable:
 | Script error | Nashorn exception | Logged, regex fallback attempted |
 | Non-JSON response | HTML error page, WAF | Preview logged, assertion fails |
 
-### 11.3 OAuth2 Errors
+### 13.3 OAuth2 Errors
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
@@ -898,9 +942,9 @@ When Nashorn is unavailable:
 
 ---
 
-## 13. Performance
+## 14. Performance
 
-### 13.1 Memory Management
+### 14.1 Memory Management
 
 | Component | Strategy |
 |-----------|----------|
@@ -910,14 +954,14 @@ When Nashorn is unavailable:
 | Token store | Static `ConcurrentHashMap` - no automatic eviction |
 | Script engine | New engine per script execution (no pooling) |
 
-### 13.2 Rate Limiting
+### 14.2 Rate Limiting
 
 - **Import delay**: 0–5000ms between Sitemap requests
 - **Runner delay**: 0–5000ms between sequential requests
 - **Concurrent requests**: 1 (runner is strictly sequential)
 - **Retry backoff**: `delayMs x attempt_number`
 
-### 13.3 Scalability Limits
+### 14.3 Scalability Limits
 
 | Metric | Limit | Rationale |
 |--------|-------|-----------|
@@ -929,9 +973,9 @@ When Nashorn is unavailable:
 
 ---
 
-## 14. Extending the Extension
+## 15. Extending the Extension
 
-### 14.1 Adding a New Collection Format
+### 15.1 Adding a New Collection Format
 
 1. Implement `CollectionParser` interface:
 ```java
@@ -957,7 +1001,7 @@ public ParserRegistry() {
 
 3. Normalize to `ApiRequest` / `ApiCollection` model
 
-### 14.2 Adding a New OAuth2 Grant Type
+### 15.2 Adding a New OAuth2 Grant Type
 
 1. Create handler class:
 ```java
@@ -972,7 +1016,7 @@ public class MyGrantHandler {
 2. Add to `OAuth2Config.GrantType` enum
 3. Add case in `OAuth2Manager.acquireToken()`
 
-### 14.3 Adding Script APIs
+### 15.3 Adding Script APIs
 
 Extend `ScriptEngine.PostmanApi` or `ScriptEngine.BrunoApi`:
 ```java
@@ -986,9 +1030,9 @@ public class PostmanApi {
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
-### 15.1 Extension Won't Load
+### 16.1 Extension Won't Load
 
 **Symptom:** "Extension failed to load" in Burp Extensions tab
 
@@ -998,7 +1042,7 @@ public class PostmanApi {
 3. Verify Montoya API version compatibility
 4. Check Burp output for stack trace
 
-### 15.2 Nashorn Not Available
+### 16.2 Nashorn Not Available
 
 **Symptom:** "Nashorn engine not available" in logs
 
@@ -1008,7 +1052,7 @@ public class PostmanApi {
 - Java 21+: Standalone Nashorn may have compatibility issues; regex fallback will be used
 - Alternative: Scripts will use regex fallback (limited functionality - variable extraction only, no assertions)
 
-### 15.3 OAuth2 Browser Doesn't Open
+### 16.3 OAuth2 Browser Doesn't Open
 
 **Symptom:** Authorization Code flow hangs at "Opening browser"
 
@@ -1018,7 +1062,7 @@ public class PostmanApi {
 3. Ensure `localhost:9876` is not blocked by firewall
 4. Use Client Credentials or Password grant as alternative
 
-### 15.4 Variables Not Resolving
+### 16.4 Variables Not Resolving
 
 **Symptom:** `{{variable}}` appears literally in requests
 
@@ -1028,7 +1072,7 @@ public class PostmanApi {
 3. Ensure no spaces in variable name
 4. Try with default: `{{variable|default_value}}`
 
-### 15.5 Import Creates Empty Repeater Tabs
+### 16.5 Import Creates Empty Repeater Tabs
 
 **Symptom:** Repeater tabs created but no request content
 

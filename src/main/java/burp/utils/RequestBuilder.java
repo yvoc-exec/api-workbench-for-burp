@@ -24,21 +24,19 @@ public class RequestBuilder {
             "accept-encoding", "postman-token"
     );
     private final MontoyaApi api;
-    private final VariableResolver resolver;
     private final boolean debugMode = false;
     private final OAuth2Manager oauth2Manager;
 
-    public RequestBuilder(MontoyaApi api, VariableResolver resolver) {
-        this(api, resolver, null);
+    public RequestBuilder(MontoyaApi api) {
+        this(api, null);
     }
 
-    public RequestBuilder(MontoyaApi api, VariableResolver resolver, OAuth2Manager oauth2Manager) {
+    public RequestBuilder(MontoyaApi api, OAuth2Manager oauth2Manager) {
         this.oauth2Manager = oauth2Manager;
         this.api = api;
-        this.resolver = resolver;
     }
 
-    public byte[] buildRequest(ApiRequest request) throws Exception {
+    public byte[] buildRequest(ApiRequest request, VariableResolver resolver) throws Exception {
         if (request == null) {
             throw new IllegalArgumentException("Request cannot be null");
         }
@@ -47,7 +45,7 @@ public class RequestBuilder {
         }
 
         // Resolve URL and parse target robustly
-        String resolvedUrl = resolver.resolve(request.url);
+        String resolvedUrl = resolver != null ? resolver.resolve(request.url) : request.url;
         String method = request.method != null ? request.method.toUpperCase() : "GET";
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
@@ -73,7 +71,7 @@ public class RequestBuilder {
         }
 
         // Layer 3: authentication (only if not already present at request level)
-        requestTarget = applyAuthentication(headers, request.auth, requestTarget);
+        requestTarget = applyAuthentication(headers, request.auth, requestTarget, resolver);
 
         // Layer 4: Host header (computed, must be correct)
         String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
@@ -87,9 +85,9 @@ public class RequestBuilder {
         }
 
         // Body
-        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, rawHeaders);
+        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, rawHeaders, resolver);
         if (body == null) {
-            body = buildBody(request.body, rawHeaders, request.name);
+            body = buildBody(request.body, rawHeaders, request.name, resolver);
         }
 
         // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
@@ -193,7 +191,7 @@ public class RequestBuilder {
      *
      * Uses putDefault() for Authorization/Cookie so explicit request-level headers win.
      */
-    private String applyAuthentication(HeaderStore headers, ApiRequest.Auth auth, String requestTarget) {
+    private String applyAuthentication(HeaderStore headers, ApiRequest.Auth auth, String requestTarget, VariableResolver resolver) {
         if (auth == null || auth.type == null) return requestTarget;
 
         switch (auth.type.toLowerCase()) {
@@ -202,7 +200,7 @@ public class RequestBuilder {
                     String token = auth.properties.getOrDefault("token", auth.properties.get("value"));
                     if (token != null) {
                         String prefix = auth.properties.getOrDefault("prefix", "Bearer");
-                        headers.putDefault("Authorization", resolver.resolve(prefix) + " " + resolver.resolve(token));
+                        headers.putDefault("Authorization", (resolver != null ? resolver.resolve(prefix) : prefix) + " " + (resolver != null ? resolver.resolve(token) : token));
                     }
                 }
                 break;
@@ -211,8 +209,8 @@ public class RequestBuilder {
                     String username = auth.properties.getOrDefault("username", auth.properties.get("user"));
                     String password = auth.properties.getOrDefault("password", auth.properties.get("pass"));
                     if (username != null || password != null) {
-                        String credentials = (username != null ? resolver.resolve(username) : "") + ":" +
-                                (password != null ? resolver.resolve(password) : "");
+                        String credentials = (username != null ? (resolver != null ? resolver.resolve(username) : username) : "") + ":" +
+                                (password != null ? (resolver != null ? resolver.resolve(password) : password) : "");
                         String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
                         headers.putDefault("Authorization", "Basic " + encoded);
                     }
@@ -224,13 +222,13 @@ public class RequestBuilder {
                 String in = auth.properties.getOrDefault("in", "header");
                 if (keyName != null && keyValue != null) {
                     if ("query".equalsIgnoreCase(in)) {
-                        String param = URLEncoder.encode(resolver.resolve(keyName), StandardCharsets.UTF_8)
-                                + "=" + URLEncoder.encode(resolver.resolve(keyValue), StandardCharsets.UTF_8);
+                        String param = URLEncoder.encode(resolver != null ? resolver.resolve(keyName) : keyName, StandardCharsets.UTF_8)
+                                + "=" + URLEncoder.encode(resolver != null ? resolver.resolve(keyValue) : keyValue, StandardCharsets.UTF_8);
                         requestTarget = requestTarget.contains("?")
                                 ? requestTarget + "&" + param
                                 : requestTarget + "?" + param;
                     } else if ("cookie".equalsIgnoreCase(in)) {
-                        String cookieValue = resolver.resolve(keyName) + "=" + resolver.resolve(keyValue);
+                        String cookieValue = (resolver != null ? resolver.resolve(keyName) : keyName) + "=" + (resolver != null ? resolver.resolve(keyValue) : keyValue);
                         headers.mergeCookie(cookieValue);
                     } else {
                         if (!headers.has(resolver.resolve(keyName))) {
@@ -242,7 +240,7 @@ public class RequestBuilder {
             case "cookie":
                 String cookieValue = auth.properties.get("value");
                 if (cookieValue != null) {
-                    String resolvedCookie = resolver.resolve(cookieValue);
+                    String resolvedCookie = resolver != null ? resolver.resolve(cookieValue) : cookieValue;
                     headers.mergeCookie(resolvedCookie);
                 }
                 break;
@@ -252,7 +250,7 @@ public class RequestBuilder {
                     // Auto-acquire live token if static token is missing/empty/templated
                     if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{")) && oauth2Manager != null) {
                         try {
-                            OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                            OAuth2Config config = OAuth2Config.fromVariables(resolver != null ? resolver.getVariables() : Collections.emptyMap());
                             if (config.isValid()) {
                                 TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
                                 accessToken = entry.accessToken;
@@ -264,11 +262,11 @@ public class RequestBuilder {
                         }
                     }
                     // Also check resolver variable injected by CollectionRunner
-                    if ((accessToken == null || accessToken.isEmpty()) && resolver.getVariables() != null) {
+                    if ((accessToken == null || accessToken.isEmpty()) && resolver != null && resolver.getVariables() != null) {
                         accessToken = resolver.getVariables().get("oauth2_access_token");
                     }
                     if (accessToken != null && !accessToken.isEmpty()) {
-                        headers.putDefault("Authorization", "Bearer " + resolver.resolve(accessToken));
+                        headers.putDefault("Authorization", "Bearer " + (resolver != null ? resolver.resolve(accessToken) : accessToken));
                     }
                 }
                 break;
@@ -276,7 +274,7 @@ public class RequestBuilder {
         return requestTarget;
     }
 
-    private byte[] buildBody(ApiRequest.Body body, List<String> headers, String requestName) throws Exception {
+    private byte[] buildBody(ApiRequest.Body body, List<String> headers, String requestName, VariableResolver resolver) throws Exception {
         if (body == null || body.mode == null || "none".equals(body.mode)) {
             return new byte[0];
         }
@@ -294,7 +292,7 @@ public class RequestBuilder {
         switch (body.mode) {
             case "raw":
                 if (body.raw != null) {
-                    String resolved = resolver.resolve(body.raw);
+                    String resolved = resolver != null ? resolver.resolve(body.raw) : body.raw;
                     String ct = body.contentType;
                     if (ct == null || ct.isBlank()) {
                         // Heuristic: if it looks like JSON, default to application/json
@@ -310,7 +308,7 @@ public class RequestBuilder {
 
             case "graphql":
                 if (body.graphql != null) {
-                    result = buildGraphQLBody(body.graphql, hs);
+                    result = buildGraphQLBody(body.graphql, hs, resolver);
                     enforceContentType(hs, "application/json", requestName);
                 } else {
                     result = new byte[0];
@@ -348,7 +346,7 @@ public class RequestBuilder {
                         }
                     }
                     hs.put("Content-Type", expected);
-                    result = buildMultipartBody(body.formdata, boundary);
+                    result = buildMultipartBody(body.formdata, boundary, resolver);
                 } else {
                     result = new byte[0];
                 }
@@ -395,16 +393,16 @@ public class RequestBuilder {
         }
     }
 
-    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, HeaderStore headers) {
+    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, HeaderStore headers, VariableResolver resolver) {
         if (graphql == null) return new byte[0];
         try {
             com.google.gson.JsonObject body = new com.google.gson.JsonObject();
             if (graphql.query != null) {
-                body.addProperty("query", resolver.resolve(graphql.query));
+                body.addProperty("query", resolver != null ? resolver.resolve(graphql.query) : graphql.query);
             }
             if (graphql.variables != null && !graphql.variables.trim().isEmpty()) {
                 try {
-                    com.google.gson.JsonElement vars = com.google.gson.JsonParser.parseString(resolver.resolve(graphql.variables));
+                    com.google.gson.JsonElement vars = com.google.gson.JsonParser.parseString(resolver != null ? resolver.resolve(graphql.variables) : graphql.variables);
                     body.add("variables", vars);
                 } catch (Exception e) {
                     body.add("variables", new com.google.gson.JsonObject());
@@ -421,12 +419,12 @@ public class RequestBuilder {
         }
     }
 
-    private byte[] buildMultipartBody(List<ApiRequest.Body.FormField> formData, String boundary) throws Exception {
+    private byte[] buildMultipartBody(List<ApiRequest.Body.FormField> formData, String boundary, VariableResolver resolver) throws Exception {
         java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
         for (ApiRequest.Body.FormField field : formData) {
             if (field.key == null) continue;
-            String resolvedKey = resolver.resolve(field.key);
-            String resolvedValue = field.value != null ? resolver.resolve(field.value) : "";
+            String resolvedKey = resolver != null ? resolver.resolve(field.key) : field.key;
+            String resolvedValue = field.value != null ? (resolver != null ? resolver.resolve(field.value) : field.value) : "";
 
             baos.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
 
@@ -472,12 +470,12 @@ public class RequestBuilder {
      * Primary: resolved URL matches resolved oauth2_token_url.
      * Fallback: auth.type == oauth2 AND URL path contains /token.
      */
-    private boolean isOAuth2TokenRequest(String method, String resolvedUrl, Map<String, String> vars, ApiRequest request) {
+    private boolean isOAuth2TokenRequest(String method, String resolvedUrl, Map<String, String> vars, ApiRequest request, VariableResolver resolver) {
         if (!"POST".equalsIgnoreCase(method)) return false;
 
         String tokenUrl = vars != null ? vars.get("oauth2_token_url") : null;
         if (tokenUrl != null && !tokenUrl.isBlank()) {
-            String resolvedTokenUrl = resolver.resolve(tokenUrl);
+            String resolvedTokenUrl = resolver != null ? resolver.resolve(tokenUrl) : tokenUrl;
             String compareTokenUrl = stripFragment(resolvedTokenUrl).trim();
             String compareResolvedUrl = stripFragment(resolvedUrl).trim();
             return compareResolvedUrl.equals(compareTokenUrl);
@@ -499,11 +497,11 @@ public class RequestBuilder {
      * Supports client_credentials, password, refresh_token, and authorization_code grants.
      * Returns null when no auto-build is needed.
      */
-    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, List<String> headers) {
-        Map<String, String> vars = resolver.mutableVariables();
+    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, List<String> headers, VariableResolver resolver) {
+        Map<String, String> vars = resolver != null ? resolver.mutableVariables() : Collections.emptyMap();
         if (vars == null) return null;
 
-        boolean isTokenReq = isOAuth2TokenRequest(method, resolvedUrl, vars, request);
+        boolean isTokenReq = isOAuth2TokenRequest(method, resolvedUrl, vars, request, resolver);
         if (!isTokenReq) return null;
 
         boolean forceUrlEncoded = !"false".equalsIgnoreCase(vars.getOrDefault("oauth2_token_force_urlencoded", "true"));

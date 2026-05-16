@@ -75,8 +75,10 @@ public class ImporterPanel {
     private CollectionRunner.RunnerListener activeRunnerListener;
 
     // Send mode is tracked by the RequestEditorPanel send button label
+    private final burp.utils.ScriptMode scriptMode;
 
-    public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
+    public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager, burp.utils.ScriptMode scriptMode) {
+        this.scriptMode = scriptMode;
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
         this.runner = runner;
@@ -97,6 +99,16 @@ public class ImporterPanel {
         tabbedPane.addTab("Collection Runner", createRunnerTab());
 
         panel.add(tabbedPane, BorderLayout.CENTER);
+
+        // Script mode status bar
+        if (scriptMode != null) {
+            JLabel scriptModeLabel = new JLabel("Script mode: " + scriptMode.label);
+            scriptModeLabel.setToolTipText(scriptMode.description);
+            scriptModeLabel.setFont(new Font(Font.DIALOG, Font.ITALIC, 11));
+            scriptModeLabel.setForeground(Color.GRAY);
+            panel.add(scriptModeLabel, BorderLayout.SOUTH);
+        }
+
         return panel;
     }
 
@@ -414,7 +426,7 @@ public class ImporterPanel {
             }
             ApiCollection col = ref.collection;
             Map<String, String> vars = oauth2Panel.getVariables();
-            col.runtimeOAuth2.putAll(vars);
+            col.putAllRuntimeOAuth2(vars);
             appendImportLog("OAuth2 bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         });
         bindPanel.add(bindOAuth2Btn);
@@ -430,7 +442,7 @@ public class ImporterPanel {
             if (confirm != JOptionPane.YES_OPTION) return;
             Map<String, String> vars = oauth2Panel.getVariables();
             for (ApiCollection col : loadedCollections) {
-                col.runtimeOAuth2.putAll(vars);
+                col.putAllRuntimeOAuth2(vars);
             }
             appendImportLog("OAuth2 bound to all " + loadedCollections.size() + " collection(s).");
         });
@@ -729,6 +741,12 @@ public class ImporterPanel {
         return refs;
     }
 
+    private void refreshOAuth2PanelForCollection(ApiCollection col) {
+        if (col != null && col.runtimeOAuth2 != null) {
+            oauth2Panel.populateFromOAuth2Map(col.runtimeOAuth2);
+        }
+    }
+
     private void renderEffectiveVariablesForSelectedCollection() {
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
         if (ref != null) {
@@ -828,6 +846,16 @@ public class ImporterPanel {
                         appendImportLog("Rejected duplicate collection name: \"" + collection.name + "\"");
                         return;
                     }
+                    collection.addChangeListener(() -> SwingUtilities.invokeLater(() -> {
+                        CollectionRef varsRef = (CollectionRef) varsCollectionCombo.getSelectedItem();
+                        if (varsRef != null && varsRef.collection == collection) {
+                            renderEffectiveVariablesForSelectedCollection();
+                        }
+                        CollectionRef oauthRef = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+                        if (oauthRef != null && oauthRef.collection == collection) {
+                            refreshOAuth2PanelForCollection(collection);
+                        }
+                    }));
                     loadedCollections.add(collection);
                     rebuildTree();
                     refreshCollectionCombos();
@@ -856,6 +884,7 @@ public class ImporterPanel {
             CollectionTreeNode ctn = (CollectionTreeNode) node;
             ApiCollection target = findCollectionForNode(ctn);
             if (target != null) {
+                target.clearChangeListeners();
                 loadedCollections.remove(target);
                 rebuildTree();
                 refreshCollectionCombos();
@@ -988,6 +1017,7 @@ public class ImporterPanel {
                 } else {
                     appendImportLog("Env bind FAILED for \"" + target.name + "\": " + result.errorMessage);
                 }
+                target.fireChanged();
                 renderEffectiveVariablesForSelectedCollection();
             }
         }
@@ -1011,6 +1041,7 @@ public class ImporterPanel {
             } else {
                 errors.add("\"" + col.name + "\": " + result.errorMessage);
             }
+            col.fireChanged();
         }
         appendImportLog("Env bound to all " + loadedCollections.size() + " collection(s): " + totalLoaded + " var(s) total.");
         for (String err : errors) {
@@ -1030,7 +1061,7 @@ public class ImporterPanel {
         }
         ApiCollection col = ref.collection;
         Map<String, String> vars = parseRuntimeOverrideSection();
-        col.runtimeVars.putAll(vars);
+        col.putAllRuntimeVars(vars);
         appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
     }
@@ -1046,7 +1077,7 @@ public class ImporterPanel {
         if (confirm != JOptionPane.YES_OPTION) return;
         Map<String, String> vars = parseRuntimeOverrideSection();
         for (ApiCollection col : loadedCollections) {
-            col.runtimeVars.putAll(vars);
+            col.putAllRuntimeVars(vars);
         }
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();

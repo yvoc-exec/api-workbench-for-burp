@@ -32,10 +32,15 @@ public class BurpExtender implements BurpExtension {
 
         api.extension().setName("API Workbench for Burp");
 
+        burp.utils.ScriptModeDetector.DetectionResult scriptResult = burp.utils.ScriptModeDetector.detect();
         api.logging().logToOutput("===================================================");
         api.logging().logToOutput("  API Workbench for Burp v2.0.0");
         api.logging().logToOutput("  Supports: Postman, Bruno, OpenAPI, Insomnia, HAR");
         api.logging().logToOutput("  Features: Import + Collection Runner + Workbench");
+        api.logging().logToOutput("  Java: " + scriptResult.javaVersion + " | Script: " + scriptResult.mode.label);
+        if (scriptResult.reason != null) {
+            api.logging().logToOutput("  Script reason: " + scriptResult.reason);
+        }
         api.logging().logToOutput("  Based on nerdygenii/postman-burp-importer");
         api.logging().logToOutput("===================================================");
         api.logging().logToOutput("Extension loaded successfully!");
