@@ -11,6 +11,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class OAuth2Panel extends JPanel {
+    public interface VariablesChangeListener {
+        void onVariablesChanged(Map<String, String> vars, boolean replaceMode);
+    }
+
     private final OAuth2Manager manager;
     private JComboBox<String> grantTypeBox;
     private JTextField tokenUrlField;
@@ -29,6 +33,8 @@ public class OAuth2Panel extends JPanel {
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
     private boolean editable = true;
+    private boolean suppressChangeNotifications = false;
+    private VariablesChangeListener variablesChangeListener;
 
     public OAuth2Panel(OAuth2Manager manager) {
         this.manager = manager;
@@ -36,6 +42,7 @@ public class OAuth2Panel extends JPanel {
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         add(createFormPanel(), BorderLayout.NORTH);
         add(createStatusPanel(), BorderLayout.CENTER);
+        attachLiveSyncListeners();
     }
 
     private JPanel createFormPanel() {
@@ -124,6 +131,7 @@ public class OAuth2Panel extends JPanel {
             updateStatus("Tokens cleared");
             refreshBtn.setEnabled(false);
             tokenPreviewField.setText("");
+            notifyVariablesChanged(true);
         });
         btnPanel.add(acquireBtn);
         btnPanel.add(refreshBtn);
@@ -189,6 +197,25 @@ public class OAuth2Panel extends JPanel {
         clientSecretField.setEnabled(!isAuthCode || clientSecretField.getPassword().length > 0);
     }
 
+    private void attachLiveSyncListeners() {
+        grantTypeBox.addActionListener(e -> notifyVariablesChanged(true));
+        pkceBox.addActionListener(e -> notifyVariablesChanged(true));
+
+        javax.swing.event.DocumentListener dl = new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { notifyVariablesChanged(true); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { notifyVariablesChanged(true); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { notifyVariablesChanged(true); }
+        };
+        tokenUrlField.getDocument().addDocumentListener(dl);
+        authUrlField.getDocument().addDocumentListener(dl);
+        redirectUriField.getDocument().addDocumentListener(dl);
+        clientIdField.getDocument().addDocumentListener(dl);
+        clientSecretField.getDocument().addDocumentListener(dl);
+        usernameField.getDocument().addDocumentListener(dl);
+        passwordField.getDocument().addDocumentListener(dl);
+        scopeField.getDocument().addDocumentListener(dl);
+    }
+
     private void acquireToken() {
         OAuth2Config config = buildConfig();
         if (!config.isValid()) {
@@ -216,6 +243,7 @@ public class OAuth2Panel extends JPanel {
                     tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
                     refreshBtn.setEnabled(entry.refreshToken != null);
                     updateStatus("SUCCESS: Token acquired. Refresh token available: " + (entry.refreshToken != null));
+                    notifyVariablesChanged(true);
                 } catch (Exception e) {
                     updateStatus("FAILED: " + e.getMessage());
                 }
@@ -246,6 +274,12 @@ public class OAuth2Panel extends JPanel {
                 try {
                     TokenStore.TokenEntry entry = get();
                     updateStatus("Token refreshed. New expiry: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
+                    if (entry != null && entry.accessToken != null) {
+                        String preview = entry.accessToken.substring(0, Math.min(20, entry.accessToken.length())) + "...";
+                        tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
+                    }
+                    refreshBtn.setEnabled(entry != null && entry.refreshToken != null);
+                    notifyVariablesChanged(true);
                 } catch (Exception e) {
                     updateStatus("Refresh failed: " + e.getMessage());
                 }
@@ -282,37 +316,60 @@ public class OAuth2Panel extends JPanel {
     public void populateFromOAuth2Map(Map<String, String> vars) {
         SwingUtilities.invokeLater(() -> {
             if (vars == null) return;
-
-            String grant = vars.get("oauth2_grant");
-            if (grant != null) {
-                switch (grant.toLowerCase()) {
-                    case "client_credentials":
-                        grantTypeBox.setSelectedItem("Client Credentials");
-                        break;
-                    case "password":
-                        grantTypeBox.setSelectedItem("Password");
-                        break;
-                    case "authorization_code":
-                        grantTypeBox.setSelectedItem("Authorization Code");
-                        break;
-                    case "refresh_token":
-                        grantTypeBox.setSelectedItem("Refresh Token");
-                        break;
+            suppressChangeNotifications = true;
+            try {
+                String grant = vars.get("oauth2_grant");
+                if (grant != null) {
+                    switch (grant.toLowerCase()) {
+                        case "client_credentials":
+                            grantTypeBox.setSelectedItem("Client Credentials");
+                            break;
+                        case "password":
+                            grantTypeBox.setSelectedItem("Password");
+                            break;
+                        case "authorization_code":
+                            grantTypeBox.setSelectedItem("Authorization Code");
+                            break;
+                        case "refresh_token":
+                            grantTypeBox.setSelectedItem("Refresh Token");
+                            break;
+                    }
                 }
+                if (vars.containsKey("oauth2_token_url")) tokenUrlField.setText(vars.get("oauth2_token_url"));
+                if (vars.containsKey("oauth2_auth_url")) authUrlField.setText(vars.get("oauth2_auth_url"));
+                if (vars.containsKey("oauth2_redirect_uri")) redirectUriField.setText(vars.get("oauth2_redirect_uri"));
+                if (vars.containsKey("oauth2_client_id")) clientIdField.setText(vars.get("oauth2_client_id"));
+                if (vars.containsKey("oauth2_client_secret")) clientSecretField.setText(vars.get("oauth2_client_secret"));
+                if (vars.containsKey("oauth2_username")) usernameField.setText(vars.get("oauth2_username"));
+                if (vars.containsKey("oauth2_password")) passwordField.setText(vars.get("oauth2_password"));
+                if (vars.containsKey("oauth2_scope")) scopeField.setText(vars.get("oauth2_scope"));
+                if (vars.containsKey("oauth2_use_pkce")) {
+                    pkceBox.setSelected(Boolean.parseBoolean(vars.get("oauth2_use_pkce")));
+                }
+                if (vars.containsKey("oauth2_access_token")) {
+                    String t = vars.get("oauth2_access_token");
+                    if (t != null && !t.isEmpty()) {
+                        tokenPreviewField.setText("Access Token: " + t.substring(0, Math.min(20, t.length())) + "...");
+                    }
+                } else {
+                    tokenPreviewField.setText("");
+                }
+                updateFieldVisibility();
+            } finally {
+                suppressChangeNotifications = false;
             }
-            if (vars.containsKey("oauth2_token_url")) tokenUrlField.setText(vars.get("oauth2_token_url"));
-            if (vars.containsKey("oauth2_auth_url")) authUrlField.setText(vars.get("oauth2_auth_url"));
-            if (vars.containsKey("oauth2_redirect_uri")) redirectUriField.setText(vars.get("oauth2_redirect_uri"));
-            if (vars.containsKey("oauth2_client_id")) clientIdField.setText(vars.get("oauth2_client_id"));
-            if (vars.containsKey("oauth2_client_secret")) clientSecretField.setText(vars.get("oauth2_client_secret"));
-            if (vars.containsKey("oauth2_username")) usernameField.setText(vars.get("oauth2_username"));
-            if (vars.containsKey("oauth2_password")) passwordField.setText(vars.get("oauth2_password"));
-            if (vars.containsKey("oauth2_scope")) scopeField.setText(vars.get("oauth2_scope"));
-            if (vars.containsKey("oauth2_use_pkce")) {
-                pkceBox.setSelected(Boolean.parseBoolean(vars.get("oauth2_use_pkce")));
-            }
-            updateFieldVisibility();
         });
+    }
+
+    public void setVariablesChangeListener(VariablesChangeListener listener) {
+        this.variablesChangeListener = listener;
+    }
+
+    private void notifyVariablesChanged(boolean replaceMode) {
+        if (suppressChangeNotifications || !editable || variablesChangeListener == null) return;
+        try {
+            variablesChangeListener.onVariablesChanged(getVariables(), replaceMode);
+        } catch (Exception ignored) {}
     }
 
     public Map<String, String> getVariables() {

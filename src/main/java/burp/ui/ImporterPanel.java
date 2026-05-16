@@ -424,7 +424,7 @@ public class ImporterPanel {
             }
             ApiCollection col = ref.collection;
             Map<String, String> vars = oauth2Panel.getVariables();
-            col.putAllRuntimeOAuth2(vars);
+            col.replaceRuntimeOAuth2(vars);
             appendImportLog("OAuth2 bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         });
         bindPanel.add(bindOAuth2Btn);
@@ -440,7 +440,7 @@ public class ImporterPanel {
             if (confirm != JOptionPane.YES_OPTION) return;
             Map<String, String> vars = oauth2Panel.getVariables();
             for (ApiCollection col : loadedCollections) {
-                col.putAllRuntimeOAuth2(vars);
+                col.replaceRuntimeOAuth2(vars);
             }
             appendImportLog("OAuth2 bound to all " + loadedCollections.size() + " collection(s).");
         });
@@ -475,6 +475,15 @@ public class ImporterPanel {
                 refreshOAuth2PanelForCollection(ref.collection);
             }
             updateScopeControlState();
+        });
+        oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> {
+            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+            if (ref == null || ref.collection == null) return;
+            if (replaceMode) {
+                ref.collection.replaceRuntimeOAuth2(vars);
+            } else {
+                ref.collection.putAllRuntimeOAuth2(vars);
+            }
         });
         updateScopeControlState();
 
@@ -794,7 +803,16 @@ public class ImporterPanel {
                 sb.append("\n");
                 hasAny = true;
             }
-            // Layer 3: runtime overrides (editable layer)
+            // Layer 3: scoped OAuth2 runtime (managed by OAuth2 tab / runtime refresh)
+            if (col.runtimeOAuth2 != null && !col.runtimeOAuth2.isEmpty()) {
+                sb.append("# Scoped OAuth2 runtime (managed by OAuth2 tab)\n");
+                for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeOAuth2).entrySet()) {
+                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                }
+                sb.append("\n");
+                hasAny = true;
+            }
+            // Layer 4: runtime overrides (editable layer)
             if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
                 sb.append("# Runtime overrides (edits apply here)\n");
                 for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
