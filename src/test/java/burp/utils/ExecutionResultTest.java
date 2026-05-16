@@ -25,6 +25,18 @@ class ExecutionResultTest {
     }
 
     @Test
+    void removedVarsSetIsWritableAndReadable() {
+        ExecutionResult result = new ExecutionResult();
+        assertThat(result.removedVars).isEmpty();
+
+        result.removedVars.add("token");
+        assertThat(result.removedVars).contains("token");
+
+        result.removedVars.remove("token");
+        assertThat(result.removedVars).isEmpty();
+    }
+
+    @Test
     void resolvedUrlFieldExists() {
         ExecutionResult result = new ExecutionResult();
         result.resolvedUrl = "https://example.com/api/users";
