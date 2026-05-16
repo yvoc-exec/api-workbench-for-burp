@@ -178,15 +178,36 @@ public class UniversalImporter {
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
-        return new SingleSendResult(exec.response, exec.builtRequest);
+        return new SingleSendResult(
+            exec.response,
+            exec.builtRequest,
+            exec.requestHeaders,
+            exec.resolvedUrl,
+            exec.elapsedMs,
+            exec.errorMessage
+        );
     }
 
     public static class SingleSendResult {
         public final burp.api.montoya.http.message.HttpRequestResponse response;
         public final HttpRequest builtRequest;
+        public final String rawRequestText;
+        public final String resolvedUrl;
+        public final long elapsedMs;
+        public final String errorMessage;
+
         public SingleSendResult(burp.api.montoya.http.message.HttpRequestResponse response, HttpRequest builtRequest) {
+            this(response, builtRequest, null, null, 0L, null);
+        }
+
+        public SingleSendResult(burp.api.montoya.http.message.HttpRequestResponse response, HttpRequest builtRequest,
+                                String rawRequestText, String resolvedUrl, long elapsedMs, String errorMessage) {
             this.response = response;
             this.builtRequest = builtRequest;
+            this.rawRequestText = rawRequestText;
+            this.resolvedUrl = resolvedUrl;
+            this.elapsedMs = elapsedMs;
+            this.errorMessage = errorMessage;
         }
     }
 
