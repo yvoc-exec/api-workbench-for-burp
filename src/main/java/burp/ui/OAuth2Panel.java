@@ -17,6 +17,9 @@ public class OAuth2Panel extends JPanel {
     public interface AutoRefreshToggleListener {
         void onToggleRequested();
     }
+    public interface AutoRefreshIntervalListener {
+        void onIntervalChanged(int seconds);
+    }
 
     private final OAuth2Manager manager;
     private JComboBox<String> grantTypeBox;
@@ -40,6 +43,7 @@ public class OAuth2Panel extends JPanel {
     private boolean suppressChangeNotifications = false;
     private VariablesChangeListener variablesChangeListener;
     private AutoRefreshToggleListener autoRefreshToggleListener;
+    private AutoRefreshIntervalListener autoRefreshIntervalListener;
     private Color defaultRefreshBg;
     private Color defaultRefreshFg;
 
@@ -158,6 +162,11 @@ public class OAuth2Panel extends JPanel {
         autoPanel.add(new JLabel("Interval (seconds):"));
         autoRefreshIntervalSpinner = new JSpinner(new SpinnerNumberModel(300, 30, 86400, 10));
         autoRefreshIntervalSpinner.setPreferredSize(new Dimension(90, 24));
+        autoRefreshIntervalSpinner.addChangeListener(e -> {
+            if (autoRefreshIntervalListener != null) {
+                autoRefreshIntervalListener.onIntervalChanged(getAutoRefreshIntervalSeconds());
+            }
+        });
         autoPanel.add(autoRefreshIntervalSpinner);
         panel.add(autoPanel, gbc);
 
@@ -298,6 +307,10 @@ public class OAuth2Panel extends JPanel {
 
     public void setAutoRefreshToggleListener(AutoRefreshToggleListener listener) {
         this.autoRefreshToggleListener = listener;
+    }
+
+    public void setAutoRefreshIntervalListener(AutoRefreshIntervalListener listener) {
+        this.autoRefreshIntervalListener = listener;
     }
 
     private OAuth2Config buildConfig() {
