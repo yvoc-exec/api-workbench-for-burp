@@ -174,7 +174,9 @@ public class ImporterPanel {
                     CollectionTreeNode ctn = (CollectionTreeNode) node;
                     if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
                         requestEditor.loadRequest(ctn.request);
-                        requestEditor.setCurrentCollection(findCollectionForNode(ctn));
+                        ApiCollection selectedCollection = findCollectionForNode(ctn);
+                        requestEditor.setCurrentCollection(selectedCollection);
+                        syncRequestEditorRuntimeContext(ctn.request, selectedCollection);
                     }
                 }
             }
@@ -256,12 +258,12 @@ public class ImporterPanel {
         actionPanel.add(debugRawRequestBox);
         panel.add(actionPanel);
 
-        // Import / Send to Runner buttons
+        // Import / Run Selected buttons
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 2));
         importBtn = new JButton("Import Selected");
         importBtn.setEnabled(false);
         importBtn.addActionListener(e -> startImport());
-        sendToRunnerBtn = new JButton("Send to Runner");
+        sendToRunnerBtn = new JButton("Run Selected");
         sendToRunnerBtn.setEnabled(false);
         sendToRunnerBtn.addActionListener(e -> sendToRunner());
 
@@ -387,15 +389,12 @@ public class ImporterPanel {
         bindVarsBtn.addActionListener(e -> bindVarsToSelectedCollection());
         JButton bindAllBtn = new JButton("Bind to All Collections");
         bindAllBtn.addActionListener(e -> bindVarsToAllCollections());
-        JButton parseBtn = new JButton("Parse Variables");
-        parseBtn.addActionListener(e -> parseEnvVars());
         JButton clearBtn = new JButton("Clear");
         clearBtn.addActionListener(e -> envVarsArea.setText(""));
         bindPanel.add(new JLabel("Target:"));
         bindPanel.add(varsCollectionCombo);
         bindPanel.add(bindVarsBtn);
         bindPanel.add(bindAllBtn);
-        bindPanel.add(parseBtn);
         bindPanel.add(clearBtn);
         bottomPanel.add(bindPanel, BorderLayout.NORTH);
 
@@ -565,7 +564,7 @@ public class ImporterPanel {
         actionRow.add(runnerProgress, BorderLayout.WEST);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
-        JButton clearBtn = new JButton("Clear");
+        JButton clearBtn = new JButton("Clear Results");
         clearBtn.addActionListener(e -> {
             resultModel.clear();
             runnerLog.setText("");
@@ -616,6 +615,7 @@ public class ImporterPanel {
                         ((CollectionTreeNode) parent).updateParentCheckState();
                     }
                     requestTree.repaint();
+                    updateScopeControlState();
                 }
             }
         }
@@ -677,6 +677,7 @@ public class ImporterPanel {
             }
         }
         requestTree.repaint();
+        updateScopeControlState();
     }
 
     private List<ApiRequest> getSelectedRequestsFromTree() {
@@ -684,6 +685,13 @@ public class ImporterPanel {
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         enumerateCheckedRequests(root, selected);
         return selected;
+    }
+
+    private List<ApiCollection> getCheckedCollectionsFromTree() {
+        LinkedHashSet<ApiCollection> checked = new LinkedHashSet<>();
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        enumerateCheckedCollections(root, checked);
+        return new ArrayList<>(checked);
     }
 
     private void enumerateCheckedRequests(DefaultMutableTreeNode node, List<ApiRequest> out) {
@@ -695,6 +703,18 @@ public class ImporterPanel {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             enumerateCheckedRequests((DefaultMutableTreeNode) node.getChildAt(i), out);
+        }
+    }
+
+    private void enumerateCheckedCollections(DefaultMutableTreeNode node, Set<ApiCollection> out) {
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION && ctn.isChecked() && ctn.collection != null) {
+                out.add(ctn.collection);
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            enumerateCheckedCollections((DefaultMutableTreeNode) node.getChildAt(i), out);
         }
     }
 
@@ -859,6 +879,9 @@ public class ImporterPanel {
                         if (oauthRef != null && oauthRef.collection == collection) {
                             refreshOAuth2PanelForCollection(collection);
                         }
+                        if (requestEditor != null && requestEditor.getCurrentCollection() == collection) {
+                            syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
+                        }
                     }));
                     loadedCollections.add(collection);
                     rebuildTree();
@@ -878,29 +901,24 @@ public class ImporterPanel {
     }
 
     private void removeSelectedCollections() {
-        TreePath path = requestTree.getSelectionPath();
-        if (path == null) {
-            appendImportLog("Select a collection in the tree to remove.");
+        List<ApiCollection> checkedCollections = getCheckedCollectionsFromTree();
+        if (checkedCollections.isEmpty()) {
+            appendImportLog("No checked collection nodes to remove.");
             return;
         }
-        Object node = path.getLastPathComponent();
-        if (node instanceof CollectionTreeNode) {
-            CollectionTreeNode ctn = (CollectionTreeNode) node;
-            ApiCollection target = findCollectionForNode(ctn);
-            if (target != null) {
-                target.clearChangeListeners();
-                loadedCollections.remove(target);
-                rebuildTree();
-                refreshCollectionCombos();
-                appendImportLog("Removed collection: " + target.name);
-                if (loadedCollections.isEmpty()) {
-                    importBtn.setEnabled(false);
-                    sendToRunnerBtn.setEnabled(false);
-                    startRunnerBtn.setEnabled(false);
-                    removeCollectionBtn.setEnabled(false);
-                    envApplyAllBtn.setEnabled(false);
-                }
-            }
+        for (ApiCollection target : checkedCollections) {
+            target.clearChangeListeners();
+            loadedCollections.remove(target);
+            appendImportLog("Removed collection: " + target.name);
+        }
+        rebuildTree();
+        refreshCollectionCombos();
+        if (loadedCollections.isEmpty()) {
+            importBtn.setEnabled(false);
+            sendToRunnerBtn.setEnabled(false);
+            startRunnerBtn.setEnabled(false);
+            removeCollectionBtn.setEnabled(false);
+            envApplyAllBtn.setEnabled(false);
         }
     }
 
@@ -936,6 +954,9 @@ public class ImporterPanel {
         }
         updateScopeControlState();
         renderEffectiveVariablesForSelectedCollection();
+        if (requestEditor != null && requestEditor.getCurrentCollection() != null) {
+            syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
+        }
     }
 
     private void updateScopeControlState() {
@@ -974,18 +995,9 @@ public class ImporterPanel {
             }
         }
 
-        // Env apply selected requires a collection selected in the tree
+        // Env apply selected requires one or more checked collection nodes
         if (requestTree != null && envApplySelectedBtn != null) {
-            TreePath path = requestTree.getSelectionPath();
-            boolean treeHasCollection = false;
-            if (path != null) {
-                Object node = path.getLastPathComponent();
-                if (node instanceof CollectionTreeNode) {
-                    ApiCollection col = findCollectionForNode((CollectionTreeNode) node);
-                    treeHasCollection = col != null;
-                }
-            }
-            envApplySelectedBtn.setEnabled(treeHasCollection && !loadedCollections.isEmpty());
+            envApplySelectedBtn.setEnabled(!getCheckedCollectionsFromTree().isEmpty() && !loadedCollections.isEmpty());
         }
     }
 
@@ -1006,25 +1018,24 @@ public class ImporterPanel {
             appendImportLog("No environment file selected. Browse first.");
             return;
         }
-        TreePath path = requestTree.getSelectionPath();
-        if (path == null) {
-            appendImportLog("Select a collection in the tree to bind env to.");
+        List<ApiCollection> targets = getCheckedCollectionsFromTree();
+        if (targets.isEmpty()) {
+            appendImportLog("No checked collection nodes. Check one or more collections to bind env.");
             return;
         }
-        Object node = path.getLastPathComponent();
-        if (node instanceof CollectionTreeNode) {
-            ApiCollection target = findCollectionForNode((CollectionTreeNode) node);
-            if (target != null) {
-                UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
-                if (result.isSuccess()) {
-                    appendImportLog("Env bound to collection \"" + target.name + "\": " + result.loadedCount + " var(s).");
-                } else {
-                    appendImportLog("Env bind FAILED for \"" + target.name + "\": " + result.errorMessage);
-                }
-                target.fireChanged();
-                renderEffectiveVariablesForSelectedCollection();
+        int totalLoaded = 0;
+        for (ApiCollection target : targets) {
+            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
+            if (result.isSuccess()) {
+                totalLoaded += result.loadedCount;
+                appendImportLog("Env bound to collection \"" + target.name + "\": " + result.loadedCount + " var(s).");
+            } else {
+                appendImportLog("Env bind FAILED for \"" + target.name + "\": " + result.errorMessage);
             }
+            target.fireChanged();
         }
+        appendImportLog("Env bind complete for " + targets.size() + " checked collection(s): " + totalLoaded + " var(s) total.");
+        renderEffectiveVariablesForSelectedCollection();
     }
 
     private void applyEnvToAllCollections() {
@@ -1068,6 +1079,7 @@ public class ImporterPanel {
         col.putAllRuntimeVars(vars);
         appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
+        syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
     }
 
     private void bindVarsToAllCollections() {
@@ -1085,6 +1097,7 @@ public class ImporterPanel {
         }
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
+        syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
     }
 
     // ========================================================================
@@ -1222,8 +1235,11 @@ public class ImporterPanel {
     private void populateOAuth2FromSelectedRequest() {
         List<ApiRequest> selected = getSelectedRequestsFromTree();
         if (selected.isEmpty()) {
-            appendImportLog("Populate OAuth2: No request selected in tree.");
+            appendImportLog("Populate OAuth2: No checked request. Check at least one request node.");
             return;
+        }
+        if (selected.size() > 1) {
+            appendImportLog("Populate OAuth2: Multiple checked requests; using first in tree order: \"" + selected.get(0).name + "\".");
         }
         ApiRequest req = selected.get(0);
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req);
@@ -1239,6 +1255,28 @@ public class ImporterPanel {
     // ========================================================================
     // Utility
     // ========================================================================
+    private void syncRequestEditorRuntimeContext(ApiRequest req, ApiCollection col) {
+        if (requestEditor == null || req == null || col == null) {
+            if (requestEditor != null) {
+                requestEditor.setRuntimeVariables(Collections.emptyMap());
+            }
+            return;
+        }
+        VariableResolver vr = new VariableResolver();
+        vr.addEnvironmentVariables(col);
+        vr.addCollectionVariables(col);
+        if (col.runtimeOAuth2 != null) vr.addAll(col.runtimeOAuth2);
+        if (col.runtimeVars != null) vr.addAll(col.runtimeVars);
+        vr.addRequestVariables(req);
+        if (req.hasAuth()) {
+            Map<String, String> authMapped = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, vr.getVariables(), true);
+            if (!authMapped.isEmpty()) {
+                vr.addAll(authMapped);
+            }
+        }
+        requestEditor.setRuntimeVariables(vr.getVariables());
+    }
+
     private Map<String, String> parseEnvVarsMap() {
         Map<String, String> vars = new HashMap<>();
         String text = envVarsArea.getText();
@@ -1292,11 +1330,6 @@ public class ImporterPanel {
             }
         }
         return vars;
-    }
-
-    private void parseEnvVars() {
-        Map<String, String> vars = parseEnvVarsMap();
-        appendImportLog("Parsed " + vars.size() + " variables.");
     }
 
     public void appendImportLog(String msg) {
