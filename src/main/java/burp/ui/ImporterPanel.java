@@ -472,6 +472,10 @@ public class ImporterPanel {
             }
         });
         oauth2CollectionCombo.addActionListener(e -> {
+            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+            if (ref != null && ref.collection != null) {
+                refreshOAuth2PanelForCollection(ref.collection);
+            }
             updateScopeControlState();
         });
         updateScopeControlState();
