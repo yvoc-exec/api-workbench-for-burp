@@ -68,4 +68,13 @@ public class ApiCollection {
             fireChanged();
         }
     }
+
+    /** Replaces OAuth2 runtime layer atomically (used for UI mirroring to avoid stale keys). */
+    public void replaceRuntimeOAuth2(Map<String, String> vars) {
+        runtimeOAuth2.clear();
+        if (vars != null && !vars.isEmpty()) {
+            runtimeOAuth2.putAll(vars);
+        }
+        fireChanged();
+    }
 }
