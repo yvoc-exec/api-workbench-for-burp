@@ -283,7 +283,8 @@ public class ImporterPanel {
         }
         ApiCollection col = requestEditor.getCurrentCollection();
         if (col == null) {
-            col = findCollectionByName(edited.sourceCollection);
+            appendImportLog("Send failed: no collection context is bound to the selected request.");
+            return;
         }
         final ApiCollection resolvedCol = col;
         requestEditor.setSendEnabled(false);
@@ -694,12 +695,7 @@ public class ImporterPanel {
         return null;
     }
 
-    private ApiCollection findCollectionByName(String name) {
-        for (ApiCollection c : loadedCollections) {
-            if (c.name.equals(name)) return c;
-        }
-        return null;
-    }
+
 
     /**
      * Wrapper for combo items that binds by object identity instead of name,
