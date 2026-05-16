@@ -111,12 +111,12 @@ public class UniversalImporter {
                                 processRequest(qr.request, destination, delayMs, logCallback, colSources);
                             }
                             result.successCount++;
-                            publish("✓ " + qr.request.name);
+                            publish("[OK] " + qr.request.name);
                         } catch (Exception e) {
                             result.failedRequestDetails.add(new ImportResult.FailedRequestInfo(
                                     qr.request.name, qr.request.path, e.getMessage(), qr.request));
                             result.failedRequests.add(qr.request.name + ": " + e.getMessage());
-                            publish("✗ " + qr.request.name + " - " + e.getMessage());
+                            publish("[FAIL] " + qr.request.name + " - " + e.getMessage());
                         }
                         setProgress((i + 1) * 100 / queue.size());
                     }
@@ -169,6 +169,7 @@ public class UniversalImporter {
             if (!authVars.isEmpty()) resolver.addAll(authVars);
         }
         byte[] rawRequest = requestBuilder.buildRequest(req);
+        warnIfUnresolved(rawRequest, req.name);
         String resolvedUrl = resolver.resolve(req.url);
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
         burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
@@ -285,6 +286,7 @@ public class UniversalImporter {
         }
 
         byte[] rawRequest = requestBuilder.buildRequest(req);
+        warnIfUnresolved(rawRequest, req.name);
         if (debugRawRequest) {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
             logCallback.log(debug);
@@ -373,6 +375,13 @@ public class UniversalImporter {
         if (msg.contains("ConnectException")) return "Connection refused";
         if (msg.contains("SocketTimeoutException")) return "Connection timeout";
         return msg;
+    }
+
+    private void warnIfUnresolved(byte[] rawRequest, String requestName) {
+        Set<String> unresolved = RequestBuilder.findUnresolvedTokens(rawRequest);
+        if (!unresolved.isEmpty() && api != null) {
+            api.logging().logToOutput("[WARN] Unresolved variables in request '" + requestName + "': " + String.join(", ", unresolved));
+        }
     }
 
     public void clearVariables() {

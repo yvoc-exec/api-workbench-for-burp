@@ -42,6 +42,14 @@ public class RequestEditorPanel extends JPanel {
 
     private ApiRequest currentRequest;
 
+    // Send action callback
+    public interface SendActionListener {
+        void onSend();
+    }
+    private SendActionListener sendActionListener;
+    private JButton sendBtn;
+    private JButton sendDropdownBtn;
+
     public RequestEditorPanel() {
         setLayout(new BorderLayout(5, 5));
         setBorder(BorderFactory.createTitledBorder("Request Editor"));
@@ -54,9 +62,59 @@ public class RequestEditorPanel extends JPanel {
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
         urlField = new JTextField();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+
+        // Send split button
+        sendBtn = new JButton("Send");
+        sendBtn.setToolTipText("Send current edited request directly");
+        sendBtn.addActionListener(e -> {
+            if (sendActionListener != null) {
+                sendActionListener.onSend();
+            }
+        });
+        sendDropdownBtn = new JButton("\u25BC"); // Black down-pointing triangle
+        sendDropdownBtn.setToolTipText("Select send mode");
+        sendDropdownBtn.setPreferredSize(new Dimension(22, sendBtn.getPreferredSize().height));
+        sendDropdownBtn.addActionListener(e -> {
+            JPopupMenu menu = new JPopupMenu();
+            JMenuItem sendOnlyItem = new JMenuItem("Send");
+            JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
+            sendOnlyItem.addActionListener(ev -> setSendModeLabel("Send"));
+            sendRepeaterItem.addActionListener(ev -> setSendModeLabel("Send + Repeater"));
+            menu.add(sendOnlyItem);
+            menu.add(sendRepeaterItem);
+            menu.show(sendDropdownBtn, 0, sendDropdownBtn.getHeight());
+        });
+
+        JPanel sendPanel = new JPanel(new BorderLayout(0, 0));
+        sendPanel.add(sendBtn, BorderLayout.CENTER);
+        sendPanel.add(sendDropdownBtn, BorderLayout.EAST);
+
         panel.add(methodBox, BorderLayout.WEST);
         panel.add(urlField, BorderLayout.CENTER);
+        panel.add(sendPanel, BorderLayout.EAST);
         return panel;
+    }
+
+    public void setSendActionListener(SendActionListener listener) {
+        this.sendActionListener = listener;
+    }
+
+    public void setSendEnabled(boolean enabled) {
+        sendBtn.setEnabled(enabled);
+        sendDropdownBtn.setEnabled(enabled);
+    }
+
+    public String getSendModeLabel() {
+        return sendBtn.getText();
+    }
+
+    public void setSendModeLabel(String label) {
+        sendBtn.setText(label);
+        if ("Send + Repeater".equals(label)) {
+            sendBtn.setToolTipText("Send request and also create Repeater tab");
+        } else {
+            sendBtn.setToolTipText("Send current edited request directly");
+        }
     }
 
     private JTabbedPane createTabs() {

@@ -242,6 +242,7 @@ public class CollectionRunner {
                     }
                 }
                 byte[] rawRequest = requestBuilder.buildRequest(req);
+                warnIfUnresolved(rawRequest, req.name);
                 if (debugRawRequest) {
                     String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
                     api.logging().logToOutput(debug);
@@ -460,6 +461,13 @@ public class CollectionRunner {
             return "Connection timeout - target unresponsive";
         }
         return msg;
+    }
+
+    private void warnIfUnresolved(byte[] rawRequest, String requestName) {
+        Set<String> unresolved = burp.utils.RequestBuilder.findUnresolvedTokens(rawRequest);
+        if (!unresolved.isEmpty() && api != null) {
+            api.logging().logToOutput("[WARN] Unresolved variables in request '" + requestName + "': " + String.join(", ", unresolved));
+        }
     }
 
     public void cancel() {
