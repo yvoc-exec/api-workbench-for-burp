@@ -25,17 +25,25 @@ public class UniversalImporter {
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final RequestBuilder requestBuilder;
+    private final SharedRequestPipeline pipeline;
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
     public UniversalImporter(MontoyaApi api) {
+        this(api, burp.utils.ScriptModeDetector.detect().mode);
+    }
+
+    public UniversalImporter(MontoyaApi api, ScriptMode scriptMode) {
         this.api = api;
         this.resolver = new VariableResolver();
         OAuth2Manager oauth2Manager = new OAuth2Manager(api);
-        this.requestBuilder = new RequestBuilder(api, resolver, oauth2Manager);
-        this.ui = new ImporterPanel(this, new burp.runner.CollectionRunner(api, oauth2Manager), oauth2Manager);
+        this.requestBuilder = new RequestBuilder(api, oauth2Manager);
+        ScriptEngine scriptEngine = new ScriptEngine(api, scriptMode);
+        this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
+        burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
+        this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
     }
 
     public JPanel getMainPanel() {
@@ -82,7 +90,9 @@ public class UniversalImporter {
                 ui.appendImportLog("Env bind warning: " + result.errorMessage);
             }
         }
-        collection.runtimeVars.putAll(initialVars);
+        if (initialVars != null && !initialVars.isEmpty()) {
+            collection.putAllRuntimeVars(initialVars);
+        }
         List<QueuedRequest> queue = new ArrayList<>();
         for (ApiRequest req : selectedRequests) {
             queue.add(new QueuedRequest(collection, req));
@@ -164,24 +174,11 @@ public class UniversalImporter {
      */
     public SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
-        resolver.clear();
-        seedResolverForCollection(colContext);
-        resolver.addRequestVariables(req);
-        if (req.hasAuth()) {
-            Map<String, String> authVars = OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables());
-            if (!authVars.isEmpty()) resolver.addAll(authVars);
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects);
+        if (!exec.success) {
+            throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
-        byte[] rawRequest = requestBuilder.buildRequest(req);
-        warnIfUnresolved(rawRequest, req.name);
-        String resolvedUrl = resolver.resolve(req.url);
-        HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
-        burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                parsed.host, parsed.port, parsed.useHttps);
-        HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
-        RequestOptions options = RequestOptions.requestOptions()
-                .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
-        var response = api.http().sendRequest(httpRequest, options);
-        return new SingleSendResult(response, httpRequest);
+        return new SingleSendResult(exec.response, exec.builtRequest);
     }
 
     public static class SingleSendResult {
@@ -303,7 +300,7 @@ public class UniversalImporter {
             }
         }
 
-        byte[] rawRequest = requestBuilder.buildRequest(req);
+        byte[] rawRequest = requestBuilder.buildRequest(req, resolver);
         warnIfUnresolved(rawRequest, req.name);
         if (debugRawRequest) {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);

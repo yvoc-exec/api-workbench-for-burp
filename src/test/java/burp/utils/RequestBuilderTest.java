@@ -19,7 +19,7 @@ class RequestBuilderTest {
     @BeforeEach
     void setUp() {
         resolver = new VariableResolver();
-        builder = new RequestBuilder(null, resolver);
+        builder = new RequestBuilder(null);
     }
 
     // ===================================================================
@@ -33,7 +33,7 @@ class RequestBuilderTest {
         req.url = "http://example.com/api";
         req.headers.add(new ApiRequest.Header("Accept", "text/html", false));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Accept")).isEqualTo("text/html");
@@ -47,7 +47,7 @@ class RequestBuilderTest {
         req.headers.add(new ApiRequest.Header("content-type", "text/html", false));
         req.headers.add(new ApiRequest.Header("Content-Type", "application/json", false));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         // Only one Content-Type should exist; last one wins (medium precedence put)
@@ -64,7 +64,7 @@ class RequestBuilderTest {
         req.method = "GET";
         req.url = "http://example.com:8080/api";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.hasHeader("Host")).isTrue();
@@ -77,7 +77,7 @@ class RequestBuilderTest {
         req.method = "GET";
         req.url = "https://example.com/api";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Host")).isEqualTo("example.com");
@@ -93,7 +93,7 @@ class RequestBuilderTest {
         req.auth.type = "bearer";
         req.auth.properties.put("token", "abc123");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Authorization")).isEqualTo("Basic custom");
@@ -111,7 +111,7 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "xyz");
         req.auth.properties.put("in", "cookie");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.hasHeader("Cookie")).isTrue();
@@ -137,7 +137,7 @@ class RequestBuilderTest {
         req.headers.add(new ApiRequest.Header("Accept-Encoding", "gzip", false));
         req.headers.add(new ApiRequest.Header("Postman-Token", "abc", false));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.hasHeader("Connection")).isFalse();
@@ -157,7 +157,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "hello";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.hasHeader("Transfer-Encoding")).isFalse();
@@ -177,7 +177,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "{\"key\":\"value\"}";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/json");
@@ -192,7 +192,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "plain text";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("text/plain");
@@ -208,7 +208,7 @@ class RequestBuilderTest {
         req.body.raw = "plain text";
         req.body.contentType = "application/xml";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/xml");
@@ -224,7 +224,7 @@ class RequestBuilderTest {
         req.body.urlencoded.add(new ApiRequest.Body.FormField("a", "1"));
         req.body.urlencoded.add(new ApiRequest.Body.FormField("b", "2"));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/x-www-form-urlencoded");
@@ -241,7 +241,7 @@ class RequestBuilderTest {
         req.body.graphql = new ApiRequest.Body.GraphQL();
         req.body.graphql.query = "{ users }";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/json");
@@ -257,7 +257,7 @@ class RequestBuilderTest {
         req.body.mode = "formdata";
         req.body.formdata.add(new ApiRequest.Body.FormField("field1", "value1"));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         String ct = parsed.headerValue("Content-Type");
@@ -282,7 +282,7 @@ class RequestBuilderTest {
         req.body.mode = "formdata";
         req.body.formdata.add(new ApiRequest.Body.FormField("field1", "value1"));
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         String ct = parsed.headerValue("Content-Type");
@@ -307,7 +307,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "hello world";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.contentLength()).isEqualTo(11);
@@ -319,7 +319,7 @@ class RequestBuilderTest {
         req.method = "POST";
         req.url = "http://example.com/api";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.contentLength()).isEqualTo(0);
@@ -334,7 +334,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "data";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.contentLength()).isEqualTo(4);
@@ -349,7 +349,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "patch";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.contentLength()).isEqualTo(5);
@@ -361,7 +361,7 @@ class RequestBuilderTest {
         req.method = "GET";
         req.url = "http://example.com/api";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.hasHeader("Content-Length")).isFalse();
@@ -376,7 +376,7 @@ class RequestBuilderTest {
         req.body.mode = "raw";
         req.body.raw = "x";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         long count = parsed.headers.keySet().stream()
@@ -423,7 +423,7 @@ class RequestBuilderTest {
         req.auth.type = "bearer";
         req.auth.properties.put("token", "mytoken");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Authorization")).isEqualTo("Bearer mytoken");
@@ -439,7 +439,7 @@ class RequestBuilderTest {
         req.auth.properties.put("username", "admin");
         req.auth.properties.put("password", "secret");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Authorization")).isEqualTo("Basic YWRtaW46c2VjcmV0");
@@ -456,7 +456,7 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "secret123");
         req.auth.properties.put("in", "query");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.path()).contains("api_key=secret123");
@@ -473,7 +473,7 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "secret123");
         req.auth.properties.put("in", "header");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("X-API-Key")).isEqualTo("secret123");
@@ -491,7 +491,7 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "abc");
         req.auth.properties.put("in", "cookie");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         String cookie = parsed.headerValue("Cookie");
@@ -508,7 +508,7 @@ class RequestBuilderTest {
         req.auth.type = "cookie";
         req.auth.properties.put("value", "b=2");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         String cookie = parsed.headerValue("Cookie");
@@ -534,7 +534,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("oauth2_client_secret", "secret456");
         resolver.addCustomVariable("oauth2_scope", "read");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/x-www-form-urlencoded");
@@ -557,7 +557,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("oauth2_client_secret", "secret456");
         resolver.addCustomVariable("oauth2_client_auth", "basic");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         // Basic auth header should be present
@@ -580,7 +580,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("oauth2_grant", "client_credentials");
         // No client_id set
 
-        assertThatThrownBy(() -> builder.buildRequest(req))
+        assertThatThrownBy(() -> builder.buildRequest(req, resolver))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("oauth2_client_id");
     }
@@ -596,7 +596,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("oauth2_client_id", "client123");
         // No client_secret
 
-        assertThatThrownBy(() -> builder.buildRequest(req))
+        assertThatThrownBy(() -> builder.buildRequest(req, resolver))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("oauth2_client_secret");
     }
@@ -613,7 +613,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("oauth2_client_secret", "secret456");
         // No username/password
 
-        assertThatThrownBy(() -> builder.buildRequest(req))
+        assertThatThrownBy(() -> builder.buildRequest(req, resolver))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("oauth2_username");
     }
@@ -637,7 +637,7 @@ class RequestBuilderTest {
         resolver.addCustomVariable("token", "abc");
         resolver.addCustomVariable("user", "john");
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.path()).startsWith("/api/42");
@@ -651,7 +651,7 @@ class RequestBuilderTest {
         req.method = "GET";
         req.url = "http://example.com/api";
 
-        byte[] raw = builder.buildRequest(req);
+        byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
         assertThat(parsed.headerValue("Accept")).isEqualTo("application/json, text/plain, */*");

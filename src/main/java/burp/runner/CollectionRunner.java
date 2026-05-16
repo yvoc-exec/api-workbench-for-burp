@@ -2,6 +2,7 @@ package burp.runner;
 
 import burp.models.*;
 import burp.parser.VariableResolver;
+import burp.utils.ExecutionResult;
 import burp.utils.HttpUtils;
 import burp.utils.ScriptEngine;
 import burp.utils.RequestBuilder;
@@ -29,8 +30,7 @@ import java.util.regex.*;
  */
 public class CollectionRunner {
     private final MontoyaApi api;
-    private final VariableResolver resolver;
-    private final RequestBuilder requestBuilder;
+    private final burp.utils.SharedRequestPipeline pipeline;
     private final List<RunnerListener> listeners = new ArrayList<>();
     private volatile boolean running = false;
     private volatile boolean cancelled = false;
@@ -41,28 +41,21 @@ public class CollectionRunner {
     private boolean debugRawRequest = false;
     private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
-    private ScriptEngine scriptEngine;
 
     private OAuth2Manager oauth2Manager;
 
-    private static final List<String> OAUTH2_CANONICAL_KEYS = Arrays.asList(
-        "oauth2_grant", "oauth2_token_url", "oauth2_auth_url",
-        "oauth2_client_id", "oauth2_client_secret", "oauth2_scope",
-        "oauth2_username", "oauth2_password", "oauth2_refresh_token",
-        "oauth2_code", "oauth2_redirect_uri", "oauth2_code_verifier",
-        "oauth2_client_auth", "oauth2_access_token"
-    );
-
     public CollectionRunner(MontoyaApi api) {
-        this(api, null);
+        this(api, null, null);
     }
 
-    public CollectionRunner(MontoyaApi api, OAuth2Manager oauth2Manager) {
-        this.oauth2Manager = oauth2Manager;
+    public CollectionRunner(MontoyaApi api, burp.utils.SharedRequestPipeline pipeline) {
+        this(api, pipeline, null);
+    }
+
+    public CollectionRunner(MontoyaApi api, burp.utils.SharedRequestPipeline pipeline, OAuth2Manager oauth2Manager) {
         this.api = api;
-        this.resolver = new VariableResolver();
-        this.requestBuilder = new RequestBuilder(api, resolver);
-        this.scriptEngine = new ScriptEngine(api, resolver);
+        this.pipeline = pipeline;
+        this.oauth2Manager = oauth2Manager;
     }
 
     public void addListener(RunnerListener listener) {
@@ -82,8 +75,8 @@ public class CollectionRunner {
     /** Legacy single-collection runner (kept for compatibility). */
     public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
                               Map<String, String> initialVars) {
-        if (collection != null) {
-            collection.runtimeVars.putAll(initialVars);
+        if (collection != null && initialVars != null && !initialVars.isEmpty()) {
+            collection.putAllRuntimeVars(initialVars);
         }
         runCollections(Collections.singletonList(collection), selectedRequests);
     }
@@ -139,51 +132,8 @@ public class CollectionRunner {
                         col = colMap.getOrDefault(req.sourceCollection, null);
                     }
 
-                    // Seed resolver with collection-scoped layers
-                    resolver.clear();
-                    Map<String, String> sources = new LinkedHashMap<>();
-                    if (col != null) {
-                        resolver.addEnvironmentVariables(col);
-                        if (col.environment != null) {
-                            for (String key : col.environment.keySet()) sources.put(key, "collection-env");
-                        }
-                        resolver.addCollectionVariables(col);
-                        for (ApiRequest.Variable v : col.variables) {
-                            if (v.value != null) sources.put(v.key, "collection-var");
-                        }
-                        if (col.runtimeVars != null) {
-                            resolver.addAll(col.runtimeVars);
-                            for (String key : col.runtimeVars.keySet()) sources.put(key, "scoped-runtime");
-                        }
-                        if (col.runtimeOAuth2 != null) {
-                            resolver.addAll(col.runtimeOAuth2);
-                            for (String key : col.runtimeOAuth2.keySet()) sources.put(key, "scoped-oauth2");
-                        }
-                    }
-
-                    // Apply request-level variables
-                    resolver.addRequestVariables(req);
-                    if (req.variables != null) {
-                        for (ApiRequest.Variable v : req.variables) {
-                            if (v.value != null) sources.put(v.key, "request-level");
-                        }
-                    }
-                    // Apply any previously extracted vars (highest precedence in runner)
-                    resolver.addAll(extractedVars);
-                    for (String key : extractedVars.keySet()) sources.put(key, "runner-extracted");
-
-                    // Execute pre-request scripts
-                    scriptEngine.executePreRequest(req, extractedVars);
-
-                    RunnerResult result = executeRequest(req, i + 1, ordered.size(), extractedVars, sources);
+                    RunnerResult result = executeRequest(req, col);
                     results.add(result);
-
-                    // Extract variables from response
-                    if (result.success) {
-                        Map<String, String> newVars = extractVariablesFromResponse(req, result);
-                        extractedVars.putAll(newVars);
-                        result.extractedVariables.putAll(newVars);
-                    }
 
                     fireOnRequestComplete(result);
 
@@ -208,111 +158,74 @@ public class CollectionRunner {
         });
     }
 
-    private RunnerResult executeRequest(ApiRequest req, int current, int total, Map<String, String> extractedVars, Map<String, String> sources) {
+    private RunnerResult executeRequest(ApiRequest req, ApiCollection col) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
-        // Snapshot current OAuth2 canonical values before this request
-        Map<String, String> oauth2Snapshot = snapshotOAuth2Vars();
+        // Merge previously extracted vars into collection runtime context so pipeline sees them
+        if (col != null && !extractedVars.isEmpty()) {
+            col.putAllRuntimeVars(extractedVars);
+        }
 
         int attempts = 0;
         while (attempts < maxRetries) {
             attempts++;
             try {
-                // Apply current request's auth mapping with override so this request's auth wins
-                if (req.hasAuth()) {
-                    Map<String, String> authVars = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables(), true);
-                    if (!authVars.isEmpty()) {
-                        resolver.addAll(authVars);
-                    }
-                }
+                ExecutionResult exec = pipeline.execute(req, col, followRedirects);
 
-                // Refresh OAuth2 token if needed before executing
-                if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
-                    try {
-                        OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
-                        if (config.isValid()) {
-                            TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
-                            resolver.addCustomVariable("oauth2_access_token", entry.accessToken);
-                        }
-                    } catch (Exception e) {
-                        api.logging().logToOutput("OAuth2 refresh in runner failed: " + e.getMessage());
-                    }
-                }
-                byte[] rawRequest = requestBuilder.buildRequest(req);
-                warnIfUnresolved(rawRequest, req.name);
-                if (debugRawRequest) {
-                    String debug = burp.utils.RequestDebugFormatter.format(rawRequest, "runner", req.name);
-                    api.logging().logToOutput(debug);
-                    fireOnDebug(debug);
-                    String varsDebug = burp.utils.VariableDebugFormatter.format(resolver.getVariables(), sources, "runner / " + req.name);
-                    api.logging().logToOutput(varsDebug);
-                    fireOnDebug(varsDebug);
-                }
-                String resolvedUrl = resolver.resolve(req.url);
-                HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
-                result.host = parsed.host;
-                result.path = parsed.pathWithQuery;
-
-                burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                        parsed.host, parsed.port, parsed.useHttps);
-
-                HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
-
-                // Store request details for result pane
-                result.requestUrl = resolvedUrl;
-                result.requestHeaders = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
-                if (req.body != null && req.body.raw != null) {
-                    result.requestBody = req.body.raw;
-                }
-
-                long startTime = System.currentTimeMillis();
-                RequestOptions options = RequestOptions.requestOptions()
-                        .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
-                HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
-                long endTime = System.currentTimeMillis();
-
-                result.responseTimeMs = endTime - startTime;
-
-                if (response.response() != null) {
+                if (exec.success && exec.response != null && exec.response.response() != null) {
+                    var response = exec.response.response();
                     result.success = true;
-                    result.statusCode = response.response().statusCode();
-                    result.responseSize = response.response().body().length();
+                    result.statusCode = response.statusCode();
+                    result.responseSize = response.body().length();
 
-                    // Preview of response body (first 500 chars)
-                    String body = response.response().bodyToString();
+                    String body = response.bodyToString();
                     result.responseBody = body;
                     result.responseBodyLength = body.length();
                     result.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
+                    result.responseTimeMs = exec.elapsedMs;
 
                     // Store response headers
                     StringBuilder respHeaders = new StringBuilder();
-                    respHeaders.append("HTTP/1.1 ").append(response.response().statusCode()).append(" OK\n");
-                    for (var header : response.response().headers()) {
+                    respHeaders.append("HTTP/1.1 ").append(response.statusCode()).append(" OK\n");
+                    for (var header : response.headers()) {
                         respHeaders.append(header.name()).append(": ").append(header.value()).append("\n");
                     }
                     result.responseHeaders = respHeaders.toString();
 
+                    // Store request details for result pane
+                    result.requestUrl = req.url;
+                    result.requestHeaders = exec.requestHeaders;
+                    result.requestBody = exec.requestBody;
+                    HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(req.url);
+                    result.host = parsed.host;
+                    result.path = parsed.pathWithQuery;
+
                     // Annotate sitemap entry for visibility
                     Annotations annotations = Annotations.annotations(
                             "[Runner] " + req.name, HighlightColor.CYAN);
-                    api.siteMap().add(response.withAnnotations(annotations));
+                    api.siteMap().add(exec.response.withAnnotations(annotations));
 
-                    // Execute post-response scripts (assertions + variable extraction)
-                    Map<String, List<String>> headersMap = new HashMap<>();
-                    for (var header : response.response().headers()) {
-                        headersMap.computeIfAbsent(header.name().toLowerCase(), k -> new ArrayList<>()).add(header.value());
-                    }
-                    scriptEngine.executePostResponse(req, result, extractedVars, body, result.statusCode, headersMap);
+                    // Copy extracted vars for cross-request continuity
+                    extractedVars.putAll(exec.extractedVars);
+                    result.extractedVariables.putAll(exec.extractedVars);
+
+                    break; // Success, exit retry loop
                 } else {
                     result.success = false;
-                    result.errorMessage = "No response received";
+                    result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
+                    if (attempts >= maxRetries) {
+                        break;
+                    }
+                    try {
+                        Thread.sleep(delayMs * attempts); // Exponential backoff
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
-
-                break; // Success, exit retry loop
-
             } catch (Exception e) {
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
@@ -328,32 +241,7 @@ public class CollectionRunner {
             }
         }
 
-        // Restore snapshot so next request starts clean for OAuth2 keys
-        restoreOAuth2Vars(oauth2Snapshot);
-
         return result;
-    }
-
-    private Map<String, String> snapshotOAuth2Vars() {
-        Map<String, String> snapshot = new HashMap<>();
-        Map<String, String> vars = resolver.getVariables();
-        for (String key : OAUTH2_CANONICAL_KEYS) {
-            if (vars.containsKey(key)) {
-                snapshot.put(key, vars.get(key));
-            }
-        }
-        return snapshot;
-    }
-
-    private void restoreOAuth2Vars(Map<String, String> snapshot) {
-        Map<String, String> vars = resolver.mutableVariables();
-        if (vars == null) return;
-        // Remove all canonical keys
-        for (String key : OAUTH2_CANONICAL_KEYS) {
-            vars.remove(key);
-        }
-        // Re-add snapped values
-        vars.putAll(snapshot);
     }
 
     private Map<String, String> extractVariablesFromResponse(ApiRequest req, RunnerResult result) {
