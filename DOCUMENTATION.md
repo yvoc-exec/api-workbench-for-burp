@@ -87,7 +87,7 @@ Load multiple collections simultaneously:
 - **Sequential execution** with configurable inter-request delay
 - **Variable extraction** from JSON responses via scripts or comments
 - **Assertions** (status code, header presence, JSON property existence)
-- **Auto-retry** with exponential backoff (delayMs x attempt number)
+- **Internal retry** with exponential backoff (maxRetries defaults to 1; not exposed in UI)
 - **Stop on error** option halts execution on first failure
 - **Real-time results** table with status, timing, size, assertion pass/fail
 - **Sitemap integration** - runner responses auto-populate Site map
@@ -646,7 +646,6 @@ public void runCollection(ApiCollection collection,
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
 | Delay | 200ms | 0–5000ms | Pause between requests |
-| Max Retries | 1 | 1–5 | Retry count on failure |
 | Stop on Error | false | boolean | Halt execution on first failure |
 | Follow Redirects | true | boolean | Burp HTTP client setting |
 
@@ -872,7 +871,7 @@ When Nashorn is unavailable:
 |-------|-------|-------------|
 | "Unknown collection format" | File doesn't match any parser | Check file extension and structure |
 | "Invalid Postman collection" | Missing `info` object | Verify Postman export version |
-| "No requests selected" | Import attempted with 0 checkboxes | Select requests in preview table |
+| "No requests selected" | Import attempted with 0 checkboxes | Select requests in the Workbench Request Tree checkboxes |
 | "DNS failed" | Unknown host | Check network/VPN/proxy |
 | "Connection refused" | Service down or wrong port | Verify target is running |
 | "Connection timeout" | Target unresponsive | Check firewall or increase timeout |
@@ -1035,7 +1034,7 @@ public class PostmanApi {
 
 **Checks:**
 1. Verify collection has valid URLs (not empty)
-2. Check if requests are disabled in preview table
+2. Check if requests are checked in the Request Tree
 3. Look for errors in Import Log panel
 4. Try Sitemap mode to verify request is buildable
 
