@@ -1,9 +1,12 @@
 package burp.ui;
 
 import burp.models.ApiRequest;
+import burp.parser.VariableResolver;
 
 import javax.swing.*;
 import javax.swing.border.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.util.*;
@@ -40,6 +43,10 @@ public class RequestEditorPanel extends JPanel {
     private JTextArea preScriptArea;
     private JTextArea postScriptArea;
 
+    // Resolved mirror
+    private JTextArea resolvedViewArea;
+    private Map<String, String> runtimeVariables = new HashMap<>();
+
     private ApiRequest currentRequest;
     private burp.models.ApiCollection currentCollection;
 
@@ -56,6 +63,7 @@ public class RequestEditorPanel extends JPanel {
         setBorder(BorderFactory.createTitledBorder("Request Editor"));
         add(createTopBar(), BorderLayout.NORTH);
         add(createTabs(), BorderLayout.CENTER);
+        attachLiveRefreshListeners();
     }
 
     private JPanel createTopBar() {
@@ -125,6 +133,7 @@ public class RequestEditorPanel extends JPanel {
         tabs.addTab("Headers", createHeadersPanel());
         tabs.addTab("Body", createBodyPanel());
         tabs.addTab("Scripts", createScriptsPanel());
+        tabs.addTab("Resolved", createResolvedPanel());
         return tabs;
     }
 
@@ -174,18 +183,28 @@ public class RequestEditorPanel extends JPanel {
         } else if ("oauth2".equals(type)) {
             addAuthField("grantType", "Grant Type");
             addAuthField("accessTokenUrl", "Token URL");
+            addAuthField("authorizationUrl", "Authorization URL");
+            addAuthField("redirectUri", "Redirect URI");
             addAuthField("clientId", "Client ID");
             addAuthField("clientSecret", "Client Secret");
+            addAuthField("username", "Username");
+            addAuthField("password", "Password");
             addAuthField("scope", "Scope");
+            addAuthField("refreshToken", "Refresh Token");
+            addAuthField("code", "Authorization Code");
+            addAuthField("codeVerifier", "Code Verifier");
+            addAuthField("clientAuth", "Client Auth (body/basic/none)");
             addAuthField("accessToken", "Access Token");
         }
         authFieldsPanel.revalidate();
         authFieldsPanel.repaint();
+        refreshResolvedMirror();
     }
 
     private void addAuthField(String key, String label) {
         authFieldsPanel.add(new JLabel(label));
         JTextField field = new JTextField();
+        field.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
         authFields.put(key, field);
         authFieldsPanel.add(field);
     }
@@ -215,7 +234,7 @@ public class RequestEditorPanel extends JPanel {
 
     private JPanel createBodyPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-        bodyModeBox = new JComboBox<>(new String[]{"none", "raw", "urlencoded", "formdata"});
+        bodyModeBox = new JComboBox<>(new String[]{"none", "raw", "urlencoded", "formdata", "graphql", "file"});
         bodyModeBox.addActionListener(e -> updateBodyMode());
         panel.add(bodyModeBox, BorderLayout.NORTH);
 
@@ -252,7 +271,9 @@ public class RequestEditorPanel extends JPanel {
         CardLayout cl = (CardLayout) ((JPanel) bodyModeBox.getParent().getComponent(1)).getLayout();
         if ("raw".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "raw");
         else if ("none".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "none");
+        else if ("graphql".equals(mode) || "file".equals(mode)) cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "raw");
         else cl.show((JPanel) bodyModeBox.getParent().getComponent(1), "form");
+        refreshResolvedMirror();
     }
 
     private JPanel createScriptsPanel() {
@@ -268,12 +289,41 @@ public class RequestEditorPanel extends JPanel {
         return panel;
     }
 
+    private JPanel createResolvedPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        resolvedViewArea = new JTextArea(12, 40);
+        resolvedViewArea.setEditable(false);
+        resolvedViewArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        panel.add(new JScrollPane(resolvedViewArea), BorderLayout.CENTER);
+        return panel;
+    }
+
+    private void attachLiveRefreshListeners() {
+        methodBox.addActionListener(e -> refreshResolvedMirror());
+        urlField.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
+        headersModel.addTableModelListener(e -> refreshResolvedMirror());
+        paramsModel.addTableModelListener(e -> refreshResolvedMirror());
+        bodyFormModel.addTableModelListener(e -> refreshResolvedMirror());
+        bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
+        preScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
+        postScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
+    }
+
+    private static class SimpleDocumentListener implements DocumentListener {
+        private final Runnable onChange;
+        SimpleDocumentListener(Runnable onChange) { this.onChange = onChange; }
+        @Override public void insertUpdate(DocumentEvent e) { onChange.run(); }
+        @Override public void removeUpdate(DocumentEvent e) { onChange.run(); }
+        @Override public void changedUpdate(DocumentEvent e) { onChange.run(); }
+    }
+
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
         if (req == null) {
             methodBox.setSelectedItem("GET");
             urlField.setText("");
             clearAll();
+            refreshResolvedMirror();
             return;
         }
         methodBox.setSelectedItem(req.method != null ? req.method.toUpperCase() : "GET");
@@ -303,13 +353,20 @@ public class RequestEditorPanel extends JPanel {
             }
         }
         // Body
+        bodyRawArea.setText("");
+        bodyFormModel.setRowCount(0);
         if (req.body != null) {
             bodyModeBox.setSelectedItem(req.body.mode != null ? req.body.mode : "none");
             updateBodyMode();
             if ("raw".equals(req.body.mode) && req.body.raw != null) {
                 bodyRawArea.setText(req.body.raw);
             }
-            bodyFormModel.setRowCount(0);
+            if ("graphql".equals(req.body.mode) && req.body.graphql != null) {
+                bodyRawArea.setText(req.body.graphql.query != null ? req.body.graphql.query : "");
+            }
+            if ("file".equals(req.body.mode) && req.body.raw != null) {
+                bodyRawArea.setText(req.body.raw);
+            }
             if (req.body.urlencoded != null) {
                 for (ApiRequest.Body.FormField f : req.body.urlencoded) {
                     bodyFormModel.addRow(new Object[]{f.key, f.value});
@@ -328,19 +385,37 @@ public class RequestEditorPanel extends JPanel {
         preScriptArea.setText("");
         postScriptArea.setText("");
         if (req.preRequestScripts != null) {
-            for (ApiRequest.Script s : req.preRequestScripts) {
-                preScriptArea.append(s.exec != null ? s.exec : "");
+            for (int i = 0; i < req.preRequestScripts.size(); i++) {
+                ApiRequest.Script s = req.preRequestScripts.get(i);
+                if (s.exec != null) {
+                    if (i > 0 && !preScriptArea.getText().endsWith("\n")) preScriptArea.append("\n");
+                    preScriptArea.append(s.exec);
+                }
             }
         }
         if (req.postResponseScripts != null) {
-            for (ApiRequest.Script s : req.postResponseScripts) {
-                postScriptArea.append(s.exec != null ? s.exec : "");
+            for (int i = 0; i < req.postResponseScripts.size(); i++) {
+                ApiRequest.Script s = req.postResponseScripts.get(i);
+                if (s.exec != null) {
+                    if (i > 0 && !postScriptArea.getText().endsWith("\n")) postScriptArea.append("\n");
+                    postScriptArea.append(s.exec);
+                }
             }
         }
+        refreshResolvedMirror();
     }
 
+    public ApiRequest getCurrentRequest() { return currentRequest; }
     public burp.models.ApiCollection getCurrentCollection() { return currentCollection; }
-    public void setCurrentCollection(burp.models.ApiCollection col) { this.currentCollection = col; }
+    public void setCurrentCollection(burp.models.ApiCollection col) {
+        this.currentCollection = col;
+        refreshResolvedMirror();
+    }
+
+    public void setRuntimeVariables(Map<String, String> vars) {
+        runtimeVariables = vars != null ? new HashMap<>(vars) : new HashMap<>();
+        refreshResolvedMirror();
+    }
 
     public ApiRequest buildRequestFromUI() {
         if (currentRequest == null) return null;
@@ -358,9 +433,13 @@ public class RequestEditorPanel extends JPanel {
         if (!"none".equals(authType)) {
             req.auth = new ApiRequest.Auth();
             req.auth.type = authType;
+            if (currentRequest.auth != null && authType.equalsIgnoreCase(currentRequest.auth.type)) {
+                req.auth.properties.putAll(currentRequest.auth.properties);
+            }
             for (Map.Entry<String, JTextField> e : authFields.entrySet()) {
                 String val = e.getValue().getText().trim();
                 if (!val.isEmpty()) req.auth.properties.put(e.getKey(), val);
+                else req.auth.properties.remove(e.getKey());
             }
         }
         // Headers
@@ -379,6 +458,23 @@ public class RequestEditorPanel extends JPanel {
             req.body.mode = bodyMode;
             if ("raw".equals(bodyMode)) {
                 req.body.raw = bodyRawArea.getText();
+            } else if ("graphql".equals(bodyMode)) {
+                ApiRequest.Body.GraphQL graphQL = new ApiRequest.Body.GraphQL();
+                if (currentRequest.body != null && currentRequest.body.graphql != null) {
+                    graphQL.variables = currentRequest.body.graphql.variables;
+                }
+                graphQL.query = bodyRawArea.getText();
+                req.body.graphql = graphQL;
+                if (currentRequest.body != null) {
+                    req.body.contentType = currentRequest.body.contentType;
+                }
+            } else if ("file".equals(bodyMode)) {
+                if (currentRequest.body != null) {
+                    req.body.raw = bodyRawArea.getText();
+                    req.body.contentType = currentRequest.body.contentType;
+                    req.body.formdata = currentRequest.body.formdata != null ? new ArrayList<>(currentRequest.body.formdata) : new ArrayList<>();
+                    req.body.urlencoded = currentRequest.body.urlencoded != null ? new ArrayList<>(currentRequest.body.urlencoded) : new ArrayList<>();
+                }
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
                 List<ApiRequest.Body.FormField> fields = new ArrayList<>();
                 for (int i = 0; i < bodyFormModel.getRowCount(); i++) {
@@ -399,6 +495,64 @@ public class RequestEditorPanel extends JPanel {
         if (!postScript.isEmpty()) req.postResponseScripts.add(new ApiRequest.Script("js", postScript));
 
         return req;
+    }
+
+    private void refreshResolvedMirror() {
+        if (resolvedViewArea == null) return;
+        if (currentRequest == null) {
+            resolvedViewArea.setText("");
+            return;
+        }
+        VariableResolver vr = new VariableResolver();
+        if (runtimeVariables != null && !runtimeVariables.isEmpty()) {
+            vr.addAll(runtimeVariables);
+        }
+        vr.addRequestVariables(currentRequest);
+
+        StringBuilder out = new StringBuilder();
+        out.append("Resolved URL\n");
+        out.append("------------\n");
+        out.append(vr.resolve(rebuildUrlWithParams(urlField.getText(), paramsModel))).append("\n\n");
+
+        out.append("Resolved Auth\n");
+        out.append("-------------\n");
+        String authType = (String) authTypeBox.getSelectedItem();
+        out.append("type=").append(authType).append("\n");
+        for (Map.Entry<String, JTextField> e : authFields.entrySet()) {
+            String v = e.getValue().getText();
+            if (v != null && !v.isEmpty()) {
+                out.append(e.getKey()).append("=").append(vr.resolve(v)).append("\n");
+            }
+        }
+        out.append("\nResolved Headers\n");
+        out.append("----------------\n");
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            String value = (String) headersModel.getValueAt(i, 1);
+            Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
+            if (key != null && !key.trim().isEmpty() && (enabled == null || enabled)) {
+                out.append(vr.resolve(key)).append(": ").append(vr.resolve(value != null ? value : "")).append("\n");
+            }
+        }
+
+        out.append("\nResolved Body\n");
+        out.append("-------------\n");
+        String bodyMode = (String) bodyModeBox.getSelectedItem();
+        out.append("mode=").append(bodyMode).append("\n");
+        if ("raw".equals(bodyMode) || "graphql".equals(bodyMode) || "file".equals(bodyMode)) {
+            out.append(vr.resolve(bodyRawArea.getText())).append("\n");
+        } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
+            for (int i = 0; i < bodyFormModel.getRowCount(); i++) {
+                String k = (String) bodyFormModel.getValueAt(i, 0);
+                String v = (String) bodyFormModel.getValueAt(i, 1);
+                if (k != null && !k.trim().isEmpty()) {
+                    out.append(vr.resolve(k)).append("=").append(vr.resolve(v != null ? v : "")).append("\n");
+                }
+            }
+        }
+
+        resolvedViewArea.setText(out.toString());
+        resolvedViewArea.setCaretPosition(0);
     }
 
     public JTextField getUrlField() { return urlField; }
@@ -485,5 +639,6 @@ public class RequestEditorPanel extends JPanel {
         bodyFormModel.setRowCount(0);
         preScriptArea.setText("");
         postScriptArea.setText("");
+        refreshResolvedMirror();
     }
 }
