@@ -11,14 +11,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
 import java.io.ByteArrayOutputStream;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RequestBuilder {
     /**
-     * Hop-by-hop and body-length headers that must be overridden to match
-     * the rebuilt request bytes. Burp normalises these too.
+     * Hop-by-hop and body-length headers that must not be emitted from imported
+     * definitions. Burp normalises these too, but stale values cause 400s.
      */
     private static final Set<String> SKIP_HEADER_NAMES = Set.of(
-            "host", "content-length", "transfer-encoding", "connection", "proxy-connection"
+            "host", "content-length", "transfer-encoding", "connection", "proxy-connection",
+            "accept-encoding", "postman-token"
     );
     private final MontoyaApi api;
     private final VariableResolver resolver;
@@ -49,81 +52,169 @@ public class RequestBuilder {
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
         String requestTarget = parsed.pathWithQuery;
-        List<String> headers = new ArrayList<>();
+        HeaderStore headers = new HeaderStore();
 
-        // Host header (only :port when non-default for scheme)
-        String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
-        headers.add("Host: " + hostValue);
+        // Layer 1: compatibility defaults (lowest precedence)
+        headers.putDefault("Accept", "application/json, text/plain, */*");
+        headers.putDefault("User-Agent", "BurpExtensionRuntime");
+        headers.putDefault("Cache-Control", "no-cache");
 
-        // Custom headers (skip dangerous hop-by-hop / body-length headers)
+        // Layer 2: request-level headers (override defaults)
         if (request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
                 if (!header.disabled && header.key != null && header.value != null) {
                     String key = resolver.resolve(header.key);
                     String value = resolver.resolve(header.value);
                     if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
-                        headers.add(key.trim() + ": " + value);
+                        headers.put(key.trim(), value);
                     }
                 }
             }
         }
 
-        // Authentication (may modify requestTarget for API-key-in-query)
+        // Layer 3: authentication (only if not already present at request level)
         requestTarget = applyAuthentication(headers, request.auth, requestTarget);
 
-        // Insert request line at the top after auth has settled the target
-        headers.add(0, method + " " + requestTarget + " HTTP/1.1");
+        // Layer 4: Host header (computed, must be correct)
+        String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
+        headers.putComputed("Host", hostValue);
 
-        // Body
-        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers);
-        if (body == null) {
-            body = buildBody(request.body, headers);
+        // Insert request line at index 0
+        List<String> rawHeaders = new ArrayList<>();
+        rawHeaders.add(method + " " + requestTarget + " HTTP/1.1");
+        for (Map.Entry<String, String> entry : headers.entries()) {
+            rawHeaders.add(entry.getKey() + ": " + entry.getValue());
         }
 
-        // Override Content-Length to match exact body bytes; never emit Transfer-Encoding
-        headers.removeIf(h -> h.toLowerCase().startsWith("content-length:") || h.toLowerCase().startsWith("transfer-encoding:"));
+        // Body
+        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, rawHeaders);
+        if (body == null) {
+            body = buildBody(request.body, rawHeaders, request.name);
+        }
+
+        // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
+        // have leaked through, then compute exact Content-Length from body bytes.
+        rawHeaders.removeIf(h -> {
+            String lower = h.toLowerCase();
+            return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
+        });
         boolean shouldSendContentLength = body.length > 0
                 || method.equals("POST")
                 || method.equals("PUT")
                 || method.equals("PATCH");
         if (shouldSendContentLength) {
-            headers.add("Content-Length: " + body.length);
+            rawHeaders.add("Content-Length: " + body.length);
         }
 
         // Build raw request bytes preserving CRLF line endings
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.write(String.join("\r\n", headers).getBytes(StandardCharsets.UTF_8));
+        baos.write(String.join("\r\n", rawHeaders).getBytes(StandardCharsets.UTF_8));
         baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
         baos.write(body);
         return baos.toByteArray();
     }
 
     /**
+     * Scans built request bytes for unresolved {{variable}} tokens.
+     * Returns the set of unresolved variable names (empty if none).
+     */
+    public static Set<String> findUnresolvedTokens(byte[] rawRequest) {
+        Set<String> unresolved = new LinkedHashSet<>();
+        if (rawRequest == null || rawRequest.length == 0) return unresolved;
+        String text = new String(rawRequest, StandardCharsets.UTF_8);
+        Pattern p = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
+        Matcher m = p.matcher(text);
+        while (m.find()) {
+            unresolved.add(m.group(1).trim());
+        }
+        return unresolved;
+    }
+
+    /**
+     * Case-insensitive header store with stable insertion order and explicit
+     * precedence levels: default (lowest) -> put (medium) -> computed (highest).
+     */
+    private static class HeaderStore {
+        private final LinkedHashMap<String, String> headers = new LinkedHashMap<>();
+        private final Set<String> keysLower = new HashSet<>();
+
+        /** Adds only if absent (lowest precedence). */
+        void putDefault(String key, String value) {
+            String lower = key.toLowerCase();
+            if (!keysLower.contains(lower)) {
+                headers.put(key, value);
+                keysLower.add(lower);
+            }
+        }
+
+        /** Overrides any existing value (medium precedence). */
+        void put(String key, String value) {
+            String lower = key.toLowerCase();
+            // Remove existing case variant to preserve latest insertion order
+            headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(key));
+            headers.put(key, value);
+            keysLower.add(lower);
+        }
+
+        /** Overrides any existing value (highest precedence for computed headers). */
+        void putComputed(String key, String value) {
+            put(key, value);
+        }
+
+        /** Merges a cookie into a single Cookie header. */
+        void mergeCookie(String cookieValue) {
+            String existing = get("Cookie");
+            if (existing != null) {
+                putComputed("Cookie", existing + "; " + cookieValue);
+            } else {
+                putDefault("Cookie", cookieValue);
+            }
+        }
+
+        String get(String key) {
+            for (Map.Entry<String, String> e : headers.entrySet()) {
+                if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
+            }
+            return null;
+        }
+
+        boolean has(String key) {
+            return keysLower.contains(key.toLowerCase());
+        }
+
+        Collection<Map.Entry<String, String>> entries() {
+            return new ArrayList<>(headers.entrySet());
+        }
+    }
+
+    /**
      * Applies authentication to headers and optionally modifies the request target
      * (e.g., appending API key to query string). Returns the potentially-modified target.
+     *
+     * Uses putDefault() for Authorization/Cookie so explicit request-level headers win.
      */
-    private String applyAuthentication(List<String> headers, ApiRequest.Auth auth, String requestTarget) {
+    private String applyAuthentication(HeaderStore headers, ApiRequest.Auth auth, String requestTarget) {
         if (auth == null || auth.type == null) return requestTarget;
 
         switch (auth.type.toLowerCase()) {
             case "bearer":
-                if (!hasHeader(headers, "Authorization")) {
+                if (!headers.has("Authorization")) {
                     String token = auth.properties.getOrDefault("token", auth.properties.get("value"));
                     if (token != null) {
                         String prefix = auth.properties.getOrDefault("prefix", "Bearer");
-                        headers.add("Authorization: " + resolver.resolve(prefix) + " " + resolver.resolve(token));
+                        headers.putDefault("Authorization", resolver.resolve(prefix) + " " + resolver.resolve(token));
                     }
                 }
                 break;
             case "basic":
-                if (!hasHeader(headers, "Authorization")) {
+                if (!headers.has("Authorization")) {
                     String username = auth.properties.getOrDefault("username", auth.properties.get("user"));
                     String password = auth.properties.getOrDefault("password", auth.properties.get("pass"));
                     if (username != null || password != null) {
                         String credentials = (username != null ? resolver.resolve(username) : "") + ":" +
                                 (password != null ? resolver.resolve(password) : "");
                         String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-                        headers.add("Authorization: Basic " + encoded);
+                        headers.putDefault("Authorization", "Basic " + encoded);
                     }
                 }
                 break;
@@ -140,17 +231,11 @@ public class RequestBuilder {
                                 : requestTarget + "?" + param;
                     } else if ("cookie".equalsIgnoreCase(in)) {
                         String cookieValue = resolver.resolve(keyName) + "=" + resolver.resolve(keyValue);
-                        Optional<String> existingCookie = headers.stream()
-                                .filter(h -> h.toLowerCase().startsWith("cookie:"))
-                                .findFirst();
-                        if (existingCookie.isPresent()) {
-                            int idx = headers.indexOf(existingCookie.get());
-                            headers.set(idx, existingCookie.get() + "; " + cookieValue);
-                        } else {
-                            headers.add("Cookie: " + cookieValue);
-                        }
+                        headers.mergeCookie(cookieValue);
                     } else {
-                        headers.add(resolver.resolve(keyName) + ": " + resolver.resolve(keyValue));
+                        if (!headers.has(resolver.resolve(keyName))) {
+                            headers.putDefault(resolver.resolve(keyName), resolver.resolve(keyValue));
+                        }
                     }
                 }
                 break;
@@ -158,19 +243,11 @@ public class RequestBuilder {
                 String cookieValue = auth.properties.get("value");
                 if (cookieValue != null) {
                     String resolvedCookie = resolver.resolve(cookieValue);
-                    Optional<String> existingCookie = headers.stream()
-                            .filter(h -> h.toLowerCase().startsWith("cookie:"))
-                            .findFirst();
-                    if (existingCookie.isPresent()) {
-                        int idx = headers.indexOf(existingCookie.get());
-                        headers.set(idx, existingCookie.get() + "; " + resolvedCookie);
-                    } else {
-                        headers.add("Cookie: " + resolvedCookie);
-                    }
+                    headers.mergeCookie(resolvedCookie);
                 }
                 break;
             case "oauth2":
-                if (!hasHeader(headers, "Authorization")) {
+                if (!headers.has("Authorization")) {
                     String accessToken = auth.properties.get("accessToken");
                     // Auto-acquire live token if static token is missing/empty/templated
                     if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{")) && oauth2Manager != null) {
@@ -191,7 +268,7 @@ public class RequestBuilder {
                         accessToken = resolver.getVariables().get("oauth2_access_token");
                     }
                     if (accessToken != null && !accessToken.isEmpty()) {
-                        headers.add("Authorization: Bearer " + resolver.resolve(accessToken));
+                        headers.putDefault("Authorization", "Bearer " + resolver.resolve(accessToken));
                     }
                 }
                 break;
@@ -199,25 +276,44 @@ public class RequestBuilder {
         return requestTarget;
     }
 
-    private byte[] buildBody(ApiRequest.Body body, List<String> headers) throws Exception {
+    private byte[] buildBody(ApiRequest.Body body, List<String> headers, String requestName) throws Exception {
         if (body == null || body.mode == null || "none".equals(body.mode)) {
             return new byte[0];
         }
 
+        // Re-wrap List<String> into a temporary HeaderStore for body-derived headers
+        HeaderStore hs = new HeaderStore();
+        for (String h : headers) {
+            int colon = h.indexOf(':');
+            if (colon > 0) {
+                hs.put(h.substring(0, colon).trim(), h.substring(colon + 1).trim());
+            }
+        }
+
+        byte[] result;
         switch (body.mode) {
             case "raw":
                 if (body.raw != null) {
                     String resolved = resolver.resolve(body.raw);
-                    if (!hasContentType(headers)) {
-                        headers.add("Content-Type: " + (body.contentType != null ? body.contentType : "text/plain"));
+                    String ct = body.contentType;
+                    if (ct == null || ct.isBlank()) {
+                        // Heuristic: if it looks like JSON, default to application/json
+                        String trimmed = resolved.trim();
+                        ct = (trimmed.startsWith("{") || trimmed.startsWith("[")) ? "application/json" : "text/plain";
                     }
-                    return resolved.getBytes(StandardCharsets.UTF_8);
+                    enforceContentType(hs, ct, requestName);
+                    result = resolved.getBytes(StandardCharsets.UTF_8);
+                } else {
+                    result = new byte[0];
                 }
                 break;
 
             case "graphql":
                 if (body.graphql != null) {
-                    return buildGraphQLBody(body.graphql, headers);
+                    result = buildGraphQLBody(body.graphql, hs);
+                    enforceContentType(hs, "application/json", requestName);
+                } else {
+                    result = new byte[0];
                 }
                 break;
 
@@ -232,28 +328,74 @@ public class RequestBuilder {
                             params.add(key + "=" + value);
                         }
                     }
-                    if (!hasContentType(headers)) {
-                        headers.add("Content-Type: application/x-www-form-urlencoded");
-                    }
-                    return String.join("&", params).getBytes(StandardCharsets.UTF_8);
+                    enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
+                    result = String.join("&", params).getBytes(StandardCharsets.UTF_8);
+                } else {
+                    result = new byte[0];
                 }
                 break;
 
             case "formdata":
                 if (body.formdata != null) {
                     String boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
-                    if (!hasContentType(headers)) {
-                        headers.add("Content-Type: multipart/form-data; boundary=" + boundary);
+                    String expected = "multipart/form-data; boundary=" + boundary;
+                    if (hs.has("Content-Type")) {
+                        String existing = hs.get("Content-Type");
+                        if (existing != null && !existing.toLowerCase().startsWith("multipart/form-data")) {
+                            if (api != null) {
+                                api.logging().logToOutput("[WARN] Request '" + requestName + "': replacing imported Content-Type '" + existing + "' with '" + expected + "' for body mode=formdata");
+                            }
+                        }
                     }
-                    return buildMultipartBody(body.formdata, boundary);
+                    hs.put("Content-Type", expected);
+                    result = buildMultipartBody(body.formdata, boundary);
+                } else {
+                    result = new byte[0];
                 }
                 break;
+
+            default:
+                result = new byte[0];
         }
 
-        return new byte[0];
+        // Synchronize any newly-added body headers back into the raw list
+        // (replace existing case variants or append)
+        for (Map.Entry<String, String> entry : hs.entries()) {
+            String key = entry.getKey();
+            String full = key + ": " + entry.getValue();
+            boolean replaced = false;
+            for (int i = 0; i < headers.size(); i++) {
+                String existing = headers.get(i);
+                int colon = existing.indexOf(':');
+                if (colon > 0 && existing.substring(0, colon).trim().equalsIgnoreCase(key)) {
+                    headers.set(i, full);
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                headers.add(full);
+            }
+        }
+
+        return result;
     }
 
-    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, List<String> headers) {
+    private void enforceContentType(HeaderStore hs, String expectedType, String requestName) {
+        if (hs.has("Content-Type")) {
+            String existing = hs.get("Content-Type");
+            if (existing != null && !existing.toLowerCase().startsWith(expectedType.toLowerCase())) {
+                if (api != null) {
+                    api.logging().logToOutput("[WARN] Request '" + requestName + "': replacing imported Content-Type '" + existing + "' with '" + expectedType + "' to match body mode");
+                }
+                hs.put("Content-Type", expectedType);
+            }
+        } else {
+            hs.putDefault("Content-Type", expectedType);
+        }
+    }
+
+    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, HeaderStore headers) {
         if (graphql == null) return new byte[0];
         try {
             com.google.gson.JsonObject body = new com.google.gson.JsonObject();
@@ -270,8 +412,8 @@ public class RequestBuilder {
             } else {
                 body.add("variables", new com.google.gson.JsonObject());
             }
-            if (!hasContentType(headers)) {
-                headers.add("Content-Type: application/json");
+            if (!headers.has("Content-Type")) {
+                headers.putDefault("Content-Type", "application/json");
             }
             return new com.google.gson.GsonBuilder().serializeNulls().create().toJson(body).getBytes(StandardCharsets.UTF_8);
         } catch (Exception e) {
@@ -315,11 +457,7 @@ public class RequestBuilder {
         return baos.toByteArray();
     }
 
-    private boolean hasContentType(List<String> headers) {
-        return headers.stream().anyMatch(h -> h.toLowerCase().startsWith("content-type:"));
-    }
-
-    // Check for any header by name (case-insensitive)
+    // Check for any header by name (case-insensitive) in a raw List
     private boolean hasHeader(List<String> headers, String headerName) {
         String target = headerName.toLowerCase();
         return headers.stream().anyMatch(h -> {

@@ -35,7 +35,7 @@ public class ImporterPanel {
     private JProgressBar importProgress;
     private JCheckBox repeaterBtn, sitemapBtn, intruderBtn;
     private JSpinner delaySpinner;
-    private JButton importBtn, sendToRunnerBtn, sendWorkbenchBtn, addCollectionBtn, removeCollectionBtn;
+    private JButton importBtn, sendToRunnerBtn, addCollectionBtn, removeCollectionBtn;
     private JCheckBox debugRawRequestBox;
     private JTextField envField;
     private JButton envBrowseBtn, envApplySelectedBtn, envApplyAllBtn;
@@ -61,21 +61,19 @@ public class ImporterPanel {
 
     // Variables tab
     private JTextArea envVarsArea;
-    private JComboBox<String> varsCollectionCombo;
+    private JComboBox<CollectionRef> varsCollectionCombo;
     private JButton bindVarsBtn;
     private JLabel varsHintLabel;
 
     // OAuth2 tab
-    private JComboBox<String> oauth2CollectionCombo;
+    private JComboBox<CollectionRef> oauth2CollectionCombo;
     private JButton bindOAuth2Btn;
     private JLabel oauth2HintLabel;
 
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
 
-    // Split Send button mode
-    private enum SendMode { SEND_ONLY, SEND_AND_REPEATER }
-    private SendMode currentSendMode = SendMode.SEND_ONLY;
+    // Send mode is tracked by the RequestEditorPanel send button label
 
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager) {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
@@ -189,6 +187,8 @@ public class ImporterPanel {
         requestEditor = new RequestEditorPanel();
         responsePane = new ResponsePane();
 
+        requestEditor.setSendActionListener(() -> executeWorkbenchSend());
+
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         split.setTopComponent(requestEditor);
         split.setBottomComponent(responsePane);
@@ -242,7 +242,7 @@ public class ImporterPanel {
         actionPanel.add(debugRawRequestBox);
         panel.add(actionPanel);
 
-        // Import / Send / Send to Runner buttons
+        // Import / Send to Runner buttons
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 2));
         importBtn = new JButton("Import Selected");
         importBtn.setEnabled(false);
@@ -251,8 +251,6 @@ public class ImporterPanel {
         sendToRunnerBtn.setEnabled(false);
         sendToRunnerBtn.addActionListener(e -> sendToRunner());
 
-        JPanel sendSplitPanel = createSplitSendButton();
-        btnPanel.add(sendSplitPanel);
         btnPanel.add(importBtn);
         btnPanel.add(sendToRunnerBtn);
         panel.add(btnPanel);
@@ -275,42 +273,6 @@ public class ImporterPanel {
         return panel;
     }
 
-    private JPanel createSplitSendButton() {
-        JPanel panel = new JPanel(new BorderLayout(0, 0));
-
-        sendWorkbenchBtn = new JButton("Send");
-        sendWorkbenchBtn.setToolTipText("Send current edited request directly");
-        sendWorkbenchBtn.addActionListener(e -> executeWorkbenchSend());
-
-        JButton arrowBtn = new JButton("v");
-        arrowBtn.setPreferredSize(new Dimension(22, sendWorkbenchBtn.getPreferredSize().height));
-        arrowBtn.addActionListener(e -> {
-            JPopupMenu menu = new JPopupMenu();
-            JMenuItem sendOnlyItem = new JMenuItem("Send");
-            JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
-            sendOnlyItem.addActionListener(ev -> setSendMode(SendMode.SEND_ONLY));
-            sendRepeaterItem.addActionListener(ev -> setSendMode(SendMode.SEND_AND_REPEATER));
-            menu.add(sendOnlyItem);
-            menu.add(sendRepeaterItem);
-            menu.show(arrowBtn, 0, arrowBtn.getHeight());
-        });
-
-        panel.add(sendWorkbenchBtn, BorderLayout.CENTER);
-        panel.add(arrowBtn, BorderLayout.EAST);
-        return panel;
-    }
-
-    private void setSendMode(SendMode mode) {
-        currentSendMode = mode;
-        if (mode == SendMode.SEND_ONLY) {
-            sendWorkbenchBtn.setText("Send");
-            sendWorkbenchBtn.setToolTipText("Send current edited request directly");
-        } else {
-            sendWorkbenchBtn.setText("Send + Repeater");
-            sendWorkbenchBtn.setToolTipText("Send request and also create Repeater tab");
-        }
-    }
-
     private void executeWorkbenchSend() {
         ApiRequest edited = requestEditor.buildRequestFromUI();
         if (edited == null) {
@@ -318,6 +280,7 @@ public class ImporterPanel {
             return;
         }
         ApiCollection col = findCollectionByName(edited.sourceCollection);
+        requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
@@ -325,7 +288,9 @@ public class ImporterPanel {
                     publish("Sending: " + edited.method + " " + edited.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
 
+                    long startTime = System.currentTimeMillis();
                     var result = importer.sendSingleRequestWithBuiltRequest(edited, col, follow);
+                    long elapsed = System.currentTimeMillis() - startTime;
                     var rr = result.response;
 
                     if (rr != null && rr.response() != null) {
@@ -337,15 +302,15 @@ public class ImporterPanel {
                         }
                         byte[] bodyBytes = resp.body().getBytes();
                         SwingUtilities.invokeLater(() -> {
-                            responsePane.displayResponse(resp.statusCode(), 0, bodyBytes.length,
+                            responsePane.displayResponse(resp.statusCode(), elapsed, bodyBytes.length,
                                 headers.toString(), bodyBytes);
                         });
-                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes)");
+                        publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + elapsed + " ms)");
                     } else {
                         publish("No response received.");
                     }
 
-                    if (currentSendMode == SendMode.SEND_AND_REPEATER && result.builtRequest != null) {
+                    if ("Send + Repeater".equals(requestEditor.getSendModeLabel()) && result.builtRequest != null) {
                         String tabName = importer.generateRepeaterTabName(edited.name,
                             edited.sourceCollection != null ? edited.sourceCollection : "Unknown");
                         importer.sendToRepeater(result.builtRequest, tabName);
@@ -360,6 +325,11 @@ public class ImporterPanel {
             @Override
             protected void process(List<String> chunks) {
                 for (String msg : chunks) appendImportLog(msg);
+            }
+
+            @Override
+            protected void done() {
+                requestEditor.setSendEnabled(true);
             }
         };
         worker.execute();
@@ -389,23 +359,9 @@ public class ImporterPanel {
 
         JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         varsCollectionCombo = new JComboBox<>();
-        varsCollectionCombo.setPrototypeDisplayValue("Select collection...");
+        varsCollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
         varsCollectionCombo.addActionListener(e -> {
-            String selected = (String) varsCollectionCombo.getSelectedItem();
-            if (selected != null) {
-                ApiCollection col = findCollectionByName(selected);
-                if (col != null && col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
-                    StringBuilder sb = new StringBuilder();
-                    for (Map.Entry<String, String> entry : col.runtimeVars.entrySet()) {
-                        sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
-                    }
-                    envVarsArea.setText(sb.toString());
-                } else {
-                    envVarsArea.setText("");
-                }
-            } else {
-                envVarsArea.setText("");
-            }
+            renderEffectiveVariablesForSelectedCollection();
             updateScopeControlState();
         });
         bindVarsBtn = new JButton("Bind to Collection");
@@ -437,23 +393,22 @@ public class ImporterPanel {
 
         JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         oauth2CollectionCombo = new JComboBox<>();
-        oauth2CollectionCombo.setPrototypeDisplayValue("Select collection...");
+        oauth2CollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
         oauth2HintLabel = new JLabel("Select a collection to bind OAuth2 settings.");
         oauth2HintLabel.setForeground(Color.GRAY);
         bindPanel.add(new JLabel("Target:"));
         bindPanel.add(oauth2CollectionCombo);
         bindOAuth2Btn = new JButton("Bind OAuth2 to Collection");
         bindOAuth2Btn.addActionListener(e -> {
-            String colName = (String) oauth2CollectionCombo.getSelectedItem();
-            if (colName == null) {
+            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+            if (ref == null) {
                 appendImportLog("OAuth2: No collection selected for binding.");
                 return;
             }
-            ApiCollection col = findCollectionByName(colName);
-            if (col == null) return;
+            ApiCollection col = ref.collection;
             Map<String, String> vars = oauth2Panel.getVariables();
             col.runtimeOAuth2.putAll(vars);
-            appendImportLog("OAuth2 bound to \"" + colName + "\": " + vars.size() + " var(s).");
+            appendImportLog("OAuth2 bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         });
         bindPanel.add(bindOAuth2Btn);
         JButton bindAllBtn = new JButton("Bind OAuth2 to All");
@@ -480,14 +435,15 @@ public class ImporterPanel {
         // Keep combo in sync with loaded collections
         tabbedPane.addChangeListener(e -> {
             if (tabbedPane.getSelectedIndex() == 2) { // OAuth2 tab
-                String prev = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+                CollectionRef prev = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
                 oauth2CollectionCombo.removeAllItems();
-                for (ApiCollection c : loadedCollections) {
-                    oauth2CollectionCombo.addItem(c.name);
+                List<CollectionRef> refs = buildCollectionRefs();
+                for (CollectionRef ref : refs) {
+                    oauth2CollectionCombo.addItem(ref);
                 }
                 if (prev != null) {
                     for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
-                        if (prev.equals(oauth2CollectionCombo.getItemAt(i))) {
+                        if (prev.collection == oauth2CollectionCombo.getItemAt(i).collection) {
                             oauth2CollectionCombo.setSelectedIndex(i);
                             break;
                         }
@@ -737,6 +693,80 @@ public class ImporterPanel {
         return null;
     }
 
+    /**
+     * Wrapper for combo items that binds by object identity instead of name,
+     * eliminating ambiguity when duplicate collection names exist.
+     */
+    private static class CollectionRef {
+        final ApiCollection collection;
+        final String label;
+        CollectionRef(ApiCollection collection, String label) {
+            this.collection = collection;
+            this.label = label;
+        }
+        @Override public String toString() { return label; }
+    }
+
+    private List<CollectionRef> buildCollectionRefs() {
+        Map<String, Integer> nameCounts = new HashMap<>();
+        for (ApiCollection c : loadedCollections) {
+            nameCounts.merge(c.name, 1, Integer::sum);
+        }
+        Map<String, Integer> seen = new HashMap<>();
+        List<CollectionRef> refs = new ArrayList<>();
+        for (ApiCollection c : loadedCollections) {
+            String label = c.name;
+            if (nameCounts.get(c.name) > 1) {
+                int count = seen.merge(c.name, 1, Integer::sum);
+                label = c.name + " (#" + count + ")";
+            }
+            refs.add(new CollectionRef(c, label));
+        }
+        return refs;
+    }
+
+    private void renderEffectiveVariablesForSelectedCollection() {
+        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
+        if (ref != null) {
+            ApiCollection col = ref.collection;
+            StringBuilder sb = new StringBuilder();
+            boolean hasAny = false;
+            // Layer 1: environment
+            if (col.environment != null && !col.environment.isEmpty()) {
+                sb.append("# From collection environment (read-only base)\n");
+                for (Map.Entry<String, String> entry : new TreeMap<>(col.environment).entrySet()) {
+                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                }
+                sb.append("\n");
+                hasAny = true;
+            }
+            // Layer 2: collection variables
+            if (col.variables != null && !col.variables.isEmpty()) {
+                sb.append("# From collection definition (read-only base)\n");
+                List<ApiRequest.Variable> sorted = new ArrayList<>(col.variables);
+                sorted.sort(Comparator.comparing(v -> v.key));
+                for (ApiRequest.Variable v : sorted) {
+                    if (v.value != null) {
+                        sb.append(v.key).append("=").append(v.value).append("\n");
+                    }
+                }
+                sb.append("\n");
+                hasAny = true;
+            }
+            // Layer 3: runtime overrides (editable layer)
+            if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
+                sb.append("# Runtime overrides (edits apply here)\n");
+                for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
+                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                }
+                hasAny = true;
+            }
+            envVarsArea.setText(hasAny ? sb.toString() : "");
+        } else {
+            envVarsArea.setText("");
+        }
+    }
+
     // ========================================================================
     // Collection Management
     // ========================================================================
@@ -822,47 +852,50 @@ public class ImporterPanel {
     }
 
     private void refreshCollectionCombos() {
-        String prevVars = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
+        CollectionRef prevVars = varsCollectionCombo.getSelectedItem() != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
         varsCollectionCombo.removeAllItems();
-        for (ApiCollection c : loadedCollections) {
-            varsCollectionCombo.addItem(c.name);
+        List<CollectionRef> varRefs = buildCollectionRefs();
+        for (CollectionRef ref : varRefs) {
+            varsCollectionCombo.addItem(ref);
         }
         if (prevVars != null) {
             for (int i = 0; i < varsCollectionCombo.getItemCount(); i++) {
-                if (prevVars.equals(varsCollectionCombo.getItemAt(i))) {
+                if (prevVars.collection == varsCollectionCombo.getItemAt(i).collection) {
                     varsCollectionCombo.setSelectedIndex(i);
                     break;
                 }
             }
         }
 
-        String prevOAuth2 = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
+        CollectionRef prevOAuth2 = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
         oauth2CollectionCombo.removeAllItems();
-        for (ApiCollection c : loadedCollections) {
-            oauth2CollectionCombo.addItem(c.name);
+        List<CollectionRef> oauthRefs = buildCollectionRefs();
+        for (CollectionRef ref : oauthRefs) {
+            oauth2CollectionCombo.addItem(ref);
         }
         if (prevOAuth2 != null) {
             for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
-                if (prevOAuth2.equals(oauth2CollectionCombo.getItemAt(i))) {
+                if (prevOAuth2.collection == oauth2CollectionCombo.getItemAt(i).collection) {
                     oauth2CollectionCombo.setSelectedIndex(i);
                     break;
                 }
             }
         }
         updateScopeControlState();
+        renderEffectiveVariablesForSelectedCollection();
     }
 
     private void updateScopeControlState() {
         // Variables tab
         if (varsCollectionCombo != null && envVarsArea != null) {
-            String varsSelected = varsCollectionCombo.getSelectedItem() != null ? (String) varsCollectionCombo.getSelectedItem() : null;
-            boolean varsHasTarget = varsSelected != null;
+            CollectionRef varsRef = varsCollectionCombo.getSelectedItem() != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
+            boolean varsHasTarget = varsRef != null;
             envVarsArea.setEnabled(varsHasTarget);
             envVarsArea.setEditable(varsHasTarget);
             if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
             if (varsHintLabel != null) {
                 if (varsHasTarget) {
-                    varsHintLabel.setText("Editing scoped variables for: " + varsSelected);
+                    varsHintLabel.setText("Editing runtime overrides for: " + varsRef.label);
                     varsHintLabel.setForeground(Color.BLACK);
                 } else {
                     varsHintLabel.setText("Select a collection to edit scoped variables.");
@@ -873,13 +906,13 @@ public class ImporterPanel {
 
         // OAuth2 tab
         if (oauth2CollectionCombo != null && oauth2Panel != null) {
-            String oauth2Selected = oauth2CollectionCombo.getSelectedItem() != null ? (String) oauth2CollectionCombo.getSelectedItem() : null;
-            boolean oauth2HasTarget = oauth2Selected != null;
+            CollectionRef oauth2Ref = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
+            boolean oauth2HasTarget = oauth2Ref != null;
             oauth2Panel.setEditable(oauth2HasTarget);
             if (bindOAuth2Btn != null) bindOAuth2Btn.setEnabled(oauth2HasTarget);
             if (oauth2HintLabel != null) {
                 if (oauth2HasTarget) {
-                    oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Selected);
+                    oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Ref.label);
                     oauth2HintLabel.setForeground(Color.BLACK);
                 } else {
                     oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
@@ -931,6 +964,7 @@ public class ImporterPanel {
             if (target != null) {
                 importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
                 appendImportLog("Env bound to collection: " + target.name);
+                renderEffectiveVariablesForSelectedCollection();
             }
         }
     }
@@ -948,22 +982,23 @@ public class ImporterPanel {
             importer.loadEnvFileIntoMap(selectedEnv, col.runtimeVars);
         }
         appendImportLog("Env bound to all " + loadedCollections.size() + " collection(s).");
+        renderEffectiveVariablesForSelectedCollection();
     }
 
     // ========================================================================
     // Variables Tab Binding
     // ========================================================================
     private void bindVarsToSelectedCollection() {
-        String colName = (String) varsCollectionCombo.getSelectedItem();
-        if (colName == null) {
+        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
+        if (ref == null) {
             appendImportLog("Variables: No collection selected for binding.");
             return;
         }
-        ApiCollection col = findCollectionByName(colName);
-        if (col == null) return;
+        ApiCollection col = ref.collection;
         Map<String, String> vars = parseEnvVarsMap();
         col.runtimeVars.putAll(vars);
-        appendImportLog("Variables bound to \"" + colName + "\": " + vars.size() + " var(s).");
+        appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
+        renderEffectiveVariablesForSelectedCollection();
     }
 
     private void bindVarsToAllCollections() {
@@ -980,6 +1015,7 @@ public class ImporterPanel {
             col.runtimeVars.putAll(vars);
         }
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
+        renderEffectiveVariablesForSelectedCollection();
     }
 
     // ========================================================================
