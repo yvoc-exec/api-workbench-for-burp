@@ -505,6 +505,12 @@ public class ImporterPanel {
             }
         });
         oauth2Panel.setAutoRefreshToggleListener(this::toggleAutoRefreshForSelectedCollection);
+        oauth2Panel.setAutoRefreshIntervalListener(seconds -> {
+            ApiCollection col = getSelectedOAuth2Collection();
+            if (col != null) {
+                getAutoState(col).intervalSeconds = Math.max(30, seconds);
+            }
+        });
         applyAutoRefreshUiForSelectedCollection();
         updateScopeControlState();
 
