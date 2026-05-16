@@ -26,6 +26,7 @@ public class ImporterPanel {
 
     // Multi-collection support
     private final List<ApiCollection> loadedCollections = new ArrayList<>();
+    private final IdentityHashMap<ApiRequest, ApiCollection> requestToCollectionMap = new IdentityHashMap<>();
     private OAuth2Panel oauth2Panel;
     private File selectedEnv;
 
@@ -161,6 +162,7 @@ public class ImporterPanel {
                     CollectionTreeNode ctn = (CollectionTreeNode) node;
                     if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
                         requestEditor.loadRequest(ctn.request);
+                        requestEditor.setCurrentCollection(findCollectionForNode(ctn));
                     }
                 }
             }
@@ -279,7 +281,11 @@ public class ImporterPanel {
             appendImportLog("No request loaded in editor.");
             return;
         }
-        ApiCollection col = findCollectionByName(edited.sourceCollection);
+        ApiCollection col = requestEditor.getCurrentCollection();
+        if (col == null) {
+            col = findCollectionByName(edited.sourceCollection);
+        }
+        final ApiCollection resolvedCol = col;
         requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
@@ -289,7 +295,7 @@ public class ImporterPanel {
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
 
                     long startTime = System.currentTimeMillis();
-                    var result = importer.sendSingleRequestWithBuiltRequest(edited, col, follow);
+                    var result = importer.sendSingleRequestWithBuiltRequest(edited, resolvedCol, follow);
                     long elapsed = System.currentTimeMillis() - startTime;
                     var rr = result.response;
 
@@ -599,11 +605,13 @@ public class ImporterPanel {
     }
 
     private void rebuildTree() {
+        requestToCollectionMap.clear();
         DefaultMutableTreeNode root = new DefaultMutableTreeNode("Collections");
         for (ApiCollection col : loadedCollections) {
             CollectionTreeNode colNode = new CollectionTreeNode(col);
             root.add(colNode);
             for (ApiRequest req : col.requests) {
+                requestToCollectionMap.put(req, col);
                 String path = req.path != null ? req.path : "";
                 String[] parts = path.split("/");
                 java.util.List<String> segments = new java.util.ArrayList<>();
@@ -808,6 +816,22 @@ public class ImporterPanel {
             protected void done() {
                 try {
                     ApiCollection collection = get();
+                    String normName = collection.name != null ? collection.name.trim() : "";
+                    boolean duplicate = false;
+                    for (ApiCollection existing : loadedCollections) {
+                        String existingNorm = existing.name != null ? existing.name.trim() : "";
+                        if (existingNorm.equalsIgnoreCase(normName)) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (duplicate) {
+                        JOptionPane.showMessageDialog(mainPanel,
+                            "A collection named \"" + collection.name + "\" is already loaded.\nImport rejected to prevent ambiguity.",
+                            "Duplicate Collection Name", JOptionPane.WARNING_MESSAGE);
+                        appendImportLog("Rejected duplicate collection name: \"" + collection.name + "\"");
+                        return;
+                    }
                     loadedCollections.add(collection);
                     rebuildTree();
                     refreshCollectionCombos();
@@ -962,8 +986,12 @@ public class ImporterPanel {
         if (node instanceof CollectionTreeNode) {
             ApiCollection target = findCollectionForNode((CollectionTreeNode) node);
             if (target != null) {
-                importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
-                appendImportLog("Env bound to collection: " + target.name);
+                UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
+                if (result.isSuccess()) {
+                    appendImportLog("Env bound to collection \"" + target.name + "\": " + result.loadedCount + " var(s).");
+                } else {
+                    appendImportLog("Env bind FAILED for \"" + target.name + "\": " + result.errorMessage);
+                }
                 renderEffectiveVariablesForSelectedCollection();
             }
         }
@@ -978,10 +1006,20 @@ public class ImporterPanel {
             "This will bind the selected environment file to ALL " + loadedCollections.size() + " collection(s). Continue?",
             "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
         if (confirm != JOptionPane.YES_OPTION) return;
+        int totalLoaded = 0;
+        List<String> errors = new ArrayList<>();
         for (ApiCollection col : loadedCollections) {
-            importer.loadEnvFileIntoMap(selectedEnv, col.runtimeVars);
+            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, col.runtimeVars);
+            if (result.isSuccess()) {
+                totalLoaded += result.loadedCount;
+            } else {
+                errors.add("\"" + col.name + "\": " + result.errorMessage);
+            }
         }
-        appendImportLog("Env bound to all " + loadedCollections.size() + " collection(s).");
+        appendImportLog("Env bound to all " + loadedCollections.size() + " collection(s): " + totalLoaded + " var(s) total.");
+        for (String err : errors) {
+            appendImportLog("  Env bind error - " + err);
+        }
         renderEffectiveVariablesForSelectedCollection();
     }
 
@@ -995,7 +1033,7 @@ public class ImporterPanel {
             return;
         }
         ApiCollection col = ref.collection;
-        Map<String, String> vars = parseEnvVarsMap();
+        Map<String, String> vars = parseRuntimeOverrideSection();
         col.runtimeVars.putAll(vars);
         appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
@@ -1010,7 +1048,7 @@ public class ImporterPanel {
             "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
             "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
         if (confirm != JOptionPane.YES_OPTION) return;
-        Map<String, String> vars = parseEnvVarsMap();
+        Map<String, String> vars = parseRuntimeOverrideSection();
         for (ApiCollection col : loadedCollections) {
             col.runtimeVars.putAll(vars);
         }
@@ -1040,11 +1078,10 @@ public class ImporterPanel {
 
         // Build deterministic queue preserving collection order + request order
         List<UniversalImporter.QueuedRequest> queue = new ArrayList<>();
-        for (ApiCollection col : loadedCollections) {
-            for (ApiRequest req : selected) {
-                if (col.name.equals(req.sourceCollection)) {
-                    queue.add(new UniversalImporter.QueuedRequest(col, req));
-                }
+        for (ApiRequest req : selected) {
+            ApiCollection col = requestToCollectionMap.get(req);
+            if (col != null) {
+                queue.add(new UniversalImporter.QueuedRequest(col, req));
             }
         }
 
@@ -1136,7 +1173,11 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> appendRunnerLog(message));
             }
             @Override public void onError(String message) {
-                SwingUtilities.invokeLater(() -> appendRunnerLog("ERROR: " + message));
+                SwingUtilities.invokeLater(() -> {
+                    appendRunnerLog("ERROR: " + message);
+                    startRunnerBtn.setEnabled(true);
+                    cancelRunnerBtn.setEnabled(false);
+                });
             }
         };
         runner.addListener(activeRunnerListener);
@@ -1170,6 +1211,38 @@ public class ImporterPanel {
     private Map<String, String> parseEnvVarsMap() {
         Map<String, String> vars = new HashMap<>();
         String text = envVarsArea.getText();
+        try {
+            com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseString(text).getAsJsonObject();
+            for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
+                vars.put(entry.getKey(), entry.getValue().getAsString());
+            }
+            return vars;
+        } catch (Exception e) {
+            // Not JSON, parse as key=value lines
+        }
+        for (String line : text.split("\n")) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            int eqIdx = line.indexOf('=');
+            if (eqIdx > 0) {
+                vars.put(line.substring(0, eqIdx).trim(), line.substring(eqIdx + 1).trim());
+            }
+        }
+        return vars;
+    }
+
+    /**
+     * Parses only the "# Runtime overrides" section from the Variables tab.
+     * If the marker is absent, falls back to full-text parsing for backward compatibility.
+     */
+    private Map<String, String> parseRuntimeOverrideSection() {
+        Map<String, String> vars = new HashMap<>();
+        String text = envVarsArea.getText();
+        String marker = "# Runtime overrides (edits apply here)";
+        int idx = text.indexOf(marker);
+        if (idx >= 0) {
+            text = text.substring(idx + marker.length());
+        }
         try {
             com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseString(text).getAsJsonObject();
             for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {

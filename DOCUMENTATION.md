@@ -60,9 +60,9 @@ Load multiple collections simultaneously:
 - Click **+ Add Collection** to load additional collections
 - Collection list shows name, format, and request count
 - Remove individual collections with **- Remove**
-- Preview table shows requests from ALL loaded collections
+- Checkbox tree shows requests from ALL loaded collections
 - **Source** column identifies which collection each request belongs to
-- Variables from all collections are merged (last-loaded wins on conflict)
+- Variables are collection-scoped (no cross-collection leakage)
 - Import/Runner operates on selected requests across all collections
 
 ### 2.3 Import Destinations
@@ -816,7 +816,7 @@ When Nashorn is unavailable:
 - Not logged to Burp output
 
 ### 10.3 Path Traversal Prevention
-> **Not implemented.** The code shown above does not exist in the current codebase. File uploads read from paths specified in collections without path traversal validation.
+> **Not applicable.** File uploads are not fully implemented or tested in the current codebase, so path traversal via collection-defined file paths is not a current concern.
 
 ### 10.4 OAuth2 Security
 - **PKCE** enforced for Authorization Code flow (S256 method)
@@ -839,11 +839,12 @@ When Nashorn is unavailable:
 
 | Claimed Feature | Actual Implementation | Status |
 |-----------------|----------------------|--------|
-| Path traversal prevention for file uploads | **Not implemented** - no validation exists | ❌ Missing |
+| Path traversal prevention for file uploads | **Not applicable** - file uploads not fully implemented | N/A |
 | `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | ✅ Correct |
 | Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | ⚠️ Security risk |
 | Token storage "never persisted" | Static `ConcurrentHashMap` - survives extension reloads in same JVM | ⚠️ Misleading |
 | File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
+| Automated test suite | JUnit 5 + Mockito + AssertJ; `RequestBuilderTest` (37), `VariableResolverTest` (13) | ✅ Present |
 
 ### 11.2 Architectural Limitations
 
@@ -851,9 +852,8 @@ When Nashorn is unavailable:
 - **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
 - **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
-- **No tests**: Zero unit tests, zero integration tests. No test framework in `pom.xml`.
+- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` runs 50+ tests covering request building and variable resolution.
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
-- **Runner executor not shut down**: `CollectionRunner` creates an `ExecutorService` but never shuts it down on extension unload.
 
 ### 11.3 Parser Limitations
 

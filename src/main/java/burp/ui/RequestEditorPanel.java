@@ -41,6 +41,7 @@ public class RequestEditorPanel extends JPanel {
     private JTextArea postScriptArea;
 
     private ApiRequest currentRequest;
+    private burp.models.ApiCollection currentCollection;
 
     // Send action callback
     public interface SendActionListener {
@@ -337,6 +338,9 @@ public class RequestEditorPanel extends JPanel {
             }
         }
     }
+
+    public burp.models.ApiCollection getCurrentCollection() { return currentCollection; }
+    public void setCurrentCollection(burp.models.ApiCollection col) { this.currentCollection = col; }
 
     public ApiRequest buildRequestFromUI() {
         if (currentRequest == null) return null;

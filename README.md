@@ -2,8 +2,6 @@
 
 A Burp Suite Professional/Community extension that imports **Postman**, **Bruno**, **OpenAPI/Swagger**, **Insomnia**, and **HAR** collections into Burp Suite Repeater and/or Sitemap - with a built-in **Collection Runner** for sequential API execution, **OAuth2 token management**, **Nashorn JavaScript script execution**, and a **Workbench** for request editing and direct sending.
 
-Formerly known as *Universal API Collection Importer & Runner*.
-
 ---
 
 ## Features
@@ -276,8 +274,7 @@ src/main/java/burp/
 - **No script timeout**: Infinite loops in pre/post-request scripts will hang the runner thread.
 - **File uploads**: Multipart file upload code exists but end-to-end file reading from disk is not fully implemented/tested.
 - **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
-- **No tests**: Zero unit/integration tests.
-- **No extension unload cleanup for runner**: `CollectionRunner` executor service is not shut down on extension unload.
+- **Test suite**: Automated tests cover `RequestBuilder` (header/body/Content-Type/Content-Length/auth/OAuth2) and `VariableResolver` (substitution/defaults/nested). Run with `mvn test`.
 - **Parser encoding**: All JSON/YAML/HAR parsers and Bruno request decoding use explicit UTF-8.
 
 ---
