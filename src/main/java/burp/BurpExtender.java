@@ -46,7 +46,7 @@ public class BurpExtender implements BurpExtension {
         api.logging().logToOutput("Extension loaded successfully!");
 
         SwingUtilities.invokeLater(() -> {
-            importer = new UniversalImporter(api);
+            importer = new UniversalImporter(api, scriptResult.mode);
             api.userInterface().registerSuiteTab("API Workbench", importer.getMainPanel());
         });
 

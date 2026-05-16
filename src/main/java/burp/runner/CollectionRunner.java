@@ -196,10 +196,11 @@ public class CollectionRunner {
                     result.responseHeaders = respHeaders.toString();
 
                     // Store request details for result pane
-                    result.requestUrl = req.url;
+                    result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
-                    HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(req.url);
+                    HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(
+                        exec.resolvedUrl != null ? exec.resolvedUrl : req.url);
                     result.host = parsed.host;
                     result.path = parsed.pathWithQuery;
 
@@ -208,9 +209,12 @@ public class CollectionRunner {
                             "[Runner] " + req.name, HighlightColor.CYAN);
                     api.siteMap().add(exec.response.withAnnotations(annotations));
 
-                    // Copy extracted vars for cross-request continuity
+                    // Copy extracted vars and assertions for cross-request continuity
                     extractedVars.putAll(exec.extractedVars);
                     result.extractedVariables.putAll(exec.extractedVars);
+                    if (!exec.assertions.isEmpty()) {
+                        result.assertions.addAll(exec.assertions);
+                    }
 
                     break; // Success, exit retry loop
                 } else {

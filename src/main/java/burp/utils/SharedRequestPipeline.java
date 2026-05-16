@@ -63,9 +63,10 @@ public class SharedRequestPipeline {
                 if (!authVars.isEmpty()) resolver.addAll(authVars);
             }
 
-            // 2. Pre-request scripts
+            // 2. Pre-request scripts (use isolated copy to track mutations)
+            Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
             if (col != null) {
-                scriptEngine.executePreRequest(req, resolver, col.runtimeVars);
+                scriptEngine.executePreRequest(req, resolver, scriptContext);
             }
 
             // 3. OAuth2 token refresh if needed
@@ -92,6 +93,7 @@ public class SharedRequestPipeline {
             warnIfUnresolved(rawRequest, req.name);
 
             String resolvedUrl = resolver.resolve(req.url);
+            result.resolvedUrl = resolvedUrl;
             HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
             HttpService service = HttpService.httpService(parsed.host, parsed.port, parsed.useHttps);
             HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
@@ -128,12 +130,17 @@ public class SharedRequestPipeline {
                     scriptResult.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
                     scriptResult.statusCode = statusCode;
 
-                    scriptEngine.executePostResponse(req, resolver, col.runtimeVars, scriptResult, body, statusCode, headersMap);
+                    scriptEngine.executePostResponse(req, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
 
-                    // Merge extracted vars back into collection runtime context
+                    // Commit script mutations back to collection runtime context via helper (fires change listeners)
+                    if (col != null) {
+                        col.putAllRuntimeVars(scriptContext);
+                    }
                     if (!scriptResult.extractedVariables.isEmpty()) {
-                        col.putAllRuntimeVars(scriptResult.extractedVariables);
                         result.extractedVars.putAll(scriptResult.extractedVariables);
+                    }
+                    if (!scriptResult.assertions.isEmpty()) {
+                        result.assertions.addAll(scriptResult.assertions);
                     }
                 }
             } else {
