@@ -46,6 +46,7 @@ public class SharedRequestPipeline {
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
         ExecutionResult result = new ExecutionResult();
         VariableResolver resolver = new VariableResolver();
+        Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
 
         try {
             // 1. Seed resolver in unified precedence order
@@ -64,7 +65,6 @@ public class SharedRequestPipeline {
             }
 
             // 2. Pre-request scripts (use isolated copy to track mutations)
-            Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
             if (col != null) {
                 scriptEngine.executePreRequest(req, resolver, scriptContext);
             }
@@ -132,10 +132,6 @@ public class SharedRequestPipeline {
 
                     scriptEngine.executePostResponse(req, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
 
-                    // Commit script mutations back to collection runtime context via helper (fires change listeners)
-                    if (col != null) {
-                        col.putAllRuntimeVars(scriptContext);
-                    }
                     if (!scriptResult.extractedVariables.isEmpty()) {
                         result.extractedVars.putAll(scriptResult.extractedVariables);
                     }
@@ -150,6 +146,12 @@ public class SharedRequestPipeline {
         } catch (Exception e) {
             result.success = false;
             result.errorMessage = extractCleanError(e);
+        } finally {
+            // Commit script mutations back to collection runtime context via helper (fires change listeners)
+            // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
+            if (col != null) {
+                col.putAllRuntimeVars(scriptContext);
+            }
         }
         return result;
     }

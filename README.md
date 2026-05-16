@@ -133,7 +133,7 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 3. Click **Send**.
 4. Inspect the response in Pretty, Raw, or Hex view.
 
-> **Note:** Post-response scripts and variable extraction run only in the **Collection Runner**, not during direct Workbench Send.
+> **Note:** Pre/post scripts, variable extraction, and assertions run in both **Workbench Send** and **Collection Runner** via the shared pipeline.
 >
 > In the Collection Runner, use script syntax like:
 > ```javascript

@@ -211,7 +211,7 @@ public class UniversalImporter {
     private Map<String, String> seedResolverForCollection(ApiCollection collection) {
         Map<String, String> sources = new LinkedHashMap<>();
         if (collection == null) return sources;
-        // Precedence (lowest -> highest): environment -> variables -> runtimeVars -> runtimeOAuth2
+        // Precedence (lowest -> highest): environment -> variables -> runtimeOAuth2 -> runtimeVars
         resolver.addEnvironmentVariables(collection);
         if (collection.environment != null) {
             for (String key : collection.environment.keySet()) sources.put(key, "collection-env");
@@ -220,13 +220,13 @@ public class UniversalImporter {
         for (ApiRequest.Variable v : collection.variables) {
             if (v.value != null) sources.put(v.key, "collection-var");
         }
-        if (collection.runtimeVars != null) {
-            resolver.addAll(collection.runtimeVars);
-            for (String key : collection.runtimeVars.keySet()) sources.put(key, "scoped-runtime");
-        }
         if (collection.runtimeOAuth2 != null) {
             resolver.addAll(collection.runtimeOAuth2);
             for (String key : collection.runtimeOAuth2.keySet()) sources.put(key, "scoped-oauth2");
+        }
+        if (collection.runtimeVars != null) {
+            resolver.addAll(collection.runtimeVars);
+            for (String key : collection.runtimeVars.keySet()) sources.put(key, "scoped-runtime");
         }
         return sources;
     }
