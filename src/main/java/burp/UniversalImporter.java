@@ -405,6 +405,9 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
+        if (ui != null) {
+            ui.cleanup();
+        }
         clearVariables();
     }
 

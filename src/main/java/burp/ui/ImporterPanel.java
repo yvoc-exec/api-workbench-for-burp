@@ -4,6 +4,8 @@ import burp.models.*;
 import burp.parser.*;
 import burp.runner.CollectionRunner;
 import burp.auth.OAuth2Manager;
+import burp.auth.OAuth2Config;
+import burp.auth.TokenStore;
 import burp.UniversalImporter;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.CheckBoxTreeCellRenderer;
@@ -22,10 +24,12 @@ import java.awt.event.*;
 import java.io.File;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.*;
 
 public class ImporterPanel {
     private final UniversalImporter importer;
     private final CollectionRunner runner;
+    private final OAuth2Manager oauth2Manager;
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -75,6 +79,12 @@ public class ImporterPanel {
     private JComboBox<CollectionRef> oauth2CollectionCombo;
     private JButton bindOAuth2Btn;
     private JLabel oauth2HintLabel;
+    private final Map<ApiCollection, OAuthAutoRefreshState> oauthAutoStates = new IdentityHashMap<>();
+    private final ScheduledExecutorService oauthAutoExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "oauth2-auto-refresh");
+        t.setDaemon(true);
+        return t;
+    });
 
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
@@ -82,8 +92,16 @@ public class ImporterPanel {
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
 
+    private static class OAuthAutoRefreshState {
+        boolean enabled;
+        int intervalSeconds = 300;
+        ScheduledFuture<?> future;
+        String lastStatus;
+    }
+
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager, burp.utils.ScriptMode scriptMode) {
         this.scriptMode = scriptMode;
+        this.oauth2Manager = oauth2Manager;
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.importer = importer;
         this.runner = runner;
@@ -474,6 +492,7 @@ public class ImporterPanel {
             if (ref != null && ref.collection != null) {
                 refreshOAuth2PanelForCollection(ref.collection);
             }
+            applyAutoRefreshUiForSelectedCollection();
             updateScopeControlState();
         });
         oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> {
@@ -485,6 +504,8 @@ public class ImporterPanel {
                 ref.collection.putAllRuntimeOAuth2(vars);
             }
         });
+        oauth2Panel.setAutoRefreshToggleListener(this::toggleAutoRefreshForSelectedCollection);
+        applyAutoRefreshUiForSelectedCollection();
         updateScopeControlState();
 
         return panel;
@@ -773,6 +794,7 @@ public class ImporterPanel {
         if (col != null && col.runtimeOAuth2 != null) {
             oauth2Panel.populateFromOAuth2Map(col.runtimeOAuth2);
         }
+        applyAutoRefreshUiForSelectedCollection();
     }
 
     private void renderEffectiveVariablesForSelectedCollection() {
@@ -920,6 +942,8 @@ public class ImporterPanel {
             return;
         }
         for (ApiCollection target : checkedCollections) {
+            stopAutoRefreshForCollection(target, "Collection removed");
+            oauthAutoStates.remove(target);
             target.clearChangeListeners();
             loadedCollections.remove(target);
             appendImportLog("Removed collection: " + target.name);
@@ -967,6 +991,7 @@ public class ImporterPanel {
         }
         updateScopeControlState();
         renderEffectiveVariablesForSelectedCollection();
+        applyAutoRefreshUiForSelectedCollection();
         if (requestEditor != null && requestEditor.getCurrentCollection() != null) {
             syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
         }
@@ -1263,6 +1288,179 @@ public class ImporterPanel {
         Map<String, String> merged = burp.utils.OAuth2PopulateHelper.mergeWithExisting(extracted, parseEnvVarsMap());
         oauth2Panel.populateFromOAuth2Map(merged);
         appendImportLog("Populate OAuth2: Filled " + extracted.size() + " field(s) from request \"" + req.name + "\".");
+    }
+
+    private OAuthAutoRefreshState getAutoState(ApiCollection col) {
+        OAuthAutoRefreshState state = oauthAutoStates.get(col);
+        if (state == null) {
+            state = new OAuthAutoRefreshState();
+            oauthAutoStates.put(col, state);
+        }
+        return state;
+    }
+
+    private ApiCollection getSelectedOAuth2Collection() {
+        CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+        return ref != null ? ref.collection : null;
+    }
+
+    private void applyAutoRefreshUiForSelectedCollection() {
+        ApiCollection col = getSelectedOAuth2Collection();
+        if (col == null) {
+            oauth2Panel.setAutoRefreshIntervalSeconds(300);
+            oauth2Panel.setAutoRefreshActive(false);
+            return;
+        }
+        OAuthAutoRefreshState state = getAutoState(col);
+        oauth2Panel.setAutoRefreshIntervalSeconds(state.intervalSeconds);
+        oauth2Panel.setAutoRefreshActive(state.enabled);
+    }
+
+    private void toggleAutoRefreshForSelectedCollection() {
+        ApiCollection col = getSelectedOAuth2Collection();
+        if (col == null) {
+            appendImportLog("OAuth2 auto-refresh: no target collection selected.");
+            oauth2Panel.appendStatus("OAuth2 auto-refresh: no target collection selected.");
+            return;
+        }
+        OAuthAutoRefreshState state = getAutoState(col);
+        if (state.enabled) {
+            stopAutoRefreshForCollection(col, "Stopped by user");
+            return;
+        }
+        int interval = Math.max(30, oauth2Panel.getAutoRefreshIntervalSeconds());
+        startAutoRefreshForCollection(col, interval);
+    }
+
+    private void startAutoRefreshForCollection(ApiCollection col, int intervalSeconds) {
+        OAuthAutoRefreshState state = getAutoState(col);
+        if (state.future != null && !state.future.isDone()) {
+            state.future.cancel(false);
+        }
+
+        Map<String, String> vars = col.runtimeOAuth2 != null ? new HashMap<>(col.runtimeOAuth2) : new HashMap<>();
+        OAuth2Config cfg = OAuth2Config.fromVariables(vars);
+        if (cfg.tokenUrl == null || cfg.tokenUrl.isEmpty() || cfg.clientId == null || cfg.clientId.isEmpty()) {
+            String msg = "OAuth2 auto-refresh not started for \"" + col.name + "\": missing oauth2_token_url or oauth2_client_id.";
+            appendImportLog(msg);
+            oauth2Panel.appendStatus(msg);
+            state.enabled = false;
+            applyAutoRefreshUiForSelectedCollection();
+            return;
+        }
+
+        String refresh = vars.get("oauth2_refresh_token");
+        if (refresh == null || refresh.isEmpty()) {
+            String key = TokenStore.makeKey(cfg);
+            TokenStore.TokenEntry entry = TokenStore.get(key);
+            if (entry != null && entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                refresh = entry.refreshToken;
+                col.putRuntimeOAuth2("oauth2_refresh_token", refresh);
+            }
+        }
+        if (refresh == null || refresh.isEmpty()) {
+            String msg = "OAuth2 auto-refresh not started for \"" + col.name + "\": missing refresh token.";
+            appendImportLog(msg);
+            oauth2Panel.appendStatus(msg);
+            state.enabled = false;
+            applyAutoRefreshUiForSelectedCollection();
+            return;
+        }
+
+        state.intervalSeconds = intervalSeconds;
+        state.enabled = true;
+        state.lastStatus = "Running";
+        state.future = oauthAutoExecutor.scheduleWithFixedDelay(
+            () -> runAutoRefreshTick(col), intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+
+        String msg = "OAuth2 auto-refresh started for \"" + col.name + "\" (" + intervalSeconds + "s interval).";
+        appendImportLog(msg);
+        oauth2Panel.appendStatus(msg);
+        applyAutoRefreshUiForSelectedCollection();
+    }
+
+    private void runAutoRefreshTick(ApiCollection col) {
+        OAuthAutoRefreshState state = getAutoState(col);
+        if (!state.enabled) return;
+        try {
+            Map<String, String> vars = new HashMap<>();
+            if (col.runtimeOAuth2 != null) vars.putAll(col.runtimeOAuth2);
+            OAuth2Config cfg = OAuth2Config.fromVariables(vars);
+
+            String refresh = vars.get("oauth2_refresh_token");
+            if ((refresh == null || refresh.isEmpty()) && cfg.clientId != null && cfg.tokenUrl != null) {
+                TokenStore.TokenEntry existing = TokenStore.get(TokenStore.makeKey(cfg));
+                if (existing != null && existing.refreshToken != null && !existing.refreshToken.isEmpty()) {
+                    refresh = existing.refreshToken;
+                }
+            }
+            if (refresh == null || refresh.isEmpty()) {
+                state.lastStatus = "Refresh token unavailable";
+                logAutoRefreshMessage(col, "Auto-refresh skipped: refresh token unavailable.");
+                return;
+            }
+
+            cfg.refreshToken = refresh;
+            cfg.grantType = OAuth2Config.GrantType.REFRESH_TOKEN;
+            if (!cfg.isValid()) {
+                state.lastStatus = "Invalid config for refresh";
+                logAutoRefreshMessage(col, "Auto-refresh skipped: invalid config for refresh_token grant.");
+                return;
+            }
+
+            TokenStore.TokenEntry entry = oauth2Manager.acquireToken(cfg);
+            Map<String, String> update = new HashMap<>();
+            if (entry.accessToken != null && !entry.accessToken.isEmpty()) {
+                update.put("oauth2_access_token", entry.accessToken);
+            }
+            if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                update.put("oauth2_refresh_token", entry.refreshToken);
+            }
+            if (!update.isEmpty()) {
+                col.putAllRuntimeOAuth2(update);
+            }
+            state.lastStatus = "Last refresh OK";
+            logAutoRefreshMessage(col, "Auto-refresh success. Next run in ~" + state.intervalSeconds + "s.");
+        } catch (Exception ex) {
+            state.lastStatus = "Refresh failed: " + ex.getMessage();
+            logAutoRefreshMessage(col, "Auto-refresh failed: " + ex.getMessage());
+        }
+    }
+
+    private void logAutoRefreshMessage(ApiCollection col, String message) {
+        SwingUtilities.invokeLater(() -> {
+            String msg = "OAuth2 [" + col.name + "]: " + message;
+            appendImportLog(msg);
+            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
+            if (ref != null && ref.collection == col) {
+                oauth2Panel.appendStatus(msg);
+            }
+        });
+    }
+
+    private void stopAutoRefreshForCollection(ApiCollection col, String reason) {
+        OAuthAutoRefreshState state = getAutoState(col);
+        state.enabled = false;
+        if (state.future != null) {
+            state.future.cancel(false);
+            state.future = null;
+        }
+        state.lastStatus = reason;
+        String msg = "OAuth2 auto-refresh stopped for \"" + col.name + "\" (" + reason + ").";
+        appendImportLog(msg);
+        oauth2Panel.appendStatus(msg);
+        applyAutoRefreshUiForSelectedCollection();
+    }
+
+    public void cleanup() {
+        for (ApiCollection col : new ArrayList<>(oauthAutoStates.keySet())) {
+            OAuthAutoRefreshState state = oauthAutoStates.get(col);
+            if (state != null && state.future != null) {
+                state.future.cancel(false);
+            }
+        }
+        oauthAutoStates.clear();
+        oauthAutoExecutor.shutdownNow();
     }
 
     // ========================================================================
