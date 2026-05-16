@@ -1,26 +1,30 @@
 package burp.ui;
 
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
+
 import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Displays HTTP response with status summary, headers, and body in multiple views.
+ * Displays HTTP response with status summary and Burp native response viewer.
  */
 public class ResponsePane extends JPanel {
+    private final MontoyaApi api;
     private JLabel statusLabel;
-    private JTabbedPane tabs;
-    private JTextArea headersArea;
-    private JTextArea prettyBodyArea;
-    private JTextArea rawBodyArea;
-    private JTextArea hexBodyArea;
+    private HttpResponseEditor responseEditor;
+    private JTextArea fallbackArea;
 
-    public ResponsePane() {
+    public ResponsePane(MontoyaApi api) {
+        this.api = api;
         setLayout(new BorderLayout(5, 5));
         setBorder(BorderFactory.createTitledBorder("Response"));
         add(createStatusBar(), BorderLayout.NORTH);
-        add(createBodyTabs(), BorderLayout.CENTER);
+        add(createBodyView(), BorderLayout.CENTER);
     }
 
     private JPanel createStatusBar() {
@@ -31,98 +35,67 @@ public class ResponsePane extends JPanel {
         return panel;
     }
 
-    private JTabbedPane createBodyTabs() {
-        tabs = new JTabbedPane();
-
-        headersArea = new JTextArea();
-        headersArea.setEditable(false);
-        headersArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        tabs.addTab("Headers", new JScrollPane(headersArea));
-
-        prettyBodyArea = new JTextArea();
-        prettyBodyArea.setEditable(false);
-        prettyBodyArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        tabs.addTab("Pretty", new JScrollPane(prettyBodyArea));
-
-        rawBodyArea = new JTextArea();
-        rawBodyArea.setEditable(false);
-        rawBodyArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        tabs.addTab("Raw", new JScrollPane(rawBodyArea));
-
-        hexBodyArea = new JTextArea();
-        hexBodyArea.setEditable(false);
-        hexBodyArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        tabs.addTab("Hex", new JScrollPane(hexBodyArea));
-
-        return tabs;
+    private Component createBodyView() {
+        if (api != null) {
+            responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
+            return responseEditor.uiComponent();
+        }
+        fallbackArea = new JTextArea();
+        fallbackArea.setEditable(false);
+        fallbackArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        return new JScrollPane(fallbackArea);
     }
 
     public void clear() {
         statusLabel.setText("No response yet");
-        headersArea.setText("");
-        prettyBodyArea.setText("");
-        rawBodyArea.setText("");
-        hexBodyArea.setText("");
+        if (responseEditor != null) {
+            responseEditor.setResponse(HttpResponse.httpResponse());
+        } else if (fallbackArea != null) {
+            fallbackArea.setText("");
+        }
+    }
+
+    public void displayResponse(HttpResponse response, long timeMs) {
+        if (response == null) {
+            clear();
+            return;
+        }
+        int sizeBytes = response.body() != null ? response.body().length() : 0;
+        statusLabel.setText(String.format("Status: %d | Time: %d ms | Size: %d bytes",
+            (int) response.statusCode(), timeMs, sizeBytes));
+
+        if (responseEditor != null) {
+            responseEditor.setResponse(response);
+        } else if (fallbackArea != null) {
+            fallbackArea.setText(response.toString());
+            fallbackArea.setCaretPosition(0);
+        }
     }
 
     public void displayResponse(int statusCode, long timeMs, int sizeBytes,
                                  String responseHeaders, byte[] responseBody) {
         statusLabel.setText(String.format("Status: %d | Time: %d ms | Size: %d bytes",
-                statusCode, timeMs, sizeBytes));
-        headersArea.setText(responseHeaders != null ? responseHeaders : "");
-        headersArea.setCaretPosition(0);
-
+            statusCode, timeMs, sizeBytes));
+        String headerBlock = normalizeHeaders(responseHeaders, statusCode);
         String bodyText = responseBody != null ? new String(responseBody, StandardCharsets.UTF_8) : "";
-        rawBodyArea.setText(bodyText);
-        rawBodyArea.setCaretPosition(0);
-
-        prettyBodyArea.setText(tryPrettyPrint(bodyText));
-        prettyBodyArea.setCaretPosition(0);
-
-        hexBodyArea.setText(bytesToHex(responseBody));
-        hexBodyArea.setCaretPosition(0);
+        String raw = headerBlock + "\r\n\r\n" + bodyText;
+        if (responseEditor != null) {
+            responseEditor.setResponse(HttpResponse.httpResponse(raw));
+        } else if (fallbackArea != null) {
+            fallbackArea.setText(raw);
+            fallbackArea.setCaretPosition(0);
+        }
     }
 
-    private String tryPrettyPrint(String text) {
-        if (text == null || text.trim().isEmpty()) return "";
-        String trimmed = text.trim();
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            try {
-                com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(trimmed);
-                return new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(el);
-            } catch (Exception e) {
-                return text;
-            }
+    private String normalizeHeaders(String responseHeaders, int statusCode) {
+        String raw = responseHeaders == null ? "" : responseHeaders.trim();
+        if (raw.isEmpty()) {
+            raw = "HTTP/1.1 " + statusCode;
         }
-        if (trimmed.startsWith("<") && trimmed.contains(">")) {
-            // Simple XML indentation attempt
-            return text.replace("><", ">\n<").replace(">", ">\n").replace("<", "\n<").trim();
+        raw = raw.replace("\r\n", "\n");
+        if (!raw.toUpperCase().startsWith("HTTP/")) {
+            raw = "HTTP/1.1 " + statusCode + "\n" + raw;
         }
-        return text;
-    }
-
-    private String bytesToHex(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) return "";
-        StringBuilder hex = new StringBuilder();
-        StringBuilder ascii = new StringBuilder();
-        int len = Math.min(bytes.length, 32768); // cap to avoid UI freeze
-        for (int i = 0; i < len; i++) {
-            if (i > 0 && i % 16 == 0) {
-                hex.append("  ").append(ascii).append("\n");
-                ascii.setLength(0);
-            }
-            int v = bytes[i] & 0xFF;
-            hex.append(String.format("%02X ", v));
-            ascii.append(v >= 32 && v < 127 ? (char) v : '.');
-        }
-        int remainder = len % 16;
-        if (remainder > 0) {
-            for (int i = 0; i < (16 - remainder); i++) hex.append("   ");
-            hex.append("  ").append(ascii);
-        }
-        if (bytes.length > len) {
-            hex.append("\n... (truncated, total ").append(bytes.length).append(" bytes)");
-        }
-        return hex.toString();
+        return raw.replace("\n", "\r\n");
     }
 }

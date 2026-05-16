@@ -50,6 +50,10 @@ public class UniversalImporter {
         return ui;
     }
 
+    public MontoyaApi getApi() {
+        return api;
+    }
+
     public void setFollowRedirects(boolean followRedirects) {
         this.followRedirects = followRedirects;
     }
