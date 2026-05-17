@@ -225,11 +225,12 @@ class CollectionRunnerTest {
                     interruptedFlag.set(true);
                 }
                 interrupted.countDown();
-                try {
-                    Thread.interrupted();
-                    cleanupGate.await(250, TimeUnit.MILLISECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                while (cleanupGate.getCount() > 0) {
+                    try {
+                        cleanupGate.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        interruptedFlag.set(true);
+                    }
                 }
                 ExecutionResult exec = new ExecutionResult();
                 exec.success = false;
@@ -261,11 +262,12 @@ class CollectionRunnerTest {
         runner.runCollections(List.of(collection), List.of(request));
         assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
         runner.cancel();
+        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
         assertThat(runner.isRunning()).isTrue();
 
         runner.runCollections(List.of(collection), List.of(request));
+        cleanupGate.countDown();
 
-        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
         waitForRunnerToStop(runner);
         drainEdt();
 
