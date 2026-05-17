@@ -48,6 +48,38 @@ class SharedRequestPipelineTest {
     }
 
     @Test
+    void buildDoesNotOverwriteRuntimeVarsAddedDuringExecution() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+        col.runtimeVars.put("existing", "old");
+
+        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
+            @Override
+            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
+                col.putRuntimeVar("external", "keep");
+                context.put("scripted", "value");
+                resolver.addCustomVariable("scripted", "value");
+            }
+        };
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{scripted}}";
+        req.preRequestScripts.add(new ApiRequest.Script("js", "pm.collectionVariables.set('scripted', 'value');"));
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(col.runtimeVars)
+                .containsEntry("existing", "old")
+                .containsEntry("external", "keep")
+                .containsEntry("scripted", "value");
+    }
+
+    @Test
     void buildPreservesMultipartFileBytes() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);

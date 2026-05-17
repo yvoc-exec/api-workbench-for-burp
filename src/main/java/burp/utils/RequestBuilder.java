@@ -125,7 +125,11 @@ public class RequestBuilder {
         Pattern p = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
         Matcher m = p.matcher(text);
         while (m.find()) {
-            unresolved.add(m.group(1).trim());
+            String variableName = m.group(1) != null ? m.group(1).trim() : "";
+            String defaultValue = m.group(2);
+            if (!variableName.isEmpty() && defaultValue == null) {
+                unresolved.add(variableName);
+            }
         }
         return unresolved;
     }
@@ -323,12 +327,13 @@ public class RequestBuilder {
                 if (body.urlencoded != null) {
                     List<String> params = new ArrayList<>();
                     for (ApiRequest.Body.FormField param : body.urlencoded) {
-                        if (param.key != null) {
-                            String key = URLEncoder.encode(resolver.resolve(param.key), StandardCharsets.UTF_8);
-                            String value = param.value != null ?
-                                    URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
-                            params.add(key + "=" + value);
+                        if (param == null || param.disabled || param.key == null) {
+                            continue;
                         }
+                        String key = URLEncoder.encode(resolver.resolve(param.key), StandardCharsets.UTF_8);
+                        String value = param.value != null ?
+                                URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
+                        params.add(key + "=" + value);
                     }
                     enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
                     result = String.join("&", params).getBytes(StandardCharsets.UTF_8);

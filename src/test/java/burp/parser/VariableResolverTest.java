@@ -95,6 +95,13 @@ class VariableResolverTest {
     }
 
     @Test
+    void findUnresolvedVariablesIgnoresVariablesWithDefaults() {
+        Set<String> missing = resolver.findUnresolvedVariables("{{base_url|https://example.com}}/api/{{missing}}");
+
+        assertThat(missing).containsExactly("missing");
+    }
+
+    @Test
     void getVariablesReturnsDefensiveCopy() {
         resolver.addCustomVariable("key", "value");
         resolver.getVariables().put("key", "tampered");

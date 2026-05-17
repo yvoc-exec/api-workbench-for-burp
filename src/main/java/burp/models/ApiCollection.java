@@ -65,6 +65,42 @@ public class ApiCollection {
         fireChanged();
     }
 
+    /**
+     * Applies runtime variable changes without replacing the full map.
+     * This preserves unrelated keys that may have been added elsewhere while
+     * a request was executing.
+     */
+    public synchronized void applyRuntimeVarDelta(Map<String, String> changedVars, Set<String> removedKeys) {
+        boolean changed = false;
+
+        if (removedKeys != null) {
+            for (String key : removedKeys) {
+                if (key != null && runtimeVars.containsKey(key)) {
+                    runtimeVars.remove(key);
+                    changed = true;
+                }
+            }
+        }
+
+        if (changedVars != null) {
+            for (Map.Entry<String, String> entry : changedVars.entrySet()) {
+                String key = entry.getKey();
+                if (key == null) {
+                    continue;
+                }
+                String value = entry.getValue();
+                if (!Objects.equals(runtimeVars.get(key), value)) {
+                    runtimeVars.put(key, value);
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed) {
+            fireChanged();
+        }
+    }
+
     public void putRuntimeOAuth2(String key, String value) {
         runtimeOAuth2.put(key, value);
         fireChanged();

@@ -136,6 +136,41 @@ class CollectionRunnerStopConditionsTest {
     }
 
     @Test
+    void stopOnMissingVariableDoesNotStopWhenDefaultValueExists() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CopyOnWriteArrayList<String> errors = new CopyOnWriteArrayList<>();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                calls.incrementAndGet();
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse(200);
+                exec.requestHeaders = "GET /default HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                return exec;
+            }
+        }, null);
+        runner.setMaxRetries(0);
+        runner.setStopConditions(stopConditions(false, false, false, true, 0));
+        runner.addListener(new TestListener(errors));
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Default Collection";
+        ApiRequest request = request("Default", 1, "http://example.com/{{base_url|https://example.com}}/path");
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        runner.runCollections(List.of(collection), List.of(request));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(errors).isEmpty();
+    }
+
+    @Test
     void stopAfterFailureCountStopsAtThreshold() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CopyOnWriteArrayList<String> errors = new CopyOnWriteArrayList<>();

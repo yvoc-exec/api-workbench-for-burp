@@ -3,6 +3,7 @@ package burp.models;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.*;
@@ -35,6 +36,52 @@ class ApiCollectionTest {
         assertThat(col.runtimeVars).containsEntry("fresh", "new");
         assertThat(col.runtimeVars).doesNotContainKey("stale");
         assertThat(col.runtimeVars).hasSize(1);
+    }
+
+    @Test
+    void applyRuntimeVarDeltaPreservesUnrelatedExistingKeys() {
+        ApiCollection col = new ApiCollection();
+        AtomicInteger count = new AtomicInteger(0);
+        col.addChangeListener(count::incrementAndGet);
+        col.runtimeVars.put("keep", "same");
+        col.runtimeVars.put("changed", "old");
+
+        col.applyRuntimeVarDelta(Map.of("changed", "new"), Set.of());
+
+        assertThat(col.runtimeVars)
+                .containsEntry("keep", "same")
+                .containsEntry("changed", "new");
+        assertThat(count.get()).isEqualTo(1);
+    }
+
+    @Test
+    void applyRuntimeVarDeltaRemovesOnlyExplicitRemovedKeys() {
+        ApiCollection col = new ApiCollection();
+        AtomicInteger count = new AtomicInteger(0);
+        col.addChangeListener(count::incrementAndGet);
+        col.runtimeVars.put("remove", "old");
+        col.runtimeVars.put("concurrent", "keep");
+
+        col.applyRuntimeVarDelta(Map.of("added", "new"), Set.of("remove"));
+
+        assertThat(col.runtimeVars)
+                .containsEntry("concurrent", "keep")
+                .containsEntry("added", "new")
+                .doesNotContainKey("remove");
+        assertThat(count.get()).isEqualTo(1);
+    }
+
+    @Test
+    void applyRuntimeVarDeltaDoesNotNotifyWhenNoEffectiveChange() {
+        ApiCollection col = new ApiCollection();
+        AtomicInteger count = new AtomicInteger(0);
+        col.addChangeListener(count::incrementAndGet);
+        col.runtimeVars.put("same", "value");
+
+        col.applyRuntimeVarDelta(Map.of("same", "value"), Set.of("missing"));
+
+        assertThat(col.runtimeVars).containsEntry("same", "value");
+        assertThat(count.get()).isEqualTo(0);
     }
 
     @Test
