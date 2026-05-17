@@ -527,6 +527,23 @@ class RequestBuilderTest {
     }
 
     @Test
+    void apiKeyInHeaderAllowsNullResolver() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "apikey";
+        req.auth.properties.put("key", "X-API-Key");
+        req.auth.properties.put("value", "secret123");
+        req.auth.properties.put("in", "header");
+
+        byte[] raw = builder.buildRequest(req, null);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.headerValue("X-API-Key")).isEqualTo("secret123");
+    }
+
+    @Test
     void apiKeyInCookieMergesWithExistingCookie() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

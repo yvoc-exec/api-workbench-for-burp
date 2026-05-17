@@ -63,8 +63,8 @@ public class RequestBuilder {
         if (request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
                 if (!header.disabled && header.key != null && header.value != null) {
-                    String key = resolver.resolve(header.key);
-                    String value = resolver.resolve(header.value);
+                    String key = resolve(resolver, header.key);
+                    String value = resolve(resolver, header.value);
                     if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
                         headers.put(key.trim(), value);
                     }
@@ -224,17 +224,19 @@ public class RequestBuilder {
                 String in = auth.properties.getOrDefault("in", "header");
                 if (keyName != null && keyValue != null) {
                     if ("query".equalsIgnoreCase(in)) {
-                        String param = URLEncoder.encode(resolver != null ? resolver.resolve(keyName) : keyName, StandardCharsets.UTF_8)
-                                + "=" + URLEncoder.encode(resolver != null ? resolver.resolve(keyValue) : keyValue, StandardCharsets.UTF_8);
+                        String param = URLEncoder.encode(resolve(resolver, keyName), StandardCharsets.UTF_8)
+                                + "=" + URLEncoder.encode(resolve(resolver, keyValue), StandardCharsets.UTF_8);
                         requestTarget = requestTarget.contains("?")
                                 ? requestTarget + "&" + param
                                 : requestTarget + "?" + param;
                     } else if ("cookie".equalsIgnoreCase(in)) {
-                        String cookieValue = (resolver != null ? resolver.resolve(keyName) : keyName) + "=" + (resolver != null ? resolver.resolve(keyValue) : keyValue);
+                        String cookieValue = resolve(resolver, keyName) + "=" + resolve(resolver, keyValue);
                         headers.mergeCookie(cookieValue);
                     } else {
-                        if (!headers.has(resolver.resolve(keyName))) {
-                            headers.putDefault(resolver.resolve(keyName), resolver.resolve(keyValue));
+                        String resolvedKeyName = resolve(resolver, keyName);
+                        String resolvedKeyValue = resolve(resolver, keyValue);
+                        if (!headers.has(resolvedKeyName)) {
+                            headers.putDefault(resolvedKeyName, resolvedKeyValue);
                         }
                     }
                 }
@@ -643,5 +645,9 @@ public class RequestBuilder {
             default:
                 return true;
         }
+    }
+
+    private String resolve(VariableResolver resolver, String input) {
+        return resolver != null ? resolver.resolve(input) : input;
     }
 }
