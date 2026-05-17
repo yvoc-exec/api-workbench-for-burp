@@ -36,9 +36,12 @@ public class CollectionRunner {
     private volatile boolean cancelled = false;
     private int delayMs = 200;
     private int maxRetries = 1;
-    private boolean stopOnError = false;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
+    private volatile RunnerStopConditions stopConditions = new RunnerStopConditions();
+    private final Object pauseLock = new Object();
+    private volatile boolean pauseRequested = false;
+    private volatile boolean singleStepRequested = false;
     private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
     private final Map<ApiCollection, Map<String, String>> extractedVarsByCollection =
             Collections.synchronizedMap(new IdentityHashMap<>());
@@ -72,9 +75,44 @@ public class CollectionRunner {
 
     public void setDelayMs(int delayMs) { this.delayMs = delayMs; }
     public void setMaxRetries(int maxRetries) { this.maxRetries = Math.max(0, maxRetries); }
-    public void setStopOnError(boolean stopOnError) { this.stopOnError = stopOnError; }
+    public void setStopOnError(boolean stopOnError) {
+        ensureStopConditions().stopOnError = stopOnError;
+    }
+    public void setStopConditions(RunnerStopConditions stopConditions) {
+        this.stopConditions = copyStopConditions(stopConditions);
+    }
+    public RunnerStopConditions getStopConditions() {
+        return copyStopConditions(ensureStopConditions());
+    }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
+
+    public void pauseAfterCurrent() {
+        synchronized (pauseLock) {
+            pauseRequested = true;
+            singleStepRequested = false;
+        }
+    }
+
+    public void resume() {
+        synchronized (pauseLock) {
+            pauseRequested = false;
+            singleStepRequested = false;
+            pauseLock.notifyAll();
+        }
+    }
+
+    public void runNextOnly() {
+        synchronized (pauseLock) {
+            singleStepRequested = true;
+            pauseRequested = false;
+            pauseLock.notifyAll();
+        }
+    }
+
+    public boolean isPaused() {
+        return pauseRequested;
+    }
 
     /** Legacy single-collection runner (kept for compatibility). */
     public void runCollection(ApiCollection collection, List<ApiRequest> selectedRequests,
@@ -96,6 +134,11 @@ public class CollectionRunner {
         }
         running = true;
         cancelled = false;
+        final RunnerStopConditions activeStopConditions = copyStopConditions(ensureStopConditions());
+        synchronized (pauseLock) {
+            pauseRequested = false;
+            singleStepRequested = false;
+        }
         results.clear();
         extractedVars.clear();
         extractedVarsByCollection.clear();
@@ -125,8 +168,19 @@ public class CollectionRunner {
         Future<?> future = executor.submit(() -> {
             try {
                 fireOnStart("Runner", ordered.size());
+                int failedResultCount = 0;
+                boolean stoppedByCondition = false;
 
                 for (int i = 0; i < ordered.size() && !cancelled; i++) {
+                    if (i > 0) {
+                        if (!waitIfPausedOrStepConsumed()) {
+                            break;
+                        }
+                        if (delayMs > 0) {
+                            Thread.sleep(delayMs);
+                        }
+                    }
+
                     ApiRequest req = ordered.get(i);
                     if (req.disabled) {
                         fireOnSkip(req.name, "Request disabled");
@@ -138,28 +192,60 @@ public class CollectionRunner {
                         col = colMap.getOrDefault(req.sourceCollection, null);
                     }
 
-                    RunnerResult result = executeRequest(req, col);
-                    if (result == null || cancelled || Thread.currentThread().isInterrupted()) {
+                    List<String> unresolvedVariables = activeStopConditions.stopOnMissingVariable
+                        ? collectUnresolvedVariables(buildPreviewResolver(req, col), req)
+                        : Collections.emptyList();
+                    if (activeStopConditions.stopOnMissingVariable && !unresolvedVariables.isEmpty()) {
+                        fireOnError("Stopped on missing variable(s): " + String.join(", ", unresolvedVariables));
+                        stoppedByCondition = true;
                         break;
                     }
 
+                    RequestExecutionOutcome outcome = executeRequest(req, col);
+                    if (outcome == null || outcome.result == null || cancelled || Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
+
+                    RunnerResult result = outcome.result;
                     results.add(result);
                     fireOnRequestComplete(result);
+                    fireOnTimeline(buildTimelineRow(req, col, result, outcome.attempts));
 
-                    if (!result.success && stopOnError) {
-                        fireOnError("Stopped on error: " + result.errorMessage);
-                        break;
+                    boolean assertionFailed = hasAssertionFailure(result);
+                    boolean statusFailed = hasStatusAtLeast400(result);
+                    boolean executionFailed = !result.success;
+                    boolean anyFailure = executionFailed || assertionFailed || statusFailed;
+                    if (anyFailure) {
+                        failedResultCount++;
                     }
 
-                    // Delay between requests
-                    if (delayMs > 0 && i < ordered.size() - 1) {
-                        Thread.sleep(delayMs);
+                    if (activeStopConditions.stopOnError && executionFailed) {
+                        fireOnError("Stopped on error: " + result.errorMessage);
+                        stoppedByCondition = true;
+                        break;
+                    }
+                    if (activeStopConditions.stopOnAssertionFailure && assertionFailed) {
+                        fireOnError("Stopped on assertion failure for " + result.requestName);
+                        stoppedByCondition = true;
+                        break;
+                    }
+                    if (activeStopConditions.stopOnStatusAtLeast400 && statusFailed) {
+                        fireOnError("Stopped on status >= 400 for " + result.requestName + " (" + result.statusCode + ")");
+                        stoppedByCondition = true;
+                        break;
+                    }
+                    if (activeStopConditions.stopAfterFailureCount > 0 &&
+                        failedResultCount >= activeStopConditions.stopAfterFailureCount) {
+                        fireOnError("Stopped after failure count reached: " +
+                            failedResultCount + "/" + activeStopConditions.stopAfterFailureCount);
+                        stoppedByCondition = true;
+                        break;
                     }
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     fireOnDebug("Runner cancelled.");
-                } else {
+                } else if (!stoppedByCondition) {
                     fireOnComplete(results);
                 }
             } catch (Exception e) {
@@ -178,7 +264,56 @@ public class CollectionRunner {
         activeFuture = future;
     }
 
-    private RunnerResult executeRequest(ApiRequest req, ApiCollection col) {
+    public List<RunnerPreviewRow> buildRunPreview(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
+        List<RunnerPreviewRow> previewRows = new ArrayList<>();
+        if (selectedRequests == null || selectedRequests.isEmpty()) {
+            return previewRows;
+        }
+
+        Map<ApiRequest, ApiCollection> reqToColMap = new IdentityHashMap<>();
+        Map<String, ApiCollection> colMap = new HashMap<>();
+        if (sourceCollections != null) {
+            for (ApiCollection c : sourceCollections) {
+                if (c != null) {
+                    if (c.name != null) colMap.put(c.name, c);
+                    if (c.requests != null) {
+                        for (ApiRequest r : c.requests) {
+                            reqToColMap.put(r, c);
+                        }
+                    }
+                }
+            }
+        }
+
+        List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
+        ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
+
+        for (ApiRequest req : ordered) {
+            if (req == null || req.disabled) {
+                continue;
+            }
+
+            ApiCollection col = reqToColMap.get(req);
+            if (col == null) {
+                col = colMap.getOrDefault(req.sourceCollection, null);
+            }
+
+            VariableResolver resolver = buildPreviewResolver(req, col);
+            RunnerPreviewRow row = new RunnerPreviewRow();
+            row.order = req.sequenceOrder;
+            row.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
+            row.requestName = req.name;
+            row.method = req.method != null ? req.method.toUpperCase() : "GET";
+            row.urlPreview = resolver.resolve(req.url);
+            row.authStatus = req.hasAuth() ? req.auth.type : "none";
+            row.unresolvedVariables.addAll(collectUnresolvedVariables(resolver, req));
+            previewRows.add(row);
+        }
+
+        return previewRows;
+    }
+
+    private RequestExecutionOutcome executeRequest(ApiRequest req, ApiCollection col) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
@@ -257,11 +392,14 @@ public class CollectionRunner {
                 } else {
                     result.success = false;
                     result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
+                    fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
                     if (attempts >= maxAttempts || cancelled) {
                         break;
                     }
+                    int retryDelay = retryDelayMs(attempts);
+                    fireOnDebug("Retrying in " + retryDelay + "ms");
                     try {
-                        Thread.sleep(delayMs * attempts); // Exponential backoff
+                        Thread.sleep(retryDelay);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         return null;
@@ -270,11 +408,14 @@ public class CollectionRunner {
             } catch (Exception e) {
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
+                fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
                 if (attempts >= maxAttempts || cancelled) {
                     break;
                 }
+                int retryDelay = retryDelayMs(attempts);
+                fireOnDebug("Retrying in " + retryDelay + "ms");
                 try {
-                    Thread.sleep(delayMs * attempts); // Exponential backoff
+                    Thread.sleep(retryDelay);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return null;
@@ -282,7 +423,11 @@ public class CollectionRunner {
             }
         }
 
-        return result;
+        if (result.success && attempts > 1) {
+            fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " passed");
+        }
+
+        return new RequestExecutionOutcome(result, attempts);
     }
 
     private Map<String, String> extractVariablesFromResponse(ApiRequest req, RunnerResult result) {
@@ -428,8 +573,148 @@ public class CollectionRunner {
         }
     }
 
+    private VariableResolver buildPreviewResolver(ApiRequest req, ApiCollection col) {
+        VariableResolver resolver = new VariableResolver();
+        if (col != null) {
+            resolver.addEnvironmentVariables(col);
+            resolver.addCollectionVariables(col);
+            if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
+            if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
+        }
+        resolver.addRequestVariables(req);
+        return resolver;
+    }
+
+    private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {
+        Set<String> unresolved = new LinkedHashSet<>();
+        if (req == null) {
+            return new ArrayList<>();
+        }
+
+        addUnresolved(resolver, unresolved, req.url);
+        if (req.headers != null) {
+            for (ApiRequest.Header header : req.headers) {
+                if (header == null || header.disabled) continue;
+                addUnresolved(resolver, unresolved, header.key);
+                addUnresolved(resolver, unresolved, header.value);
+            }
+        }
+        if (req.body != null) {
+            addUnresolved(resolver, unresolved, req.body.raw);
+            if (req.body.urlencoded != null) {
+                for (ApiRequest.Body.FormField field : req.body.urlencoded) {
+                    if (field == null || field.disabled) continue;
+                    addUnresolved(resolver, unresolved, field.key);
+                    addUnresolved(resolver, unresolved, field.value);
+                    addUnresolved(resolver, unresolved, field.filePath);
+                }
+            }
+            if (req.body.formdata != null) {
+                for (ApiRequest.Body.FormField field : req.body.formdata) {
+                    if (field == null || field.disabled) continue;
+                    addUnresolved(resolver, unresolved, field.key);
+                    addUnresolved(resolver, unresolved, field.value);
+                    addUnresolved(resolver, unresolved, field.filePath);
+                }
+            }
+            if (req.body.graphql != null) {
+                addUnresolved(resolver, unresolved, req.body.graphql.query);
+                addUnresolved(resolver, unresolved, req.body.graphql.variables);
+            }
+        }
+        if (req.auth != null && req.auth.properties != null) {
+            for (String value : req.auth.properties.values()) {
+                addUnresolved(resolver, unresolved, value);
+            }
+        }
+
+        return new ArrayList<>(unresolved);
+    }
+
+    private void addUnresolved(VariableResolver resolver, Set<String> unresolved, String input) {
+        if (resolver == null || unresolved == null || input == null || input.isEmpty()) {
+            return;
+        }
+        unresolved.addAll(resolver.findUnresolvedVariables(input));
+    }
+
+    private boolean hasAssertionFailure(RunnerResult result) {
+        if (result == null || result.assertions == null || result.assertions.isEmpty()) {
+            return false;
+        }
+        for (RunnerResult.AssertionResult assertion : result.assertions) {
+            if (assertion != null && !assertion.passed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasStatusAtLeast400(RunnerResult result) {
+        return result != null && result.success && result.statusCode >= 400;
+    }
+
+    private RunnerTimelineRow buildTimelineRow(ApiRequest req, ApiCollection col, RunnerResult result, int attempts) {
+        RunnerTimelineRow row = new RunnerTimelineRow();
+        row.order = req != null ? req.sequenceOrder : 0;
+        row.collectionName = col != null && col.name != null ? col.name : (req != null ? req.sourceCollection : "");
+        row.requestName = req != null ? req.name : "";
+        row.status = result != null && result.success ? String.valueOf(result.statusCode) : "ERR";
+        row.timeMs = result != null ? result.responseTimeMs : 0L;
+        row.retries = Math.max(0, attempts - 1);
+        row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;
+        row.assertions = formatAssertionSummary(result);
+        return row;
+    }
+
+    private String formatAssertionSummary(RunnerResult result) {
+        if (result == null || result.assertions == null || result.assertions.isEmpty()) {
+            return "0/0";
+        }
+        int passed = 0;
+        int total = 0;
+        for (RunnerResult.AssertionResult assertion : result.assertions) {
+            if (assertion == null) {
+                continue;
+            }
+            total++;
+            if (assertion.passed) {
+                passed++;
+            }
+        }
+        return passed + "/" + total;
+    }
+
+    private int retryDelayMs(int attemptNumber) {
+        return Math.max(0, delayMs * attemptNumber);
+    }
+
+    private RunnerStopConditions ensureStopConditions() {
+        if (stopConditions == null) {
+            stopConditions = new RunnerStopConditions();
+        }
+        return stopConditions;
+    }
+
+    private RunnerStopConditions copyStopConditions(RunnerStopConditions source) {
+        RunnerStopConditions copy = new RunnerStopConditions();
+        if (source != null) {
+            copy.stopOnError = source.stopOnError;
+            copy.stopOnAssertionFailure = source.stopOnAssertionFailure;
+            copy.stopOnStatusAtLeast400 = source.stopOnStatusAtLeast400;
+            copy.stopOnMissingVariable = source.stopOnMissingVariable;
+            copy.stopAfterFailureCount = source.stopAfterFailureCount;
+        }
+        return copy;
+    }
+
     public void cancel() {
         cancelled = true;
+        synchronized (pauseLock) {
+            pauseRequested = false;
+            singleStepRequested = false;
+            pauseLock.notifyAll();
+        }
         Future<?> future = activeFuture;
         if (future != null) {
             future.cancel(true);
@@ -443,6 +728,22 @@ public class CollectionRunner {
     public boolean isRunning() { return running; }
     public List<RunnerResult> getResults() { return new ArrayList<>(results); }
     public Map<String, String> getExtractedVariables() { return new HashMap<>(extractedVars); }
+
+    private boolean waitIfPausedOrStepConsumed() throws InterruptedException {
+        synchronized (pauseLock) {
+            while (!cancelled && pauseRequested && !singleStepRequested) {
+                pauseLock.wait();
+            }
+            if (cancelled) {
+                return false;
+            }
+            if (singleStepRequested) {
+                singleStepRequested = false;
+                pauseRequested = true;
+            }
+            return true;
+        }
+    }
 
     // Listener notifications - all dispatched on EDT for Swing safety
     private void fireOnStart(String collectionName, int totalRequests) {
@@ -458,6 +759,11 @@ public class CollectionRunner {
     private void fireOnRequestComplete(RunnerResult result) {
         SwingUtilities.invokeLater(() -> {
             for (RunnerListener l : listeners) l.onRequestComplete(result);
+        });
+    }
+    private void fireOnTimeline(RunnerTimelineRow row) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onTimeline(row);
         });
     }
     private void fireOnComplete(List<RunnerResult> results) {
@@ -480,8 +786,19 @@ public class CollectionRunner {
         void onStart(String collectionName, int totalRequests);
         void onSkip(String requestName, String reason);
         void onRequestComplete(RunnerResult result);
+        default void onTimeline(RunnerTimelineRow row) { }
         void onComplete(List<RunnerResult> results);
         void onError(String message);
         default void onDebug(String message) { }
+    }
+
+    private static final class RequestExecutionOutcome {
+        private final RunnerResult result;
+        private final int attempts;
+
+        private RequestExecutionOutcome(RunnerResult result, int attempts) {
+            this.result = result;
+            this.attempts = attempts;
+        }
     }
 }

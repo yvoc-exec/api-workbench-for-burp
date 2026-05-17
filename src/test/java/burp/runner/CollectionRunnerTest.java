@@ -1,6 +1,7 @@
 package burp.runner;
 
 import burp.models.RunnerResult;
+import burp.models.RunnerTimelineRow;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
@@ -95,6 +96,8 @@ class CollectionRunnerTest {
     @Test
     void retriesAreCountedAfterTheFirstAttempt() throws Exception {
         AtomicInteger calls = new AtomicInteger();
+        CopyOnWriteArrayList<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<String> debugMessages = new CopyOnWriteArrayList<>();
         CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
             @Override
             public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
@@ -107,12 +110,26 @@ class CollectionRunnerTest {
                     exec.errorMessage = "temporary failure";
                 } else {
                     exec.success = true;
+                    exec.elapsedMs = 123;
+                    exec.extractedVars.put("token", "abc");
+                    exec.assertions.add(new RunnerResult.AssertionResult("status", true, "200", "200"));
+                    exec.assertions.add(new RunnerResult.AssertionResult("body", false, "OK", "ERR"));
                     exec.response = mockResponse();
                 }
                 return exec;
             }
         }, null);
+        runner.setDelayMs(0);
         runner.setMaxRetries(1);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onTimeline(RunnerTimelineRow row) { timelineRows.add(row); }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onDebug(String message) { debugMessages.add(message); }
+        });
 
         ApiCollection collection = new ApiCollection();
         collection.name = "Retry Collection";
@@ -132,6 +149,16 @@ class CollectionRunnerTest {
         assertThat(runner.getResults().get(0).success)
                 .as("error=%s", runner.getResults().get(0).errorMessage)
                 .isTrue();
+        assertThat(timelineRows).hasSize(1);
+        assertThat(timelineRows.get(0).retries).isEqualTo(1);
+        assertThat(timelineRows.get(0).varsChanged).isEqualTo(1);
+        assertThat(timelineRows.get(0).assertions).isEqualTo("1/2");
+        assertThat(timelineRows.get(0).status).isEqualTo("200");
+        assertThat(timelineRows.get(0).timeMs).isEqualTo(123);
+        assertThat(debugMessages).containsExactly(
+                "Attempt 1/2 failed: temporary failure",
+                "Retrying in 0ms",
+                "Attempt 2/2 passed");
     }
 
     @Test
@@ -153,6 +180,7 @@ class CollectionRunnerTest {
             @Override public void onStart(String collectionName, int totalRequests) { }
             @Override public void onSkip(String requestName, String reason) { }
             @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onTimeline(RunnerTimelineRow row) { }
             @Override public void onComplete(List<RunnerResult> results) { }
             @Override public void onError(String message) { }
             @Override public void onDebug(String message) { debugMessages.add(message); }
