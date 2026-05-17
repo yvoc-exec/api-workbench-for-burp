@@ -63,12 +63,20 @@ public class ImporterPanel {
     private JProgressBar runnerProgress;
     private JTable resultTable;
     private RunnerResultTableModel resultModel;
+    private JTable timelineTable;
+    private RunnerTimelineTableModel timelineModel;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
     private JCheckBox stopOnErrorBox;
+    private JCheckBox stopOnAssertionFailureBox;
+    private JCheckBox stopOnStatusAtLeast400Box;
+    private JCheckBox stopOnMissingVariableBox;
+    private JSpinner stopAfterFailuresSpinner;
     private JCheckBox followRedirectsBox;
     private JCheckBox runnerDebugRawRequestBox;
-    private JButton startRunnerBtn, cancelRunnerBtn;
+    private JButton pauseRunnerBtn, resumeRunnerBtn, stepRunnerBtn, previewRunnerBtn, startRunnerBtn, cancelRunnerBtn;
+    private RunnerPreviewTableModel runnerPreviewModel;
+    private javax.swing.Timer runnerCancelPollTimer;
 
     // Runner detail pane
     private HttpRequestEditor detailRequestEditor;
@@ -675,10 +683,29 @@ public class ImporterPanel {
         configPanel.add(stopOnErrorBox, gbc);
 
         gbc.gridx = 5;
+        stopOnAssertionFailureBox = new JCheckBox("Stop on assertion failure");
+        configPanel.add(stopOnAssertionFailureBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1;
+        stopOnStatusAtLeast400Box = new JCheckBox("Stop on status >= 400");
+        configPanel.add(stopOnStatusAtLeast400Box, gbc);
+
+        gbc.gridx = 1;
+        stopOnMissingVariableBox = new JCheckBox("Stop when variable missing");
+        configPanel.add(stopOnMissingVariableBox, gbc);
+
+        gbc.gridx = 2;
+        configPanel.add(new JLabel("Stop after failures:"), gbc);
+
+        gbc.gridx = 3;
+        stopAfterFailuresSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 100, 1));
+        configPanel.add(stopAfterFailuresSpinner, gbc);
+
+        gbc.gridx = 4;
         followRedirectsBox = new JCheckBox("Follow redirects", true);
         configPanel.add(followRedirectsBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 6;
+        gbc.gridx = 5;
         runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
         configPanel.add(runnerDebugRawRequestBox, gbc);
 
@@ -693,6 +720,15 @@ public class ImporterPanel {
         tableScroll.setPreferredSize(new Dimension(350, 250));
         tableScroll.setMinimumSize(new Dimension(200, 150));
 
+        timelineModel = new RunnerTimelineTableModel();
+        timelineTable = new JTable(timelineModel);
+        timelineTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        timelineTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        JScrollPane timelineScroll = new JScrollPane(timelineTable);
+        timelineScroll.setBorder(BorderFactory.createTitledBorder("Runner Timeline"));
+        timelineScroll.setPreferredSize(new Dimension(350, 180));
+        timelineScroll.setMinimumSize(new Dimension(200, 120));
+
         JTabbedPane detailTabs = new JTabbedPane();
         detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         detailTabs.addTab("Request", detailRequestEditor.uiComponent());
@@ -705,7 +741,12 @@ public class ImporterPanel {
         detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         detailTabs.addTab("Vars", new JScrollPane(detailVarsText));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScroll, detailTabs);
+        JSplitPane resultsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, timelineScroll);
+        resultsSplit.setResizeWeight(0.70);
+        resultsSplit.setOneTouchExpandable(true);
+        resultsSplit.setContinuousLayout(true);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, resultsSplit, detailTabs);
         splitPane.setResizeWeight(0.5);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
@@ -733,15 +774,32 @@ public class ImporterPanel {
         JButton clearBtn = new JButton("Clear Results");
         clearBtn.addActionListener(e -> {
             resultModel.clear();
+            timelineModel.clear();
             runnerLog.setText("");
         });
+        pauseRunnerBtn = new JButton("Pause");
+        pauseRunnerBtn.setEnabled(false);
+        pauseRunnerBtn.addActionListener(e -> pauseRunnerFromUi());
+        resumeRunnerBtn = new JButton("Resume");
+        resumeRunnerBtn.setEnabled(false);
+        resumeRunnerBtn.addActionListener(e -> resumeRunnerFromUi());
+        stepRunnerBtn = new JButton("Step");
+        stepRunnerBtn.setEnabled(false);
+        stepRunnerBtn.addActionListener(e -> stepRunnerFromUi());
+        previewRunnerBtn = new JButton("Preview Run");
+        previewRunnerBtn.setEnabled(false);
+        previewRunnerBtn.addActionListener(e -> startRunner(true));
         startRunnerBtn = new JButton("Start Collection Runner");
         startRunnerBtn.setEnabled(false);
-        startRunnerBtn.addActionListener(e -> startRunner());
+        startRunnerBtn.addActionListener(e -> startRunner(false));
         cancelRunnerBtn = new JButton("Cancel");
         cancelRunnerBtn.setEnabled(false);
-        cancelRunnerBtn.addActionListener(e -> runner.cancel());
+        cancelRunnerBtn.addActionListener(e -> cancelRunnerFromUi());
         btnPanel.add(clearBtn);
+        btnPanel.add(pauseRunnerBtn);
+        btnPanel.add(resumeRunnerBtn);
+        btnPanel.add(stepRunnerBtn);
+        btnPanel.add(previewRunnerBtn);
         btnPanel.add(startRunnerBtn);
         btnPanel.add(cancelRunnerBtn);
         actionRow.add(btnPanel, BorderLayout.EAST);
@@ -1079,6 +1137,7 @@ public class ImporterPanel {
                     importBtn.setEnabled(true);
                     sendToRunnerBtn.setEnabled(true);
                     startRunnerBtn.setEnabled(true);
+                    previewRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
                     envApplyAllBtn.setEnabled(true);
                 } catch (Exception e) {
@@ -1108,6 +1167,7 @@ public class ImporterPanel {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
             startRunnerBtn.setEnabled(false);
+            previewRunnerBtn.setEnabled(false);
             removeCollectionBtn.setEnabled(false);
             envApplyAllBtn.setEnabled(false);
         }
@@ -1436,20 +1496,38 @@ public class ImporterPanel {
     // ========================================================================
     // Runner
     // ========================================================================
-    private void startRunner() {
+    private void startRunner(boolean showPreviewDialog) {
         List<ApiRequest> selected = getSelectedRequestsFromTree();
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests to run. Load collections first.");
             return;
         }
 
+        List<RunnerPreviewRow> previewRows = runner.buildRunPreview(loadedCollections, selected);
+        if (previewRows.isEmpty()) {
+            appendRunnerLog("No runnable requests found.");
+            return;
+        }
+
+        if (showPreviewDialog || hasRunnerPreviewWarnings(previewRows)) {
+            if (!showRunnerPreviewDialog(previewRows, showPreviewDialog)) {
+                appendRunnerLog("Runner preview cancelled.");
+                return;
+            }
+        }
+
+        startRunnerExecution(selected);
+    }
+
+    private void startRunnerExecution(List<ApiRequest> selected) {
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
         runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
-        runner.setStopOnError(stopOnErrorBox.isSelected());
+        runner.setStopConditions(buildRunnerStopConditionsFromUi());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
         runner.setDebugRawRequest(runnerDebugRawRequestBox.isSelected());
 
         resultModel.clear();
+        timelineModel.clear();
         runnerLog.setText("");
         runnerProgress.setValue(0);
 
@@ -1461,7 +1539,9 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("Starting runner (" + total + " requests from " +
                         loadedCollections.size() + " collection(s))");
+                    setRunnerControlsRunning(true);
                     startRunnerBtn.setEnabled(false);
+                    previewRunnerBtn.setEnabled(false);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
                 });
@@ -1478,7 +1558,11 @@ public class ImporterPanel {
                     if (!result.extractedVariables.isEmpty()) {
                         appendRunnerLog("   Extracted: " + result.extractedVariables);
                     }
+                    setRunnerControlsRunning(runner.isRunning());
                 });
+            }
+            @Override public void onTimeline(RunnerTimelineRow row) {
+                SwingUtilities.invokeLater(() -> timelineModel.addRow(row));
             }
             @Override public void onComplete(List<RunnerResult> results) {
                 SwingUtilities.invokeLater(() -> {
@@ -1486,7 +1570,9 @@ public class ImporterPanel {
                     appendRunnerLog("\n=== Runner Complete ===");
                     appendRunnerLog("Success: " + success + "/" + results.size());
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
+                    setRunnerControlsRunning(false);
                     startRunnerBtn.setEnabled(true);
+                    previewRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -1496,7 +1582,9 @@ public class ImporterPanel {
             @Override public void onError(String message) {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
+                    setRunnerControlsRunning(false);
                     startRunnerBtn.setEnabled(true);
+                    previewRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -1504,6 +1592,179 @@ public class ImporterPanel {
         runner.addListener(activeRunnerListener);
 
         runner.runCollections(loadedCollections, selected);
+    }
+
+    private RunnerStopConditions buildRunnerStopConditionsFromUi() {
+        RunnerStopConditions stopConditions = new RunnerStopConditions();
+        stopConditions.stopOnError = stopOnErrorBox != null && stopOnErrorBox.isSelected();
+        stopConditions.stopOnAssertionFailure = stopOnAssertionFailureBox != null && stopOnAssertionFailureBox.isSelected();
+        stopConditions.stopOnStatusAtLeast400 = stopOnStatusAtLeast400Box != null && stopOnStatusAtLeast400Box.isSelected();
+        stopConditions.stopOnMissingVariable = stopOnMissingVariableBox != null && stopOnMissingVariableBox.isSelected();
+        stopConditions.stopAfterFailureCount = stopAfterFailuresSpinner != null
+            ? (Integer) stopAfterFailuresSpinner.getValue()
+            : 0;
+        return stopConditions;
+    }
+
+    private void setRunnerControlsRunning(boolean running) {
+        boolean hasCollections = !loadedCollections.isEmpty();
+        boolean paused = running && runner != null && runner.isPaused();
+        if (startRunnerBtn != null) {
+            startRunnerBtn.setEnabled(!running && hasCollections);
+        }
+        if (previewRunnerBtn != null) {
+            previewRunnerBtn.setEnabled(!running && hasCollections);
+        }
+        if (cancelRunnerBtn != null) {
+            cancelRunnerBtn.setEnabled(running);
+        }
+        if (pauseRunnerBtn != null) {
+            pauseRunnerBtn.setEnabled(running && !paused);
+        }
+        if (resumeRunnerBtn != null) {
+            resumeRunnerBtn.setEnabled(running && paused);
+        }
+        if (stepRunnerBtn != null) {
+            stepRunnerBtn.setEnabled(running && paused);
+        }
+    }
+
+    private void pauseRunnerFromUi() {
+        appendRunnerLog("Runner will pause after current request.");
+        runner.pauseAfterCurrent();
+        setRunnerControlsRunning(runner.isRunning());
+    }
+
+    private void resumeRunnerFromUi() {
+        appendRunnerLog("Runner resumed.");
+        runner.resume();
+        setRunnerControlsRunning(runner.isRunning());
+    }
+
+    private void stepRunnerFromUi() {
+        appendRunnerLog("Runner stepping one request.");
+        runner.runNextOnly();
+        setRunnerControlsRunning(runner.isRunning());
+    }
+
+    private void cancelRunnerFromUi() {
+        if (cancelRunnerBtn != null) {
+            cancelRunnerBtn.setEnabled(false);
+        }
+        appendRunnerLog("Runner cancellation requested.");
+        runner.cancel();
+
+        if (runnerCancelPollTimer != null) {
+            runnerCancelPollTimer.stop();
+        }
+        runnerCancelPollTimer = new javax.swing.Timer(150, e -> {
+            if (runner.isRunning()) {
+                return;
+            }
+            javax.swing.Timer timer = (javax.swing.Timer) e.getSource();
+            timer.stop();
+            if (runnerCancelPollTimer == timer) {
+                runnerCancelPollTimer = null;
+            }
+            restoreRunnerControlsAfterCancellation();
+        });
+        runnerCancelPollTimer.setRepeats(true);
+        runnerCancelPollTimer.start();
+    }
+
+    private void restoreRunnerControlsAfterCancellation() {
+        setRunnerControlsRunning(false);
+        boolean hasCollections = !loadedCollections.isEmpty();
+        if (startRunnerBtn != null) {
+            startRunnerBtn.setEnabled(hasCollections);
+        }
+        if (previewRunnerBtn != null) {
+            previewRunnerBtn.setEnabled(hasCollections);
+        }
+    }
+
+    private boolean hasRunnerPreviewWarnings(List<RunnerPreviewRow> previewRows) {
+        for (RunnerPreviewRow row : previewRows) {
+            if (row == null) {
+                continue;
+            }
+            if (row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
+                return true;
+            }
+            if (row.authStatus == null || row.authStatus.isBlank() || "none".equalsIgnoreCase(row.authStatus)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean showRunnerPreviewDialog(List<RunnerPreviewRow> previewRows, boolean previewRequested) {
+        if (previewRows == null || previewRows.isEmpty()) {
+            return true;
+        }
+
+        if (runnerPreviewModel == null) {
+            runnerPreviewModel = new RunnerPreviewTableModel();
+        }
+        runnerPreviewModel.setRows(previewRows);
+
+        JTable previewTable = new JTable(runnerPreviewModel);
+        previewTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        previewTable.setFillsViewportHeight(true);
+        previewTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        JScrollPane previewScroll = new JScrollPane(previewTable);
+        previewScroll.setPreferredSize(new Dimension(900, 280));
+
+        int unresolvedCount = 0;
+        int missingAuthCount = 0;
+        for (RunnerPreviewRow row : previewRows) {
+            if (row == null) {
+                continue;
+            }
+            if (row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
+                unresolvedCount++;
+            }
+            if (row.authStatus == null || row.authStatus.isBlank() || "none".equalsIgnoreCase(row.authStatus)) {
+                missingAuthCount++;
+            }
+        }
+
+        String message;
+        if (previewRequested) {
+            message = "Review the runner preview before starting.";
+        } else if (unresolvedCount > 0 || missingAuthCount > 0) {
+            message = "Runner preview found " + unresolvedCount + " request(s) with unresolved variables and " +
+                missingAuthCount + " request(s) with missing auth.";
+        } else {
+            message = "Runner preview is ready. Continue to start the run?";
+        }
+
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Runner Preview", Dialog.ModalityType.APPLICATION_MODAL);
+        JPanel content = new JPanel(new BorderLayout(8, 8));
+        content.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+
+        JLabel messageLabel = new JLabel("<html>" + message + "</html>");
+        content.add(messageLabel, BorderLayout.NORTH);
+        content.add(previewScroll, BorderLayout.CENTER);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton continueBtn = new JButton("Continue");
+        JButton cancelBtn = new JButton("Cancel");
+        final boolean[] accepted = {false};
+        continueBtn.addActionListener(e -> {
+            accepted[0] = true;
+            dialog.dispose();
+        });
+        cancelBtn.addActionListener(e -> dialog.dispose());
+        buttonPanel.add(cancelBtn);
+        buttonPanel.add(continueBtn);
+        content.add(buttonPanel, BorderLayout.SOUTH);
+
+        dialog.setContentPane(content);
+        dialog.pack();
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
+        return accepted[0];
     }
 
     // ========================================================================
