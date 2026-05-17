@@ -54,6 +54,7 @@ public class SharedRequestPipeline {
                                             ExecutionResult result, boolean sendRequest) {
         VariableResolver resolver = new VariableResolver();
         Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
+        Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
 
         try {
@@ -165,15 +166,26 @@ public class SharedRequestPipeline {
             result.errorMessage = extractCleanError(e);
         } finally {
             result.removedVars.clear();
+            Set<String> removedKeys = new LinkedHashSet<>();
             for (String key : beforeScriptKeys) {
                 if (!scriptContext.containsKey(key)) {
                     result.removedVars.add(key);
+                    removedKeys.add(key);
                 }
             }
+
+            Map<String, String> changedVars = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : scriptContext.entrySet()) {
+                String key = entry.getKey();
+                if (!beforeScriptContext.containsKey(key) || !Objects.equals(beforeScriptContext.get(key), entry.getValue())) {
+                    changedVars.put(key, entry.getValue());
+                }
+            }
+
             // Commit script mutations back to collection runtime context via helper (fires change listeners)
             // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
             if (col != null) {
-                col.replaceRuntimeVars(scriptContext);
+                col.applyRuntimeVarDelta(changedVars, removedKeys);
             }
         }
         return result;

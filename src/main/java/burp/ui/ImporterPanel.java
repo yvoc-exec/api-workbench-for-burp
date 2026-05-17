@@ -6,7 +6,9 @@ import burp.runner.CollectionRunner;
 import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
+import burp.utils.RuntimeVariablesJson;
 import burp.UniversalImporter;
+import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.CheckBoxTreeCellRenderer;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -23,7 +25,9 @@ import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
@@ -362,6 +366,14 @@ public class ImporterPanel {
         }
         final ApiCollection resolvedCol = col;
         final String sendModeLabel = requestEditor.getSendModeLabel();
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(List.of(resolvedCol), List.of(edited));
+        if (!issues.isEmpty()) {
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
+            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                appendImportLog("Send cancelled due to unresolved variables.");
+                return;
+            }
+        }
         requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
@@ -548,6 +560,12 @@ public class ImporterPanel {
         bindPanel.add(varsCollectionCombo);
         bindPanel.add(bindVarsBtn);
         bindPanel.add(bindAllBtn);
+        JButton exportRuntimeBtn = new JButton("Export Runtime JSON");
+        exportRuntimeBtn.addActionListener(e -> exportSelectedCollectionRuntimeJson());
+        JButton importRuntimeBtn = new JButton("Import Runtime JSON");
+        importRuntimeBtn.addActionListener(e -> importSelectedCollectionRuntimeJson());
+        bindPanel.add(exportRuntimeBtn);
+        bindPanel.add(importRuntimeBtn);
         bindPanel.add(clearBtn);
         bottomPanel.add(bindPanel, BorderLayout.NORTH);
 
@@ -987,6 +1005,190 @@ public class ImporterPanel {
             refs.add(new CollectionRef(c, label));
         }
         return refs;
+    }
+
+    private UnresolvedVariablesDialog.Action showUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
+                                                                           List<ApiCollection> targetCollections) {
+        if (issues == null || issues.isEmpty()) {
+            return UnresolvedVariablesDialog.Action.CONTINUE_WITHOUT_APPLYING;
+        }
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        UnresolvedVariablesDialog dialog = new UnresolvedVariablesDialog(owner, issues, targetCollections);
+        return dialog.showDialog();
+    }
+
+    private void exportSelectedCollectionRuntimeJson() {
+        ApiCollection collection = getSelectedVariablesCollection();
+        if (collection == null) {
+            appendImportLog("Runtime JSON export: no collection selected.");
+            return;
+        }
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export Runtime Variables JSON");
+        chooser.setFileFilter(new FileNameExtensionFilter("JSON files", "json"));
+        String defaultName = (collection.name != null && !collection.name.isBlank()) ? collection.name : "runtime-variables";
+        chooser.setSelectedFile(new File(defaultName.replaceAll("[^a-zA-Z0-9._-]", "_") + ".json"));
+        if (chooser.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        File target = chooser.getSelectedFile();
+        if (target.exists()) {
+            int confirm = JOptionPane.showConfirmDialog(mainPanel,
+                    "Overwrite existing file?\n" + target.getAbsolutePath(),
+                    "Confirm Export Overwrite",
+                    JOptionPane.YES_NO_OPTION);
+            if (confirm != JOptionPane.YES_OPTION) {
+                return;
+            }
+        }
+
+        try {
+            Files.writeString(target.toPath(), RuntimeVariablesJson.toJson(collection), StandardCharsets.UTF_8);
+            appendImportLog("Exported runtime variables for " + collection.name + ".");
+        } catch (IOException ex) {
+            appendImportLog("Runtime JSON export failed: " + ex.getMessage());
+            JOptionPane.showMessageDialog(mainPanel,
+                    "Failed to export runtime JSON:\n" + ex.getMessage(),
+                    "Export Failed",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void importSelectedCollectionRuntimeJson() {
+        ApiCollection collection = getSelectedVariablesCollection();
+        if (collection == null) {
+            appendImportLog("Runtime JSON import: no collection selected.");
+            return;
+        }
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Import Runtime Variables JSON");
+        chooser.setFileFilter(new FileNameExtensionFilter("JSON files", "json"));
+        if (chooser.showOpenDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        File source = chooser.getSelectedFile();
+        try {
+            String json = Files.readString(source.toPath(), StandardCharsets.UTF_8);
+            RuntimeVariablesJson.RuntimeVariableBundle bundle = RuntimeVariablesJson.fromJson(json);
+            Object[] options = {"Merge", "Replace", "Cancel"};
+            int choice = JOptionPane.showOptionDialog(
+                    mainPanel,
+                    "Import runtime variables into \"" + collection.name + "\"?\n" +
+                            "Merge keeps existing values. Replace overwrites runtime vars and OAuth2 runtime vars.",
+                    "Confirm Runtime JSON Import",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.QUESTION_MESSAGE,
+                    null,
+                    options,
+                    options[0]);
+            if (choice == 2 || choice == JOptionPane.CLOSED_OPTION) {
+                return;
+            }
+
+            RuntimeVariablesJson.applyToCollection(collection, bundle, choice == 1);
+            appendImportLog("Imported runtime variables for " + collection.name + " from " + source.getName() + ".");
+            renderEffectiveVariablesForSelectedCollection();
+            refreshOAuth2PanelForCollection(collection);
+            if (requestEditor != null && requestEditor.getCurrentCollection() == collection) {
+                syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
+            }
+        } catch (Exception ex) {
+            appendImportLog("Runtime JSON import failed: " + ex.getMessage());
+            JOptionPane.showMessageDialog(mainPanel,
+                    "Failed to import runtime JSON:\n" + ex.getMessage(),
+                    "Import Failed",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private ApiCollection getSelectedVariablesCollection() {
+        CollectionRef ref = varsCollectionCombo != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
+        return ref != null ? ref.collection : null;
+    }
+
+    static List<UnresolvedVariableIssue> collectUnresolvedVariableIssues(List<ApiCollection> sourceCollections,
+                                                                         List<ApiRequest> selectedRequests) {
+        List<UnresolvedVariableIssue> issues = new ArrayList<>();
+        if (selectedRequests == null || selectedRequests.isEmpty()) {
+            return issues;
+        }
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+        Map<ApiRequest, ApiCollection> requestToCollection = new IdentityHashMap<>();
+        Map<String, ApiCollection> collectionsByName = new HashMap<>();
+        if (sourceCollections != null) {
+            for (ApiCollection collection : sourceCollections) {
+                if (collection == null) {
+                    continue;
+                }
+                if (collection.name != null) {
+                    collectionsByName.put(collection.name, collection);
+                }
+                if (collection.requests != null) {
+                    for (ApiRequest request : collection.requests) {
+                        requestToCollection.put(request, collection);
+                    }
+                }
+            }
+        }
+
+        for (ApiRequest request : selectedRequests) {
+            if (request == null) {
+                continue;
+            }
+            ApiCollection collection = requestToCollection.get(request);
+            if (collection == null && request.sourceCollection != null) {
+                collection = collectionsByName.get(request.sourceCollection);
+            }
+            issues.addAll(analyzer.analyze(collection, request));
+        }
+
+        return issues;
+    }
+
+    static List<ApiCollection> collectCollectionsForRequests(List<ApiCollection> sourceCollections,
+                                                             List<ApiRequest> selectedRequests) {
+        List<ApiCollection> collections = new ArrayList<>();
+        if (selectedRequests == null || selectedRequests.isEmpty()) {
+            return collections;
+        }
+
+        Map<ApiRequest, ApiCollection> requestToCollection = new IdentityHashMap<>();
+        Map<String, ApiCollection> collectionsByName = new HashMap<>();
+        if (sourceCollections != null) {
+            for (ApiCollection collection : sourceCollections) {
+                if (collection == null) {
+                    continue;
+                }
+                if (collection.name != null) {
+                    collectionsByName.put(collection.name, collection);
+                }
+                if (collection.requests != null) {
+                    for (ApiRequest request : collection.requests) {
+                        requestToCollection.put(request, collection);
+                    }
+                }
+            }
+        }
+
+        Set<ApiCollection> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (ApiRequest request : selectedRequests) {
+            if (request == null) {
+                continue;
+            }
+            ApiCollection collection = requestToCollection.get(request);
+            if (collection == null && request.sourceCollection != null) {
+                collection = collectionsByName.get(request.sourceCollection);
+            }
+            if (collection != null && unique.add(collection)) {
+                collections.add(collection);
+            }
+        }
+        return collections;
     }
 
     private void refreshOAuth2PanelForCollection(ApiCollection col) {
@@ -1450,6 +1652,15 @@ public class ImporterPanel {
             appendImportLog("No destination selected.");
             return;
         }
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected);
+        if (!issues.isEmpty()) {
+            List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
+            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                appendImportLog("Import cancelled due to unresolved variables.");
+                return;
+            }
+        }
         int delay = (Integer) delaySpinner.getValue();
         importer.setDebugRawRequest(debugRawRequestBox.isSelected());
 
@@ -1501,6 +1712,16 @@ public class ImporterPanel {
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests to run. Load collections first.");
             return;
+        }
+
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected);
+        if (!issues.isEmpty()) {
+            List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
+            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                appendRunnerLog("Runner cancelled due to unresolved variables.");
+                return;
+            }
         }
 
         List<RunnerPreviewRow> previewRows = runner.buildRunPreview(loadedCollections, selected);

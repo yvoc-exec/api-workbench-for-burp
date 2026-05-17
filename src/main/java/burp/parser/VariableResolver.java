@@ -90,12 +90,16 @@ public class VariableResolver {
     }
 
     public Set<String> findUnresolvedVariables(String input) {
-        Set<String> unresolved = new HashSet<>();
+        Set<String> unresolved = new LinkedHashSet<>();
         if (input == null) return unresolved;
 
         Matcher matcher = VARIABLE_PATTERN.matcher(input);
         while (matcher.find()) {
             String varName = matcher.group(1).trim();
+            String defaultValue = matcher.group(2);
+            if (varName.isEmpty() || defaultValue != null) {
+                continue;
+            }
             if (!variables.containsKey(varName)) {
                 unresolved.add(varName);
             }

@@ -86,11 +86,13 @@ Load multiple collections simultaneously:
 ### 2.4 Collection Runner
 
 - **Sequential execution** with configurable inter-request delay
+- **Run preview** before sending, with collection, method, URL preview, unresolved variables, and auth status
+- **Pause / resume / step** controls for debugging chained APIs
 - **Variable extraction** from JSON responses via scripts or comments
 - **Assertions** (status code, header presence, JSON property existence)
-- **Internal retry** with exponential backoff (maxRetries defaults to 1; not exposed in UI)
-- **Stop on error** option halts execution on first failure
-- **Real-time results** table with status, timing, size, assertion pass/fail
+- **Configurable retry** with visible attempt logs and retry delay messages
+- **Stop conditions** for error, assertion failure, status >= 400, missing variable, or after N failures
+- **Real-time results** and **timeline** tables with status, timing, retries, variable changes, and assertion summary
 - **Sitemap integration** - runner responses auto-populate Site map
 
 ### 2.5 OAuth2 Token Management
@@ -123,7 +125,7 @@ burp/
 ├── auth/                          # OAuth2 token lifecycle
 │   ├── OAuth2Config.java          # Configuration model
 │   ├── OAuth2Manager.java         # Token acquisition/refresh
-│   ├── TokenStore.java            # In-memory encrypted cache
+│   ├── TokenStore.java            # In-memory token cache
 │   ├── ClientCredentialsHandler.java
 │   ├── PasswordGrantHandler.java
 │   ├── RefreshTokenHandler.java
@@ -154,6 +156,8 @@ burp/
     ├── RequestBuilder.java        # HTTP message construction
     └── ScriptEngine.java          # Nashorn JS execution
 ```
+
+Additional current models/UI utilities include `RunnerPreviewRow`, `RunnerStopConditions`, `RunnerTimelineRow`, `UnresolvedVariableIssue`, `RunnerPreviewTableModel`, `RunnerTimelineTableModel`, `UnresolvedVariablesDialog`, `SharedRequestPipeline`, `RuntimeVariablesJson`, and `UnresolvedVariableAnalyzer`.
 
 ### 3.2 Class Diagram (Simplified)
 
@@ -206,6 +210,12 @@ VariableResolver loads environment variables
 User selects requests + destination (Repeater/Sitemap/Both)
     |
     v
+UnresolvedVariableAnalyzer scans selected requests
+    |
+    v
+If missing variables exist: modal offers cancel, continue, or apply runtime values
+    |
+    v
 For each selected request:
     VariableResolver.resolve(request) -> substitutes {{variables}}
     RequestBuilder.buildRequest(request) -> raw HTTP bytes
@@ -225,19 +235,25 @@ ImportResult returned with success/failure counts
 User selects requests + configures runner settings
     |
     v
+Build run preview -> ordered list, URL preview, unresolved vars, auth status
+    |
+    v
+Optional unresolved-variable modal before live execution
+    |
+    v
 CollectionRunner.runCollection(collection, requests, initialVars)
     |
     v
 For each request in sequence:
-    1. Execute pre-request scripts (ScriptEngine)
-    2. VariableResolver.apply(request-level vars + extracted vars)
-    3. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
-    4. RequestBuilder.buildRequest() -> HTTP message
-    5. api.http().sendRequest() -> HttpRequestResponse
-    6. Measure response time
-    7. Evaluate assertions (ScriptEngine)
-    8. Execute post-response scripts -> extract variables
-    9. Store extracted variables for next request
+    1. Honor pause/resume/step gate
+    2. Evaluate missing-variable stop condition
+    3. Execute through SharedRequestPipeline
+    4. Retry failed attempts according to configured retries
+    5. Measure response time and shape RunnerResult
+    6. Execute post-response scripts -> extract variables
+    7. Store extracted variables for the same collection only
+    8. Evaluate assertions/status/failure stop conditions
+    9. Emit result row and timeline row
     10. Delay (if configured and not last request)
     |
     v
@@ -442,6 +458,7 @@ Variables use double-brace syntax: `{{variable_name}}`
 **Default Values:** `{{variable|default_value}}`
 - If `variable` is not defined, uses `default_value`
 - Example: `{{base_url|http://localhost:8080}}`
+- Defaulted placeholders are treated as resolved by preview, preflight, and stop-on-missing-variable checks.
 
 **Nested Variables:** Variables can reference other variables
 - `{{api_url}}` = `{{base_url}}/api` -> resolves `base_url` first, then constructs `api_url`
@@ -449,7 +466,7 @@ Variables use double-brace syntax: `{{variable_name}}`
 
 ### 6.2 Resolution Order (Precedence)
 
-Unified precedence across Workbench Send, Import, and Collection Runner (highest → lowest):
+Unified precedence across Workbench Send, Import, and Collection Runner (highest to lowest):
 
 1. **Request-level variables**
    - Bruno: request `vars` block
@@ -473,6 +490,10 @@ Unified precedence across Workbench Send, Import, and Collection Runner (highest
 
 6. **Default values** (lowest priority)
    - `{{var|default}}` uses `default` if `var` undefined
+
+Before Workbench send, import, and runner start, `UnresolvedVariableAnalyzer` scans URL, headers, bodies, GraphQL payloads, form fields, and auth properties. Missing variables are shown in a modal with quick-entry fields; applied values are stored in the selected collection's runtime variables.
+
+Runtime variables and OAuth2 runtime values can be exported/imported as JSON from the Variables tab. Import supports merge or replace, which makes repeat testing easier without persisting token data automatically.
 
 ### 6.3 Implementation
 
@@ -505,10 +526,10 @@ For each request:
     Load request variables -> add to resolver
     Resolve all {{variables}} in URL, headers, body
     Send request
-    Extract variables from response -> add to resolver
+    Extract variables from response -> update collection runtime vars
     |
     v
-Next request uses updated resolver (including extracted vars)
+Next request in the same collection uses updated runtime vars
 ```
 
 ---
@@ -652,9 +673,15 @@ public void runCollection(ApiCollection collection,
 
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
-| Delay | 200ms | 0–5000ms | Pause between requests |
-| Stop on Error | false | boolean | Halt execution on first failure |
+| Delay | 200ms | 0-5000ms | Pause between requests |
+| Retries | UI-configured | 0+ | Retries after the first attempt |
+| Stop on Error | false | boolean | Halt execution on transport/build failure |
+| Stop on Assertion Failure | false | boolean | Halt after any failed script assertion |
+| Stop on Status >= 400 | false | boolean | Halt after HTTP client/server errors |
+| Stop When Variable Missing | false | boolean | Halt before sending requests with unresolved variables, excluding `{{var|default}}` placeholders |
+| Stop After Failures | 0 | 0+ | Halt after N total failures; 0 disables this stop condition |
 | Follow Redirects | true | boolean | Burp HTTP client setting |
+| Pause/Resume/Step | n/a | controls | Pause after current request, resume, or run one queued request |
 
 ### 8.3 Request Lifecycle
 
@@ -666,33 +693,38 @@ Shared pipeline steps (used by both Workbench Send and Collection Runner):
 3. Execute pre-request scripts (ScriptEngine, gated by ScriptMode)
 4. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
 5. RequestBuilder.buildRequest() -> HTTP bytes
+   - Skips disabled headers, form-data fields, and URL-encoded fields
 6. api.http().sendRequest() -> HttpRequestResponse
 7. Execute post-response scripts -> extract variables
-8. Merge extracted variables into collection.runtimeVars
+8. Apply script/runtime variable delta into collection.runtimeVars
 9. Fire collection change listeners -> UI refresh
 ```
 
 Collection Runner specific (around the shared pipeline):
 ```
-10. Retry loop with exponential backoff (maxRetries, delayMs)
-11. RunnerResult shaping (timing, headers, assertions)
-12. Add response to Site map
-13. Add to results table (via invokeLater)
-14. Delay (if not last request)
+10. Pause/step gate before each request
+11. Missing-variable stop condition before send
+12. Retry loop with delay-scaled backoff
+13. RunnerResult shaping (timing, headers, assertions)
+14. Add response to Site map
+15. Add to results and timeline tables (via invokeLater)
+16. Delay (if not last request)
 ```
 
 ### 8.4 Retry Logic
 
 ```java
-int attempts = 0;
-while (attempts < maxRetries) {
-    attempts++;
+int maxAttempts = maxRetries + 1;
+for (int attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
         // send request
+        // logs: Attempt X/Y passed after a retry succeeds
         break; // success
     } catch (Exception e) {
-        if (attempts >= maxRetries) throw e;
-        Thread.sleep(delayMs * attempts); // exponential backoff
+        // logs: Attempt X/Y failed: message
+        if (attempt >= maxAttempts) throw e;
+        // logs: Retrying in Nms
+        Thread.sleep(delayMs * attempt);
     }
 }
 ```
@@ -718,6 +750,17 @@ public class AssertionResult {
     boolean passed;
     String expected;
     String actual;
+}
+
+public class RunnerTimelineRow {
+    int index;
+    String collectionName;
+    String requestName;
+    int statusCode;
+    long timeMs;
+    int retries;
+    int varsChanged;
+    String assertions;
 }
 ```
 
@@ -832,6 +875,8 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 - **Variables tab** automatically refreshes when a script (Workbench or Runner) extracts new variables into `collection.runtimeVars`.
 - **OAuth2 tab** refreshes when a token is acquired during pipeline execution and persisted into `collection.runtimeOAuth2`.
 - **Workbench** uses the same shared pipeline as the Runner, so variable extraction behavior is identical.
+- **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution.
+- **Runtime JSON import/export** uses the same collection helper methods so merge/replace operations refresh dependent UI.
 
 ### 10.1 Mutation Helpers
 
@@ -840,6 +885,8 @@ All write paths must use these methods to guarantee listener coverage:
 - `putAllRuntimeVars(Map)`
 - `putRuntimeOAuth2(String, String)`
 - `putAllRuntimeOAuth2(Map)`
+- `replaceRuntimeVars(Map)`
+- `replaceRuntimeOAuth2(Map)`
 
 Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohibited in new code.
 
@@ -849,7 +896,8 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 
 ### 11.1 Token Storage
 - **In-memory only** via `ConcurrentHashMap`
-- **Never persisted** to disk, Burp project files, or logs
+- **Never persisted automatically** to disk, Burp project files, or logs
+- **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file
 - **No encryption at rest** (not needed for transient memory)
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`
 
@@ -859,13 +907,13 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 - Not logged to Burp output
 
 ### 11.3 Path Traversal Prevention
-> **Not applicable.** File uploads are not fully implemented or tested in the current codebase, so path traversal via collection-defined file paths is not a current concern.
+Multipart file reading is only attempted when a form field is explicitly marked as a file upload and includes file metadata. Plain values that look like local paths are sent as text. File upload paths are constrained to the current working directory or the user's home directory.
 
 ### 11.4 OAuth2 Security
 - **PKCE** enforced for Authorization Code flow (S256 method)
 - **State parameter** validated to prevent CSRF
 - **Localhost only** (`127.0.0.1`) - no remote callback exposure
-- **Random high port** (9876) with socket timeout
+- **Fixed localhost port** (9876) with socket timeout
 - **Auto-shutdown** of listener after callback or timeout
 
 ### 11.5 Script Execution
@@ -882,12 +930,12 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 
 | Claimed Feature | Actual Implementation | Status |
 |-----------------|----------------------|--------|
-| Path traversal prevention for file uploads | **Not applicable** - file uploads not fully implemented | N/A |
-| `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | ✅ Correct |
-| Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | ⚠️ Security risk |
-| Token storage "never persisted" | Static `ConcurrentHashMap` - survives extension reloads in same JVM | ⚠️ Misleading |
-| File upload MIME detection | `Files.probeContentType()` is called but end-to-end file reading is untested | ⚠️ Partial |
-| Automated test suite | JUnit 5 + Mockito + AssertJ; `RequestBuilderTest` (37), `VariableResolverTest` (13) | ✅ Present |
+| Path traversal prevention for file uploads | File reading requires explicit upload metadata and restricts paths to cwd/home | Implemented |
+| `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | Correct |
+| Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | Security risk |
+| Token storage "never persisted" | Static `ConcurrentHashMap` - survives extension reloads in same JVM but is not written to disk | Accurate with caveat |
+| File upload MIME detection | `Files.probeContentType()` is called for explicit file uploads | Implemented |
+| Automated test suite | JUnit 5 + Mockito + AssertJ across parsers, request building, runner behavior, variables, and runtime JSON | Present |
 
 ### 12.2 Architectural Limitations
 
@@ -895,13 +943,13 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 - **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
 - **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
-- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` runs 50+ tests covering request building and variable resolution.
+- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and runtime JSON.
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
 
 ### 12.3 Parser Limitations
 
 - **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
-- **Bruno parser**: Regex-based parsing (not a full parser). Complex nested braces in body content may fail.
+- **Bruno parser**: Uses block extraction for known blocks but is not a full Bruno grammar parser. New Bruno syntax may still need parser updates.
 - **OpenAPI parser**: Generates examples for all schema types but casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
 - **Insomnia parser**: Only supports v4 exports. v3 or earlier are not detected.
 

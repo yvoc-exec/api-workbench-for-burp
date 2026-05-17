@@ -33,18 +33,26 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Environment files (Postman environment JSON)
 - Request-level variables (Bruno `vars` block, Postman request vars)
 - Custom manual variables (Variables tab + OAuth2 tab)
+- Unresolved-variable preflight modal before Workbench send, import, and runner start
+- Runtime variable/OAuth2 export and import as JSON for repeat testing
 - Default values: `{{var|default}}`
+- Defaulted placeholders are treated as resolved by preview, preflight, and stop-on-missing-variable checks
 - Nested variable resolution
 - Unified precedence across Workbench, Import, and Runner flows (see Playbook 4)
 
 ### Collection Runner
 - Execute selected requests **sequentially** like Postman Collection Runner
+- Preview the final ordered run before sending, including collection, method, URL preview, unresolved vars, and auth status
 - Configurable **delay between requests** (rate limiting)
+- Configurable **retries** with visible attempt/debug logging
+- Pause after current request, resume, or step exactly one request for chain debugging
 - **Variable extraction** from responses (JSON path, script patterns, nested dotted paths like `jsonData.data.token`)
 - **Assertions** (status code, headers, JSON properties)
-- **Stop on error** option
+- Stop conditions: error, assertion failure, HTTP status >= 400, missing variable, or after N failures
 - Results table with status, timing, size, assertion pass/fail
+- Runner timeline table with collection, request, status, time, retries, changed vars, and assertion summary
 - Auto-populates Sitemap with runner responses
+- Disabled headers, form-data fields, and URL-encoded fields are skipped when building requests
 - Per-request OAuth2 auth scoping is resolved per send through the shared pipeline's fresh resolver
 - **Execution model**: pre/post scripts and response extraction/assertions run in both Collection Runner and Workbench direct send via a shared pipeline
 
@@ -86,12 +94,12 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Build from Source
 ```bash
 git clone <repo-url>
-cd universal-api-importer
+cd api-workbench-for-burp
 mvn clean package
 ```
 Load the fat JAR in Burp Suite:
 ```
-Extensions -> Add -> Select: target/universal-api-importer-2.0.0-jar-with-dependencies.jar
+Extensions -> Add -> Select: target/*-jar-with-dependencies.jar
 ```
 
 ### Requirements
@@ -123,9 +131,11 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 ### Playbook 3: Stateful Flow Testing in Collection Runner
 1. Load and select an ordered set of requests in the Workbench tree.
 2. Switch to the **Collection Runner** tab.
-3. Configure delay, stop-on-error, and follow-redirects as needed.
-4. Click **Start Collection Runner**.
-5. Results populate in real-time; extracted variables feed automatically into downstream requests.
+3. Configure delay, retries, follow-redirects, and stop conditions.
+4. Click **Preview Run** to inspect the final ordered request list, URL previews, unresolved variables, and auth status.
+5. Click **Start Collection Runner**. If unresolved variables remain after defaulted placeholders are ignored, use the modal quick-entry fields to apply runtime values or continue intentionally.
+6. Use **Pause**, **Resume**, or **Step** while debugging chained APIs.
+7. Results and the runner timeline update in real time; extracted variables feed automatically into downstream requests.
 
 ### Playbook 3b: Direct Send from Workbench
 1. Click a request in the tree to load it into the editor.
@@ -175,6 +185,12 @@ Precedence during runtime (highest to lowest):
 
 **Collection-scoped isolation:**
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
+
+**Unresolved-variable preflight:**
+Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. Entered values are applied into the selected collection runtime variables before continuing.
+
+**Runtime JSON portability:**
+Use **Export Runtime JSON** and **Import Runtime JSON** in the Variables tab to save and reload a collection's runtime variables and OAuth2 runtime values. Import supports merge or replace.
 
 **Format-specific collection/global variable sources:**
 - **Postman** - `collection.variable` array (objects/arrays serialized to JSON string)
@@ -231,7 +247,7 @@ src/main/java/burp/
 |-- auth/
 |   |-- OAuth2Config.java          # OAuth2 configuration model
 |   |-- OAuth2Manager.java         # Token lifecycle manager
-|   |-- TokenStore.java            # In-memory encrypted token cache
+|   |-- TokenStore.java            # In-memory token cache
 |   |-- ClientCredentialsHandler.java
 |   |-- PasswordGrantHandler.java
 |   |-- RefreshTokenHandler.java
@@ -240,7 +256,11 @@ src/main/java/burp/
 |   |-- ApiRequest.java            # Unified request model
 |   |-- ApiCollection.java         # Unified collection model
 |   |-- ImportResult.java          # Import operation result
-|   `-- RunnerResult.java          # Runner operation result
+|   |-- RunnerPreviewRow.java      # Runner preview row model
+|   |-- RunnerResult.java          # Runner operation result
+|   |-- RunnerStopConditions.java  # Runner stop-condition config
+|   |-- RunnerTimelineRow.java     # Runner timeline row model
+|   `-- UnresolvedVariableIssue.java # Variable preflight issue model
 |-- parser/
 |   |-- CollectionParser.java      # Parser interface
 |   |-- ParserRegistry.java        # Auto-detect registry
@@ -257,16 +277,22 @@ src/main/java/burp/
 |   |-- OAuth2Panel.java           # OAuth2 configuration UI
 |   |-- RequestEditorPanel.java    # Workbench request editor (method, url, headers, body, auth, scripts)
 |   |-- ResponsePane.java          # Workbench response display (Pretty/Raw/Hex)
+|   |-- RunnerPreviewTableModel.java
 |   |-- tree/
 |   |   |-- CollectionTreeNode.java
 |   |   `-- CheckBoxTreeCellRenderer.java
 |   |-- RequestPreviewTableModel.java
-|   `-- RunnerResultTableModel.java
+|   |-- RunnerResultTableModel.java
+|   |-- RunnerTimelineTableModel.java
+|   `-- UnresolvedVariablesDialog.java
 `-- utils/
     |-- HttpUtils.java             # URL parsing utilities
     |-- RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
     |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
-    `-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
+    |-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
+    |-- RuntimeVariablesJson.java  # Runtime vars/OAuth2 JSON import/export
+    |-- SharedRequestPipeline.java # Shared build/send/script/OAuth pipeline
+    `-- UnresolvedVariableAnalyzer.java # Preflight unresolved-variable scanner
 ```
 
 ---
@@ -274,6 +300,7 @@ src/main/java/burp/
 ## Security Notes
 
 - **Tokens**: Stored in-memory via `TokenStore` (static `ConcurrentHashMap`). Cleared on extension unload or via OAuth2 panel. Survives extension reloads within the same Burp JVM session.
+- **Runtime JSON exports**: Manual exports can include runtime OAuth2 values such as access/refresh tokens. Treat exported JSON files as sensitive.
 - **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JPasswordField` for secret fields.
 - **PKCE**: Used for Authorization Code flow (S256 method).
 - **Localhost listener**: Binds to `127.0.0.1:9876`, validates `state` parameter.
@@ -282,9 +309,9 @@ src/main/java/burp/
 
 - **No sandbox**: Nashorn scripts can access any Java class via `Java.type()`. Only run trusted collection scripts.
 - **No script timeout**: Infinite loops in pre/post-request scripts will hang the runner thread.
-- **File uploads**: Multipart file upload code exists but end-to-end file reading from disk is not fully implemented/tested.
+- **File uploads**: Multipart file reading is supported only when a field is explicitly marked as a file upload with file metadata. Plain path-looking values are treated as text.
 - **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
-- **Test suite**: Automated tests cover `RequestBuilder` (header/body/Content-Type/Content-Length/auth/OAuth2) and `VariableResolver` (substitution/defaults/nested). Run with `mvn test`.
+- **Test suite**: Automated tests cover parsers, request building, shared pipeline behavior, runner controls/stop conditions/timeline, variable preflight, and runtime JSON import/export. Run with `mvn test`.
 - **Parser encoding**: All JSON/YAML/HAR parsers and Bruno request decoding use explicit UTF-8.
 
 ---

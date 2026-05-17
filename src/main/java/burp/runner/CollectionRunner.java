@@ -14,7 +14,6 @@ import burp.api.montoya.http.RedirectionMode;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
-import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 
@@ -49,8 +48,6 @@ public class CollectionRunner {
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
 
-    private OAuth2Manager oauth2Manager;
-
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
     }
@@ -59,10 +56,9 @@ public class CollectionRunner {
         this(api, pipeline, null);
     }
 
-    public CollectionRunner(MontoyaApi api, burp.utils.SharedRequestPipeline pipeline, OAuth2Manager oauth2Manager) {
+    public CollectionRunner(MontoyaApi api, burp.utils.SharedRequestPipeline pipeline, burp.auth.OAuth2Manager oauth2Manager) {
         this.api = api;
         this.pipeline = pipeline;
-        this.oauth2Manager = oauth2Manager;
     }
 
     public void addListener(RunnerListener listener) {

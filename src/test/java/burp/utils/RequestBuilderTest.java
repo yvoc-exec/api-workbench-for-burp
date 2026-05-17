@@ -234,6 +234,25 @@ class RequestBuilderTest {
     }
 
     @Test
+    void urlencodedBodySkipsDisabledFields() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "urlencoded";
+        req.body.urlencoded.add(new ApiRequest.Body.FormField("enabled", "yes"));
+        ApiRequest.Body.FormField disabled = new ApiRequest.Body.FormField("disabled", "no");
+        disabled.disabled = true;
+        req.body.urlencoded.add(disabled);
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        String text = new String(raw, StandardCharsets.UTF_8);
+
+        assertThat(text).contains("enabled=yes");
+        assertThat(text).doesNotContain("disabled=no");
+    }
+
+    @Test
     void graphqlBodyGetsApplicationJsonContentType() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";
@@ -452,9 +471,9 @@ class RequestBuilderTest {
 
     @Test
     void findUnresolvedTokensHandlesDefaults() {
-        String text = "GET /api/{{user_id|123}} HTTP/1.1\r\n\r\n";
+        String text = "GET /api/{{user_id|123}}/{{missing}} HTTP/1.1\r\n\r\n";
         Set<String> unresolved = RequestBuilder.findUnresolvedTokens(text.getBytes(StandardCharsets.UTF_8));
-        assertThat(unresolved).containsExactly("user_id");
+        assertThat(unresolved).containsExactly("missing");
     }
 
     // ===================================================================

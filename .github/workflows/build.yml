@@ -1,4 +1,4 @@
-name: Build Extension JAR
+name: Build API Workbench JAR
 
 on:
   push:
@@ -17,8 +17,8 @@ jobs:
         distribution: 'temurin'
     - name: Build with Maven
       run: mvn clean package
-    - name: Upload JAR
+    - name: Upload API Workbench JAR
       uses: actions/upload-artifact@v4
       with:
-        name: universal-api-importer-jar
+        name: api-workbench-for-burp-jar
         path: target/*-jar-with-dependencies.jar

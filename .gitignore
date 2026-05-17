@@ -5,3 +5,4 @@ target/
 *.jar
 !target/*-jar-with-dependencies.jar
 .DS_Store
+docs/superpowers/plans/
