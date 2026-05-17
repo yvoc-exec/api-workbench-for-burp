@@ -79,6 +79,32 @@ class SharedRequestPipelineTest {
         assertThat(containsSubArray(exec.rawRequestBytes, fileBytes)).isTrue();
     }
 
+    @Test
+    void buildSplitsHeadersAndUrlEncodedBody() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Submit";
+        req.method = "POST";
+        req.url = "http://example.com/form";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "urlencoded";
+        req.body.urlencoded.add(new ApiRequest.Body.FormField("a", "1"));
+        req.body.urlencoded.add(new ApiRequest.Body.FormField("b", "2"));
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).contains("POST /form HTTP/1.1");
+        assertThat(exec.requestHeaders).contains("Content-Type: application/x-www-form-urlencoded");
+        assertThat(exec.requestHeaders).doesNotContain("a=1&b=2");
+        assertThat(exec.requestBody).isEqualTo("a=1&b=2");
+    }
+
     private static boolean containsSubArray(byte[] haystack, byte[] needle) {
         if (haystack == null || needle == null || needle.length == 0 || haystack.length < needle.length) {
             return false;

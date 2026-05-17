@@ -104,10 +104,9 @@ public class SharedRequestPipeline {
 
             String resolvedUrl = resolver.resolve(req.url);
             result.resolvedUrl = resolvedUrl;
-            result.requestHeaders = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
-            if (req.body != null && req.body.raw != null) {
-                result.requestBody = req.body.raw;
-            }
+            String[] requestParts = splitRawRequest(rawRequest);
+            result.requestHeaders = requestParts[0];
+            result.requestBody = requestParts[1];
 
             if (!sendRequest) {
                 result.success = true;
@@ -194,5 +193,40 @@ public class SharedRequestPipeline {
         if (msg.contains("ConnectException")) return "Connection refused - service may be down or firewalled";
         if (msg.contains("SocketTimeoutException")) return "Connection timeout - target unresponsive";
         return msg;
+    }
+
+    private String[] splitRawRequest(byte[] rawRequest) {
+        if (rawRequest == null || rawRequest.length == 0) {
+            return new String[]{"", ""};
+        }
+
+        byte[] separator = "\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        int separatorIndex = indexOf(rawRequest, separator);
+        if (separatorIndex < 0) {
+            return new String[]{new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8), ""};
+        }
+
+        String headerText = new String(rawRequest, 0, separatorIndex, java.nio.charset.StandardCharsets.UTF_8);
+        int bodyStart = separatorIndex + separator.length;
+        String bodyText = bodyStart <= rawRequest.length
+                ? new String(rawRequest, bodyStart, rawRequest.length - bodyStart, java.nio.charset.StandardCharsets.UTF_8)
+                : "";
+        return new String[]{headerText, bodyText};
+    }
+
+    private int indexOf(byte[] haystack, byte[] needle) {
+        if (haystack == null || needle == null || needle.length == 0 || haystack.length < needle.length) {
+            return -1;
+        }
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
     }
 }

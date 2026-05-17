@@ -5,6 +5,8 @@ import burp.models.ApiRequest;
 import com.google.gson.*;
 import org.yaml.snakeyaml.Yaml;
 import java.io.*;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Set;
 import java.util.HashSet;
@@ -18,10 +20,17 @@ public class OpenApiParser implements CollectionParser {
     @Override
     public boolean canParse(File file) {
         String name = file.getName().toLowerCase();
-        if (name.endsWith(".yaml") || name.endsWith(".yml")) return true;
+        if (name.endsWith(".yaml") || name.endsWith(".yml")) {
+            try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
+                Object parsed = new Yaml().load(reader);
+                return isOpenApiMap(parsed);
+            } catch (Exception e) {
+                return false;
+            }
+        }
         if (!name.endsWith(".json")) return false;
 
-        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
+        try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
             JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
             return obj.has("openapi") || obj.has("swagger");
         } catch (Exception e) {
@@ -35,12 +44,15 @@ public class OpenApiParser implements CollectionParser {
         String name = file.getName().toLowerCase();
 
         if (name.endsWith(".yaml") || name.endsWith(".yml")) {
-            Yaml yaml = new Yaml();
-            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
-                spec = yaml.load(reader);
+            try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
+                Object parsed = new Yaml().load(reader);
+                if (!(parsed instanceof Map)) {
+                    throw new IllegalArgumentException("OpenAPI YAML root must be a map");
+                }
+                spec = (Map<String, Object>) parsed;
             }
         } else {
-            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
+            try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
                 spec = gson.fromJson(reader, Map.class);
             }
         }
@@ -111,7 +123,7 @@ public class OpenApiParser implements CollectionParser {
                         String method = methodEntry.getKey().toUpperCase();
                         if (isHttpMethod(method)) {
                             ApiRequest req = parseOpenApiOperation(
-                                method, path, (Map) methodEntry.getValue(), defaultBaseUrl,
+                                method, path, methods, (Map) methodEntry.getValue(), defaultBaseUrl,
                                 securitySchemes, defaultSecurity
                             );
                             req.sourceCollection = collection.name;
@@ -148,7 +160,7 @@ public class OpenApiParser implements CollectionParser {
         return schemes;
     }
 
-    private ApiRequest parseOpenApiOperation(String method, String path, Map<String, Object> op, String baseUrl,
+    private ApiRequest parseOpenApiOperation(String method, String path, Map<String, Object> pathItem, Map<String, Object> op, String baseUrl,
                                              Map<String, Map<String, Object>> securitySchemes,
                                              List<Map<String, Object>> defaultSecurity) {
         ApiRequest req = new ApiRequest();
@@ -156,18 +168,26 @@ public class OpenApiParser implements CollectionParser {
         req.name = getString(op, "operationId", method + " " + path);
         req.path = path;
         req.description = getString(op, "summary", "") + "\n" + getString(op, "description", "");
-        req.url = baseUrl + path;
+        req.url = joinBaseUrlAndPath(baseUrl, convertPathTemplate(path));
 
         // Parse parameters (query, header, path)
-        if (op.containsKey("parameters") && op.get("parameters") instanceof List) {
-            List<Map<String, Object>> params = (List) op.get("parameters");
-            for (Map<String, Object> param : params) {
-                String in = (String) param.get("in");
-                String paramName = (String) param.get("name");
-                if ("header".equals(in)) {
-                    req.headers.add(new ApiRequest.Header(paramName, String.valueOf(generateExampleValue(param))));
-                }
-                // Path/query params are embedded in URL or handled by variable resolver
+        for (Map<String, Object> param : collectParameters(pathItem, op)) {
+            if (param == null || isDisabledParameter(param)) {
+                continue;
+            }
+            String in = getString(param, "in", "");
+            String paramName = getString(param, "name", "");
+            if (paramName.isEmpty()) {
+                continue;
+            }
+
+            String value = parameterExampleValue(param);
+            if ("path".equalsIgnoreCase(in)) {
+                addParameterVariable(req, paramName, value, "path");
+            } else if ("query".equalsIgnoreCase(in)) {
+                req.url = appendQueryParam(req.url, paramName, value);
+            } else if ("header".equalsIgnoreCase(in)) {
+                req.headers.add(new ApiRequest.Header(paramName, value));
             }
         }
 
@@ -334,6 +354,156 @@ public class OpenApiParser implements CollectionParser {
             case "accessCode": return "authorization_code";
             default: return flow; // password, implicit
         }
+    }
+
+    private List<Map<String, Object>> collectParameters(Map<String, Object> pathItem, Map<String, Object> op) {
+        List<Map<String, Object>> params = new ArrayList<>();
+        addParametersFromSource(params, pathItem);
+        addParametersFromSource(params, op);
+        return params;
+    }
+
+    private void addParametersFromSource(List<Map<String, Object>> params, Map<String, Object> source) {
+        if (source == null) {
+            return;
+        }
+        Object rawParams = source.get("parameters");
+        if (rawParams instanceof List) {
+            for (Object rawParam : (List<?>) rawParams) {
+                if (rawParam instanceof Map) {
+                    params.add((Map<String, Object>) rawParam);
+                }
+            }
+        }
+    }
+
+    private boolean isOpenApiMap(Object parsed) {
+        if (!(parsed instanceof Map)) {
+            return false;
+        }
+        Map<?, ?> map = (Map<?, ?>) parsed;
+        return map.containsKey("openapi") || map.containsKey("swagger");
+    }
+
+    private boolean isDisabledParameter(Map<String, Object> param) {
+        return Boolean.TRUE.equals(param.get("disabled")) || Boolean.TRUE.equals(param.get("x-disabled"));
+    }
+
+    private String convertPathTemplate(String path) {
+        if (path == null) {
+            return "";
+        }
+        return path.replaceAll("\\{([^/{}]+)\\}", "{{$1}}");
+    }
+
+    private String joinBaseUrlAndPath(String baseUrl, String path) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return path == null ? "" : path;
+        }
+
+        String normalizedPath = path == null || path.isBlank() ? "" : path;
+        if (!normalizedPath.isEmpty() && !normalizedPath.startsWith("/")) {
+            normalizedPath = "/" + normalizedPath;
+        }
+
+        String fragment = "";
+        int fragmentIdx = baseUrl.indexOf('#');
+        String withoutFragment = baseUrl;
+        if (fragmentIdx >= 0) {
+            fragment = baseUrl.substring(fragmentIdx);
+            withoutFragment = baseUrl.substring(0, fragmentIdx);
+        }
+
+        String query = "";
+        int queryIdx = withoutFragment.indexOf('?');
+        String withoutQuery = withoutFragment;
+        if (queryIdx >= 0) {
+            query = withoutFragment.substring(queryIdx);
+            withoutQuery = withoutFragment.substring(0, queryIdx);
+        }
+
+        String left = withoutQuery.endsWith("/") ? withoutQuery.substring(0, withoutQuery.length() - 1) : withoutQuery;
+        if (normalizedPath.isEmpty()) {
+            return left + query + fragment;
+        }
+        return left + normalizedPath + query + fragment;
+    }
+
+    private String appendQueryParam(String url, String name, String value) {
+        if (url == null || url.isBlank() || name == null || name.isBlank()) {
+            return url;
+        }
+
+        String fragment = "";
+        int fragmentIdx = url.indexOf('#');
+        String withoutFragment = url;
+        if (fragmentIdx >= 0) {
+            fragment = url.substring(fragmentIdx);
+            withoutFragment = url.substring(0, fragmentIdx);
+        }
+
+        String separator = withoutFragment.contains("?") ? "&" : "?";
+        return withoutFragment + separator + urlEncode(name) + "=" + urlEncode(value) + fragment;
+    }
+
+    private String parameterExampleValue(Map<String, Object> param) {
+        if (param == null) {
+            return "";
+        }
+
+        Object example = param.get("example");
+        if (example != null) {
+            return stringifyParameterValue(example);
+        }
+
+        Object defaultValue = param.get("default");
+        if (defaultValue != null) {
+            return stringifyParameterValue(defaultValue);
+        }
+
+        Map<String, Object> schema = null;
+        if (param.get("schema") instanceof Map) {
+            schema = (Map<String, Object>) param.get("schema");
+        } else if (param.containsKey("type")) {
+            schema = new LinkedHashMap<>();
+            schema.put("type", param.get("type"));
+        }
+
+        if (schema != null) {
+            Object generated = generateExampleValue(schema);
+            if (generated != null) {
+                return stringifyParameterValue(generated);
+            }
+        }
+
+        String type = getString(param, "schema.type", getString(param, "type", ""));
+        if ("integer".equalsIgnoreCase(type) || "number".equalsIgnoreCase(type)) {
+            return "1";
+        }
+        if ("boolean".equalsIgnoreCase(type)) {
+            return "true";
+        }
+        return "sample";
+    }
+
+    private String stringifyParameterValue(Object value) {
+        if (value instanceof Map || value instanceof List) {
+            return gson.toJson(value);
+        }
+        return String.valueOf(value);
+    }
+
+    private void addParameterVariable(ApiRequest req, String key, String value, String type) {
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = value;
+        variable.type = type;
+        variable.enabled = true;
+        req.variables.add(variable);
+    }
+
+    private String urlEncode(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
     private String generateJsonExample(Map<String, Object> schema) {

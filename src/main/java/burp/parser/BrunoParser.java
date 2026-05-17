@@ -159,25 +159,24 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse body
-            Pattern bodyPattern = Pattern.compile("body\\s*[:]?\\s*(?:\\{([^}]+)\\}|(none|json|xml|text|graphql|form|multipart))?", Pattern.CASE_INSENSITIVE);
-            Matcher bodyMatcher = bodyPattern.matcher(content);
-            if (bodyMatcher.find()) {
-                String bodyBlock = bodyMatcher.group(1);
-                if (bodyBlock != null) {
-                    bodyBlock = bodyBlock.trim();
-                    req.body = new ApiRequest.Body();
-                    req.body.mode = "raw";
-                    req.body.raw = bodyBlock;
-                    req.body.contentType = "text/plain";
+            String bodyBlock = extractBlock(content, "body");
+            if (bodyBlock != null) {
+                req.body = new ApiRequest.Body();
+                req.body.mode = "raw";
+                req.body.raw = bodyBlock;
+                req.body.contentType = "text/plain";
 
-                    // Detect content type from headers
-                    for (ApiRequest.Header h : req.headers) {
-                        if (h.key.equalsIgnoreCase("content-type")) {
-                            req.body.contentType = h.value;
-                            break;
-                        }
+                // Detect content type from headers
+                for (ApiRequest.Header h : req.headers) {
+                    if (h.key.equalsIgnoreCase("content-type")) {
+                        req.body.contentType = h.value;
+                        break;
                     }
-                } else if (bodyMatcher.group(2) != null) {
+                }
+            } else {
+                Pattern bodyPattern = Pattern.compile("body\\s*[:]?\\s*(none|json|xml|text|graphql|form|multipart)?", Pattern.CASE_INSENSITIVE);
+                Matcher bodyMatcher = bodyPattern.matcher(content);
+                if (bodyMatcher.find() && bodyMatcher.group(1) != null) {
                     // Mode-only body (e.g., body: none)
                     req.body = new ApiRequest.Body();
                     req.body.mode = "none";
@@ -191,10 +190,8 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse vars (pre-request variables)
-            Pattern varsPattern = Pattern.compile("vars\\s*\\{([^}]+)\\}");
-            Matcher varsMatcher = varsPattern.matcher(content);
-            if (varsMatcher.find()) {
-                String varsBlock = varsMatcher.group(1);
+            String varsBlock = extractBlock(content, "vars");
+            if (varsBlock != null) {
                 for (String line : varsBlock.split("\n")) {
                     line = line.trim();
                     if (line.isEmpty() || line.startsWith("#")) continue;
@@ -209,28 +206,24 @@ public class BrunoParser implements CollectionParser {
             }
 
             // Parse assert (test scripts)
-            Pattern assertPattern = Pattern.compile("assert\\s*\\{([^}]+)\\}");
-            Matcher assertMatcher = assertPattern.matcher(content);
-            if (assertMatcher.find()) {
-                String assertBlock = assertMatcher.group(1);
+            String assertBlock = extractBlock(content, "assert");
+            if (assertBlock != null) {
                 req.postResponseScripts.add(new ApiRequest.Script("js", assertBlock));
             }
 
             // Parse script:pre-request
-            Pattern preScriptPattern = Pattern.compile("script:pre-request\\s*\\{([^}]+)\\}");
-            Matcher preScriptMatcher = preScriptPattern.matcher(content);
-            if (preScriptMatcher.find()) {
-                String script = preScriptMatcher.group(1);
+            String preScriptBlock = extractBlock(content, "script:pre-request");
+            if (preScriptBlock != null) {
+                String script = preScriptBlock;
                 // Normalize Bruno script to standard JS
                 script = normalizeBrunoScript(script);
                 req.preRequestScripts.add(new ApiRequest.Script("js", script));
             }
 
             // Parse script:post-response
-            Pattern postScriptPattern = Pattern.compile("script:post-response\\s*\\{([^}]+)\\}");
-            Matcher postScriptMatcher = postScriptPattern.matcher(content);
-            if (postScriptMatcher.find()) {
-                String script = postScriptMatcher.group(1);
+            String postScriptBlock = extractBlock(content, "script:post-response");
+            if (postScriptBlock != null) {
+                String script = postScriptBlock;
                 script = normalizeBrunoScript(script);
                 req.postResponseScripts.add(new ApiRequest.Script("js", script));
             }
@@ -246,7 +239,7 @@ public class BrunoParser implements CollectionParser {
      * Returns null if the block is not found.
      */
     private String extractBlock(String content, String blockName) {
-        Pattern startPattern = Pattern.compile("\\b" + blockName + "\\s*\\{", Pattern.CASE_INSENSITIVE);
+        Pattern startPattern = Pattern.compile("\\b" + Pattern.quote(blockName) + "\\s*\\{", Pattern.CASE_INSENSITIVE);
         Matcher m = startPattern.matcher(content);
         if (!m.find()) return null;
         int start = m.end() - 1; // position of opening brace
