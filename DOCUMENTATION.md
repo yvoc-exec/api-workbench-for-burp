@@ -651,6 +651,23 @@ public class TokenStore {
 - Socket timeout -> `future.completeExceptionally(new Exception("timeout"))`
 - Invalid state -> security exception
 
+### 7.3 Auth Inheritance
+
+Postman imports preserve the effective auth on each request while also recording where it came from:
+
+- `authInherited = true` when the request inherited auth from a folder or collection
+- `authExplicitlyDisabled = true` when the request or parent explicitly selected `noauth`
+- `authSource` records the source label, such as `request: Get Me`, `folder: Admin`, or `collection: Auth Demo`
+
+Auth resolution follows nearest-parent semantics:
+
+1. Explicit request auth wins.
+2. Otherwise the nearest folder auth applies.
+3. Otherwise collection auth applies.
+4. Explicit `noauth` stops inheritance and keeps the effective auth as none.
+
+Runner preview and Workbench metadata use `authSource` so operators can see whether a request is using request, folder, collection, or no-auth provenance. `RequestBuilder` still consumes the effective `ApiRequest.auth` value only; the extra metadata is for UI and tests.
+
 ---
 
 ## 8. Collection Runner
@@ -878,7 +895,22 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 - **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution.
 - **Runtime JSON import/export** uses the same collection helper methods so merge/replace operations refresh dependent UI.
 
-### 10.1 Mutation Helpers
+### 10.1 Project State Persistence
+
+When Burp is using a project on disk, API Workbench stores a workspace snapshot in Montoya extension data. The snapshot covers the loaded collections and the project-scoped runtime state needed to restore the operator's working set.
+
+If Burp is running without a project file, Montoya extension data remains memory-only for the session, so the same state behaves like ephemeral workspace state.
+
+### 10.2 Autosave
+
+Variables and OAuth2 edits autosave to the selected collection using debounced UI listeners.
+
+- Normal typing and table edits schedule autosave.
+- Programmatic refreshes suppress autosave so UI rebuilds do not overwrite runtime state.
+- **Save Now** performs an explicit immediate write.
+- **Clear** only clears the editor UI and does not write an empty runtime map until the operator explicitly saves.
+
+### 10.3 Mutation Helpers
 
 All write paths must use these methods to guarantee listener coverage:
 - `putRuntimeVar(String, String)`
@@ -897,6 +929,7 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 ### 11.1 Token Storage
 - **In-memory only** via `ConcurrentHashMap`
 - **Never persisted automatically** to disk, Burp project files, or logs
+- **Workspace persistence is conservative**: project snapshots save loaded collections and non-sensitive runtime state, not bearer tokens, refresh tokens, passwords, or client secrets by default
 - **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file
 - **No encryption at rest** (not needed for transient memory)
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`

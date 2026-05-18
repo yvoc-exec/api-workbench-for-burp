@@ -10,6 +10,20 @@ import java.util.*;
  * > Authorization Basic header > existing variables (fallback only).
  */
 public class OAuth2PopulateHelper {
+    private static final java.util.regex.Pattern[] RAW_TOKEN_FIELD_PATTERNS = new java.util.regex.Pattern[] {
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])grant_type\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"grant_type\""),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])client_id\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"client_id\""),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])client_secret\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"client_secret\""),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])refresh_token\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"refresh_token\""),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])code_verifier\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"code_verifier\""),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])code\\s*="),
+            java.util.regex.Pattern.compile("(?i)(^|[&\\s\\{\\[\\(\",])\"code\"")
+    };
 
     private static final Map<String, String> KEY_SYNONYMS = new HashMap<>();
     static {
@@ -141,6 +155,8 @@ public class OAuth2PopulateHelper {
             result.put("oauth2_grant", grant);
         }
 
+        inferTokenUrlFromRequestUrl(req, result);
+
         return result;
     }
 
@@ -163,5 +179,142 @@ public class OAuth2PopulateHelper {
 
     private static boolean isEmpty(String s) {
         return s == null || s.isEmpty();
+    }
+
+    private static void inferTokenUrlFromRequestUrl(ApiRequest req, Map<String, String> result) {
+        if (req == null || result == null || hasExistingTokenUrl(result)) {
+            return;
+        }
+        if (req.url == null || req.url.isBlank()) {
+            return;
+        }
+        if (!looksLikeTokenRequest(req)) {
+            return;
+        }
+
+        result.put("oauth2_token_url", req.url.trim());
+    }
+
+    private static boolean hasExistingTokenUrl(Map<String, String> result) {
+        return result != null && !isEmpty(result.get("oauth2_token_url"));
+    }
+
+    private static boolean looksLikeTokenRequest(ApiRequest req) {
+        return hasTokenPath(req != null ? req.url : null) ||
+                ((hasUrlEncodedBodyMode(req) || hasUrlEncodedContentType(req)) && hasOAuthTokenBodyFields(req));
+    }
+
+    private static boolean hasUrlEncodedBodyMode(ApiRequest req) {
+        return req != null && req.body != null && "urlencoded".equalsIgnoreCase(req.body.mode);
+    }
+
+    private static boolean hasTokenPath(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+
+        String normalized = url.trim().toLowerCase(Locale.ROOT);
+        int queryIdx = normalized.indexOf('?');
+        if (queryIdx >= 0) {
+            normalized = normalized.substring(0, queryIdx);
+        }
+        int fragmentIdx = normalized.indexOf('#');
+        if (fragmentIdx >= 0) {
+            normalized = normalized.substring(0, fragmentIdx);
+        }
+
+        return normalized.contains("/oauth/token") ||
+                normalized.contains("/oauth2/token") ||
+                normalized.contains("/connect/token") ||
+                normalized.contains("/auth/token") ||
+                normalized.endsWith("/token") ||
+                normalized.contains("/token/");
+    }
+
+    private static boolean hasUrlEncodedContentType(ApiRequest req) {
+        if (req == null) {
+            return false;
+        }
+
+        if (req.body != null && req.body.contentType != null &&
+                req.body.contentType.toLowerCase(Locale.ROOT).contains("application/x-www-form-urlencoded")) {
+            return true;
+        }
+
+        if (req.headers == null) {
+            return false;
+        }
+
+        for (ApiRequest.Header header : req.headers) {
+            if (header == null || header.disabled || header.key == null || header.value == null) {
+                continue;
+            }
+            if ("content-type".equalsIgnoreCase(header.key.trim()) &&
+                    header.value.toLowerCase(Locale.ROOT).contains("application/x-www-form-urlencoded")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasOAuthTokenBodyFields(ApiRequest req) {
+        if (req == null || req.body == null) {
+            return false;
+        }
+
+        if (req.body.urlencoded != null) {
+            for (ApiRequest.Body.FormField field : req.body.urlencoded) {
+                if (field == null || field.disabled) {
+                    continue;
+                }
+                if (isOAuthTokenFieldName(field.key)) {
+                    return true;
+                }
+            }
+        }
+
+        if (req.body.formdata != null) {
+            for (ApiRequest.Body.FormField field : req.body.formdata) {
+                if (field == null || field.disabled) {
+                    continue;
+                }
+                if (isOAuthTokenFieldName(field.key)) {
+                    return true;
+                }
+            }
+        }
+
+        if (req.body.raw != null && !req.body.raw.isBlank()) {
+            return rawBodyContainsOAuthTokenField(req.body.raw);
+        }
+
+        return false;
+    }
+
+    private static boolean isOAuthTokenFieldName(String key) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+
+        String normalized = key.trim().toLowerCase(Locale.ROOT);
+        return "grant_type".equals(normalized) ||
+                "client_id".equals(normalized) ||
+                "client_secret".equals(normalized) ||
+                "refresh_token".equals(normalized) ||
+                "code".equals(normalized) ||
+                "code_verifier".equals(normalized);
+    }
+
+    private static boolean rawBodyContainsOAuthTokenField(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return false;
+        }
+
+        for (java.util.regex.Pattern pattern : RAW_TOKEN_FIELD_PATTERNS) {
+            if (pattern.matcher(raw).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -4,11 +4,14 @@ import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
 
+import burp.models.ApiCollection;
+
 import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 public class OAuth2Panel extends JPanel {
     public interface VariablesChangeListener {
@@ -19,6 +22,9 @@ public class OAuth2Panel extends JPanel {
     }
     public interface AutoRefreshIntervalListener {
         void onIntervalChanged(int seconds);
+    }
+    public interface TokenAcquiredListener {
+        void onTokenAcquired(TokenStore.TokenEntry entry, ApiCollection collection, Map<String, String> oauth2Vars);
     }
 
     private final OAuth2Manager manager;
@@ -44,6 +50,8 @@ public class OAuth2Panel extends JPanel {
     private VariablesChangeListener variablesChangeListener;
     private AutoRefreshToggleListener autoRefreshToggleListener;
     private AutoRefreshIntervalListener autoRefreshIntervalListener;
+    private TokenAcquiredListener tokenAcquiredListener;
+    private Supplier<ApiCollection> tokenAcquiredCollectionSupplier;
     private Color defaultRefreshBg;
     private Color defaultRefreshFg;
 
@@ -251,6 +259,7 @@ public class OAuth2Panel extends JPanel {
             updateStatus("ERROR: Invalid configuration. Check required fields.");
             return;
         }
+        ApiCollection targetCollection = tokenAcquiredCollectionSupplier != null ? tokenAcquiredCollectionSupplier.get() : null;
 
         SwingWorker<TokenStore.TokenEntry, String> worker = new SwingWorker<>() {
             @Override
@@ -268,11 +277,32 @@ public class OAuth2Panel extends JPanel {
             protected void done() {
                 try {
                     TokenStore.TokenEntry entry = get();
+                    if (entry.accessToken == null || entry.accessToken.isBlank()) {
+                        updateStatus("FAILED: Token acquisition returned no access token.");
+                        return;
+                    }
                     String preview = entry.accessToken.substring(0, Math.min(20, entry.accessToken.length())) + "...";
                     tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
                     refreshBtn.setEnabled(entry.refreshToken != null);
                     updateStatus("SUCCESS: Token acquired. Refresh token available: " + (entry.refreshToken != null));
-                    notifyVariablesChanged(true);
+                    Map<String, String> vars = getVariables();
+                    vars.put("oauth2_access_token", entry.accessToken);
+                    if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
+                        vars.put("oauth2_refresh_token", entry.refreshToken);
+                    }
+                    if (entry.tokenType != null && !entry.tokenType.isBlank()) {
+                        vars.put("oauth2_token_type", entry.tokenType);
+                    }
+                    if (entry.scope != null && !entry.scope.isBlank()) {
+                        vars.put("oauth2_scope", entry.scope);
+                    }
+                    if (entry.expiresAt > 0) {
+                        long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+                        vars.put("oauth2_expires_in", String.valueOf(expiresInSeconds));
+                    }
+                    if (tokenAcquiredListener != null) {
+                        tokenAcquiredListener.onTokenAcquired(entry, targetCollection, vars);
+                    }
                 } catch (Exception e) {
                     updateStatus("FAILED: " + e.getMessage());
                 }
@@ -311,6 +341,14 @@ public class OAuth2Panel extends JPanel {
 
     public void setAutoRefreshIntervalListener(AutoRefreshIntervalListener listener) {
         this.autoRefreshIntervalListener = listener;
+    }
+
+    public void setTokenAcquiredListener(TokenAcquiredListener listener) {
+        this.tokenAcquiredListener = listener;
+    }
+
+    public void setTokenAcquiredCollectionSupplier(Supplier<ApiCollection> supplier) {
+        this.tokenAcquiredCollectionSupplier = supplier;
     }
 
     private OAuth2Config buildConfig() {

@@ -70,4 +70,28 @@ class CollectionRunnerPreviewTest {
         assertThat(secondRow.unresolvedVariables).containsExactly("missingId");
         assertThat(secondRow.authStatus).isEqualTo("bearer");
     }
+
+    @Test
+    void buildRunPreviewIncludesInheritedAuthSourceInAuthStatus() {
+        CollectionRunner runner = new CollectionRunner(null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Auth Demo";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Get Me";
+        request.method = "GET";
+        request.url = "https://api.example.test/me";
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        request.authInherited = true;
+        request.authSource = "collection: Auth Demo";
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).authStatus).contains("bearer");
+        assertThat(rows.get(0).authStatus).contains("collection:");
+    }
 }

@@ -301,12 +301,22 @@ public class CollectionRunner {
             row.requestName = req.name;
             row.method = req.method != null ? req.method.toUpperCase() : "GET";
             row.urlPreview = resolver.resolve(req.url);
-            row.authStatus = req.hasAuth() ? req.auth.type : "none";
+            row.authStatus = describeAuth(req);
             row.unresolvedVariables.addAll(collectUnresolvedVariables(resolver, req));
             previewRows.add(row);
         }
 
         return previewRows;
+    }
+
+    private String describeAuth(ApiRequest req) {
+        if (req == null || req.auth == null || req.auth.type == null || "none".equalsIgnoreCase(req.auth.type)) {
+            return req != null && req.authExplicitlyDisabled ? "No auth (request)" : "No auth";
+        }
+        String source = req.authSource != null && !req.authSource.isBlank()
+                ? " from " + req.authSource
+                : (req.authInherited ? " inherited" : "");
+        return req.auth.type + source;
     }
 
     private RequestExecutionOutcome executeRequest(ApiRequest req, ApiCollection col) {

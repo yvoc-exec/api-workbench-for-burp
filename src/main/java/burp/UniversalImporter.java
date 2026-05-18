@@ -28,11 +28,18 @@ public class UniversalImporter {
     private final SharedRequestPipeline pipeline;
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
+    private final WorkspaceStateService workspaceStateService;
+    private final WorkspacePersistenceOptions workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
     public UniversalImporter(MontoyaApi api, ScriptMode scriptMode) {
+        this(api, scriptMode, api != null ? new WorkspaceStateService(api) : null);
+    }
+
+    public UniversalImporter(MontoyaApi api, ScriptMode scriptMode, WorkspaceStateService workspaceStateService) {
         this.api = api;
+        this.workspaceStateService = workspaceStateService;
         this.resolver = new VariableResolver();
         OAuth2Manager oauth2Manager = new OAuth2Manager(api);
         this.requestBuilder = new RequestBuilder(api, oauth2Manager);
@@ -40,6 +47,8 @@ public class UniversalImporter {
         this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
+        this.ui.setWorkspaceChangeListener(this::saveWorkspaceState);
+        restoreWorkspaceState();
     }
 
     public JPanel getMainPanel() {
@@ -412,10 +421,29 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
+        saveWorkspaceState();
         if (ui != null) {
             ui.cleanup();
         }
         clearVariables();
+    }
+
+    private void restoreWorkspaceState() {
+        if (workspaceStateService == null || ui == null) {
+            return;
+        }
+        WorkspaceState state = workspaceStateService.load();
+        if (state != null && state.collections != null && !state.collections.isEmpty()) {
+            SwingUtilities.invokeLater(() -> ui.restoreWorkspaceCollections(state.collections));
+        }
+    }
+
+    private void saveWorkspaceState() {
+        if (workspaceStateService == null || ui == null) {
+            return;
+        }
+        WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), workspacePersistenceOptions);
+        workspaceStateService.save(state);
     }
 
     public interface LogCallback {

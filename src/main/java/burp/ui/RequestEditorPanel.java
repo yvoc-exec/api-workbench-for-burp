@@ -540,6 +540,7 @@ public class RequestEditorPanel extends JPanel {
 
         // Auth
         String authType = (String) authTypeBox.getSelectedItem();
+        applyAuthMetadata(req, currentRequest, authType);
         if (!"none".equals(authType)) {
             req.auth = new ApiRequest.Auth();
             req.auth.type = authType;
@@ -608,6 +609,45 @@ public class RequestEditorPanel extends JPanel {
         if (!postScript.isEmpty()) req.postResponseScripts.add(new ApiRequest.Script("js", postScript));
 
         return req;
+    }
+
+    static void applyAuthMetadata(ApiRequest target, ApiRequest source, String authType) {
+        if (target == null) {
+            return;
+        }
+
+        if (source != null) {
+            target.authSource = source.authSource;
+            target.authInherited = source.authInherited;
+            target.authExplicitlyDisabled = source.authExplicitlyDisabled;
+        }
+
+        String normalizedAuthType = authType != null ? authType.trim() : "none";
+        if (!"none".equalsIgnoreCase(normalizedAuthType)) {
+            boolean sameAuthType = source != null
+                && source.auth != null
+                && source.auth.type != null
+                && normalizedAuthType.equalsIgnoreCase(source.auth.type);
+            if (!sameAuthType) {
+                target.authInherited = false;
+                target.authExplicitlyDisabled = false;
+                target.authSource = "request: " + target.name;
+            }
+            return;
+        }
+
+        boolean preserveNoAuth = source != null
+            && isMeaningfulAuthSource(source.authSource)
+            && (source.auth == null || source.auth.type == null || "none".equalsIgnoreCase(source.auth.type));
+        if (!preserveNoAuth) {
+            target.authInherited = false;
+            target.authExplicitlyDisabled = true;
+            target.authSource = "request: " + target.name;
+        }
+    }
+
+    static boolean isMeaningfulAuthSource(String source) {
+        return source != null && !source.isBlank() && !"none".equalsIgnoreCase(source.trim());
     }
 
     private void refreshResolvedMirror() {

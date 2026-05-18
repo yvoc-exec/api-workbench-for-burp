@@ -18,7 +18,7 @@ import javax.swing.*;
  * - Collection Runner: sequential execution with variable extraction
  * - Rate limiting and retry logic
  *
- * Author: yvoc-exec yvoc-exec (based on API Workbench for Burp)
+ * Author: yvoc-exec yvoc-exec
  * Version: 2.0.0
  * License: MIT
  */
@@ -41,12 +41,12 @@ public class BurpExtender implements BurpExtension {
         if (scriptResult.reason != null) {
             api.logging().logToOutput("  Script reason: " + scriptResult.reason);
         }
-        api.logging().logToOutput("  Based on API Workbench for Burp");
         api.logging().logToOutput("===================================================");
         api.logging().logToOutput("Extension loaded successfully!");
 
         SwingUtilities.invokeLater(() -> {
-            importer = new UniversalImporter(api, scriptResult.mode);
+            burp.utils.WorkspaceStateService workspaceStateService = new burp.utils.WorkspaceStateService(api);
+            importer = new UniversalImporter(api, scriptResult.mode, workspaceStateService);
             api.userInterface().registerSuiteTab("API Workbench", importer.getMainPanel());
         });
 

@@ -33,7 +33,10 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Environment files (Postman environment JSON)
 - Request-level variables (Bruno `vars` block, Postman request vars)
 - Custom manual variables (Variables tab + OAuth2 tab)
+- Postman-style auth inheritance from collection and folder auth, including explicit no-auth overrides
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
+- Loaded collections and selected-collection runtime state can be restored from Burp project data
+- Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
 - Runtime variable/OAuth2 export and import as JSON for repeat testing
 - Default values: `{{var|default}}`
 - Defaulted placeholders are treated as resolved by preview, preflight, and stop-on-missing-variable checks
@@ -80,6 +83,8 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
+
+> **Security note:** API Workbench persists loaded collections and non-sensitive runtime settings into Burp project data when a project is available. Access tokens, refresh tokens, client secrets, passwords, and secret-like keys are not persisted by default. Use Export Runtime JSON only when you intentionally want a portable runtime snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -192,6 +197,12 @@ Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown 
 **Runtime JSON portability:**
 Use **Export Runtime JSON** and **Import Runtime JSON** in the Variables tab to save and reload a collection's runtime variables and OAuth2 runtime values. Import supports merge or replace.
 
+**Autosave behavior:**
+- Typing in the Variables editor autosaves to the selected collection after a short debounce.
+- Table edits and add/remove row actions also autosave.
+- Use **Save Now** to explicitly persist the current editor contents immediately.
+- Use **Clear** to clear the editor UI only; it does not autosave until you click **Save Now**.
+
 **Format-specific collection/global variable sources:**
 - **Postman** - `collection.variable` array (objects/arrays serialized to JSON string)
 - **Insomnia** - `environment` resources in export (`resources[].data` key-value map)
@@ -206,6 +217,7 @@ Use **Export Runtime JSON** and **Import Runtime JSON** in the Variables tab to 
 4. For Password grant, add Username and Password.
 5. Click **Acquire Token**.
 6. The acquired token is injected into requests where `auth.type = "oauth2"`. The runtime manager can refresh it automatically before expiry.
+7. OAuth2 edits autosave to the selected collection, and **Save Now** writes the current OAuth2 form state immediately.
 
 ### Playbook 6: Imported OAuth2 Auth Compatibility
 When collections define OAuth2 metadata (endpoints, client ID, grant type, etc.), the extension normalizes parser-specific property names into canonical `oauth2_*` runtime variables at execution time.
@@ -318,12 +330,10 @@ src/main/java/burp/
 
 ## License
 
-MIT License - based on [API Workbench for Burp](https://github.com/API Workbench for Burp).
+MIT License.
 
 ---
 
 ## Author
 
 **yvoc-exec yvoc-exec** - Cybersecurity Professional, Philippines
-
-Original Postman-only extension by **Abdulrahman Oyekunle** (@API Workbench for Burp).
