@@ -114,6 +114,13 @@ Extensions -> Add -> Select: target/*-jar-with-dependencies.jar
 
 ---
 
+## Documentation
+
+- [Operator Guide](OPERATOR_GUIDE.md) - field workflow guide for loading collections, variables, OAuth2, runner controls, errors, and common testing scenarios.
+- [Complete Documentation](DOCUMENTATION.md) - architecture, parser behavior, data flow, security notes, and implementation details.
+
+---
+
 ## Operational Playbooks
 
 ### Playbook 1: Fast Manual Testing in Repeater

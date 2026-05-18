@@ -34,6 +34,8 @@
 
 This Burp Suite extension bridges the gap between API development tools (Postman, Bruno, Insomnia) and security testing workflows. It imports API collections into Burp Suite for manual pentesting while providing a built-in Collection Runner for automated sequential execution with variable extraction.
 
+For day-to-day usage, see the [Operator Guide](OPERATOR_GUIDE.md). This document focuses on architecture, implementation details, and reference behavior.
+
 ### Key Capabilities
 - **Import** collections from 5 formats into Burp Repeater, Sitemap, or both
 - **Run** collections sequentially with delays, retries, and assertions
