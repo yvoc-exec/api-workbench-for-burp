@@ -8,6 +8,7 @@ import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 import burp.utils.RuntimeVariablesJson;
 import burp.UniversalImporter;
+import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.CheckBoxTreeCellRenderer;
@@ -31,6 +32,7 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 public class ImporterPanel {
     private final UniversalImporter importer;
@@ -97,12 +99,16 @@ public class ImporterPanel {
     private JComboBox<CollectionRef> varsCollectionCombo;
     private JButton bindVarsBtn;
     private JLabel varsHintLabel;
+    private JLabel varsAutosaveStatusLabel;
+    private burp.utils.DebouncedSwingAction variablesAutosave;
+    private boolean suppressVariablesAutosave = false;
     private String varsBaseLayerText = "";
 
     // OAuth2 tab
     private JComboBox<CollectionRef> oauth2CollectionCombo;
     private JButton bindOAuth2Btn;
     private JLabel oauth2HintLabel;
+    private JLabel oauth2AutosaveStatusLabel;
     private final Map<ApiCollection, OAuthAutoRefreshState> oauthAutoStates = new IdentityHashMap<>();
     private final ScheduledExecutorService oauthAutoExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "oauth2-auto-refresh");
@@ -112,6 +118,9 @@ public class ImporterPanel {
 
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
+
+    // Workspace persistence callback
+    private Runnable workspaceChangeListener;
 
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
@@ -127,11 +136,23 @@ public class ImporterPanel {
         this.scriptMode = scriptMode;
         this.oauth2Manager = oauth2Manager;
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
+        this.oauth2Panel.setTokenAcquiredCollectionSupplier(this::getSelectedOAuth2Collection);
+        this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
         this.importer = importer;
         this.runner = runner;
         this.mainPanel = createUI();
         if (oauth2Panel.getPopulateButton() != null) {
             oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromSelectedRequest());
+        }
+    }
+
+    public void setWorkspaceChangeListener(Runnable listener) {
+        this.workspaceChangeListener = listener;
+    }
+
+    private void notifyWorkspaceChanged() {
+        if (workspaceChangeListener != null) {
+            workspaceChangeListener.run();
         }
     }
 
@@ -456,6 +477,10 @@ public class ImporterPanel {
         String method = edited != null && edited.method != null ? edited.method : "GET";
         String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
         meta.append("Request: ").append(requestName).append(" [").append(method).append("]\n");
+        String authLine = buildAuthMetaLine(edited);
+        if (authLine != null) {
+            meta.append(authLine);
+        }
         meta.append("Resolved URL: ").append(result != null && result.resolvedUrl != null ? result.resolvedUrl : "").append("\n");
         int statusCode = 0;
         int responseBytes = 0;
@@ -477,6 +502,31 @@ public class ImporterPanel {
         return meta.toString();
     }
 
+    static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
+        if (row == null) {
+            return true;
+        }
+        String status = row.authStatus;
+        if (status == null || status.isBlank()) {
+            return true;
+        }
+        String normalized = status.trim().toLowerCase(Locale.ROOT);
+        return "none".equals(normalized) || normalized.startsWith("no auth");
+    }
+
+    static String buildAuthMetaLine(ApiRequest edited) {
+        if (edited == null || edited.auth == null || edited.auth.type == null) {
+            return null;
+        }
+        StringBuilder meta = new StringBuilder();
+        meta.append("Auth: ").append(edited.auth.type);
+        if (edited.authSource != null && !edited.authSource.isBlank()) {
+            meta.append(" (").append(edited.authSource).append(")");
+        }
+        meta.append("\n");
+        return meta.toString();
+    }
+
 
 
     // ========================================================================
@@ -489,11 +539,18 @@ public class ImporterPanel {
         envVarsArea = new JTextArea(20, 60);
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
+        variablesAutosave = new burp.utils.DebouncedSwingAction(500, this::autosaveVariablesToSelectedCollection);
+        envVarsArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
+        });
 
         varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
         varsTable = new JTable(varsTableModel);
         varsTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         varsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        varsTableModel.addTableModelListener(e -> scheduleVariablesAutosave());
 
         varsEditorCardPanel = new JPanel(new CardLayout());
         varsEditorCardPanel.add(new JScrollPane(envVarsArea), "raw");
@@ -506,6 +563,7 @@ public class ImporterPanel {
             commitTableEdit(varsTable);
             varsTableModel.addRow(new Object[]{"", ""});
             syncRawFromVarsTable();
+            scheduleVariablesAutosave();
         });
         JButton delVarBtn = new JButton("-");
         delVarBtn.addActionListener(e -> {
@@ -513,6 +571,7 @@ public class ImporterPanel {
             int row = resolveTargetRow(varsTable);
             if (row >= 0) varsTableModel.removeRow(row);
             syncRawFromVarsTable();
+            scheduleVariablesAutosave();
         });
         tableBtnPanel.add(addVarBtn);
         tableBtnPanel.add(delVarBtn);
@@ -541,21 +600,34 @@ public class ImporterPanel {
         // Hint label
         varsHintLabel = new JLabel("Select a collection to edit scoped variables.");
         varsHintLabel.setForeground(Color.GRAY);
-        bottomPanel.add(varsHintLabel, BorderLayout.CENTER);
+        varsAutosaveStatusLabel = new JLabel("Autosave idle.");
+        varsAutosaveStatusLabel.setForeground(Color.GRAY);
+        JPanel varsStatusPanel = new JPanel(new GridLayout(2, 1));
+        varsStatusPanel.add(varsHintLabel);
+        varsStatusPanel.add(varsAutosaveStatusLabel);
+        bottomPanel.add(varsStatusPanel, BorderLayout.CENTER);
 
         JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         varsCollectionCombo = new JComboBox<>();
         varsCollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
         varsCollectionCombo.addActionListener(e -> {
+            if (variablesAutosave != null) {
+                variablesAutosave.stop();
+            }
             renderEffectiveVariablesForSelectedCollection();
             updateScopeControlState();
+            if (varsCollectionCombo.getSelectedItem() != null) {
+                setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
+            } else {
+                setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+            }
         });
-        bindVarsBtn = new JButton("Bind to Collection");
+        bindVarsBtn = new JButton("Save Now");
         bindVarsBtn.addActionListener(e -> bindVarsToSelectedCollection());
         JButton bindAllBtn = new JButton("Bind to All Collections");
         bindAllBtn.addActionListener(e -> bindVarsToAllCollections());
         JButton clearBtn = new JButton("Clear");
-        clearBtn.addActionListener(e -> envVarsArea.setText(""));
+        clearBtn.addActionListener(e -> clearVariablesEditorOnly());
         bindPanel.add(new JLabel("Target:"));
         bindPanel.add(varsCollectionCombo);
         bindPanel.add(bindVarsBtn);
@@ -585,19 +657,23 @@ public class ImporterPanel {
         oauth2CollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
         oauth2HintLabel = new JLabel("Select a collection to bind OAuth2 settings.");
         oauth2HintLabel.setForeground(Color.GRAY);
+        oauth2AutosaveStatusLabel = new JLabel("Autosave idle.");
+        oauth2AutosaveStatusLabel.setForeground(Color.GRAY);
         bindPanel.add(new JLabel("Target:"));
         bindPanel.add(oauth2CollectionCombo);
-        bindOAuth2Btn = new JButton("Bind OAuth2 to Collection");
+        bindOAuth2Btn = new JButton("Save Now");
         bindOAuth2Btn.addActionListener(e -> {
             CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
             if (ref == null) {
                 appendImportLog("OAuth2: No collection selected for binding.");
+                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
                 return;
             }
             ApiCollection col = ref.collection;
             Map<String, String> vars = oauth2Panel.getVariables();
             col.replaceRuntimeOAuth2(vars);
             appendImportLog("OAuth2 bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
+            setOAuth2AutosaveStatus("Saved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
         });
         bindPanel.add(bindOAuth2Btn);
         JButton bindAllBtn = new JButton("Bind OAuth2 to All");
@@ -615,11 +691,15 @@ public class ImporterPanel {
                 col.replaceRuntimeOAuth2(vars);
             }
             appendImportLog("OAuth2 bound to all " + loadedCollections.size() + " collection(s).");
+            setOAuth2AutosaveStatus("Saved to all " + loadedCollections.size() + " collection(s).", new Color(0, 128, 0));
         });
         bindPanel.add(bindAllBtn);
         panel.add(bindPanel, BorderLayout.NORTH);
         panel.add(oauth2Panel, BorderLayout.CENTER);
-        panel.add(oauth2HintLabel, BorderLayout.SOUTH);
+        JPanel oauth2StatusPanel = new JPanel(new GridLayout(2, 1));
+        oauth2StatusPanel.add(oauth2HintLabel);
+        oauth2StatusPanel.add(oauth2AutosaveStatusLabel);
+        panel.add(oauth2StatusPanel, BorderLayout.SOUTH);
 
         // Keep combo in sync with loaded collections
         tabbedPane.addChangeListener(e -> {
@@ -645,18 +725,25 @@ public class ImporterPanel {
             CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
             if (ref != null && ref.collection != null) {
                 refreshOAuth2PanelForCollection(ref.collection);
+                setOAuth2AutosaveStatus("Autosave idle.", Color.GRAY);
+            } else {
+                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
             }
             applyAutoRefreshUiForSelectedCollection();
             updateScopeControlState();
         });
         oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> {
             CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-            if (ref == null || ref.collection == null) return;
+            if (ref == null || ref.collection == null) {
+                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
+                return;
+            }
             if (replaceMode) {
                 ref.collection.replaceRuntimeOAuth2(vars);
             } else {
                 ref.collection.putAllRuntimeOAuth2(vars);
             }
+            setOAuth2AutosaveStatus("Autosaved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
         });
         oauth2Panel.setAutoRefreshToggleListener(this::toggleAutoRefreshForSelectedCollection);
         oauth2Panel.setAutoRefreshIntervalListener(seconds -> {
@@ -1017,6 +1104,129 @@ public class ImporterPanel {
         return dialog.showDialog();
     }
 
+    private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
+                                           ApiCollection collection,
+                                           Map<String, String> oauth2Vars) {
+        if (entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
+            return;
+        }
+
+        if (collection == null) {
+            appendImportLog("OAuth2 acquire completed but no target collection was captured.");
+            return;
+        }
+
+        applyAcquiredOAuth2Runtime(collection, entry, oauth2Vars);
+        List<BearerTokenAliasCandidate> candidates = OAuth2BearerAliasDetector.detect(collection, entry.accessToken);
+        if (candidates.isEmpty()) {
+            refreshRuntimeViewsForCollection(collection);
+            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+            return;
+        }
+
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        BearerTokenAliasDialog dialog = new BearerTokenAliasDialog(owner, candidates);
+        if (dialog.showDialog() != BearerTokenAliasDialog.Action.BIND_SELECTED) {
+            refreshRuntimeViewsForCollection(collection);
+            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+            return;
+        }
+
+        Set<String> selectedAliases = dialog.getSelectedAliases();
+        if (selectedAliases.isEmpty()) {
+            refreshRuntimeViewsForCollection(collection);
+            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+            return;
+        }
+
+        OAuth2BearerAliasDetector.bindSelectedAliases(collection, candidates, selectedAliases, entry.accessToken);
+        refreshRuntimeViewsForCollection(collection);
+        appendImportLog("OAuth2 bearer aliases bound to \"" + collection.name + "\": " + String.join(", ", selectedAliases));
+        setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+    }
+
+    static Map<String, String> buildOAuth2RuntimeSnapshot(TokenStore.TokenEntry entry, Map<String, String> panelVars) {
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        if (panelVars != null && !panelVars.isEmpty()) {
+            snapshot.putAll(panelVars);
+        }
+        if (entry == null) {
+            return snapshot;
+        }
+
+        if (entry.accessToken != null && !entry.accessToken.isBlank()) {
+            snapshot.put("oauth2_access_token", entry.accessToken);
+        }
+        if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
+            snapshot.put("oauth2_refresh_token", entry.refreshToken);
+        }
+        if (entry.tokenType != null && !entry.tokenType.isBlank()) {
+            snapshot.put("oauth2_token_type", entry.tokenType);
+        }
+        if (entry.scope != null && !entry.scope.isBlank()) {
+            snapshot.put("oauth2_scope", entry.scope);
+        }
+        if (entry.expiresAt > 0) {
+            long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+            snapshot.put("oauth2_expires_in", String.valueOf(expiresInSeconds));
+        }
+        return snapshot;
+    }
+
+    static void applyAcquiredOAuth2Runtime(ApiCollection collection,
+                                           TokenStore.TokenEntry entry,
+                                           Map<String, String> panelVars) {
+        if (collection == null || entry == null) {
+            return;
+        }
+        collection.replaceRuntimeOAuth2(buildOAuth2RuntimeSnapshot(entry, panelVars));
+    }
+
+    static void clearVariablesEditorOnly(JTextArea envVarsArea,
+                                         DefaultTableModel varsTableModel,
+                                         burp.utils.DebouncedSwingAction variablesAutosave,
+                                         Runnable beginSuppress,
+                                         Runnable endSuppress,
+                                         Runnable clearBaseLayerText,
+                                         Consumer<String> statusUpdater) {
+        if (variablesAutosave != null) {
+            variablesAutosave.stop();
+        }
+        if (beginSuppress != null) {
+            beginSuppress.run();
+        }
+        try {
+            if (envVarsArea != null) {
+                envVarsArea.setText("");
+            }
+            if (clearBaseLayerText != null) {
+                clearBaseLayerText.run();
+            }
+            if (varsTableModel != null) {
+                varsTableModel.setRowCount(0);
+            }
+        } finally {
+            if (endSuppress != null) {
+                endSuppress.run();
+            }
+        }
+        if (statusUpdater != null) {
+            statusUpdater.accept("Editor cleared. Click Save Now to update the selected collection.");
+        }
+    }
+
+    private void clearVariablesEditorOnly() {
+        clearVariablesEditorOnly(
+                envVarsArea,
+                varsTableModel,
+                variablesAutosave,
+                () -> suppressVariablesAutosave = true,
+                () -> suppressVariablesAutosave = false,
+                () -> varsBaseLayerText = "",
+                msg -> setVarsAutosaveStatus(msg, Color.GRAY)
+        );
+    }
+
     private void exportSelectedCollectionRuntimeJson() {
         ApiCollection collection = getSelectedVariablesCollection();
         if (collection == null) {
@@ -1198,67 +1408,91 @@ public class ImporterPanel {
         applyAutoRefreshUiForSelectedCollection();
     }
 
+    private void refreshRuntimeViewsForCollection(ApiCollection col) {
+        if (col == null) {
+            return;
+        }
+        CollectionRef varsRef = varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null
+                ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
+        if (varsRef != null && varsRef.collection == col) {
+            renderEffectiveVariablesForSelectedCollection();
+        }
+        CollectionRef oauthRef = oauth2CollectionCombo != null && oauth2CollectionCombo.getSelectedItem() != null
+                ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
+        if (oauthRef != null && oauthRef.collection == col) {
+            refreshOAuth2PanelForCollection(col);
+        }
+        if (requestEditor != null && requestEditor.getCurrentCollection() == col) {
+            syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), col);
+        }
+    }
+
     private void renderEffectiveVariablesForSelectedCollection() {
-        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
-        if (ref != null) {
-            ApiCollection col = ref.collection;
-            StringBuilder base = new StringBuilder();
-            StringBuilder sb = new StringBuilder();
-            boolean hasAny = false;
-            // Layer 1: environment
-            if (col.environment != null && !col.environment.isEmpty()) {
-                base.append("# From collection environment (read-only base)\n");
-                for (Map.Entry<String, String> entry : new TreeMap<>(col.environment).entrySet()) {
-                    base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
-                }
-                base.append("\n");
-                hasAny = true;
-            }
-            // Layer 2: collection variables
-            if (col.variables != null && !col.variables.isEmpty()) {
-                base.append("# From collection definition (read-only base)\n");
-                List<ApiRequest.Variable> sorted = new ArrayList<>(col.variables);
-                sorted.sort(Comparator.comparing(v -> v.key));
-                for (ApiRequest.Variable v : sorted) {
-                    if (v.value != null) {
-                        base.append(v.key).append("=").append(v.value).append("\n");
+        suppressVariablesAutosave = true;
+        try {
+            CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
+            if (ref != null) {
+                ApiCollection col = ref.collection;
+                StringBuilder base = new StringBuilder();
+                StringBuilder sb = new StringBuilder();
+                boolean hasAny = false;
+                // Layer 1: environment
+                if (col.environment != null && !col.environment.isEmpty()) {
+                    base.append("# From collection environment (read-only base)\n");
+                    for (Map.Entry<String, String> entry : new TreeMap<>(col.environment).entrySet()) {
+                        base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
                     }
+                    base.append("\n");
+                    hasAny = true;
                 }
-                base.append("\n");
-                hasAny = true;
-            }
-            // Layer 3: scoped OAuth2 runtime (managed by OAuth2 tab / runtime refresh)
-            if (col.runtimeOAuth2 != null && !col.runtimeOAuth2.isEmpty()) {
-                base.append("# Scoped OAuth2 runtime (managed by OAuth2 tab)\n");
-                for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeOAuth2).entrySet()) {
-                    base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                // Layer 2: collection variables
+                if (col.variables != null && !col.variables.isEmpty()) {
+                    base.append("# From collection definition (read-only base)\n");
+                    List<ApiRequest.Variable> sorted = new ArrayList<>(col.variables);
+                    sorted.sort(Comparator.comparing(v -> v.key));
+                    for (ApiRequest.Variable v : sorted) {
+                        if (v.value != null) {
+                            base.append(v.key).append("=").append(v.value).append("\n");
+                        }
+                    }
+                    base.append("\n");
+                    hasAny = true;
                 }
-                base.append("\n");
-                hasAny = true;
-            }
-            // Layer 4: runtime overrides (editable layer)
-            sb.append(base);
-            varsBaseLayerText = base.toString().trim();
-            if (!varsBaseLayerText.isEmpty()) {
-                sb.append("\n");
-            }
-            if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
-                sb.append("# Runtime overrides (edits apply here)\n");
-                for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
-                    sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                // Layer 3: scoped OAuth2 runtime (managed by OAuth2 tab / runtime refresh)
+                if (col.runtimeOAuth2 != null && !col.runtimeOAuth2.isEmpty()) {
+                    base.append("# Scoped OAuth2 runtime (managed by OAuth2 tab)\n");
+                    for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeOAuth2).entrySet()) {
+                        base.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                    }
+                    base.append("\n");
+                    hasAny = true;
                 }
-                hasAny = true;
-            } else if (hasAny) {
-                sb.append("# Runtime overrides (edits apply here)\n");
+                // Layer 4: runtime overrides (editable layer)
+                sb.append(base);
+                varsBaseLayerText = base.toString().trim();
+                if (!varsBaseLayerText.isEmpty()) {
+                    sb.append("\n");
+                }
+                if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
+                    sb.append("# Runtime overrides (edits apply here)\n");
+                    for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
+                        sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                    }
+                    hasAny = true;
+                } else if (hasAny) {
+                    sb.append("# Runtime overrides (edits apply here)\n");
+                }
+                envVarsArea.setText(hasAny ? sb.toString() : "");
+                if (isVarsTableViewActive()) {
+                    renderVarsTableFromRaw();
+                }
+            } else {
+                envVarsArea.setText("");
+                varsBaseLayerText = "";
+                if (varsTableModel != null) varsTableModel.setRowCount(0);
             }
-            envVarsArea.setText(hasAny ? sb.toString() : "");
-            if (isVarsTableViewActive()) {
-                renderVarsTableFromRaw();
-            }
-        } else {
-            envVarsArea.setText("");
-            varsBaseLayerText = "";
-            if (varsTableModel != null) varsTableModel.setRowCount(0);
+        } finally {
+            suppressVariablesAutosave = false;
         }
     }
 
@@ -1319,19 +1553,7 @@ public class ImporterPanel {
                         appendImportLog("Rejected duplicate collection name: \"" + collection.name + "\"");
                         return;
                     }
-                    collection.addChangeListener(() -> SwingUtilities.invokeLater(() -> {
-                        CollectionRef varsRef = (CollectionRef) varsCollectionCombo.getSelectedItem();
-                        if (varsRef != null && varsRef.collection == collection) {
-                            renderEffectiveVariablesForSelectedCollection();
-                        }
-                        CollectionRef oauthRef = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-                        if (oauthRef != null && oauthRef.collection == collection) {
-                            refreshOAuth2PanelForCollection(collection);
-                        }
-                        if (requestEditor != null && requestEditor.getCurrentCollection() == collection) {
-                            syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
-                        }
-                    }));
+                    registerCollectionRuntimeListener(collection);
                     loadedCollections.add(collection);
                     rebuildTree();
                     refreshCollectionCombos();
@@ -1342,6 +1564,7 @@ public class ImporterPanel {
                     previewRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
                     envApplyAllBtn.setEnabled(true);
+                    notifyWorkspaceChanged();
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
                 }
@@ -1365,6 +1588,7 @@ public class ImporterPanel {
         }
         rebuildTree();
         refreshCollectionCombos();
+        notifyWorkspaceChanged();
         if (loadedCollections.isEmpty()) {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
@@ -1373,6 +1597,47 @@ public class ImporterPanel {
             removeCollectionBtn.setEnabled(false);
             envApplyAllBtn.setEnabled(false);
         }
+    }
+
+    private void registerCollectionRuntimeListener(ApiCollection col) {
+        if (col == null) {
+            return;
+        }
+        col.addChangeListener(() -> SwingUtilities.invokeLater(() -> {
+            refreshRuntimeViewsForCollection(col);
+            notifyWorkspaceChanged();
+        }));
+    }
+
+    public List<ApiCollection> getLoadedCollectionsSnapshot() {
+        return new ArrayList<>(loadedCollections);
+    }
+
+    public void restoreWorkspaceCollections(List<ApiCollection> collections) {
+        for (ApiCollection existing : new ArrayList<>(loadedCollections)) {
+            existing.clearChangeListeners();
+        }
+        loadedCollections.clear();
+        requestToCollectionMap.clear();
+        if (collections != null) {
+            for (ApiCollection col : collections) {
+                if (col == null) {
+                    continue;
+                }
+                loadedCollections.add(col);
+                registerCollectionRuntimeListener(col);
+                if (col.requests != null) {
+                    for (ApiRequest req : col.requests) {
+                        requestToCollectionMap.put(req, col);
+                        req.sourceCollection = col.name;
+                    }
+                }
+            }
+        }
+        rebuildTree();
+        refreshCollectionCombos();
+        renderEffectiveVariablesForSelectedCollection();
+        updateScopeControlState();
     }
 
     private void refreshCollectionCombos() {
@@ -1411,6 +1676,12 @@ public class ImporterPanel {
         if (requestEditor != null && requestEditor.getCurrentCollection() != null) {
             syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
         }
+        if (varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null) {
+            setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
+        }
+        if (oauth2CollectionCombo != null && oauth2CollectionCombo.getSelectedItem() != null) {
+            setOAuth2AutosaveStatus("Autosave idle.", Color.GRAY);
+        }
     }
 
     private void updateScopeControlState() {
@@ -1433,6 +1704,9 @@ public class ImporterPanel {
                     varsHintLabel.setForeground(Color.GRAY);
                 }
             }
+            if (!varsHasTarget) {
+                setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+            }
         }
 
         // OAuth2 tab
@@ -1449,6 +1723,9 @@ public class ImporterPanel {
                     oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
                     oauth2HintLabel.setForeground(Color.GRAY);
                 }
+            }
+            if (!oauth2HasTarget) {
+                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
             }
         }
 
@@ -1528,6 +1805,7 @@ public class ImporterPanel {
             renderVarsTableFromRaw();
         } else {
             syncRawFromVarsTable();
+            scheduleVariablesAutosave();
         }
         CardLayout cl = (CardLayout) varsEditorCardPanel.getLayout();
         cl.show(varsEditorCardPanel, tableView ? "table" : "raw");
@@ -1539,12 +1817,17 @@ public class ImporterPanel {
 
     private void renderVarsTableFromRaw() {
         if (varsTableModel == null) return;
-        varsTableModel.setRowCount(0);
-        Map<String, String> vars = parseRuntimeOverrideFromRawText();
-        List<String> keys = new ArrayList<>(vars.keySet());
-        Collections.sort(keys);
-        for (String key : keys) {
-            varsTableModel.addRow(new Object[]{key, vars.get(key)});
+        suppressVariablesAutosave = true;
+        try {
+            varsTableModel.setRowCount(0);
+            Map<String, String> vars = parseRuntimeOverrideFromRawText();
+            List<String> keys = new ArrayList<>(vars.keySet());
+            Collections.sort(keys);
+            for (String key : keys) {
+                varsTableModel.addRow(new Object[]{key, vars.get(key)});
+            }
+        } finally {
+            suppressVariablesAutosave = false;
         }
     }
 
@@ -1564,18 +1847,23 @@ public class ImporterPanel {
 
     private void syncRawFromVarsTable() {
         if (envVarsArea == null || varsTableModel == null) return;
-        Map<String, String> vars = parseVarsTableMap();
-        StringBuilder sb = new StringBuilder();
-        if (varsBaseLayerText != null && !varsBaseLayerText.isEmpty()) {
-            sb.append(varsBaseLayerText);
-            if (!varsBaseLayerText.endsWith("\n")) sb.append("\n");
-            sb.append("\n");
+        suppressVariablesAutosave = true;
+        try {
+            Map<String, String> vars = parseVarsTableMap();
+            StringBuilder sb = new StringBuilder();
+            if (varsBaseLayerText != null && !varsBaseLayerText.isEmpty()) {
+                sb.append(varsBaseLayerText);
+                if (!varsBaseLayerText.endsWith("\n")) sb.append("\n");
+                sb.append("\n");
+            }
+            sb.append("# Runtime overrides (edits apply here)\n");
+            for (Map.Entry<String, String> e : new TreeMap<>(vars).entrySet()) {
+                sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
+            }
+            envVarsArea.setText(sb.toString());
+        } finally {
+            suppressVariablesAutosave = false;
         }
-        sb.append("# Runtime overrides (edits apply here)\n");
-        for (Map.Entry<String, String> e : new TreeMap<>(vars).entrySet()) {
-            sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
-        }
-        envVarsArea.setText(sb.toString());
     }
 
     private int resolveTargetRow(JTable table) {
@@ -1600,16 +1888,65 @@ public class ImporterPanel {
     // ========================================================================
     // Variables Tab Binding
     // ========================================================================
+    private void scheduleVariablesAutosave() {
+        if (suppressVariablesAutosave) {
+            return;
+        }
+        if (variablesAutosave != null) {
+            variablesAutosave.restart();
+        }
+    }
+
+    private void autosaveVariablesToSelectedCollection() {
+        if (suppressVariablesAutosave || varsCollectionCombo == null) {
+            return;
+        }
+        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
+        if (ref == null || ref.collection == null) {
+            setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+            return;
+        }
+        try {
+            if (isVarsTableViewActive()) {
+                syncRawFromVarsTable();
+            }
+            Map<String, String> vars = parseRuntimeOverrideSection();
+            ref.collection.replaceRuntimeVars(vars);
+            setVarsAutosaveStatus("Autosaved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
+        } catch (Exception ex) {
+            setVarsAutosaveStatus("Autosave failed: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()), Color.RED);
+        }
+    }
+
+    private void setVarsAutosaveStatus(String text, Color color) {
+        if (varsAutosaveStatusLabel != null) {
+            varsAutosaveStatusLabel.setText(text);
+            varsAutosaveStatusLabel.setForeground(color != null ? color : Color.GRAY);
+        }
+    }
+
+    private void setOAuth2AutosaveStatus(String text, Color color) {
+        if (oauth2AutosaveStatusLabel != null) {
+            oauth2AutosaveStatusLabel.setText(text);
+            oauth2AutosaveStatusLabel.setForeground(color != null ? color : Color.GRAY);
+        }
+    }
+
     private void bindVarsToSelectedCollection() {
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
         if (ref == null) {
             appendImportLog("Variables: No collection selected for binding.");
+            setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
             return;
         }
         ApiCollection col = ref.collection;
+        if (variablesAutosave != null) {
+            variablesAutosave.stop();
+        }
         Map<String, String> vars = parseRuntimeOverrideSection();
         col.replaceRuntimeVars(vars);
         appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
+        setVarsAutosaveStatus("Saved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
         renderEffectiveVariablesForSelectedCollection();
         syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
     }
@@ -1618,6 +1955,9 @@ public class ImporterPanel {
         if (loadedCollections.isEmpty()) {
             appendImportLog("Variables: No collections loaded.");
             return;
+        }
+        if (variablesAutosave != null) {
+            variablesAutosave.stop();
         }
         int confirm = JOptionPane.showConfirmDialog(mainPanel,
             "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
@@ -1630,6 +1970,7 @@ public class ImporterPanel {
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
         renderEffectiveVariablesForSelectedCollection();
         syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
+        setVarsAutosaveStatus("Saved to all " + loadedCollections.size() + " collection(s).", new Color(0, 128, 0));
     }
 
     // ========================================================================
@@ -1906,13 +2247,10 @@ public class ImporterPanel {
 
     private boolean hasRunnerPreviewWarnings(List<RunnerPreviewRow> previewRows) {
         for (RunnerPreviewRow row : previewRows) {
-            if (row == null) {
-                continue;
-            }
-            if (row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
+            if (row != null && row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
                 return true;
             }
-            if (row.authStatus == null || row.authStatus.isBlank() || "none".equalsIgnoreCase(row.authStatus)) {
+            if (isRunnerPreviewMissingAuth(row)) {
                 return true;
             }
         }
@@ -1939,13 +2277,10 @@ public class ImporterPanel {
         int unresolvedCount = 0;
         int missingAuthCount = 0;
         for (RunnerPreviewRow row : previewRows) {
-            if (row == null) {
-                continue;
-            }
-            if (row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
+            if (row != null && row.unresolvedVariables != null && !row.unresolvedVariables.isEmpty()) {
                 unresolvedCount++;
             }
-            if (row.authStatus == null || row.authStatus.isBlank() || "none".equalsIgnoreCase(row.authStatus)) {
+            if (isRunnerPreviewMissingAuth(row)) {
                 missingAuthCount++;
             }
         }

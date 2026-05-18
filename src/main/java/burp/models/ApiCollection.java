@@ -14,6 +14,8 @@ public class ApiCollection {
     public List<ApiRequest> requests = new ArrayList<>();
     public List<ApiRequest.Variable> variables = new ArrayList<>();
     public Map<String, String> environment = new HashMap<>();
+    /** Collection-level effective auth used as the root Postman auth source. */
+    public ApiRequest.Auth auth;
 
     /** Collection-scoped runtime overrides (Variables tab / env file bound to this collection). */
     public Map<String, String> runtimeVars = new HashMap<>();

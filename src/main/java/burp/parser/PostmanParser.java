@@ -12,6 +12,22 @@ import java.util.*;
 public class PostmanParser implements CollectionParser {
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
+    private static class AuthContext {
+        final ApiRequest.Auth auth;
+        final String source;
+        final boolean explicitNoAuth;
+
+        AuthContext(ApiRequest.Auth auth, String source) {
+            this(auth, source, false);
+        }
+
+        AuthContext(ApiRequest.Auth auth, String source, boolean explicitNoAuth) {
+            this.auth = auth;
+            this.source = source;
+            this.explicitNoAuth = explicitNoAuth;
+        }
+    }
+
     @Override
     public boolean canParse(File file) {
         try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
@@ -74,9 +90,12 @@ public class PostmanParser implements CollectionParser {
         }
 
         // Collection-level auth inheritance
-        ApiRequest.Auth collectionAuth = null;
+        AuthContext collectionAuth = null;
         if (collectionObj.has("auth") && collectionObj.get("auth").isJsonObject()) {
-            collectionAuth = parseAuth(collectionObj.getAsJsonObject("auth"));
+            collection.auth = parseAuth(collectionObj.getAsJsonObject("auth"));
+            if (collection.auth != null && collection.auth.type != null && !"none".equalsIgnoreCase(collection.auth.type)) {
+                collectionAuth = new AuthContext(deepCopyAuth(collection.auth), "collection: " + collection.name);
+            }
         }
 
         // Parse items recursively
@@ -87,16 +106,23 @@ public class PostmanParser implements CollectionParser {
         return collection;
     }
 
-    private void parseItems(JsonArray items, String path, ApiCollection collection, ApiRequest.Auth inheritedAuth) {
+    private void parseItems(JsonArray items, String path, ApiCollection collection, AuthContext inheritedAuth) {
         for (JsonElement elem : items) {
             JsonObject item = elem.getAsJsonObject();
             String name = getString(item, "name", "Unnamed");
             String currentPath = path.isEmpty() ? name : path + "/" + name;
 
             // Folder-level auth overrides collection-level auth
-            ApiRequest.Auth nextInherited = inheritedAuth;
+            AuthContext nextInherited = inheritedAuth;
             if (item.has("auth") && item.get("auth").isJsonObject()) {
-                nextInherited = parseAuth(item.getAsJsonObject("auth"));
+                ApiRequest.Auth folderAuth = parseAuth(item.getAsJsonObject("auth"));
+                if (folderAuth != null) {
+                    if ("none".equalsIgnoreCase(folderAuth.type)) {
+                        nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath, true);
+                    } else if (folderAuth.type != null) {
+                        nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath);
+                    }
+                }
             }
 
             if (item.has("request") && item.get("request").isJsonObject()) {
@@ -121,7 +147,7 @@ public class PostmanParser implements CollectionParser {
         }
     }
 
-    private ApiRequest parseRequest(JsonObject reqObj, String name, String path, ApiRequest.Auth inheritedAuth) {
+    private ApiRequest parseRequest(JsonObject reqObj, String name, String path, AuthContext inheritedAuth) {
         ApiRequest req = new ApiRequest();
         req.name = name;
         req.path = path;
@@ -159,15 +185,44 @@ public class PostmanParser implements CollectionParser {
 
         // Auth (inherit from folder/collection if request has none)
         if (reqObj.has("auth") && reqObj.get("auth").isJsonObject()) {
-            req.auth = parseAuth(reqObj.getAsJsonObject("auth"));
-        }
-        if ((req.auth == null || req.auth.type == null || "none".equals(req.auth.type)) && inheritedAuth != null) {
-            req.auth = deepCopyAuth(inheritedAuth);
+            ApiRequest.Auth explicitAuth = parseAuth(reqObj.getAsJsonObject("auth"));
+            if (explicitAuth == null) {
+                applyInheritedAuth(req, inheritedAuth);
+            } else {
+                req.auth = explicitAuth;
+                req.authInherited = false;
+                req.authSource = "request: " + name;
+                req.authExplicitlyDisabled = "none".equalsIgnoreCase(req.auth.type);
+            }
+        } else {
+            applyInheritedAuth(req, inheritedAuth);
         }
 
         // Events parsed outside parseRequest to allow item-level override
 
         return req;
+    }
+
+    private void applyInheritedAuth(ApiRequest req, AuthContext inheritedAuth) {
+        if (inheritedAuth != null && inheritedAuth.auth != null) {
+            req.auth = deepCopyAuth(inheritedAuth.auth);
+            req.authInherited = true;
+            req.authExplicitlyDisabled = inheritedAuth.explicitNoAuth;
+            req.authSource = inheritedAuth.source;
+        } else {
+            req.auth = null;
+            req.authInherited = false;
+            req.authExplicitlyDisabled = false;
+            req.authSource = "none";
+        }
+
+        if (req.auth == null && inheritedAuth != null && inheritedAuth.explicitNoAuth) {
+            req.auth = new ApiRequest.Auth();
+            req.auth.type = "none";
+            req.authInherited = true;
+            req.authExplicitlyDisabled = true;
+            req.authSource = inheritedAuth.source;
+        }
     }
 
     private void parseEvents(JsonArray events, ApiRequest req) {
@@ -294,6 +349,12 @@ public class PostmanParser implements CollectionParser {
     private ApiRequest.Auth parseAuth(JsonObject authObj) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
         auth.type = getString(authObj, "type", "none");
+        if ("inherit".equalsIgnoreCase(auth.type) || "inheritauth".equalsIgnoreCase(auth.type)) {
+            return null;
+        }
+        if ("noauth".equalsIgnoreCase(auth.type)) {
+            auth.type = "none";
+        }
 
         // Handle array format: [{"key": "token", "value": "abc", "type": "string"}]
         // or object format: {"token": "abc"}

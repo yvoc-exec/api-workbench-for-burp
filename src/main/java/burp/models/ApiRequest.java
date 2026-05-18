@@ -22,6 +22,12 @@ public class ApiRequest {
     public List<Script> postResponseScripts = new ArrayList<>();
     public boolean disabled = false;
     public int sequenceOrder = 0; // for runner ordering
+    /** True when effective auth was inherited from a parent collection/folder auth context. */
+    public boolean authInherited = false;
+    /** True when the request explicitly disabled auth instead of inheriting one. */
+    public boolean authExplicitlyDisabled = false;
+    /** Human-readable source for the effective auth layer. */
+    public String authSource;
 
     public static class Header {
         public String key;
