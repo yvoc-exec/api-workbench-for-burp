@@ -66,12 +66,12 @@ Load multiple collections simultaneously:
 - Checkbox tree shows requests from ALL loaded collections
 - **Source** column identifies which collection each request belongs to
 - Variables are collection-scoped (no cross-collection leakage)
-- Import/Runner operates on selected requests across all collections
+- Import/Runner operates on checked requests across all collections
 
 ### 2.3 Import Destinations
 
 **Repeater Mode**
-- Creates Repeater tabs for each selected request
+- Creates Repeater tabs for each checked request
 - No live HTTP requests made during import
 - Best for: Manual tampering, one-off testing
 
@@ -212,13 +212,13 @@ VariableResolver loads environment variables
 User selects requests + destination (Repeater/Sitemap/Both)
     |
     v
-UnresolvedVariableAnalyzer scans selected requests
+UnresolvedVariableAnalyzer scans checked requests
     |
     v
 If missing variables exist: modal offers cancel, continue, or apply runtime values
     |
     v
-For each selected request:
+For each checked request:
     VariableResolver.resolve(request) -> substitutes {{variables}}
     RequestBuilder.buildRequest(request) -> raw HTTP bytes
     |
@@ -897,11 +897,14 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 - **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution.
 - **Runtime JSON import/export** uses the same collection helper methods so merge/replace operations refresh dependent UI.
 
-### 10.1 Project State Persistence
+### 10.1 Workspace State Persistence
 
-If Burp is using a disk-backed project and API Workbench has no stored persistence choice yet, API Workbench prompts on the first autosave or `Save Now`. `Yes` stores sensitive runtime state in the project file; `No` keeps secrets out of project data and persists only non-sensitive workspace state.
+API Workbench saves its full workspace state through Burp project extension data.
 
-If Burp is running without a project file, Montoya extension data remains memory-only for the session, so the same state behaves like ephemeral workspace state.
+- On a disk-backed Burp project, the workspace is stored with the project and restored the next time that project is opened.
+- On a temporary Burp project, the workspace stays in memory for the current Burp session only.
+- The saved workspace includes loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime/config values, including access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
+- Treat Burp project files as sensitive because API Workbench may store secrets there.
 
 ### 10.2 Autosave
 
@@ -929,12 +932,11 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 ## 11. Security Considerations
 
 ### 11.1 Token Storage
-- **In-memory only** via `ConcurrentHashMap`
-- **Never persisted automatically** to disk, Burp project files, or logs
-- **Workspace persistence is opt-in for sensitive data**: disk-backed projects with no saved choice prompt on the first autosave or `Save Now` before storing secrets, tokens, passwords, or client secrets in the project file
-- **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file
-- **No encryption at rest** (not needed for transient memory)
-- Cleared on extension unload or `OAuth2Manager.clearTokens()`
+- **Live `TokenStore` cache** uses `ConcurrentHashMap` and remains in-memory only.
+- **Workspace snapshots are persistent**: API Workbench stores runtime OAuth2 and runtime variable state in Burp project extension data.
+- **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file.
+- **No encryption at rest** in the workspace layer; Burp project files should be treated as sensitive.
+- Cleared on extension unload or `OAuth2Manager.clearTokens()`.
 
 ### 11.2 Client Secrets
 - Passed as variables (`{{client_secret}}`) - never hardcoded
@@ -968,7 +970,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 | Path traversal prevention for file uploads | File reading requires explicit upload metadata and restricts paths to cwd/home | Implemented |
 | `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | Correct |
 | Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | Security risk |
-| Token storage "never persisted" | Static `ConcurrentHashMap` - survives extension reloads in same JVM but is not written to disk | Accurate with caveat |
+| Token storage "never persisted" | Live `ConcurrentHashMap` cache is in-memory only, but workspace snapshots can mirror OAuth2/runtime secrets into Burp project data | Accurate with caveat |
 | File upload MIME detection | `Files.probeContentType()` is called for explicit file uploads | Implemented |
 | Automated test suite | JUnit 5 + Mockito + AssertJ across parsers, request building, runner behavior, variables, and runtime JSON | Present |
 
@@ -980,7 +982,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
 - **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and runtime JSON.
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
-- **Project-save hook limitation**: Montoya does not expose a Burp “save project” event for this extension, so the opt-in prompt is tied to the first Workbench autosave or `Save Now` on a disk-backed project with no stored choice.
+- **Project-scoped state**: Montoya extension data is scoped to the Burp project/session. Disk-backed projects carry the saved workspace into the next session; temporary projects do not.
 
 ### 12.3 Parser Limitations
 
@@ -999,7 +1001,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 |-------|-------|-------------|
 | "Unknown collection format" | File doesn't match any parser | Check file extension and structure |
 | "Invalid Postman collection" | Missing `info` object | Verify Postman export version |
-| "No requests selected" | Import attempted with 0 checkboxes | Select requests in the Workbench Request Tree checkboxes |
+| "No checked requests" | Import attempted with 0 checkboxes | Check requests in the Workbench Request Tree checkboxes |
 | "DNS failed" | Unknown host | Check network/VPN/proxy |
 | "Connection refused" | Service down or wrong port | Verify target is running |
 | "Connection timeout" | Target unresponsive | Check firewall or increase timeout |

@@ -35,7 +35,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Custom manual variables (Variables tab + OAuth2 tab)
 - Postman-style auth inheritance from collection and folder auth, including explicit no-auth overrides
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
-- Loaded collections and selected-collection runtime state can be restored from Burp project data
+- Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
 - Runtime variable/OAuth2 export and import as JSON for repeat testing
 - Default values: `{{var|default}}`
@@ -44,7 +44,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Unified precedence across Workbench, Import, and Runner flows (see Playbook 4)
 
 ### Collection Runner
-- Execute selected requests **sequentially** like Postman Collection Runner
+- Execute checked requests **sequentially** like Postman Collection Runner
 - Preview the final ordered run before sending, including collection, method, URL preview, unresolved vars, and auth status
 - Configurable **delay between requests** (rate limiting)
 - Configurable **retries** with visible attempt/debug logging
@@ -84,7 +84,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 
-> **Security note:** For any Burp project on disk that does not yet have a stored API Workbench persistence choice, API Workbench prompts on the first autosave or `Save Now`. `Yes` stores sensitive runtime state in the project file; `No` keeps secrets out of project data and persists only non-sensitive workspace state. Temporary projects remain memory-only. Use Export Runtime JSON only when you intentionally want a portable snapshot.
+> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use Export Runtime JSON only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -127,7 +127,7 @@ Extensions -> Add -> Select: target/*-jar-with-dependencies.jar
 1. Click **+ Add Collection** and select your collection file or Bruno folder.
 2. Check requests in the **Workbench** tree (collection, folder, or individual request level).
 3. Check **Repeater** as the destination.
-4. Click **Import Selected**.
+4. Click **Import Checked**.
 5. Find the created tabs in Burp Repeater, edit and send manually.
 
 Repeater is best for manual tampering and iterative payload testing. No live traffic is sent during import.
@@ -135,7 +135,7 @@ Repeater is best for manual tampering and iterative payload testing. No live tra
 ### Playbook 2: Baseline Live Behavior via Sitemap
 1. Check requests in the Workbench tree.
 2. Check **Sitemap** as the destination.
-3. Click **Import Selected**.
+3. Click **Import Checked**.
 4. Imported requests are sent live and responses appear in Target > Sitemap.
 
 Use the delay spinner to pace live traffic and avoid rate-limiting.

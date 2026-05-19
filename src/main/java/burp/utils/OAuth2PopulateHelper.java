@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.models.ApiRequest;
+import burp.parser.VariableResolver;
 
 import java.util.*;
 
@@ -75,6 +76,10 @@ public class OAuth2PopulateHelper {
      * Returns a map of canonical oauth2_* keys to values.
      */
     public static Map<String, String> extractOAuth2Fields(ApiRequest req) {
+        return extractOAuth2Fields(req, null);
+    }
+
+    public static Map<String, String> extractOAuth2Fields(ApiRequest req, VariableResolver resolver) {
         Map<String, String> result = new LinkedHashMap<>();
         if (req == null) return result;
 
@@ -156,6 +161,7 @@ public class OAuth2PopulateHelper {
         }
 
         inferTokenUrlFromRequestUrl(req, result);
+        resolveExtractedValues(result, resolver);
 
         return result;
     }
@@ -179,6 +185,18 @@ public class OAuth2PopulateHelper {
 
     private static boolean isEmpty(String s) {
         return s == null || s.isEmpty();
+    }
+
+    private static void resolveExtractedValues(Map<String, String> values, VariableResolver resolver) {
+        if (values == null || values.isEmpty() || resolver == null) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : new ArrayList<>(values.entrySet())) {
+            String value = entry.getValue();
+            if (value != null && value.contains("{{")) {
+                values.put(entry.getKey(), resolver.resolve(value));
+            }
+        }
     }
 
     private static void inferTokenUrlFromRequestUrl(ApiRequest req, Map<String, String> result) {

@@ -15,7 +15,7 @@ This guide is for operators using API Workbench during API testing, debugging, a
 7. [Collection Runner Tab](#collection-runner-tab)
 8. [Import Destinations](#import-destinations)
 9. [Auth Inheritance](#auth-inheritance)
-10. [Project State Persistence](#project-state-persistence)
+10. [Workspace Persistence](#workspace-persistence)
 11. [Runtime JSON Export and Import](#runtime-json-export-and-import)
 12. [Scripts and Assertions](#scripts-and-assertions)
 13. [Supported Collection Formats](#supported-collection-formats)
@@ -57,8 +57,8 @@ This guide is for operators using API Workbench during API testing, debugging, a
 7. Choose a workflow:
 
    - **Edit/send one request**: click a request, edit it, then click **Send**.
-   - **Create Repeater tabs**: check **Repeater**, then click **Import Selected**.
-   - **Send live baseline traffic**: check **Sitemap (Live)**, then click **Import Selected**.
+   - **Create Repeater tabs**: check **Repeater**, then click **Import Checked**.
+   - **Send live baseline traffic**: check **Sitemap (Live)**, then click **Import Checked**.
    - **Run a chained flow**: switch to **Collection Runner**, click **Preview Run**, then start.
 
 ---
@@ -69,10 +69,10 @@ API Workbench has four operator surfaces:
 
 | Tab | Primary Job |
 |-----|-------------|
-| **Workbench** | Load collections, select requests, edit one request, send/import selected requests |
+| **Workbench** | Load collections, check requests, edit one request, send/import checked requests |
 | **Variables** | Manage collection-scoped runtime variables and runtime JSON files |
 | **OAuth2** | Configure/acquire OAuth2 tokens and bind bearer aliases |
-| **Collection Runner** | Execute selected requests sequentially with preview, retries, stop conditions, and timeline |
+| **Collection Runner** | Execute checked requests sequentially with preview, retries, stop conditions, and timeline |
 
 The extension keeps runtime state scoped per collection. If two loaded collections both use `{{base_url}}`, they can have different values without leaking into each other.
 
@@ -131,8 +131,8 @@ Controls:
 |---------|----------|
 | **+ Add Collection** | Opens a file chooser and imports a collection or Bruno folder |
 | **- Remove Selected** | Removes checked collection nodes from the current workspace |
-| **Select All** | Checks all visible collection/request nodes |
-| **Deselect All** | Unchecks all visible collection/request nodes |
+| **Check All** | Checks all visible collection/request nodes |
+| **Uncheck All** | Unchecks all visible collection/request nodes |
 
 Notes:
 
@@ -189,7 +189,7 @@ Controls:
 | Control | Behavior |
 |---------|----------|
 | **Browse...** | Selects a Postman environment JSON file |
-| **Apply to Selected Collection** | Loads environment values into the selected collection runtime vars |
+| **Apply to Checked Requests** | Loads environment values into the checked requests' local variables |
 | **Apply to All Collections** | Loads environment values into all loaded collections |
 
 Environment binding mutates runtime variables. It can override keys already present in the target runtime layer.
@@ -210,8 +210,8 @@ Buttons:
 
 | Button | Behavior |
 |--------|----------|
-| **Import Selected** | Imports checked requests to selected destinations |
-| **Run Selected** | Sends checked requests to the Collection Runner selection flow |
+| **Import Checked** | Imports checked requests to selected destinations |
+| **Run Checked** | Sends checked requests to the Collection Runner flow |
 
 Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into collection runtime variables.
 
@@ -283,7 +283,7 @@ Controls:
 
 ### Unresolved Variables
 
-Before Workbench send, import, or runner start, API Workbench scans selected requests for unresolved `{{vars}}`.
+Before Workbench send, import, or runner start, API Workbench scans checked requests for unresolved `{{vars}}`.
 
 The modal shows:
 
@@ -323,16 +323,16 @@ Select the collection in the top dropdown. OAuth2 form edits autosave to that co
 
 | Control | Behavior |
 |---------|----------|
-| **Populate from Selected Request** | Extracts OAuth2 fields from checked request into the OAuth2 form |
+| **Populate from Checked Request** | Extracts OAuth2 fields from the checked request and resolves `{{variables}}` from the owning collection context |
 | **Acquire Token** | Requests a token using current OAuth2 settings |
 | **Start Auto Refresh** | Starts collection-scoped refresh loop |
 | **Clear Tokens** | Clears in-memory OAuth2 tokens |
 | **Save Now** | Immediately saves current OAuth2 form values to selected collection |
 | **Bind OAuth2 to All** | Writes current OAuth2 settings to every loaded collection after confirmation |
 
-### Populate from Selected Request
+### Populate from Checked Request
 
-The populate button checks the selected request and extracts:
+The populate button checks the currently checked request and extracts:
 
 - Grant type
 - Token URL from auth metadata
@@ -346,6 +346,8 @@ The populate button checks the selected request and extracts:
 - Redirect URI
 - Client auth mode
 
+Placeholders inside extracted OAuth2 values are resolved using the checked request's owning collection context first. That includes collection environment values, collection variables, runtime OAuth2 values, runtime variables, and request variables.
+
 Token URL inference is conservative. It uses signals such as:
 
 - URL path contains `/token`, `/oauth/token`, `/oauth2/token`, `/connect/token`, or `/auth/token`
@@ -354,6 +356,8 @@ Token URL inference is conservative. It uses signals such as:
 - Body contains OAuth field names such as `grant_type`, `client_id`, `client_secret`, `refresh_token`, `code`, or `code_verifier`
 
 Explicit token URL metadata wins and is not overwritten by inference.
+
+If any placeholders remain unresolved after populate, the Workbench log reports the missing variable names so you can bind or edit them before acquiring a token.
 
 ### Acquire Token
 
@@ -504,7 +508,7 @@ Sitemap sends the request live once and stores the response.
 Use Intruder when:
 
 - You want to configure payload positions.
-- You want to fuzz a selected request after import.
+- You want to fuzz a checked request after import.
 
 ---
 
@@ -531,27 +535,14 @@ Runner preview and Workbench Meta show auth source so you can see why a request 
 
 ---
 
-## Project State Persistence
+## Workspace Persistence
 
-When Burp uses a project on disk, API Workbench saves workspace state through Montoya extension data.
+API Workbench saves its full workspace state through Burp project extension data.
 
-Persisted by default:
-
-- Loaded collections
-- Request metadata
-- Non-sensitive runtime variables
-- Non-sensitive OAuth2 runtime settings
-
-Not persisted by default:
-
-- Access tokens
-- Refresh tokens
-- ID tokens
-- Client secrets
-- Passwords
-- Secret-like runtime keys such as `api_key`, `token`, `authorization`, `password`, `secret`
-
-Temporary Burp projects behave like memory-only workspaces. State disappears when Burp exits.
+- Disk-backed Burp projects restore the saved workspace next time the project is opened.
+- Temporary Burp projects keep the workspace only for the current in-memory Burp session.
+- Saved workspace state includes loaded collections, request tree checks/selections, runtime variables, OAuth2 runtime/config values, access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
+- Treat Burp project files as sensitive because API Workbench may store secrets there.
 
 ---
 
@@ -659,7 +650,7 @@ Multipart file uploads only read local files when the field is explicitly marked
 1. Load collection.
 2. Check target requests.
 3. Select **Repeater**.
-4. Click **Import Selected**.
+4. Click **Import Checked**.
 5. Edit requests in Repeater.
 
 Use when you are exploring manually.
@@ -670,7 +661,7 @@ Use when you are exploring manually.
 2. Check endpoints.
 3. Set delay to a safe value.
 4. Select **Sitemap (Live)**.
-5. Click **Import Selected**.
+5. Click **Import Checked**.
 
 Use when you want Burp Target populated. This sends live traffic.
 
@@ -690,10 +681,11 @@ Use when you want Burp Target populated. This sends live traffic.
 1. Check the token request in the Workbench tree.
 2. Open OAuth2 tab.
 3. Select the target collection.
-4. Click **Populate from Selected Request**.
+4. Click **Populate from Checked Request**.
 5. Confirm Token URL, Client ID, Grant Type.
-6. Click **Acquire Token**.
-7. If prompted, bind bearer aliases such as `accessToken` or `auth_token`.
+6. Check the log for any unresolved variable names if the request used placeholders.
+7. Click **Acquire Token**.
+8. If prompted, bind bearer aliases such as `accessToken` or `auth_token`.
 
 ### Scenario: Requests Use Non-Standard Bearer Variable Names
 
@@ -731,7 +723,7 @@ Options:
 | Unknown collection format | Unsupported file or wrong export shape | Re-export as supported format |
 | Invalid Postman collection | Missing `info` object | Export as Postman collection v2.1 |
 | Duplicate collection name | Same name already loaded | Rename one collection before loading |
-| No requests selected | Nothing checked in tree | Check request/folder/collection nodes |
+| No checked requests | Nothing checked in tree | Check request/folder/collection nodes |
 
 ### Variable Errors
 
@@ -786,7 +778,7 @@ Options:
 
 - **Sitemap and Runner send live traffic.** Use delay and stop conditions when testing production-like systems.
 - **Scripts are not sandboxed.** Collection scripts can access Java classes through Nashorn. Only run trusted scripts.
-- **Tokens are memory-only by default.** Project snapshots do not persist OAuth access/refresh tokens by default.
+- **Project snapshots can contain tokens and secrets.** Live token cache is memory-only, but Burp project data can store OAuth access/refresh tokens and other secret values.
 - **Runtime JSON can contain secrets.** Treat exported files as sensitive.
 - **Authorization Code callback uses localhost port 9876.** Ensure redirect URI matches.
 - **File uploads are explicit only.** Path-like text values are not read as files unless the field is marked as a file upload.
@@ -831,4 +823,3 @@ Options:
 - [ ] Include Workbench Meta output if relevant.
 - [ ] Include Burp extension log lines.
 - [ ] State whether the Burp project is temporary or on disk.
-

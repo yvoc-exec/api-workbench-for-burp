@@ -56,7 +56,7 @@ public class ImporterPanel {
     private JButton importBtn, sendToRunnerBtn, addCollectionBtn, removeCollectionBtn;
     private JCheckBox debugRawRequestBox;
     private JTextField envField;
-    private JButton envBrowseBtn, envApplySelectedBtn, envApplyAllBtn;
+    private JButton envBrowseBtn, envApplyCheckedBtn, envApplyAllBtn;
     private RequestEditorPanel requestEditor;
     private JTabbedPane workbenchDetailTabs;
     private HttpRequestEditor workbenchRequestEditor;
@@ -122,6 +122,8 @@ public class ImporterPanel {
 
     // Workspace persistence callback
     private Runnable workspaceChangeListener;
+    private boolean suppressWorkspaceChangeNotifications = false;
+    private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
 
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
@@ -143,7 +145,7 @@ public class ImporterPanel {
         this.runner = runner;
         this.mainPanel = createUI();
         if (oauth2Panel.getPopulateButton() != null) {
-            oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromSelectedRequest());
+            oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromCheckedRequest());
         }
     }
 
@@ -152,11 +154,23 @@ public class ImporterPanel {
     }
 
     private void notifyWorkspaceChanged() {
-        if (shuttingDown) {
+        if (shuttingDown || suppressWorkspaceChangeNotifications) {
             return;
         }
         if (workspaceChangeListener != null) {
             workspaceChangeListener.run();
+        }
+    }
+
+    private void runWithWorkspaceChangeNotificationsSuppressed(Runnable action) {
+        boolean previous = suppressWorkspaceChangeNotifications;
+        suppressWorkspaceChangeNotifications = true;
+        try {
+            if (action != null) {
+                action.run();
+            }
+        } finally {
+            suppressWorkspaceChangeNotifications = previous;
         }
     }
 
@@ -260,9 +274,9 @@ public class ImporterPanel {
 
         // Select controls
         JPanel selectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton selectAllBtn = new JButton("Select All");
+        JButton selectAllBtn = new JButton("Check All");
         selectAllBtn.addActionListener(e -> setTreeCheckState(true));
-        JButton deselectAllBtn = new JButton("Deselect All");
+        JButton deselectAllBtn = new JButton("Uncheck All");
         deselectAllBtn.addActionListener(e -> setTreeCheckState(false));
         selectPanel.add(selectAllBtn);
         selectPanel.add(deselectAllBtn);
@@ -308,16 +322,16 @@ public class ImporterPanel {
         envField.setEditable(false);
         envBrowseBtn = new JButton("Browse...");
         envBrowseBtn.addActionListener(e -> selectEnvironment());
-        envApplySelectedBtn = new JButton("Apply to Selected Collection");
-        envApplySelectedBtn.setEnabled(false);
-        envApplySelectedBtn.addActionListener(e -> applyEnvToSelectedCollection());
+        envApplyCheckedBtn = new JButton("Apply to Checked Requests");
+        envApplyCheckedBtn.setEnabled(false);
+        envApplyCheckedBtn.addActionListener(e -> applyEnvToCheckedRequests());
         envApplyAllBtn = new JButton("Apply to All Collections");
         envApplyAllBtn.setEnabled(false);
         envApplyAllBtn.addActionListener(e -> applyEnvToAllCollections());
         panel.add(new JLabel("Env:"));
         panel.add(envField);
         panel.add(envBrowseBtn);
-        panel.add(envApplySelectedBtn);
+        panel.add(envApplyCheckedBtn);
         panel.add(envApplyAllBtn);
         return panel;
     }
@@ -344,12 +358,12 @@ public class ImporterPanel {
         actionPanel.add(debugRawRequestBox);
         panel.add(actionPanel);
 
-        // Import / Run Selected buttons
+        // Import / Run Checked buttons
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 2));
-        importBtn = new JButton("Import Selected");
+        importBtn = new JButton("Import Checked");
         importBtn.setEnabled(false);
         importBtn.addActionListener(e -> startImport());
-        sendToRunnerBtn = new JButton("Run Selected");
+        sendToRunnerBtn = new JButton("Run Checked");
         sendToRunnerBtn.setEnabled(false);
         sendToRunnerBtn.addActionListener(e -> sendToRunner());
 
@@ -386,7 +400,7 @@ public class ImporterPanel {
         }
         ApiCollection col = requestEditor.getCurrentCollection();
         if (col == null) {
-            appendImportLog("Send failed: no collection context is bound to the selected request.");
+            appendImportLog("Send failed: no collection context is bound to the current request.");
             return;
         }
         final ApiCollection resolvedCol = col;
@@ -955,18 +969,56 @@ public class ImporterPanel {
     }
 
     private void rebuildTree() {
+        rebuildTree(pendingWorkspaceRequestTreePaths);
+    }
+
+    private void rebuildTree(Map<String, String> requestTreePaths) {
         requestToCollectionMap.clear();
+        DefaultMutableTreeNode root = buildRequestTreeRoot(loadedCollections, requestTreePaths, requestToCollectionMap);
+        treeModel.setRoot(root);
+        for (int i = 0; i < requestTree.getRowCount(); i++) {
+            requestTree.expandRow(i);
+        }
+    }
+
+    static DefaultMutableTreeNode buildRequestTreeRoot(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
+        return buildRequestTreeRoot(collections, requestTreePaths, null);
+    }
+
+    static DefaultMutableTreeNode buildRequestTreeRoot(List<ApiCollection> collections,
+                                                       Map<String, String> requestTreePaths,
+                                                       Map<ApiRequest, ApiCollection> requestToCollectionMap) {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode("Collections");
-        for (ApiCollection col : loadedCollections) {
+        if (collections == null) {
+            return root;
+        }
+        for (ApiCollection col : collections) {
+            if (col == null) {
+                continue;
+            }
             CollectionTreeNode colNode = new CollectionTreeNode(col);
             root.add(colNode);
-            for (ApiRequest req : col.requests) {
-                requestToCollectionMap.put(req, col);
-                String path = req.path != null ? req.path : "";
+            if (col.requests == null) {
+                continue;
+            }
+            for (int requestIndex = 0; requestIndex < col.requests.size(); requestIndex++) {
+                ApiRequest req = col.requests.get(requestIndex);
+                if (req == null) {
+                    continue;
+                }
+                if (requestToCollectionMap != null) {
+                    requestToCollectionMap.put(req, col);
+                }
+                String path = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, col, req, requestIndex);
+                if (path == null) {
+                    path = req.path != null ? req.path : "";
+                }
                 String[] parts = path.split("/");
                 java.util.List<String> segments = new java.util.ArrayList<>();
                 for (String p : parts) {
-                    if (!p.isEmpty()) segments.add(p);
+                    if (!p.isEmpty()) {
+                        segments.add(p);
+                    }
                 }
                 boolean lastIsRequestName = !segments.isEmpty() && segments.get(segments.size() - 1).equals(req.name);
                 int folderCount = lastIsRequestName ? segments.size() - 1 : segments.size();
@@ -974,20 +1026,39 @@ public class ImporterPanel {
                 CollectionTreeNode parent = colNode;
                 StringBuilder cumulative = new StringBuilder();
                 for (int i = 0; i < folderCount; i++) {
-                    if (cumulative.length() > 0) cumulative.append("/");
+                    if (cumulative.length() > 0) {
+                        cumulative.append("/");
+                    }
                     cumulative.append(segments.get(i));
-                    parent = getOrCreateFolderNode(parent, segments.get(i), cumulative.toString());
+                    parent = getOrCreateFolderNode(parent, cumulative.toString());
                 }
                 parent.add(new CollectionTreeNode(req));
             }
         }
-        treeModel.setRoot(root);
-        for (int i = 0; i < requestTree.getRowCount(); i++) {
-            requestTree.expandRow(i);
-        }
+        return root;
     }
 
-    private CollectionTreeNode getOrCreateFolderNode(CollectionTreeNode parent, String segment, String cumulativePath) {
+    static String lookupWorkspaceRequestTreeFolderPath(Map<String, String> requestTreePaths,
+                                                       ApiCollection collection,
+                                                       ApiRequest request,
+                                                       int requestIndex) {
+        if (requestTreePaths == null || request == null) {
+            return null;
+        }
+        String collectionName = collection != null ? collection.name : request.sourceCollection;
+        String indexedKey = workspaceRequestIdentityKey(collectionName, request, requestIndex);
+        if (requestTreePaths.containsKey(indexedKey)) {
+            return requestTreePaths.get(indexedKey);
+        }
+
+        String legacyKey = workspaceRequestIdentityKey(collectionName, request);
+        if (requestTreePaths.containsKey(legacyKey)) {
+            return requestTreePaths.get(legacyKey);
+        }
+        return null;
+    }
+
+    private static CollectionTreeNode getOrCreateFolderNode(CollectionTreeNode parent, String cumulativePath) {
         for (int i = 0; i < parent.getChildCount(); i++) {
             Object child = parent.getChildAt(i);
             if (child instanceof CollectionTreeNode) {
@@ -1013,7 +1084,7 @@ public class ImporterPanel {
         updateScopeControlState();
     }
 
-    private List<ApiRequest> getSelectedRequestsFromTree() {
+    private List<ApiRequest> getCheckedRequestsFromTree() {
         List<ApiRequest> selected = new ArrayList<>();
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         enumerateCheckedRequests(root, selected);
@@ -1617,7 +1688,85 @@ public class ImporterPanel {
     }
 
     public List<ApiCollection> getLoadedCollectionsSnapshot() {
-        return new ArrayList<>(loadedCollections);
+        return WorkspaceState.fromCollections(loadedCollections).collections;
+    }
+
+    public WorkspaceState getWorkspaceStateSnapshot() {
+        runWithWorkspaceChangeNotificationsSuppressed(this::persistVariablesEditorStateSilently);
+
+        WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
+        state.requestTreePaths = collectRequestTreePaths();
+        if (tabbedPane != null) {
+            state.selectedTabIndex = tabbedPane.getSelectedIndex();
+        }
+        state.selectedVariablesCollectionName = getSelectedCollectionName(varsCollectionCombo);
+        state.selectedOAuth2CollectionName = getSelectedCollectionName(oauth2CollectionCombo);
+
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
+        if (selectedNode != null && selectedNode.request != null) {
+            ApiCollection selectedCollection = findCollectionForNode(selectedNode);
+            state.selectedRequestCollectionName = selectedCollection != null ? selectedCollection.name : selectedNode.request.sourceCollection;
+            state.selectedRequestName = selectedNode.request.name;
+            state.selectedRequestPath = selectedNode.request.path;
+        }
+
+        state.checkedRequestKeys = collectCheckedRequestKeys();
+        state.expandedTreePathKeys = new ArrayList<>();
+        return state;
+    }
+
+    public void restoreWorkspaceState(WorkspaceState state) {
+        if (state == null || state.collections == null || state.collections.isEmpty()) {
+            return;
+        }
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+            pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
+                    ? new LinkedHashMap<>(state.requestTreePaths)
+                    : Collections.emptyMap();
+            try {
+                restoreWorkspaceCollections(state.collections);
+                selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
+                selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
+                restoreCheckedRequestKeys(state.checkedRequestKeys);
+                restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestPath, state.selectedRequestName);
+                if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
+                    int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
+                    tabbedPane.setSelectedIndex(index);
+                }
+            } finally {
+                pendingWorkspaceRequestTreePaths = Collections.emptyMap();
+            }
+        });
+    }
+
+    static void applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
+        if (collections == null || collections.isEmpty()) {
+            return;
+        }
+        for (ApiCollection collection : collections) {
+            if (collection == null || collection.requests == null || collection.requests.isEmpty()) {
+                continue;
+            }
+            for (int requestIndex = 0; requestIndex < collection.requests.size(); requestIndex++) {
+                ApiRequest request = collection.requests.get(requestIndex);
+                if (request == null) {
+                    continue;
+                }
+                String folderPath = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collection, request, requestIndex);
+                if (folderPath == null) {
+                    continue;
+                }
+                String requestName = request.name != null ? request.name : "";
+                if (folderPath.isBlank()) {
+                    request.path = requestName;
+                } else if (requestName.isBlank()) {
+                    request.path = folderPath;
+                } else {
+                    request.path = folderPath + "/" + requestName;
+                }
+            }
+        }
     }
 
     public void restoreWorkspaceCollections(List<ApiCollection> collections) {
@@ -1628,11 +1777,11 @@ public class ImporterPanel {
         requestToCollectionMap.clear();
         if (collections != null) {
             for (ApiCollection col : collections) {
-                if (col == null) {
-                    continue;
-                }
-                loadedCollections.add(col);
-                registerCollectionRuntimeListener(col);
+            if (col == null) {
+                continue;
+            }
+            loadedCollections.add(col);
+            registerCollectionRuntimeListener(col);
                 if (col.requests != null) {
                     for (ApiRequest req : col.requests) {
                         requestToCollectionMap.put(req, col);
@@ -1641,10 +1790,227 @@ public class ImporterPanel {
                 }
             }
         }
-        rebuildTree();
+        rebuildTree(pendingWorkspaceRequestTreePaths);
         refreshCollectionCombos();
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
+    }
+
+    static String workspaceRequestIdentityKey(String collectionName, ApiRequest request, int requestIndex) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(collectionName != null ? collectionName : "");
+        builder.append('\u001F');
+        if (request != null) {
+            if (request.id != null && !request.id.isBlank()) {
+                builder.append("id=").append(request.id.trim());
+            } else {
+                builder.append("index=").append(requestIndex);
+                builder.append('\u001F').append("method=").append(request.method != null ? request.method : "");
+                builder.append('\u001F').append("name=").append(request.name != null ? request.name : "");
+                builder.append('\u001F').append("url=").append(request.url != null ? request.url : "");
+            }
+        }
+        return builder.toString();
+    }
+
+    static String workspaceRequestIdentityKey(String collectionName, ApiRequest request) {
+        return workspaceRequestIdentityKey(collectionName, request, request != null ? request.sequenceOrder : -1);
+    }
+
+    static String workspaceRequestKey(String collectionName, ApiRequest request) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(collectionName != null ? collectionName : "");
+        builder.append('\u001F');
+        if (request != null) {
+            builder.append(request.path != null ? request.path : "");
+            builder.append('\u001F');
+            builder.append(request.name != null ? request.name : "");
+            builder.append('\u001F');
+            builder.append(request.method != null ? request.method : "");
+            builder.append('\u001F');
+            builder.append(request.sequenceOrder);
+        }
+        return builder.toString();
+    }
+
+    private Map<String, String> collectRequestTreePaths() {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return out;
+        }
+        collectRequestTreePaths((DefaultMutableTreeNode) treeModel.getRoot(), null, "", out);
+        return out;
+    }
+
+    private void collectRequestTreePaths(DefaultMutableTreeNode node,
+                                        ApiCollection collection,
+                                        String folderPath,
+                                        Map<String, String> out) {
+        ApiCollection currentCollection = collection;
+        String currentFolderPath = folderPath != null ? folderPath : "";
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollection = ctn.collection != null ? ctn.collection : collection;
+                currentFolderPath = "";
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                currentFolderPath = ctn.folderPath != null ? ctn.folderPath : currentFolderPath;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
+                int requestIndex = currentCollection != null && currentCollection.requests != null
+                        ? currentCollection.requests.indexOf(ctn.request)
+                        : -1;
+                String key = requestIndex >= 0
+                        ? workspaceRequestIdentityKey(currentCollection != null ? currentCollection.name : ctn.request.sourceCollection, ctn.request, requestIndex)
+                        : workspaceRequestIdentityKey(currentCollection != null ? currentCollection.name : ctn.request.sourceCollection, ctn.request);
+                out.put(key, currentFolderPath);
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectRequestTreePaths((DefaultMutableTreeNode) node.getChildAt(i), currentCollection, currentFolderPath, out);
+        }
+    }
+
+    private String getSelectedCollectionName(JComboBox<CollectionRef> combo) {
+        CollectionRef ref = combo != null && combo.getSelectedItem() != null ? (CollectionRef) combo.getSelectedItem() : null;
+        return ref != null && ref.collection != null ? ref.collection.name : null;
+    }
+
+    private boolean selectCollectionByName(JComboBox<CollectionRef> combo, String collectionName) {
+        if (combo == null || collectionName == null) {
+            return false;
+        }
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            CollectionRef ref = combo.getItemAt(i);
+            if (ref != null && ref.collection != null && Objects.equals(collectionName, ref.collection.name)) {
+                combo.setSelectedIndex(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private CollectionTreeNode getSelectedRequestTreeNode() {
+        if (requestTree == null) {
+            return null;
+        }
+        TreePath selection = requestTree.getSelectionPath();
+        if (selection == null) {
+            return null;
+        }
+        Object node = selection.getLastPathComponent();
+        return node instanceof CollectionTreeNode ? (CollectionTreeNode) node : null;
+    }
+
+    private List<String> collectCheckedRequestKeys() {
+        List<String> keys = new ArrayList<>();
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return keys;
+        }
+        collectCheckedRequestKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, keys);
+        return keys;
+    }
+
+    private void collectCheckedRequestKeys(DefaultMutableTreeNode node, String collectionName, List<String> out) {
+        String currentCollectionName = collectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollectionName = ctn.collection != null ? ctn.collection.name : collectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.isChecked() && ctn.request != null) {
+                out.add(workspaceRequestKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectCheckedRequestKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollectionName, out);
+        }
+    }
+
+    private void restoreCheckedRequestKeys(List<String> checkedKeys) {
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return;
+        }
+        Set<String> keySet = checkedKeys != null ? new LinkedHashSet<>(checkedKeys) : Collections.emptySet();
+        applyCheckedRequestKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, keySet);
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            Object child = root.getChildAt(i);
+            if (child instanceof CollectionTreeNode) {
+                ((CollectionTreeNode) child).updateParentCheckState();
+            }
+        }
+        requestTree.repaint();
+        updateScopeControlState();
+    }
+
+    private void applyCheckedRequestKeys(DefaultMutableTreeNode node, String collectionName, Set<String> checkedKeys) {
+        String currentCollectionName = collectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollectionName = ctn.collection != null ? ctn.collection.name : collectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
+                String key = workspaceRequestKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request);
+                ctn.setChecked(checkedKeys.contains(key));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            applyCheckedRequestKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollectionName, checkedKeys);
+        }
+    }
+
+    private void restoreSelectedRequest(String collectionName, String requestPath, String requestName) {
+        if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
+            return;
+        }
+        TreePath path = findRequestTreePath((DefaultMutableTreeNode) treeModel.getRoot(), collectionName, requestPath, requestName, null);
+        if (path != null) {
+            requestTree.setSelectionPath(path);
+            requestTree.scrollPathToVisible(path);
+        }
+    }
+
+    private TreePath findRequestTreePath(DefaultMutableTreeNode node,
+                                         String collectionName,
+                                         String requestPath,
+                                         String requestName,
+                                         String currentCollectionName) {
+        String nextCollectionName = currentCollectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                nextCollectionName = ctn.collection != null ? ctn.collection.name : currentCollectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null
+                    && matchesRequestSelection(nextCollectionName, ctn.request, collectionName, requestPath, requestName)) {
+                return new TreePath(ctn.getPath());
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            TreePath path = findRequestTreePath((DefaultMutableTreeNode) node.getChildAt(i), collectionName, requestPath, requestName, nextCollectionName);
+            if (path != null) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesRequestSelection(String nodeCollectionName,
+                                            ApiRequest request,
+                                            String collectionName,
+                                            String requestPath,
+                                            String requestName) {
+        if (request == null) {
+            return false;
+        }
+        if (collectionName != null && !Objects.equals(collectionName, nodeCollectionName)) {
+            return false;
+        }
+        if (requestPath != null && !Objects.equals(requestPath, request.path)) {
+            return false;
+        }
+        if (requestName != null && !Objects.equals(requestName, request.name)) {
+            return false;
+        }
+        return true;
     }
 
     private void refreshCollectionCombos() {
@@ -1736,9 +2102,9 @@ public class ImporterPanel {
             }
         }
 
-        // Env apply selected requires one or more checked collection nodes
-        if (requestTree != null && envApplySelectedBtn != null) {
-            envApplySelectedBtn.setEnabled(!getCheckedCollectionsFromTree().isEmpty() && !loadedCollections.isEmpty());
+        // Env apply checked requires one or more checked requests
+        if (requestTree != null && envApplyCheckedBtn != null) {
+            envApplyCheckedBtn.setEnabled(!getCheckedRequestsFromTree().isEmpty() && !loadedCollections.isEmpty());
         }
     }
 
@@ -1754,28 +2120,74 @@ public class ImporterPanel {
         }
     }
 
-    private void applyEnvToSelectedCollection() {
+    static int applyEnvVarsToRequestVariables(ApiRequest request, Map<String, String> envVars) {
+        if (request == null || envVars == null || envVars.isEmpty()) {
+            return 0;
+        }
+        if (request.variables == null) {
+            request.variables = new ArrayList<>();
+        }
+
+        Map<String, ApiRequest.Variable> byKey = new LinkedHashMap<>();
+        for (ApiRequest.Variable variable : request.variables) {
+            if (variable != null && variable.key != null) {
+                byKey.put(variable.key, variable);
+            }
+        }
+
+        int changed = 0;
+        for (Map.Entry<String, String> entry : envVars.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            ApiRequest.Variable variable = byKey.get(key);
+            if (variable == null) {
+                variable = new ApiRequest.Variable();
+                variable.key = key;
+                request.variables.add(variable);
+                byKey.put(key, variable);
+            }
+            variable.value = entry.getValue();
+            variable.enabled = true;
+            changed++;
+        }
+        return changed;
+    }
+
+    private void applyEnvToCheckedRequests() {
         if (selectedEnv == null) {
             appendImportLog("No environment file selected. Browse first.");
             return;
         }
-        List<ApiCollection> targets = getCheckedCollectionsFromTree();
+        List<ApiRequest> targets = getCheckedRequestsFromTree();
         if (targets.isEmpty()) {
-            appendImportLog("No checked collection nodes. Check one or more collections to bind env.");
+            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
             return;
         }
-        int totalLoaded = 0;
-        for (ApiCollection target : targets) {
-            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, target.runtimeVars);
-            if (result.isSuccess()) {
-                totalLoaded += result.loadedCount;
-                appendImportLog("Env bound to collection \"" + target.name + "\": " + result.loadedCount + " var(s).");
-            } else {
-                appendImportLog("Env bind FAILED for \"" + target.name + "\": " + result.errorMessage);
-            }
-            target.fireChanged();
+        Map<String, String> parsed = new LinkedHashMap<>();
+        UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, parsed);
+        if (!result.isSuccess()) {
+            appendImportLog("Env bind FAILED for checked requests: " + result.errorMessage);
+            return;
         }
-        appendImportLog("Env bind complete for " + targets.size() + " checked collection(s): " + totalLoaded + " var(s) total.");
+        Set<ApiCollection> affectedCollections = new LinkedHashSet<>();
+        int totalApplied = 0;
+        for (ApiRequest request : targets) {
+            totalApplied += applyEnvVarsToRequestVariables(request, parsed);
+            ApiCollection collection = requestToCollectionMap.get(request);
+            if (collection == null) {
+                collection = findCollectionByName(request.sourceCollection);
+            }
+            if (collection != null) {
+                affectedCollections.add(collection);
+            }
+        }
+        appendImportLog("Env bound to " + targets.size() + " checked request(s): " + totalApplied + " var(s) total.");
+        for (ApiCollection collection : affectedCollections) {
+            refreshRuntimeViewsForCollection(collection);
+        }
+        notifyWorkspaceChanged();
         renderEffectiveVariablesForSelectedCollection();
     }
 
@@ -1987,9 +2399,9 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        List<ApiRequest> selected = getSelectedRequestsFromTree();
+        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty()) {
-            appendImportLog("No requests selected.");
+            appendImportLog("No checked requests.");
             return;
         }
         List<String> destinations = new ArrayList<>();
@@ -2034,9 +2446,9 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        List<ApiRequest> selected = getSelectedRequestsFromTree();
+        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty()) {
-            appendImportLog("No requests selected to send to runner.");
+            appendImportLog("No checked requests to send to runner.");
             return;
         }
         switchToTabByName("Collection Runner");
@@ -2056,7 +2468,7 @@ public class ImporterPanel {
     // Runner
     // ========================================================================
     private void startRunner(boolean showPreviewDialog) {
-        List<ApiRequest> selected = getSelectedRequestsFromTree();
+        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests to run. Load collections first.");
             return;
@@ -2331,10 +2743,10 @@ public class ImporterPanel {
     }
 
     // ========================================================================
-    // Populate OAuth2 from selected request
+    // Populate OAuth2 from checked request
     // ========================================================================
-    private void populateOAuth2FromSelectedRequest() {
-        List<ApiRequest> selected = getSelectedRequestsFromTree();
+    private void populateOAuth2FromCheckedRequest() {
+        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty()) {
             appendImportLog("Populate OAuth2: No checked request. Check at least one request node.");
             return;
@@ -2343,14 +2755,101 @@ public class ImporterPanel {
             appendImportLog("Populate OAuth2: Multiple checked requests; using first in tree order: \"" + selected.get(0).name + "\".");
         }
         ApiRequest req = selected.get(0);
-        Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req);
+        ApiCollection owningCollection = requestToCollectionMap.get(req);
+        if (owningCollection == null) {
+            owningCollection = findCollectionByName(req.sourceCollection);
+        }
+
+        VariableResolver populateResolver = buildOAuth2PopulateResolver(owningCollection, req);
+        Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
         if (extracted.isEmpty()) {
-            appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data.");
+            appendImportLog("Populate OAuth2: Checked request has no OAuth2-relevant data.");
             return;
         }
-        Map<String, String> merged = burp.utils.OAuth2PopulateHelper.mergeWithExisting(extracted, parseEnvVarsMap());
+
+        Map<String, String> existing = owningCollection != null
+                ? buildOAuth2PopulateExistingVars(owningCollection)
+                : parseEnvVarsMap();
+        Map<String, String> merged = burp.utils.OAuth2PopulateHelper.mergeWithExisting(extracted, existing);
         oauth2Panel.populateFromOAuth2Map(merged);
-        appendImportLog("Populate OAuth2: Filled " + extracted.size() + " field(s) from request \"" + req.name + "\".");
+
+        String collectionName = owningCollection != null && owningCollection.name != null ? owningCollection.name : "unknown collection";
+        appendImportLog("Populate OAuth2: Filled " + extracted.size() + " field(s) from request \"" + req.name
+                + "\" using collection \"" + collectionName + "\".");
+
+        List<String> unresolved = collectUnresolvedOAuth2PopulateVariables(extracted);
+        if (!unresolved.isEmpty()) {
+            appendImportLog("Populate OAuth2: Unresolved variable(s) remain: " + String.join(", ", unresolved) + ".");
+        }
+    }
+
+    static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
+        VariableResolver resolver = new VariableResolver();
+        if (collection != null) {
+            resolver.addEnvironmentVariables(collection);
+            resolver.addCollectionVariables(collection);
+            if (collection.runtimeOAuth2 != null) {
+                resolver.addAll(collection.runtimeOAuth2);
+            }
+            if (collection.runtimeVars != null) {
+                resolver.addAll(collection.runtimeVars);
+            }
+        }
+        if (request != null) {
+            resolver.addRequestVariables(request);
+        }
+        return resolver;
+    }
+
+    static List<String> collectUnresolvedOAuth2PopulateVariables(Map<String, String> fields) {
+        Set<String> unresolved = new TreeSet<>();
+        if (fields == null || fields.isEmpty()) {
+            return new ArrayList<>();
+        }
+        VariableResolver resolver = new VariableResolver();
+        for (String value : fields.values()) {
+            if (value == null || value.isBlank()) {
+                continue;
+            }
+            unresolved.addAll(resolver.findUnresolvedVariables(value));
+        }
+        return new ArrayList<>(unresolved);
+    }
+
+    static Map<String, String> buildOAuth2PopulateExistingVars(ApiCollection collection) {
+        Map<String, String> existing = new LinkedHashMap<>();
+        if (collection == null) {
+            return existing;
+        }
+        if (collection.environment != null) {
+            existing.putAll(collection.environment);
+        }
+        if (collection.variables != null) {
+            for (ApiRequest.Variable variable : collection.variables) {
+                if (variable != null && variable.enabled && variable.key != null && variable.value != null) {
+                    existing.put(variable.key, variable.value);
+                }
+            }
+        }
+        if (collection.runtimeOAuth2 != null) {
+            existing.putAll(collection.runtimeOAuth2);
+        }
+        if (collection.runtimeVars != null) {
+            existing.putAll(collection.runtimeVars);
+        }
+        return existing;
+    }
+
+    private ApiCollection findCollectionByName(String name) {
+        if (name == null) {
+            return null;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection != null && Objects.equals(name, collection.name)) {
+                return collection;
+            }
+        }
+        return null;
     }
 
     private OAuthAutoRefreshState getAutoState(ApiCollection col) {
@@ -2545,7 +3044,24 @@ public class ImporterPanel {
             return;
         }
         Map<String, String> vars = parseRuntimeOverrideSection();
-        ref.collection.replaceRuntimeVars(vars);
+        silentlyReplaceRuntimeVars(ref.collection, vars);
+    }
+
+    static void silentlyReplaceRuntimeVars(ApiCollection collection, Map<String, String> vars) {
+        if (collection == null) {
+            return;
+        }
+        Map<String, String> current = collection.runtimeVars;
+        Map<String, String> next = vars != null ? new LinkedHashMap<>(vars) : new LinkedHashMap<>();
+        if (current == null) {
+            collection.runtimeVars = new LinkedHashMap<>(next);
+            return;
+        }
+        if (current.equals(next)) {
+            return;
+        }
+        current.clear();
+        current.putAll(next);
     }
 
     // ========================================================================

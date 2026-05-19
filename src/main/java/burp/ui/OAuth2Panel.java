@@ -160,7 +160,7 @@ public class OAuth2Panel extends JPanel {
         btnPanel.add(acquireBtn);
         btnPanel.add(refreshBtn);
         btnPanel.add(clearBtn);
-        populateBtn = new JButton("Populate from Selected Request");
+        populateBtn = new JButton("Populate from Checked Request");
         btnPanel.add(populateBtn);
         gbc.gridy = 11;
         panel.add(btnPanel, gbc);
