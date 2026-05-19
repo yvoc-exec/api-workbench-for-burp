@@ -253,6 +253,7 @@ public class ImporterPanel {
         requestTree.addMouseListener(new TreeMouseListener());
         requestTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         requestTree.addTreeSelectionListener(e -> {
+            persistCurrentRequestEditorState();
             TreePath path = requestTree.getSelectionPath();
             if (path != null) {
                 Object node = path.getLastPathComponent();
@@ -393,19 +394,25 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
+        ApiRequest liveRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
+        ApiCollection col = requestEditor != null ? requestEditor.getCurrentCollection() : null;
         ApiRequest edited = requestEditor.buildRequestFromUI();
-        if (edited == null) {
+        if (edited == null || liveRequest == null) {
             appendImportLog("No request loaded in editor.");
             return;
         }
-        ApiCollection col = requestEditor.getCurrentCollection();
         if (col == null) {
             appendImportLog("Send failed: no collection context is bound to the current request.");
             return;
         }
+        applyEditedRequestToLiveRequest(col, liveRequest, edited);
+        syncRequestEditorRuntimeContext(liveRequest, col);
+        notifyWorkspaceChanged();
+
         final ApiCollection resolvedCol = col;
+        final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(List.of(resolvedCol), List.of(edited));
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(List.of(resolvedCol), List.of(requestToSend));
         if (!issues.isEmpty()) {
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
@@ -418,30 +425,30 @@ public class ImporterPanel {
             @Override
             protected Void doInBackground() throws Exception {
                 try {
-                    publish("Sending: " + edited.method + " " + edited.url);
+                    publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
 
-                    var result = importer.sendSingleRequestWithBuiltRequest(edited, resolvedCol, follow);
+                    var result = importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow);
                     var rr = result.response;
 
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
                         byte[] bodyBytes = resp.body().getBytes();
-                        SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(edited, result, sendModeLabel));
+                        SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, result, sendModeLabel));
                         publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + result.elapsedMs + " ms)");
                     } else {
                         publish("No response received.");
                     }
 
                     if ("Send + Repeater".equals(sendModeLabel) && result.builtRequest != null) {
-                        String tabName = importer.generateRepeaterTabName(edited.name,
-                            edited.sourceCollection != null ? edited.sourceCollection : "Unknown");
+                        String tabName = importer.generateRepeaterTabName(requestToSend.name,
+                            requestToSend.sourceCollection != null ? requestToSend.sourceCollection : "Unknown");
                         importer.sendToRepeater(result.builtRequest, tabName);
                         publish("Sent to Repeater: " + tabName);
                     }
                 } catch (Exception e) {
                     String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(edited, failureReason, sendModeLabel));
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, failureReason, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 }
                 return null;
@@ -458,6 +465,94 @@ public class ImporterPanel {
             }
         };
         worker.execute();
+    }
+
+    static void applyEditedRequestToLiveRequest(ApiCollection collection, ApiRequest liveRequest, ApiRequest edited) {
+        if (liveRequest == null || edited == null) {
+            return;
+        }
+
+        liveRequest.method = edited.method;
+        liveRequest.url = edited.url;
+        liveRequest.headers = copyHeaders(edited.headers);
+        liveRequest.body = copyBody(edited.body);
+        liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
+        liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
+        liveRequest.authOverrideMode = edited.authOverrideMode != null ? edited.authOverrideMode : "inherit";
+        liveRequest.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(edited.explicitAuth);
+        burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, liveRequest);
+
+        if (collection != null) {
+            collection.fireChanged();
+        }
+    }
+
+    private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> headers) {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header == null) {
+                out.add(null);
+                continue;
+            }
+            out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+        }
+        return out;
+    }
+
+    private static ApiRequest.Body copyBody(ApiRequest.Body body) {
+        if (body == null) {
+            return null;
+        }
+        ApiRequest.Body copy = new ApiRequest.Body();
+        copy.mode = body.mode;
+        copy.raw = body.raw;
+        copy.contentType = body.contentType;
+        copy.formdata = copyBodyFields(body.formdata);
+        copy.urlencoded = copyBodyFields(body.urlencoded);
+        if (body.graphql != null) {
+            copy.graphql = new ApiRequest.Body.GraphQL();
+            copy.graphql.query = body.graphql.query;
+            copy.graphql.variables = body.graphql.variables;
+        }
+        return copy;
+    }
+
+    private static List<ApiRequest.Body.FormField> copyBodyFields(List<ApiRequest.Body.FormField> fields) {
+        List<ApiRequest.Body.FormField> out = new ArrayList<>();
+        if (fields == null) {
+            return out;
+        }
+        for (ApiRequest.Body.FormField field : fields) {
+            if (field == null) {
+                out.add(null);
+                continue;
+            }
+            ApiRequest.Body.FormField copy = new ApiRequest.Body.FormField(field.key, field.value);
+            copy.type = field.type;
+            copy.fileUpload = field.fileUpload;
+            copy.filePath = field.filePath;
+            copy.disabled = field.disabled;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private static List<ApiRequest.Script> copyScripts(List<ApiRequest.Script> scripts) {
+        List<ApiRequest.Script> out = new ArrayList<>();
+        if (scripts == null) {
+            return out;
+        }
+        for (ApiRequest.Script script : scripts) {
+            if (script == null) {
+                out.add(null);
+                continue;
+            }
+            out.add(new ApiRequest.Script(script.type, script.exec));
+        }
+        return out;
     }
 
     private void updateWorkbenchDetailPaneSuccess(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel) {
@@ -951,9 +1046,14 @@ public class ImporterPanel {
             if (path == null) return;
             Rectangle bounds = requestTree.getPathBounds(path);
             if (bounds == null) return;
+            Object node = path.getLastPathComponent();
+            if (SwingUtilities.isRightMouseButton(e) && node instanceof CollectionTreeNode) {
+                requestTree.setSelectionPath(path);
+                showTreeContextMenu(e, (CollectionTreeNode) node);
+                return;
+            }
             // Check if click is in checkbox area (left side)
             if (e.getX() < bounds.x + 20) {
-                Object node = path.getLastPathComponent();
                 if (node instanceof CollectionTreeNode) {
                     CollectionTreeNode ctn = (CollectionTreeNode) node;
                     ctn.propagateCheck(!ctn.isChecked());
@@ -966,6 +1066,152 @@ public class ImporterPanel {
                 }
             }
         }
+    }
+
+    private void showTreeContextMenu(MouseEvent e, CollectionTreeNode node) {
+        if (node == null) {
+            return;
+        }
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem authItem = new JMenuItem("Auth Settings...");
+        authItem.addActionListener(ev -> editAuthForNode(node));
+        menu.add(authItem);
+        menu.show(requestTree, e.getX(), e.getY());
+    }
+
+    private void editAuthForNode(CollectionTreeNode node) {
+        ApiCollection collection = findCollectionForNode(node);
+        if (collection == null) {
+            return;
+        }
+
+        boolean allowInherit = node.getNodeType() != CollectionTreeNode.Type.COLLECTION;
+        String initialMode = determineInitialAuthMode(node, collection);
+        ApiRequest.Auth initialAuth = determineInitialAuth(node, collection, initialMode);
+        AuthSettingsDialog.Result result = AuthSettingsDialog.showDialog(
+                mainPanel,
+                "Auth Settings - " + describeAuthScope(node),
+                allowInherit,
+                initialMode,
+                initialAuth
+        );
+        if (result == null) {
+            return;
+        }
+
+        if (node.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+            burp.utils.AuthInheritanceResolver.setCollectionAuth(collection, result.auth);
+        } else if (node.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+            burp.utils.AuthInheritanceResolver.setFolderAuth(collection, node.folderPath, result.mode, result.auth);
+        } else if (node.getNodeType() == CollectionTreeNode.Type.REQUEST && node.request != null) {
+            node.request.authOverrideMode = result.mode;
+            node.request.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(result.auth);
+            burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, node.request);
+        }
+
+        refreshCollectionCombos();
+        requestTree.repaint();
+        if (requestEditor != null && requestEditor.getCurrentCollection() == collection && requestEditor.getCurrentRequest() != null) {
+            requestEditor.loadRequest(requestEditor.getCurrentRequest());
+            requestEditor.setCurrentCollection(collection);
+            syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
+        }
+        notifyWorkspaceChanged();
+    }
+
+    private String describeAuthScope(CollectionTreeNode node) {
+        if (node == null) {
+            return "Auth";
+        }
+        return switch (node.getNodeType()) {
+            case COLLECTION -> "Collection";
+            case FOLDER -> "Folder " + (node.folderPath != null ? node.folderPath : "");
+            case REQUEST -> "Request " + (node.request != null ? node.request.name : "");
+        };
+    }
+
+    private String determineInitialAuthMode(CollectionTreeNode node, ApiCollection collection) {
+        if (node == null) {
+            return "inherit";
+        }
+        if (node.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+            if (collection == null || collection.auth == null || collection.auth.type == null) {
+                return "none";
+            }
+            return "none".equalsIgnoreCase(collection.auth.type)
+                    ? "none"
+                    : collection.auth.type.toLowerCase(Locale.ROOT);
+        }
+        if (node.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+            String normalized = burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath);
+            String mode = collection != null && collection.folderAuthModes != null ? collection.folderAuthModes.get(normalized) : null;
+            if (mode == null) {
+                return "inherit";
+            }
+            if ("explicit".equalsIgnoreCase(mode) || "none".equalsIgnoreCase(mode) || "inherit".equalsIgnoreCase(mode)) {
+                if ("explicit".equalsIgnoreCase(mode) && collection.folderAuth != null && collection.folderAuth.get(normalized) != null
+                        && collection.folderAuth.get(normalized).type != null) {
+                    return collection.folderAuth.get(normalized).type.toLowerCase(Locale.ROOT);
+                }
+                return mode.toLowerCase(Locale.ROOT);
+            }
+            return "inherit";
+        }
+        if (node.request == null) {
+            return "inherit";
+        }
+        String mode = node.request.authOverrideMode != null ? node.request.authOverrideMode.trim().toLowerCase(Locale.ROOT) : "";
+        if ("inherit".equals(mode)) {
+            return "inherit";
+        }
+        if ("none".equals(mode)) {
+            return "none";
+        }
+        if ("explicit".equals(mode)) {
+            if (node.request.explicitAuth != null && node.request.explicitAuth.type != null) {
+                return node.request.explicitAuth.type.toLowerCase(Locale.ROOT);
+            }
+            if (node.request.auth != null && node.request.auth.type != null) {
+                return node.request.auth.type.toLowerCase(Locale.ROOT);
+            }
+            return "none";
+        }
+        if (node.request.explicitAuth != null && node.request.explicitAuth.type != null) {
+            return node.request.explicitAuth.type.toLowerCase(Locale.ROOT);
+        }
+        if (node.request.auth != null && node.request.auth.type != null) {
+            if ("none".equalsIgnoreCase(node.request.auth.type)) {
+                return node.request.authExplicitlyDisabled ? "none" : "inherit";
+            }
+            return node.request.auth.type.toLowerCase(Locale.ROOT);
+        }
+        return "inherit";
+    }
+
+    private ApiRequest.Auth determineInitialAuth(CollectionTreeNode node, ApiCollection collection, String initialMode) {
+        if (node == null) {
+            return null;
+        }
+        if (node.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+            return collection != null ? burp.utils.AuthInheritanceResolver.copyAuth(collection.auth) : null;
+        }
+        if (node.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+            String normalized = burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath);
+            if (collection != null && collection.folderAuth != null) {
+                return burp.utils.AuthInheritanceResolver.copyAuth(collection.folderAuth.get(normalized));
+            }
+            return null;
+        }
+        if (node.request == null) {
+            return null;
+        }
+        if ("inherit".equals(initialMode)) {
+            return burp.utils.AuthInheritanceResolver.copyAuth(node.request.auth);
+        }
+        if ("none".equals(initialMode)) {
+            return burp.utils.AuthInheritanceResolver.copyAuth(node.request.explicitAuth != null ? node.request.explicitAuth : node.request.auth);
+        }
+        return burp.utils.AuthInheritanceResolver.copyAuth(node.request.explicitAuth != null ? node.request.explicitAuth : node.request.auth);
     }
 
     private void rebuildTree() {
@@ -1693,6 +1939,7 @@ public class ImporterPanel {
 
     public WorkspaceState getWorkspaceStateSnapshot() {
         runWithWorkspaceChangeNotificationsSuppressed(this::persistVariablesEditorStateSilently);
+        runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
         state.requestTreePaths = collectRequestTreePaths();
@@ -3025,6 +3272,7 @@ public class ImporterPanel {
         } finally {
             suppressVariablesAutosave = false;
         }
+        persistCurrentRequestEditorState();
         for (ApiCollection col : new ArrayList<>(oauthAutoStates.keySet())) {
             OAuthAutoRefreshState state = oauthAutoStates.get(col);
             if (state != null && state.future != null) {
@@ -3045,6 +3293,23 @@ public class ImporterPanel {
         }
         Map<String, String> vars = parseRuntimeOverrideSection();
         silentlyReplaceRuntimeVars(ref.collection, vars);
+    }
+
+    private void persistCurrentRequestEditorState() {
+        if (requestEditor == null) {
+            return;
+        }
+        ApiRequest liveRequest = requestEditor.getCurrentRequest();
+        ApiCollection collection = requestEditor.getCurrentCollection();
+        if (liveRequest == null || collection == null) {
+            return;
+        }
+        ApiRequest edited = requestEditor.buildRequestFromUI();
+        if (edited == null) {
+            return;
+        }
+        applyEditedRequestToLiveRequest(collection, liveRequest, edited);
+        syncRequestEditorRuntimeContext(liveRequest, collection);
     }
 
     static void silentlyReplaceRuntimeVars(ApiCollection collection, Map<String, String> vars) {

@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.AuthInheritanceResolver;
 import com.google.gson.*;
 import java.io.*;
 import java.util.*;
@@ -103,6 +104,8 @@ public class PostmanParser implements CollectionParser {
             parseItems(collectionObj.getAsJsonArray("item"), "", collection, collectionAuth);
         }
 
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
         return collection;
     }
 
@@ -115,13 +118,14 @@ public class PostmanParser implements CollectionParser {
             // Folder-level auth overrides collection-level auth
             AuthContext nextInherited = inheritedAuth;
             if (item.has("auth") && item.get("auth").isJsonObject()) {
-                ApiRequest.Auth folderAuth = parseAuth(item.getAsJsonObject("auth"));
-                if (folderAuth != null) {
-                    if ("none".equalsIgnoreCase(folderAuth.type)) {
-                        nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath, true);
-                    } else if (folderAuth.type != null) {
-                        nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath);
-                    }
+                JsonObject authObj = item.getAsJsonObject("auth");
+                ApiRequest.Auth folderAuth = parseAuth(authObj);
+                storeFolderAuth(collection, currentPath, authObj, folderAuth);
+                String folderAuthMode = determineAuthMode(authObj, folderAuth);
+                if ("none".equalsIgnoreCase(folderAuthMode) && folderAuth != null) {
+                    nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath, true);
+                } else if ("explicit".equalsIgnoreCase(folderAuthMode) && folderAuth != null) {
+                    nextInherited = new AuthContext(deepCopyAuth(folderAuth), "folder: " + currentPath);
                 }
             }
 
@@ -185,22 +189,79 @@ public class PostmanParser implements CollectionParser {
 
         // Auth (inherit from folder/collection if request has none)
         if (reqObj.has("auth") && reqObj.get("auth").isJsonObject()) {
-            ApiRequest.Auth explicitAuth = parseAuth(reqObj.getAsJsonObject("auth"));
-            if (explicitAuth == null) {
+            JsonObject authObj = reqObj.getAsJsonObject("auth");
+            ApiRequest.Auth explicitAuth = parseAuth(authObj);
+            String authMode = determineAuthMode(authObj, explicitAuth);
+            if ("inherit".equalsIgnoreCase(authMode)) {
+                req.authOverrideMode = "inherit";
+                req.explicitAuth = null;
                 applyInheritedAuth(req, inheritedAuth);
             } else {
+                req.authOverrideMode = authMode != null ? authMode : "explicit";
+                req.explicitAuth = deepCopyAuth(explicitAuth);
                 req.auth = explicitAuth;
                 req.authInherited = false;
                 req.authSource = "request: " + name;
                 req.authExplicitlyDisabled = "none".equalsIgnoreCase(req.auth.type);
             }
         } else {
+            req.authOverrideMode = "inherit";
+            req.explicitAuth = null;
             applyInheritedAuth(req, inheritedAuth);
         }
 
         // Events parsed outside parseRequest to allow item-level override
 
         return req;
+    }
+
+    private void storeFolderAuth(ApiCollection collection, String folderPath, JsonObject authObj, ApiRequest.Auth parsedAuth) {
+        if (collection == null || authObj == null) {
+            return;
+        }
+        String normalizedPath = AuthInheritanceResolver.normalizeFolderPath(folderPath);
+        if (normalizedPath.isEmpty()) {
+            return;
+        }
+        String mode = determineAuthMode(authObj, parsedAuth);
+        if (mode == null) {
+            return;
+        }
+        if (collection.folderAuthModes == null) {
+            collection.folderAuthModes = new LinkedHashMap<>();
+        }
+        if (collection.folderAuth == null) {
+            collection.folderAuth = new LinkedHashMap<>();
+        }
+        collection.folderAuthModes.put(normalizedPath, mode);
+        if ("inherit".equalsIgnoreCase(mode)) {
+            collection.folderAuth.remove(normalizedPath);
+            return;
+        }
+        if ("none".equalsIgnoreCase(mode)) {
+            ApiRequest.Auth none = parsedAuth != null ? deepCopyAuth(parsedAuth) : new ApiRequest.Auth();
+            none.type = "none";
+            collection.folderAuth.put(normalizedPath, none);
+            return;
+        }
+        collection.folderAuth.put(normalizedPath, deepCopyAuth(parsedAuth));
+    }
+
+    private String determineAuthMode(JsonObject authObj, ApiRequest.Auth parsedAuth) {
+        if (authObj == null) {
+            return null;
+        }
+        String rawType = getString(authObj, "type", "");
+        if (rawType == null || rawType.isBlank()) {
+            return parsedAuth != null && parsedAuth.type != null ? "explicit" : null;
+        }
+        if ("inherit".equalsIgnoreCase(rawType) || "inheritauth".equalsIgnoreCase(rawType)) {
+            return "inherit";
+        }
+        if ("noauth".equalsIgnoreCase(rawType) || "none".equalsIgnoreCase(rawType)) {
+            return "none";
+        }
+        return "explicit";
     }
 
     private void applyInheritedAuth(ApiRequest req, AuthContext inheritedAuth) {

@@ -151,6 +151,7 @@ Collection
 ```
 
 Use checkboxes for batch operations. Click a request row to load it into the request editor.
+Right-click a collection, folder, or request node to open **Auth Settings...** for that scope.
 
 ### Request Editor
 
@@ -160,7 +161,7 @@ Editable request areas:
 ------|---------------------|
 | Method / URL | HTTP method, URL, query parameters |
 | Headers | Add, remove, enable, disable headers |
-| Auth | Select auth type and edit auth properties |
+| Auth | Select inherit or an auth type, then edit auth properties |
 | Body | Raw, URL-encoded, form-data, GraphQL, file-like modes where supported |
 | Scripts | Pre-request and post-response scripts |
 
@@ -514,7 +515,7 @@ Use Intruder when:
 
 ## Auth Inheritance
 
-Postman collections can define auth at collection, folder, and request level. API Workbench preserves that behavior.
+Postman collections can define auth at collection, folder, and request level. API Workbench preserves that behavior and lets you edit it from the Workbench tree.
 
 Resolution order:
 
@@ -523,6 +524,12 @@ Resolution order:
 3. Collection auth applies next.
 4. Explicit `noauth` stops inheritance.
 
+Auth settings are edited per scope:
+
+- Collection nodes can be set to `none` or an explicit auth type.
+- Folder nodes can be set to `inherit`, `none`, or an explicit auth type.
+- Request nodes can be set to `inherit`, `none`, or an explicit auth type.
+
 Metadata shown to operators:
 
 | Field | Meaning |
@@ -530,6 +537,7 @@ Metadata shown to operators:
 | `authInherited` | Request inherited auth from folder/collection |
 | `authExplicitlyDisabled` | Request or parent explicitly selected no-auth |
 | `authSource` | Source label such as `request: Login`, `folder: Admin`, `collection: API` |
+| `authOverrideMode` | Stored request override mode: `inherit`, `explicit`, or `none` |
 
 Runner preview and Workbench Meta show auth source so you can see why a request is authenticated or unauthenticated.
 

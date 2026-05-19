@@ -168,7 +168,7 @@ public class RequestEditorPanel extends JPanel {
 
     private JPanel createAuthPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-        authTypeBox = new JComboBox<>(new String[]{"none", "bearer", "basic", "apikey", "oauth2"});
+        authTypeBox = new JComboBox<>(new String[]{"inherit", "none", "bearer", "basic", "apikey", "oauth2"});
         authTypeBox.addActionListener(e -> rebuildAuthFields());
         panel.add(authTypeBox, BorderLayout.NORTH);
         authFieldsPanel = new JPanel(new GridLayout(0, 2, 5, 5));
@@ -180,40 +180,50 @@ public class RequestEditorPanel extends JPanel {
     private void rebuildAuthFields() {
         authFieldsPanel.removeAll();
         authFields.clear();
-        String type = (String) authTypeBox.getSelectedItem();
-        if ("bearer".equals(type)) {
-            addAuthField("token", "Token");
-        } else if ("basic".equals(type)) {
-            addAuthField("username", "Username");
-            addAuthField("password", "Password");
-        } else if ("apikey".equals(type)) {
-            addAuthField("key", "Key Name");
-            addAuthField("value", "Key Value");
-            addAuthField("in", "In (header/query/cookie)");
-        } else if ("oauth2".equals(type)) {
-            addAuthField("grantType", "Grant Type");
-            addAuthField("accessTokenUrl", "Token URL");
-            addAuthField("authorizationUrl", "Authorization URL");
-            addAuthField("redirectUri", "Redirect URI");
-            addAuthField("clientId", "Client ID");
-            addAuthField("clientSecret", "Client Secret");
-            addAuthField("username", "Username");
-            addAuthField("password", "Password");
-            addAuthField("scope", "Scope");
-            addAuthField("refreshToken", "Refresh Token");
-            addAuthField("code", "Authorization Code");
-            addAuthField("codeVerifier", "Code Verifier");
-            addAuthField("clientAuth", "Client Auth (body/basic/none)");
-            addAuthField("accessToken", "Access Token");
+        String selectedType = (String) authTypeBox.getSelectedItem();
+        boolean readOnly = "inherit".equals(selectedType);
+        String displayType = selectedType;
+        if (readOnly) {
+            displayType = currentRequest != null && currentRequest.auth != null && currentRequest.auth.type != null
+                    ? currentRequest.auth.type.toLowerCase()
+                    : null;
         }
+        ApiRequest.Auth sourceAuth = resolveAuthSourceForEditor(selectedType, displayType);
+        if ("bearer".equals(displayType)) {
+            addAuthField("token", "Token", readOnly);
+        } else if ("basic".equals(displayType)) {
+            addAuthField("username", "Username", readOnly);
+            addAuthField("password", "Password", readOnly);
+        } else if ("apikey".equals(displayType)) {
+            addAuthField("key", "Key Name", readOnly);
+            addAuthField("value", "Key Value", readOnly);
+            addAuthField("in", "In (header/query/cookie)", readOnly);
+        } else if ("oauth2".equals(displayType)) {
+            addAuthField("grantType", "Grant Type", readOnly);
+            addAuthField("accessTokenUrl", "Token URL", readOnly);
+            addAuthField("authorizationUrl", "Authorization URL", readOnly);
+            addAuthField("redirectUri", "Redirect URI", readOnly);
+            addAuthField("clientId", "Client ID", readOnly);
+            addAuthField("clientSecret", "Client Secret", readOnly);
+            addAuthField("username", "Username", readOnly);
+            addAuthField("password", "Password", readOnly);
+            addAuthField("scope", "Scope", readOnly);
+            addAuthField("refreshToken", "Refresh Token", readOnly);
+            addAuthField("code", "Authorization Code", readOnly);
+            addAuthField("codeVerifier", "Code Verifier", readOnly);
+            addAuthField("clientAuth", "Client Auth (body/basic/none)", readOnly);
+            addAuthField("accessToken", "Access Token", readOnly);
+        }
+        populateAuthFields(sourceAuth);
         authFieldsPanel.revalidate();
         authFieldsPanel.repaint();
         refreshResolvedMirror();
     }
 
-    private void addAuthField(String key, String label) {
+    private void addAuthField(String key, String label, boolean readOnly) {
         authFieldsPanel.add(new JLabel(label));
         JTextField field = new JTextField();
+        field.setEnabled(!readOnly);
         field.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
         authFields.put(key, field);
         authFieldsPanel.add(field);
@@ -413,17 +423,8 @@ public class RequestEditorPanel extends JPanel {
         parseQueryToTable(req.url);
 
         // Auth
-        if (req.auth != null && req.auth.type != null) {
-            authTypeBox.setSelectedItem(req.auth.type.toLowerCase());
-            rebuildAuthFields();
-            for (Map.Entry<String, String> e : req.auth.properties.entrySet()) {
-                JTextField f = authFields.get(e.getKey());
-                if (f != null) f.setText(e.getValue());
-            }
-        } else {
-            authTypeBox.setSelectedItem("none");
-            rebuildAuthFields();
-        }
+        authTypeBox.setSelectedItem(resolveEditorAuthMode(req));
+        rebuildAuthFields();
 
         // Headers
         headersModel.setRowCount(0);
@@ -539,20 +540,14 @@ public class RequestEditorPanel extends JPanel {
         req.url = rebuildUrlWithParams(urlField.getText(), paramsModel);
 
         // Auth
-        String authType = (String) authTypeBox.getSelectedItem();
-        applyAuthMetadata(req, currentRequest, authType);
-        if (!"none".equals(authType)) {
-            req.auth = new ApiRequest.Auth();
-            req.auth.type = authType;
-            if (currentRequest.auth != null && authType.equalsIgnoreCase(currentRequest.auth.type)) {
-                req.auth.properties.putAll(currentRequest.auth.properties);
-            }
-            for (Map.Entry<String, JTextField> e : authFields.entrySet()) {
-                String val = e.getValue().getText().trim();
-                if (!val.isEmpty()) req.auth.properties.put(e.getKey(), val);
-                else req.auth.properties.remove(e.getKey());
-            }
+        String authMode = (String) authTypeBox.getSelectedItem();
+        req.authOverrideMode = selectionToOverrideMode(authMode);
+        if ("inherit".equals(req.authOverrideMode)) {
+            req.explicitAuth = null;
+        } else {
+            req.explicitAuth = buildAuthFromFields(authMode);
         }
+        burp.utils.AuthInheritanceResolver.resolveRequestAuth(currentCollection, req);
 
         // Headers
         for (int i = 0; i < headersModel.getRowCount(); i++) {
@@ -616,23 +611,34 @@ public class RequestEditorPanel extends JPanel {
             return;
         }
 
+        String normalizedSelection = normalizeEditorSelection(authType);
+        String overrideMode = selectionToOverrideMode(normalizedSelection);
         if (source != null) {
             target.authSource = source.authSource;
             target.authInherited = source.authInherited;
             target.authExplicitlyDisabled = source.authExplicitlyDisabled;
         }
 
-        String normalizedAuthType = authType != null ? authType.trim() : "none";
-        if (!"none".equalsIgnoreCase(normalizedAuthType)) {
+        target.authOverrideMode = overrideMode;
+        if ("inherit".equals(overrideMode)) {
+            target.explicitAuth = null;
+            if (source != null && source.auth != null) {
+                target.auth = burp.utils.AuthInheritanceResolver.copyAuth(source.auth);
+            }
+            return;
+        }
+
+        if (!"none".equalsIgnoreCase(overrideMode)) {
             boolean sameAuthType = source != null
                 && source.auth != null
                 && source.auth.type != null
-                && normalizedAuthType.equalsIgnoreCase(source.auth.type);
+                && normalizedSelection.equalsIgnoreCase(source.auth.type);
             if (!sameAuthType) {
                 target.authInherited = false;
                 target.authExplicitlyDisabled = false;
                 target.authSource = "request: " + target.name;
             }
+            target.explicitAuth = target.auth != null ? burp.utils.AuthInheritanceResolver.copyAuth(target.auth) : null;
             return;
         }
 
@@ -644,6 +650,107 @@ public class RequestEditorPanel extends JPanel {
             target.authExplicitlyDisabled = true;
             target.authSource = "request: " + target.name;
         }
+        target.explicitAuth = target.auth != null ? burp.utils.AuthInheritanceResolver.copyAuth(target.auth) : null;
+    }
+
+    private static String normalizeEditorSelection(String authType) {
+        if (authType == null || authType.isBlank()) {
+            return "inherit";
+        }
+        String normalized = authType.trim().toLowerCase(Locale.ROOT);
+        if ("inherit".equals(normalized) || "none".equals(normalized) || "bearer".equals(normalized)
+                || "basic".equals(normalized) || "apikey".equals(normalized) || "oauth2".equals(normalized)) {
+            return normalized;
+        }
+        return "inherit";
+    }
+
+    private static String selectionToOverrideMode(String authType) {
+        String normalized = normalizeEditorSelection(authType);
+        if ("inherit".equals(normalized) || "none".equals(normalized)) {
+            return normalized;
+        }
+        return "explicit";
+    }
+
+    private String resolveEditorAuthMode(ApiRequest req) {
+        if (req == null) {
+            return "inherit";
+        }
+        String mode = req.authOverrideMode != null ? req.authOverrideMode.trim().toLowerCase(Locale.ROOT) : "";
+        if ("inherit".equals(mode) || "explicit".equals(mode) || "none".equals(mode)) {
+            if ("explicit".equals(mode) && req.explicitAuth != null && req.explicitAuth.type != null) {
+                return req.explicitAuth.type.toLowerCase(Locale.ROOT);
+            }
+            if ("none".equals(mode)) {
+                return "none";
+            }
+            if ("inherit".equals(mode)) {
+                return "inherit";
+            }
+        }
+        if (req.explicitAuth != null && req.explicitAuth.type != null) {
+            return req.explicitAuth.type.toLowerCase(Locale.ROOT);
+        }
+        if (req.auth != null && req.auth.type != null) {
+            if ("none".equalsIgnoreCase(req.auth.type)) {
+                return req.authExplicitlyDisabled ? "none" : "inherit";
+            }
+            return req.authInherited ? "inherit" : req.auth.type.toLowerCase(Locale.ROOT);
+        }
+        return "inherit";
+    }
+
+    private ApiRequest.Auth resolveAuthSourceForEditor(String selectedMode, String displayType) {
+        if (currentRequest == null) {
+            return null;
+        }
+        if ("inherit".equals(selectedMode)) {
+            return currentRequest.auth;
+        }
+        if ("none".equals(displayType)) {
+            if (currentRequest.explicitAuth != null && "none".equalsIgnoreCase(currentRequest.explicitAuth.type)) {
+                return currentRequest.explicitAuth;
+            }
+            return currentRequest.auth;
+        }
+        if (currentRequest.explicitAuth != null && displayType != null
+                && displayType.equalsIgnoreCase(currentRequest.explicitAuth.type)) {
+            return currentRequest.explicitAuth;
+        }
+        if (currentRequest.auth != null && displayType != null
+                && displayType.equalsIgnoreCase(currentRequest.auth.type)) {
+            return currentRequest.auth;
+        }
+        return currentRequest.explicitAuth != null ? currentRequest.explicitAuth : currentRequest.auth;
+    }
+
+    private void populateAuthFields(ApiRequest.Auth sourceAuth) {
+        if (sourceAuth == null || sourceAuth.properties == null || sourceAuth.properties.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> e : sourceAuth.properties.entrySet()) {
+            JTextField f = authFields.get(e.getKey());
+            if (f != null) {
+                f.setText(e.getValue());
+            }
+        }
+    }
+
+    private ApiRequest.Auth buildAuthFromFields(String authType) {
+        String normalized = normalizeEditorSelection(authType);
+        if ("inherit".equals(normalized)) {
+            return null;
+        }
+        ApiRequest.Auth auth = new ApiRequest.Auth();
+        auth.type = normalized;
+        for (Map.Entry<String, JTextField> e : authFields.entrySet()) {
+            String val = e.getValue().getText().trim();
+            if (!val.isEmpty()) {
+                auth.properties.put(e.getKey(), val);
+            }
+        }
+        return auth;
     }
 
     static boolean isMeaningfulAuthSource(String source) {

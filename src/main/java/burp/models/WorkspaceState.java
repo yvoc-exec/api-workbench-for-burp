@@ -63,6 +63,8 @@ public class WorkspaceState {
         copy.format = src.format;
         copy.version = src.version;
         copy.auth = copyAuth(src.auth);
+        copy.folderAuthModes = src.folderAuthModes != null ? new LinkedHashMap<>(src.folderAuthModes) : new LinkedHashMap<>();
+        copy.folderAuth = copyAuthMap(src.folderAuth);
         copy.requests = copyRequests(src.requests);
         copy.variables = copyVariables(src.variables);
         copy.environment = src.environment != null ? new LinkedHashMap<>(src.environment) : new LinkedHashMap<>();
@@ -109,6 +111,8 @@ public class WorkspaceState {
         copy.authInherited = src.authInherited;
         copy.authExplicitlyDisabled = src.authExplicitlyDisabled;
         copy.authSource = src.authSource;
+        copy.authOverrideMode = src.authOverrideMode;
+        copy.explicitAuth = copyAuth(src.explicitAuth);
         copy.auth = copyAuth(src.auth);
         copy.headers = copyHeaders(src.headers);
         copy.body = copyBody(src.body);
@@ -116,6 +120,19 @@ public class WorkspaceState {
         copy.preRequestScripts = copyScripts(src.preRequestScripts);
         copy.postResponseScripts = copyScripts(src.postResponseScripts);
         return copy;
+    }
+
+    private static Map<String, ApiRequest.Auth> copyAuthMap(Map<String, ApiRequest.Auth> src) {
+        Map<String, ApiRequest.Auth> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, ApiRequest.Auth> entry : src.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(entry.getKey(), copyAuth(entry.getValue()));
+            }
+        }
+        return out;
     }
 
     private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> src) {
