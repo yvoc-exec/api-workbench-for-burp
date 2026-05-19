@@ -18,4 +18,12 @@ class UniversalImporterPersistencePolicyTest {
         assertThat(UniversalImporter.isDiskBackedProjectName("Customer Red Team")).isTrue();
         assertThat(UniversalImporter.isDiskBackedProjectName("Old Project")).isTrue();
     }
+
+    @Test
+    void promptsOnlyForTemporaryToDiskTransitionWithoutSavedPolicy() {
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, null, true)).isTrue();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(false, null, true)).isFalse();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, Boolean.FALSE, true)).isFalse();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, null, false)).isFalse();
+    }
 }
