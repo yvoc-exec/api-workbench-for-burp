@@ -899,7 +899,7 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 
 ### 10.1 Project State Persistence
 
-When Burp is using a project on disk, API Workbench stores a workspace snapshot in Montoya extension data. The snapshot covers the loaded collections and the project-scoped runtime state needed to restore the operator's working set.
+When Burp is using a project on disk, API Workbench asks once whether to persist sensitive runtime state in that project. If the operator chooses Yes, the workspace snapshot includes sensitive runtime values; if they choose No, only non-sensitive workspace state is written.
 
 If Burp is running without a project file, Montoya extension data remains memory-only for the session, so the same state behaves like ephemeral workspace state.
 
@@ -931,7 +931,7 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 ### 11.1 Token Storage
 - **In-memory only** via `ConcurrentHashMap`
 - **Never persisted automatically** to disk, Burp project files, or logs
-- **Workspace persistence is conservative**: project snapshots save loaded collections and non-sensitive runtime state, not bearer tokens, refresh tokens, passwords, or client secrets by default
+- **Workspace persistence is opt-in for sensitive data**: disk-backed Burp projects prompt once before storing secrets, tokens, passwords, or client secrets in the project file
 - **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file
 - **No encryption at rest** (not needed for transient memory)
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`

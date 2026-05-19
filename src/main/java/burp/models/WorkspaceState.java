@@ -23,6 +23,15 @@ public class WorkspaceState {
         return state;
     }
 
+    public static WorkspaceState copyOf(WorkspaceState source, WorkspacePersistenceOptions options) {
+        WorkspacePersistenceOptions resolvedOptions = options != null ? options : WorkspacePersistenceOptions.defaults();
+        WorkspaceState copy = fromCollections(source != null ? source.collections : null, resolvedOptions);
+        if (source != null && source.version > 0) {
+            copy.version = source.version;
+        }
+        return copy;
+    }
+
     private static ApiCollection copyCollection(ApiCollection src, WorkspacePersistenceOptions options) {
         ApiCollection copy = new ApiCollection();
         copy.name = src.name;

@@ -39,4 +39,30 @@ class WorkspaceStateServiceTest {
         assertThat(loaded.collections.get(0).name).isEqualTo("Demo");
         assertThat(loaded.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
     }
+
+    @Test
+    void saveAndLoadPersistenceOptInRoundTripThroughExtensionData() {
+        Map<String, String> backing = new HashMap<>();
+        WorkspaceStateService service = new WorkspaceStateService(new WorkspaceStateService.StringStore() {
+            @Override
+            public String get(String key) {
+                return backing.get(key);
+            }
+
+            @Override
+            public void set(String key, String value) {
+                backing.put(key, value);
+            }
+        });
+
+        assertThat(service.loadSensitivePersistenceOptIn()).isNull();
+
+        service.saveSensitivePersistenceOptIn(false);
+        assertThat(service.loadSensitivePersistenceOptIn()).isFalse();
+
+        service.saveSensitivePersistenceOptIn(true);
+
+        assertThat(service.loadSensitivePersistenceOptIn()).isTrue();
+        assertThat(backing).containsEntry("api_workbench_workspace_sensitive_persistence_opt_in", "true");
+    }
 }
