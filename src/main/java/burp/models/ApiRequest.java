@@ -28,6 +28,10 @@ public class ApiRequest {
     public boolean authExplicitlyDisabled = false;
     /** Human-readable source for the effective auth layer. */
     public String authSource;
+    /** Auth override mode for editable inheritance: inherit, explicit, none. */
+    public String authOverrideMode = "inherit";
+    /** Explicit auth override configured at the request layer. */
+    public Auth explicitAuth;
 
     public static class Header {
         public String key;

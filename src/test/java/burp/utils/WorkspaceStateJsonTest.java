@@ -31,6 +31,51 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void roundTripsEditableAuthInheritanceMetadata() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Auth Demo";
+        collection.auth = new ApiRequest.Auth();
+        collection.auth.type = "bearer";
+        collection.auth.properties.put("token", "{{collectionToken}}");
+        collection.folderAuthModes.put("Admin", "explicit");
+        ApiRequest.Auth folderAuth = new ApiRequest.Auth();
+        folderAuth.type = "bearer";
+        folderAuth.properties.put("token", "{{folderToken}}");
+        collection.folderAuth.put("Admin", folderAuth);
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Special";
+        request.path = "Admin/Special";
+        request.sourceCollection = "Auth Demo";
+        request.authOverrideMode = "explicit";
+        request.explicitAuth = new ApiRequest.Auth();
+        request.explicitAuth.type = "basic";
+        request.explicitAuth.properties.put("username", "u");
+        request.explicitAuth.properties.put("password", "p");
+        request.auth = request.explicitAuth;
+        request.authInherited = false;
+        request.authSource = "request: Special";
+        collection.requests.add(request);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection)))
+        );
+
+        ApiCollection restored = parsed.collections.get(0);
+        assertThat(restored.auth.type).isEqualTo("bearer");
+        assertThat(restored.auth.properties).containsEntry("token", "{{collectionToken}}");
+        assertThat(restored.folderAuthModes).containsEntry("Admin", "explicit");
+        assertThat(restored.folderAuth.get("Admin").type).isEqualTo("bearer");
+        assertThat(restored.folderAuth.get("Admin").properties).containsEntry("token", "{{folderToken}}");
+
+        ApiRequest restoredRequest = restored.requests.get(0);
+        assertThat(restoredRequest.authOverrideMode).isEqualTo("explicit");
+        assertThat(restoredRequest.explicitAuth.type).isEqualTo("basic");
+        assertThat(restoredRequest.explicitAuth.properties).containsEntry("username", "u");
+        assertThat(restoredRequest.auth.type).isEqualTo("basic");
+    }
+
+    @Test
     void roundTripsRequestPathHierarchyAndCoreFields() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

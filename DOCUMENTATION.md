@@ -655,11 +655,22 @@ public class TokenStore {
 
 ### 7.3 Auth Inheritance
 
-Postman imports preserve the effective auth on each request while also recording where it came from:
+Postman imports preserve the effective auth on each request while also recording where it came from.
+API Workbench also stores editable override metadata so collection, folder, and request auth can be changed from the tree and restored later.
+
+Request metadata:
 
 - `authInherited = true` when the request inherited auth from a folder or collection
 - `authExplicitlyDisabled = true` when the request or parent explicitly selected `noauth`
 - `authSource` records the source label, such as `request: Get Me`, `folder: Admin`, or `collection: Auth Demo`
+- `authOverrideMode` stores the request override mode: `inherit`, `explicit`, or `none`
+- `explicitAuth` stores the request's explicit auth override when the mode is not inherit
+
+Collection metadata:
+
+- `collection.auth` stores the collection-level effective auth
+- `folderAuthModes` stores folder override modes keyed by normalized folder path
+- `folderAuth` stores folder-level explicit auth objects keyed by normalized folder path
 
 Auth resolution follows nearest-parent semantics:
 
@@ -668,7 +679,7 @@ Auth resolution follows nearest-parent semantics:
 3. Otherwise collection auth applies.
 4. Explicit `noauth` stops inheritance and keeps the effective auth as none.
 
-Runner preview and Workbench metadata use `authSource` so operators can see whether a request is using request, folder, collection, or no-auth provenance. `RequestBuilder` still consumes the effective `ApiRequest.auth` value only; the extra metadata is for UI and tests.
+Runner preview and Workbench metadata use `authSource` so operators can see whether a request is using request, folder, collection, or no-auth provenance. `RequestBuilder` still consumes the effective `ApiRequest.auth` value only; the extra metadata is for UI, tests, and workspace persistence.
 
 ---
 

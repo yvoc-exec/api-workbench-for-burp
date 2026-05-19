@@ -33,7 +33,8 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Environment files (Postman environment JSON)
 - Request-level variables (Bruno `vars` block, Postman request vars)
 - Custom manual variables (Variables tab + OAuth2 tab)
-- Postman-style auth inheritance from collection and folder auth, including explicit no-auth overrides
+- Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
+- Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit

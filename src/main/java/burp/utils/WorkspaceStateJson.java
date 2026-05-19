@@ -38,6 +38,25 @@ public final class WorkspaceStateJson {
         if (out.requestTreePaths == null) {
             out.requestTreePaths = new java.util.LinkedHashMap<>();
         }
+        if (out.collections != null) {
+            for (burp.models.ApiCollection collection : out.collections) {
+                if (collection == null) {
+                    continue;
+                }
+                if (collection.folderAuthModes == null) {
+                    collection.folderAuthModes = new java.util.LinkedHashMap<>();
+                }
+                if (collection.folderAuth == null) {
+                    collection.folderAuth = new java.util.LinkedHashMap<>();
+                }
+                if (collection.runtimeVars == null) {
+                    collection.runtimeVars = new java.util.LinkedHashMap<>();
+                }
+                if (collection.runtimeOAuth2 == null) {
+                    collection.runtimeOAuth2 = new java.util.LinkedHashMap<>();
+                }
+            }
+        }
         if (out.version <= 0) {
             out.version = 1;
         }

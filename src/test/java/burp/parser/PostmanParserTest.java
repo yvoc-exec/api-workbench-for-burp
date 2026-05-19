@@ -74,9 +74,11 @@ class PostmanParserTest {
         ApiRequest req = collection.requests.get(0);
         assertThat(collection.auth).isNotNull();
         assertThat(collection.auth.type).isEqualTo("bearer");
+        assertThat(collection.folderAuthModes).isEmpty();
         assertThat(req.auth).isNotNull();
         assertThat(req.auth.type).isEqualTo("bearer");
         assertThat(req.auth.properties.get("token")).isEqualTo("{{accessToken}}");
+        assertThat(req.authOverrideMode).isEqualTo("inherit");
         assertThat(req.authInherited).isTrue();
         assertThat(req.authExplicitlyDisabled).isFalse();
         assertThat(req.authSource).isEqualTo("collection: Auth Demo");
@@ -101,8 +103,11 @@ class PostmanParserTest {
             """);
 
         ApiRequest req = collection.requests.get(0);
+        assertThat(collection.folderAuthModes).containsEntry("Admin", "explicit");
+        assertThat(collection.folderAuth.get("Admin").type).isEqualTo("bearer");
         assertThat(req.auth.type).isEqualTo("bearer");
         assertThat(req.auth.properties.get("token")).isEqualTo("{{adminToken}}");
+        assertThat(req.authOverrideMode).isEqualTo("inherit");
         assertThat(req.authInherited).isTrue();
         assertThat(req.authSource).isEqualTo("folder: Admin");
     }
@@ -135,6 +140,9 @@ class PostmanParserTest {
         ApiRequest req = collection.requests.get(0);
         assertThat(req.auth.type).isEqualTo("basic");
         assertThat(req.auth.properties.get("username")).isEqualTo("u");
+        assertThat(req.authOverrideMode).isEqualTo("explicit");
+        assertThat(req.explicitAuth).isNotNull();
+        assertThat(req.explicitAuth.type).isEqualTo("basic");
         assertThat(req.authInherited).isFalse();
         assertThat(req.authExplicitlyDisabled).isFalse();
         assertThat(req.authSource).isEqualTo("request: Special");
@@ -163,6 +171,9 @@ class PostmanParserTest {
         assertThat(req.auth).isNotNull();
         assertThat(req.auth.type).isEqualTo("none");
         assertThat(req.hasAuth()).isFalse();
+        assertThat(req.authOverrideMode).isEqualTo("none");
+        assertThat(req.explicitAuth).isNotNull();
+        assertThat(req.explicitAuth.type).isEqualTo("none");
         assertThat(req.authInherited).isFalse();
         assertThat(req.authExplicitlyDisabled).isTrue();
         assertThat(req.authSource).isEqualTo("request: Public");
@@ -196,6 +207,9 @@ class PostmanParserTest {
         assertThat(req.hasAuth()).isFalse();
         assertThat(req.auth).isNotNull();
         assertThat(req.auth.type).isEqualTo("none");
+        assertThat(collection.folderAuthModes).containsEntry("Public", "none");
+        assertThat(collection.folderAuth.get("Public").type).isEqualTo("none");
+        assertThat(req.authOverrideMode).isEqualTo("inherit");
         assertThat(req.authInherited).isTrue();
         assertThat(req.authExplicitlyDisabled).isTrue();
         assertThat(req.authSource).isEqualTo("folder: Public");

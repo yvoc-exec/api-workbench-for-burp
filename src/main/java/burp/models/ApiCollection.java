@@ -16,6 +16,10 @@ public class ApiCollection {
     public Map<String, String> environment = new HashMap<>();
     /** Collection-level effective auth used as the root Postman auth source. */
     public ApiRequest.Auth auth;
+    /** Folder auth override modes keyed by normalized folder path. */
+    public Map<String, String> folderAuthModes = new LinkedHashMap<>();
+    /** Folder auth overrides keyed by normalized folder path. */
+    public Map<String, ApiRequest.Auth> folderAuth = new LinkedHashMap<>();
 
     /** Collection-scoped runtime overrides (Variables tab / env file bound to this collection). */
     public Map<String, String> runtimeVars = new HashMap<>();
