@@ -31,6 +31,7 @@ public class UniversalImporter {
     private final WorkspaceStateService workspaceStateService;
     private volatile WorkspacePersistenceOptions workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
     private volatile Boolean workspaceSensitivePersistenceOptIn = null;
+    private final boolean startedInTemporaryProject;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -41,6 +42,7 @@ public class UniversalImporter {
     public UniversalImporter(MontoyaApi api, ScriptMode scriptMode, WorkspaceStateService workspaceStateService) {
         this.api = api;
         this.workspaceStateService = workspaceStateService;
+        this.startedInTemporaryProject = !isProjectOnDisk();
         this.resolver = new VariableResolver();
         OAuth2Manager oauth2Manager = new OAuth2Manager(api);
         this.requestBuilder = new RequestBuilder(api, oauth2Manager);
@@ -49,7 +51,6 @@ public class UniversalImporter {
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
         this.ui.setWorkspaceChangeListener(this::saveWorkspaceState);
-        initializeWorkspacePersistencePolicy();
         restoreWorkspaceState();
     }
 
@@ -436,7 +437,7 @@ public class UniversalImporter {
         }
         WorkspaceState state = workspaceStateService.load();
         if (state != null && state.collections != null && !state.collections.isEmpty()) {
-            WorkspaceState effectiveState = WorkspaceState.copyOf(state, resolveWorkspacePersistenceOptions(false));
+            WorkspaceState effectiveState = WorkspaceState.copyOf(state, resolveWorkspacePersistenceOptionsForRestore());
             SwingUtilities.invokeLater(() -> ui.restoreWorkspaceCollections(effectiveState.collections));
         }
     }
@@ -445,19 +446,12 @@ public class UniversalImporter {
         if (workspaceStateService == null || ui == null) {
             return;
         }
-        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptions(true);
+        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptionsForSave();
         WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), options);
         workspaceStateService.save(state);
     }
 
-    private void initializeWorkspacePersistencePolicy() {
-        if (workspaceStateService == null) {
-            return;
-        }
-        resolveWorkspacePersistenceOptions(true);
-    }
-
-    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptions(boolean promptIfNeeded) {
+    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForSave() {
         if (workspaceStateService == null || !isProjectOnDisk()) {
             workspaceSensitivePersistenceOptIn = null;
             workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
@@ -466,7 +460,7 @@ public class UniversalImporter {
 
         if (workspaceSensitivePersistenceOptIn == null) {
             Boolean stored = workspaceStateService.loadSensitivePersistenceOptIn();
-            if (stored == null && promptIfNeeded) {
+            if (stored == null && shouldPromptForSensitivePersistence(startedInTemporaryProject, stored, true)) {
                 stored = promptForSensitivePersistenceOptIn();
                 workspaceStateService.saveSensitivePersistenceOptIn(stored);
             }
@@ -481,6 +475,30 @@ public class UniversalImporter {
             workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
         }
         return workspacePersistenceOptions;
+    }
+
+    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForRestore() {
+        if (workspaceStateService == null || !isProjectOnDisk()) {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+            return workspacePersistenceOptions;
+        }
+        if (workspaceSensitivePersistenceOptIn == null) {
+            workspaceSensitivePersistenceOptIn = workspaceStateService.loadSensitivePersistenceOptIn();
+        }
+        if (workspaceSensitivePersistenceOptIn == null) {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+        } else if (workspaceSensitivePersistenceOptIn) {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.fullProjectPersistence();
+        } else {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+        }
+        return workspacePersistenceOptions;
+    }
+
+    static boolean shouldPromptForSensitivePersistence(boolean startedInTemporaryProject,
+                                                       Boolean storedOptIn,
+                                                       boolean currentProjectOnDisk) {
+        return startedInTemporaryProject && currentProjectOnDisk && storedOptIn == null;
     }
 
     private boolean isProjectOnDisk() {
