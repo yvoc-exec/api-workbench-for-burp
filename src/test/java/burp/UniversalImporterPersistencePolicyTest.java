@@ -20,10 +20,10 @@ class UniversalImporterPersistencePolicyTest {
     }
 
     @Test
-    void promptsOnlyForTemporaryToDiskTransitionWithoutSavedPolicy() {
-        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, null, true)).isTrue();
-        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(false, null, true)).isFalse();
-        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, Boolean.FALSE, true)).isFalse();
-        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(true, null, false)).isFalse();
+    void promptsOnFirstSaveForAnyDiskBackedProjectWithoutSavedPolicy() {
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(null, true)).isTrue();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(Boolean.FALSE, true)).isFalse();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(Boolean.TRUE, true)).isFalse();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(null, false)).isFalse();
     }
 }

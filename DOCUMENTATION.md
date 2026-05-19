@@ -899,7 +899,7 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 
 ### 10.1 Project State Persistence
 
-If Burp starts in a temporary project and later the operator saves that session as a disk-backed project, API Workbench prompts on the first autosave or `Save Now` after the transition. `Yes` stores sensitive runtime state in the project file; `No` keeps secrets out of project data and persists only non-sensitive workspace state.
+If Burp is using a disk-backed project and API Workbench has no stored persistence choice yet, API Workbench prompts on the first autosave or `Save Now`. `Yes` stores sensitive runtime state in the project file; `No` keeps secrets out of project data and persists only non-sensitive workspace state.
 
 If Burp is running without a project file, Montoya extension data remains memory-only for the session, so the same state behaves like ephemeral workspace state.
 
@@ -931,7 +931,7 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 ### 11.1 Token Storage
 - **In-memory only** via `ConcurrentHashMap`
 - **Never persisted automatically** to disk, Burp project files, or logs
-- **Workspace persistence is opt-in for sensitive data**: temp-to-disk transitions prompt on the first autosave or `Save Now` before storing secrets, tokens, passwords, or client secrets in the project file
+- **Workspace persistence is opt-in for sensitive data**: disk-backed projects with no saved choice prompt on the first autosave or `Save Now` before storing secrets, tokens, passwords, or client secrets in the project file
 - **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file
 - **No encryption at rest** (not needed for transient memory)
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`
@@ -980,7 +980,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
 - **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and runtime JSON.
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
-- **Project-save hook limitation**: Montoya does not expose a Burp “save project” event for this extension, so the opt-in prompt is tied to the first Workbench autosave or `Save Now` after a temp project becomes disk-backed.
+- **Project-save hook limitation**: Montoya does not expose a Burp “save project” event for this extension, so the opt-in prompt is tied to the first Workbench autosave or `Save Now` on a disk-backed project with no stored choice.
 
 ### 12.3 Parser Limitations
 
