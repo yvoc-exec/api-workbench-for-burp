@@ -29,6 +29,15 @@ public final class WorkspaceStateJson {
         if (out.collections == null) {
             out.collections = new java.util.ArrayList<>();
         }
+        if (out.checkedRequestKeys == null) {
+            out.checkedRequestKeys = new java.util.ArrayList<>();
+        }
+        if (out.expandedTreePathKeys == null) {
+            out.expandedTreePathKeys = new java.util.ArrayList<>();
+        }
+        if (out.requestTreePaths == null) {
+            out.requestTreePaths = new java.util.LinkedHashMap<>();
+        }
         if (out.version <= 0) {
             out.version = 1;
         }

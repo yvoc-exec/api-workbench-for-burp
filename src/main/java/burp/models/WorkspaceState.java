@@ -3,36 +3,60 @@ package burp.models;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 public class WorkspaceState {
     public int version = 1;
     public List<ApiCollection> collections = new ArrayList<>();
+    public int selectedTabIndex = 0;
+    public String selectedVariablesCollectionName;
+    public String selectedOAuth2CollectionName;
+    public String selectedRequestCollectionName;
+    public String selectedRequestName;
+    public String selectedRequestPath;
+    public List<String> checkedRequestKeys = new ArrayList<>();
+    public List<String> expandedTreePathKeys = new ArrayList<>();
+    public Map<String, String> requestTreePaths = new LinkedHashMap<>();
 
-    public static WorkspaceState fromCollections(List<ApiCollection> source, WorkspacePersistenceOptions options) {
+    public static WorkspaceState fromCollections(List<ApiCollection> source) {
         WorkspaceState state = new WorkspaceState();
-        if (source == null || options == null || !options.persistCollections) {
-            return state;
-        }
-        for (ApiCollection collection : source) {
-            if (collection != null) {
-                state.collections.add(copyCollection(collection, options));
-            }
-        }
+        state.collections = copyCollections(source);
         return state;
     }
 
-    public static WorkspaceState copyOf(WorkspaceState source, WorkspacePersistenceOptions options) {
-        WorkspacePersistenceOptions resolvedOptions = options != null ? options : WorkspacePersistenceOptions.defaults();
-        WorkspaceState copy = fromCollections(source != null ? source.collections : null, resolvedOptions);
-        if (source != null && source.version > 0) {
-            copy.version = source.version;
+    public static WorkspaceState copyOf(WorkspaceState source) {
+        WorkspaceState copy = new WorkspaceState();
+        if (source == null) {
+            return copy;
         }
+        copy.version = source.version > 0 ? source.version : 1;
+        copy.collections = copyCollections(source.collections);
+        copy.selectedTabIndex = source.selectedTabIndex;
+        copy.selectedVariablesCollectionName = source.selectedVariablesCollectionName;
+        copy.selectedOAuth2CollectionName = source.selectedOAuth2CollectionName;
+        copy.selectedRequestCollectionName = source.selectedRequestCollectionName;
+        copy.selectedRequestName = source.selectedRequestName;
+        copy.selectedRequestPath = source.selectedRequestPath;
+        copy.checkedRequestKeys = source.checkedRequestKeys != null ? new ArrayList<>(source.checkedRequestKeys) : new ArrayList<>();
+        copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
+        copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
         return copy;
     }
 
-    private static ApiCollection copyCollection(ApiCollection src, WorkspacePersistenceOptions options) {
+    private static List<ApiCollection> copyCollections(List<ApiCollection> source) {
+        List<ApiCollection> out = new ArrayList<>();
+        if (source == null) {
+            return out;
+        }
+        for (ApiCollection collection : source) {
+            if (collection != null) {
+                out.add(copyCollection(collection));
+            }
+        }
+        return out;
+    }
+
+    private static ApiCollection copyCollection(ApiCollection src) {
         ApiCollection copy = new ApiCollection();
         copy.name = src.name;
         copy.description = src.description;
@@ -42,12 +66,8 @@ public class WorkspaceState {
         copy.requests = copyRequests(src.requests);
         copy.variables = copyVariables(src.variables);
         copy.environment = src.environment != null ? new LinkedHashMap<>(src.environment) : new LinkedHashMap<>();
-        copy.runtimeVars = options.persistRuntimeVars
-                ? sanitizeMap(src.runtimeVars, options.persistSensitiveRuntimeValues)
-                : new LinkedHashMap<>();
-        copy.runtimeOAuth2 = options.persistOAuthRuntime
-                ? sanitizeOAuth(src.runtimeOAuth2, options)
-                : new LinkedHashMap<>();
+        copy.runtimeVars = src.runtimeVars != null ? new LinkedHashMap<>(src.runtimeVars) : new LinkedHashMap<>();
+        copy.runtimeOAuth2 = src.runtimeOAuth2 != null ? new LinkedHashMap<>(src.runtimeOAuth2) : new LinkedHashMap<>();
         return copy;
     }
 
@@ -190,57 +210,5 @@ public class WorkspaceState {
             out.add(new ApiRequest.Script(script.type, script.exec));
         }
         return out;
-    }
-
-    private static Map<String, String> sanitizeMap(Map<String, String> src, boolean allowSensitive) {
-        Map<String, String> out = new LinkedHashMap<>();
-        if (src == null) {
-            return out;
-        }
-        for (Map.Entry<String, String> entry : src.entrySet()) {
-            String key = entry.getKey();
-            if (key == null) {
-                continue;
-            }
-            if (!allowSensitive && looksSensitive(key)) {
-                continue;
-            }
-            out.put(key, entry.getValue());
-        }
-        return out;
-    }
-
-    private static Map<String, String> sanitizeOAuth(Map<String, String> src, WorkspacePersistenceOptions options) {
-        Map<String, String> out = new LinkedHashMap<>();
-        if (src == null) {
-            return out;
-        }
-        for (Map.Entry<String, String> entry : src.entrySet()) {
-            String key = entry.getKey();
-            if (key == null) {
-                continue;
-            }
-            String lower = key.toLowerCase(Locale.ROOT);
-            boolean token = lower.equals("oauth2_access_token") || lower.equals("oauth2_refresh_token") || lower.equals("oauth2_id_token");
-            boolean secret = lower.equals("oauth2_client_secret") || lower.equals("oauth2_password");
-            if (token && !options.persistOAuthTokens) {
-                continue;
-            }
-            if (secret && !options.persistSensitiveRuntimeValues) {
-                continue;
-            }
-            out.put(key, entry.getValue());
-        }
-        return out;
-    }
-
-    private static boolean looksSensitive(String key) {
-        String lower = key.toLowerCase(Locale.ROOT);
-        return lower.contains("secret")
-                || lower.contains("password")
-                || lower.contains("token")
-                || lower.contains("api_key")
-                || lower.contains("apikey")
-                || lower.contains("authorization");
     }
 }

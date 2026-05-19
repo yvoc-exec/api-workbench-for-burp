@@ -2,7 +2,6 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
-import burp.models.WorkspacePersistenceOptions;
 import burp.models.WorkspaceState;
 import burp.utils.DebouncedSwingAction;
 import burp.utils.WorkspaceStateJson;
@@ -17,6 +16,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.LinkedHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -32,7 +32,7 @@ class ImporterPanelAutosaveTest {
         request.sourceCollection = "Demo";
         collection.requests.add(request);
 
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.defaults());
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
         WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
 
         assertThat(parsed.collections).hasSize(1);
@@ -50,6 +50,27 @@ class ImporterPanelAutosaveTest {
 
         assertThat(collection.runtimeVars).doesNotContainKey("stale");
         assertThat(collection.runtimeVars).containsEntry("fresh", "new");
+    }
+
+    @Test
+    void silentRuntimeVarReplacementUpdatesWithoutFiringListeners() {
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeVars = new LinkedHashMap<>();
+        AtomicInteger changeCount = new AtomicInteger(0);
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        Map<String, String> parsed = Map.of("baseUrl", "https://api.example.test", "api_key", "secret");
+        ImporterPanel.silentlyReplaceRuntimeVars(collection, parsed);
+
+        assertThat(collection.runtimeVars).containsEntry("baseUrl", "https://api.example.test");
+        assertThat(collection.runtimeVars).containsEntry("api_key", "secret");
+        assertThat(changeCount.get()).isZero();
+
+        ImporterPanel.silentlyReplaceRuntimeVars(collection, parsed);
+
+        assertThat(collection.runtimeVars).containsEntry("baseUrl", "https://api.example.test");
+        assertThat(collection.runtimeVars).containsEntry("api_key", "secret");
+        assertThat(changeCount.get()).isZero();
     }
 
     @Test

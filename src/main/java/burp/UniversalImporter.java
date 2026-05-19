@@ -29,8 +29,6 @@ public class UniversalImporter {
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
-    private volatile WorkspacePersistenceOptions workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-    private volatile Boolean workspaceSensitivePersistenceOptIn = null;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -422,10 +420,10 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
+        saveWorkspaceState();
         if (ui != null) {
             ui.cleanup();
         }
-        saveWorkspaceState(false);
         clearVariables();
     }
 
@@ -433,113 +431,42 @@ public class UniversalImporter {
         if (workspaceStateService == null || ui == null) {
             return;
         }
-        WorkspaceState state = workspaceStateService.load();
-        if (state != null && state.collections != null && !state.collections.isEmpty()) {
-            WorkspaceState effectiveState = WorkspaceState.copyOf(state, resolveWorkspacePersistenceOptionsForRestore());
-            SwingUtilities.invokeLater(() -> ui.restoreWorkspaceCollections(effectiveState.collections));
+        try {
+            WorkspaceState state = workspaceStateService.load();
+            if (state == null || state.collections == null || state.collections.isEmpty()) {
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    ui.restoreWorkspaceState(state);
+                } catch (Exception e) {
+                    logWorkspaceStateError("restore", e);
+                }
+            });
+        } catch (Exception e) {
+            logWorkspaceStateError("load", e);
         }
     }
 
     private void saveWorkspaceState() {
-        saveWorkspaceState(true);
-    }
-
-    private void saveWorkspaceState(boolean allowSensitivePrompt) {
         if (workspaceStateService == null || ui == null) {
             return;
         }
-        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptionsForSave(allowSensitivePrompt);
-        WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), options);
-        workspaceStateService.save(state);
+        try {
+            WorkspaceState state = ui.getWorkspaceStateSnapshot();
+            workspaceStateService.save(state);
+        } catch (Exception e) {
+            logWorkspaceStateError("save", e);
+        }
     }
 
-    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForSave(boolean allowSensitivePrompt) {
-        if (workspaceStateService == null || !isProjectOnDisk()) {
-            workspaceSensitivePersistenceOptIn = null;
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-            return workspacePersistenceOptions;
-        }
-
-        if (workspaceSensitivePersistenceOptIn == null) {
-            Boolean stored = workspaceStateService.loadSensitivePersistenceOptIn();
-            if (shouldPromptForSensitivePersistence(stored, true, allowSensitivePrompt)) {
-                stored = promptForSensitivePersistenceOptIn();
-                workspaceStateService.saveSensitivePersistenceOptIn(stored);
-            }
-            workspaceSensitivePersistenceOptIn = stored;
-        }
-
-        if (workspaceSensitivePersistenceOptIn == null) {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-        } else if (workspaceSensitivePersistenceOptIn) {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.fullProjectPersistence();
+    private void logWorkspaceStateError(String action, Exception e) {
+        String message = "Workspace state " + action + " failed: " + (e != null && e.getMessage() != null ? e.getMessage() : "unknown error");
+        if (api != null) {
+            api.logging().logToError(message);
         } else {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+            System.err.println(message);
         }
-        return workspacePersistenceOptions;
-    }
-
-    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForRestore() {
-        if (workspaceStateService == null || !isProjectOnDisk()) {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-            return workspacePersistenceOptions;
-        }
-        if (workspaceSensitivePersistenceOptIn == null) {
-            workspaceSensitivePersistenceOptIn = workspaceStateService.loadSensitivePersistenceOptIn();
-        }
-        if (workspaceSensitivePersistenceOptIn == null) {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-        } else if (workspaceSensitivePersistenceOptIn) {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.fullProjectPersistence();
-        } else {
-            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
-        }
-        return workspacePersistenceOptions;
-    }
-
-    private boolean isProjectOnDisk() {
-        if (api == null || api.project() == null) {
-            return false;
-        }
-        String name = api.project().name();
-        return isDiskBackedProjectName(name);
-    }
-
-    static boolean isDiskBackedProjectName(String name) {
-        if (name == null) {
-            return false;
-        }
-        String normalized = name.trim().toLowerCase(Locale.ROOT);
-        if (normalized.isEmpty()) {
-            return false;
-        }
-        return !normalized.equals("temporary project")
-                && !normalized.equals("temporary project in memory")
-                && !normalized.equals("temporary project (in memory)");
-    }
-
-    private boolean promptForSensitivePersistenceOptIn() {
-        String message = "API Workbench can persist its full workspace state in this Burp project.\n\n"
-                + "Yes: store collections, runtime vars, OAuth2 state, and sensitive values in the project file.\n"
-                + "No: store only non-sensitive workspace state; secrets stay out of project data.\n\n"
-                + "Choose Yes only if you want this project file to carry secrets with it.";
-        int choice = JOptionPane.showConfirmDialog(
-                ui != null ? ui.getPanel() : null,
-                message,
-                "Persist API Workbench Data?",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.WARNING_MESSAGE);
-        return choice == JOptionPane.YES_OPTION;
-    }
-
-    static boolean shouldPromptForSensitivePersistence(Boolean storedOptIn, boolean currentProjectOnDisk) {
-        return shouldPromptForSensitivePersistence(storedOptIn, currentProjectOnDisk, true);
-    }
-
-    static boolean shouldPromptForSensitivePersistence(Boolean storedOptIn,
-                                                       boolean currentProjectOnDisk,
-                                                       boolean allowSensitivePrompt) {
-        return allowSensitivePrompt && currentProjectOnDisk && storedOptIn == null;
     }
 
     public interface LogCallback {

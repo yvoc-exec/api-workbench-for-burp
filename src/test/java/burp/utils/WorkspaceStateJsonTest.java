@@ -2,7 +2,6 @@ package burp.utils;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
-import burp.models.WorkspacePersistenceOptions;
 import burp.models.WorkspaceState;
 import org.junit.jupiter.api.Test;
 
@@ -20,7 +19,7 @@ class WorkspaceStateJsonTest {
         collection.runtimeVars.put("baseUrl", "https://api.example.test");
         collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
 
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.defaults());
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
         String json = WorkspaceStateJson.toJson(state);
         WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
 
@@ -32,44 +31,122 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
-    void defaultOptionsDoNotPersistSensitiveTokenOrSecretValues() {
+    void roundTripsRequestPathHierarchyAndCoreFields() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest token = new ApiRequest();
+        token.id = "req-token";
+        token.name = "Get Token";
+        token.path = "Auth/OAuth/Get Token";
+        token.sourceCollection = "APIM";
+        token.method = "POST";
+        token.url = "https://auth.example.test/token";
+
+        ApiRequest users = new ApiRequest();
+        users.id = "req-users";
+        users.name = "List Users";
+        users.path = "Users/List Users";
+        users.sourceCollection = "APIM";
+        users.method = "GET";
+        users.url = "https://api.example.test/users";
+
+        collection.requests.add(token);
+        collection.requests.add(users);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection)))
+        );
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.collections.get(0).requests).hasSize(2);
+
+        ApiRequest restoredToken = parsed.collections.get(0).requests.get(0);
+        ApiRequest restoredUsers = parsed.collections.get(0).requests.get(1);
+
+        assertThat(restoredToken.path).isEqualTo("Auth/OAuth/Get Token");
+        assertThat(restoredUsers.path).isEqualTo("Users/List Users");
+        assertThat(restoredToken.sourceCollection).isEqualTo("APIM");
+        assertThat(restoredUsers.sourceCollection).isEqualTo("APIM");
+        assertThat(restoredToken.name).isEqualTo("Get Token");
+        assertThat(restoredUsers.name).isEqualTo("List Users");
+        assertThat(restoredToken.method).isEqualTo("POST");
+        assertThat(restoredUsers.method).isEqualTo("GET");
+        assertThat(restoredToken.url).isEqualTo("https://auth.example.test/token");
+        assertThat(restoredUsers.url).isEqualTo("https://api.example.test/users");
+    }
+
+    @Test
+    void workspaceSnapshotPersistsSensitiveRuntimeAndOAuthValuesByDefault() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        collection.runtimeVars.put("password", "runtime-password");
+        collection.runtimeVars.put("api_key", "secret-key");
+        collection.runtimeVars.put("baseUrl", "https://api.example.test");
+        collection.runtimeOAuth2.put("oauth2_access_token", "access");
+        collection.runtimeOAuth2.put("oauth2_refresh_token", "refresh");
+        collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
+        collection.runtimeOAuth2.put("oauth2_password", "oauth-password");
+        collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
+        collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+
+        ApiCollection saved = state.collections.get(0);
+        assertThat(saved.runtimeVars)
+                .containsEntry("password", "runtime-password")
+                .containsEntry("api_key", "secret-key")
+                .containsEntry("baseUrl", "https://api.example.test");
+        assertThat(saved.runtimeOAuth2)
+                .containsEntry("oauth2_access_token", "access")
+                .containsEntry("oauth2_refresh_token", "refresh")
+                .containsEntry("oauth2_client_secret", "client-secret")
+                .containsEntry("oauth2_password", "oauth-password")
+                .containsEntry("oauth2_client_id", "client-id")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token");
+    }
+
+    @Test
+    void copyOfDeepCopiesWorkspaceSnapshotState() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Demo";
         collection.runtimeVars.put("api_key", "secret-key");
-        collection.runtimeVars.put("baseUrl", "https://api.example.test");
         collection.runtimeOAuth2.put("oauth2_access_token", "access");
         collection.runtimeOAuth2.put("oauth2_refresh_token", "refresh");
         collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
         collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
         collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
 
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.defaults());
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.selectedTabIndex = 2;
+        state.selectedVariablesCollectionName = "Demo";
+        state.selectedOAuth2CollectionName = "Demo";
+        state.selectedRequestCollectionName = "Demo";
+        state.selectedRequestName = "Get Me";
+        state.selectedRequestPath = "Folder/Get Me";
+        state.checkedRequestKeys = new java.util.ArrayList<>(List.of("Demo\u001FFolder/Get Me\u001FGet Me\u001FGET\u001F7"));
+        state.expandedTreePathKeys = new java.util.ArrayList<>(List.of("Demo\u001FFolder"));
 
-        ApiCollection saved = state.collections.get(0);
-        assertThat(saved.runtimeVars).containsEntry("baseUrl", "https://api.example.test");
-        assertThat(saved.runtimeVars).doesNotContainKey("api_key");
-        assertThat(saved.runtimeOAuth2).containsEntry("oauth2_client_id", "client-id");
-        assertThat(saved.runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
-        assertThat(saved.runtimeOAuth2).doesNotContainKeys("oauth2_access_token", "oauth2_refresh_token", "oauth2_client_secret");
-    }
+        WorkspaceState copy = WorkspaceState.copyOf(state);
 
-    @Test
-    void explicitOptionsCanPersistSensitiveRuntimeValues() {
-        ApiCollection collection = new ApiCollection();
-        collection.name = "Demo";
-        collection.runtimeVars.put("api_key", "secret-key");
-        collection.runtimeOAuth2.put("oauth2_access_token", "access");
-        collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
+        assertThat(copy).isNotSameAs(state);
+        assertThat(copy.collections.get(0)).isNotSameAs(state.collections.get(0));
+        assertThat(copy.collections.get(0).runtimeVars).containsEntry("api_key", "secret-key");
+        assertThat(copy.collections.get(0).runtimeOAuth2).containsEntry("oauth2_access_token", "access");
+        assertThat(copy.selectedTabIndex).isEqualTo(2);
+        assertThat(copy.selectedVariablesCollectionName).isEqualTo("Demo");
+        assertThat(copy.selectedOAuth2CollectionName).isEqualTo("Demo");
+        assertThat(copy.selectedRequestCollectionName).isEqualTo("Demo");
+        assertThat(copy.selectedRequestName).isEqualTo("Get Me");
+        assertThat(copy.selectedRequestPath).isEqualTo("Folder/Get Me");
+        assertThat(copy.checkedRequestKeys).containsExactly("Demo\u001FFolder/Get Me\u001FGet Me\u001FGET\u001F7");
+        assertThat(copy.expandedTreePathKeys).containsExactly("Demo\u001FFolder");
 
-        WorkspacePersistenceOptions options = WorkspacePersistenceOptions.defaults();
-        options.persistSensitiveRuntimeValues = true;
-        options.persistOAuthTokens = true;
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection), options);
+        state.collections.get(0).runtimeVars.put("later", "mutation");
+        state.checkedRequestKeys.add("another");
 
-        ApiCollection saved = state.collections.get(0);
-        assertThat(saved.runtimeVars).containsEntry("api_key", "secret-key");
-        assertThat(saved.runtimeOAuth2).containsEntry("oauth2_access_token", "access");
-        assertThat(saved.runtimeOAuth2).containsEntry("oauth2_client_secret", "client-secret");
+        assertThat(copy.collections.get(0).runtimeVars).doesNotContainKey("later");
+        assertThat(copy.checkedRequestKeys).containsExactly("Demo\u001FFolder/Get Me\u001FGet Me\u001FGET\u001F7");
     }
 
     @Test
@@ -122,10 +199,9 @@ class WorkspaceStateJsonTest {
         request.postResponseScripts.add(new ApiRequest.Script("js", "pm.test('ok', () => {});"));
 
         collection.requests.add(request);
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.defaults());
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
 
         ApiRequest snapshot = state.collections.get(0).requests.get(0);
-        ApiRequest snapshotHeaderRequest = snapshot;
         ApiRequest.Body.FormField snapshotFormField = snapshot.body.urlencoded.get(0);
         ApiRequest.Variable snapshotVariable = snapshot.variables.get(0);
         ApiRequest.Script snapshotPreScript = snapshot.preRequestScripts.get(0);
@@ -164,7 +240,7 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
-    void copyOfAppliesPersistencePolicyToLoadedState() {
+    void copyOfPreservesWorkspaceSnapshotState() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Demo";
         collection.runtimeVars.put("api_key", "secret-key");
@@ -175,17 +251,8 @@ class WorkspaceStateJsonTest {
         collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
         collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
 
-        WorkspaceState loaded = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.fullProjectPersistence());
-
-        WorkspaceState sanitized = WorkspaceState.copyOf(loaded, WorkspacePersistenceOptions.defaults());
-        WorkspaceState preserved = WorkspaceState.copyOf(loaded, WorkspacePersistenceOptions.fullProjectPersistence());
-
-        assertThat(sanitized.collections.get(0).runtimeVars).doesNotContainKey("api_key");
-        assertThat(sanitized.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
-        assertThat(sanitized.collections.get(0).runtimeOAuth2).containsEntry("oauth2_client_id", "client-id");
-        assertThat(sanitized.collections.get(0).runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
-        assertThat(sanitized.collections.get(0).runtimeOAuth2).doesNotContainKeys(
-                "oauth2_access_token", "oauth2_refresh_token", "oauth2_client_secret");
+        WorkspaceState loaded = WorkspaceState.fromCollections(List.of(collection));
+        WorkspaceState preserved = WorkspaceState.copyOf(loaded);
 
         assertThat(preserved.collections.get(0).runtimeVars).containsEntry("api_key", "secret-key");
         assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_access_token", "access");
