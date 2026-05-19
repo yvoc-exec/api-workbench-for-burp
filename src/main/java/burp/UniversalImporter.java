@@ -29,7 +29,8 @@ public class UniversalImporter {
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
-    private final WorkspacePersistenceOptions workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+    private volatile WorkspacePersistenceOptions workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+    private volatile Boolean workspaceSensitivePersistenceOptIn = null;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -48,6 +49,7 @@ public class UniversalImporter {
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
         this.ui.setWorkspaceChangeListener(this::saveWorkspaceState);
+        initializeWorkspacePersistencePolicy();
         restoreWorkspaceState();
     }
 
@@ -434,7 +436,8 @@ public class UniversalImporter {
         }
         WorkspaceState state = workspaceStateService.load();
         if (state != null && state.collections != null && !state.collections.isEmpty()) {
-            SwingUtilities.invokeLater(() -> ui.restoreWorkspaceCollections(state.collections));
+            WorkspaceState effectiveState = WorkspaceState.copyOf(state, resolveWorkspacePersistenceOptions(false));
+            SwingUtilities.invokeLater(() -> ui.restoreWorkspaceCollections(effectiveState.collections));
         }
     }
 
@@ -442,8 +445,77 @@ public class UniversalImporter {
         if (workspaceStateService == null || ui == null) {
             return;
         }
-        WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), workspacePersistenceOptions);
+        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptions(true);
+        WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), options);
         workspaceStateService.save(state);
+    }
+
+    private void initializeWorkspacePersistencePolicy() {
+        if (workspaceStateService == null) {
+            return;
+        }
+        resolveWorkspacePersistenceOptions(true);
+    }
+
+    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptions(boolean promptIfNeeded) {
+        if (workspaceStateService == null || !isProjectOnDisk()) {
+            workspaceSensitivePersistenceOptIn = null;
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+            return workspacePersistenceOptions;
+        }
+
+        if (workspaceSensitivePersistenceOptIn == null) {
+            Boolean stored = workspaceStateService.loadSensitivePersistenceOptIn();
+            if (stored == null && promptIfNeeded) {
+                stored = promptForSensitivePersistenceOptIn();
+                workspaceStateService.saveSensitivePersistenceOptIn(stored);
+            }
+            workspaceSensitivePersistenceOptIn = stored;
+        }
+
+        if (workspaceSensitivePersistenceOptIn == null) {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+        } else if (workspaceSensitivePersistenceOptIn) {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.fullProjectPersistence();
+        } else {
+            workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
+        }
+        return workspacePersistenceOptions;
+    }
+
+    private boolean isProjectOnDisk() {
+        if (api == null || api.project() == null) {
+            return false;
+        }
+        String name = api.project().name();
+        return isDiskBackedProjectName(name);
+    }
+
+    static boolean isDiskBackedProjectName(String name) {
+        if (name == null) {
+            return false;
+        }
+        String normalized = name.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        return !normalized.equals("temporary project")
+                && !normalized.equals("temporary project in memory")
+                && !normalized.equals("temporary project (in memory)");
+    }
+
+    private boolean promptForSensitivePersistenceOptIn() {
+        String message = "API Workbench can persist its full workspace state in this Burp project.\n\n"
+                + "Yes: store collections, runtime vars, OAuth2 state, and sensitive values in the project file.\n"
+                + "No: store only non-sensitive workspace state; secrets stay out of project data.\n\n"
+                + "Choose Yes only if you want this project file to carry secrets with it.";
+        int choice = JOptionPane.showConfirmDialog(
+                ui != null ? ui.getPanel() : null,
+                message,
+                "Persist API Workbench Data?",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE);
+        return choice == JOptionPane.YES_OPTION;
     }
 
     public interface LogCallback {

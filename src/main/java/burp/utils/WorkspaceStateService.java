@@ -6,6 +6,7 @@ import burp.models.WorkspaceState;
 
 public class WorkspaceStateService {
     private static final String KEY = "api_workbench_workspace_state_json";
+    private static final String POLICY_KEY = "api_workbench_workspace_sensitive_persistence_opt_in";
 
     public interface StringStore {
         String get(String key);
@@ -38,6 +39,24 @@ public class WorkspaceStateService {
             return;
         }
         store.set(KEY, WorkspaceStateJson.toJson(state));
+    }
+
+    public Boolean loadSensitivePersistenceOptIn() {
+        if (store == null) {
+            return null;
+        }
+        String raw = store.get(POLICY_KEY);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        return Boolean.parseBoolean(raw.trim());
+    }
+
+    public void saveSensitivePersistenceOptIn(boolean allowSensitivePersistence) {
+        if (store == null) {
+            return;
+        }
+        store.set(POLICY_KEY, String.valueOf(allowSensitivePersistence));
     }
 
     private static class MontoyaStringStore implements StringStore {

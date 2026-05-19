@@ -162,4 +162,34 @@ class WorkspaceStateJsonTest {
         assertThat(snapshot.authExplicitlyDisabled).isFalse();
         assertThat(snapshot.authSource).isEqualTo("collection: Demo");
     }
+
+    @Test
+    void copyOfAppliesPersistencePolicyToLoadedState() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        collection.runtimeVars.put("api_key", "secret-key");
+        collection.runtimeVars.put("baseUrl", "https://api.example.test");
+        collection.runtimeOAuth2.put("oauth2_access_token", "access");
+        collection.runtimeOAuth2.put("oauth2_refresh_token", "refresh");
+        collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
+        collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
+        collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+
+        WorkspaceState loaded = WorkspaceState.fromCollections(List.of(collection), WorkspacePersistenceOptions.fullProjectPersistence());
+
+        WorkspaceState sanitized = WorkspaceState.copyOf(loaded, WorkspacePersistenceOptions.defaults());
+        WorkspaceState preserved = WorkspaceState.copyOf(loaded, WorkspacePersistenceOptions.fullProjectPersistence());
+
+        assertThat(sanitized.collections.get(0).runtimeVars).doesNotContainKey("api_key");
+        assertThat(sanitized.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
+        assertThat(sanitized.collections.get(0).runtimeOAuth2).containsEntry("oauth2_client_id", "client-id");
+        assertThat(sanitized.collections.get(0).runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
+        assertThat(sanitized.collections.get(0).runtimeOAuth2).doesNotContainKeys(
+                "oauth2_access_token", "oauth2_refresh_token", "oauth2_client_secret");
+
+        assertThat(preserved.collections.get(0).runtimeVars).containsEntry("api_key", "secret-key");
+        assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_access_token", "access");
+        assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_refresh_token", "refresh");
+        assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_client_secret", "client-secret");
+    }
 }

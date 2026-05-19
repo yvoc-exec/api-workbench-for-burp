@@ -84,7 +84,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 
-> **Security note:** API Workbench persists loaded collections and non-sensitive runtime settings into Burp project data when a project is available. Access tokens, refresh tokens, client secrets, passwords, and secret-like keys are not persisted by default. Use Export Runtime JSON only when you intentionally want a portable runtime snapshot.
+> **Security note:** For Burp projects on disk, API Workbench asks once whether to persist sensitive runtime state in that project file. `Yes` stores sensitive values with the project; `No` keeps secrets out of project data and persists only non-sensitive workspace state. Temporary projects remain memory-only. Use Export Runtime JSON only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
