@@ -115,6 +115,7 @@ public class ImporterPanel {
         t.setDaemon(true);
         return t;
     });
+    private volatile boolean shuttingDown = false;
 
     // Runner listener deduplication
     private CollectionRunner.RunnerListener activeRunnerListener;
@@ -151,6 +152,9 @@ public class ImporterPanel {
     }
 
     private void notifyWorkspaceChanged() {
+        if (shuttingDown) {
+            return;
+        }
         if (workspaceChangeListener != null) {
             workspaceChangeListener.run();
         }
@@ -1604,6 +1608,9 @@ public class ImporterPanel {
             return;
         }
         col.addChangeListener(() -> SwingUtilities.invokeLater(() -> {
+            if (shuttingDown) {
+                return;
+            }
             refreshRuntimeViewsForCollection(col);
             notifyWorkspaceChanged();
         }));
@@ -1889,7 +1896,7 @@ public class ImporterPanel {
     // Variables Tab Binding
     // ========================================================================
     private void scheduleVariablesAutosave() {
-        if (suppressVariablesAutosave) {
+        if (suppressVariablesAutosave || shuttingDown) {
             return;
         }
         if (variablesAutosave != null) {
@@ -1898,7 +1905,7 @@ public class ImporterPanel {
     }
 
     private void autosaveVariablesToSelectedCollection() {
-        if (suppressVariablesAutosave || varsCollectionCombo == null) {
+        if (suppressVariablesAutosave || shuttingDown || varsCollectionCombo == null) {
             return;
         }
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
@@ -2509,6 +2516,16 @@ public class ImporterPanel {
     }
 
     public void cleanup() {
+        shuttingDown = true;
+        if (variablesAutosave != null) {
+            variablesAutosave.stop();
+        }
+        suppressVariablesAutosave = true;
+        try {
+            persistVariablesEditorStateSilently();
+        } finally {
+            suppressVariablesAutosave = false;
+        }
         for (ApiCollection col : new ArrayList<>(oauthAutoStates.keySet())) {
             OAuthAutoRefreshState state = oauthAutoStates.get(col);
             if (state != null && state.future != null) {
@@ -2517,6 +2534,18 @@ public class ImporterPanel {
         }
         oauthAutoStates.clear();
         oauthAutoExecutor.shutdownNow();
+    }
+
+    private void persistVariablesEditorStateSilently() {
+        if (varsCollectionCombo == null) {
+            return;
+        }
+        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
+        if (ref == null || ref.collection == null) {
+            return;
+        }
+        Map<String, String> vars = parseRuntimeOverrideSection();
+        ref.collection.replaceRuntimeVars(vars);
     }
 
     // ========================================================================

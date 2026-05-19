@@ -25,5 +25,6 @@ class UniversalImporterPersistencePolicyTest {
         assertThat(UniversalImporter.shouldPromptForSensitivePersistence(Boolean.FALSE, true)).isFalse();
         assertThat(UniversalImporter.shouldPromptForSensitivePersistence(Boolean.TRUE, true)).isFalse();
         assertThat(UniversalImporter.shouldPromptForSensitivePersistence(null, false)).isFalse();
+        assertThat(UniversalImporter.shouldPromptForSensitivePersistence(null, true, false)).isFalse();
     }
 }

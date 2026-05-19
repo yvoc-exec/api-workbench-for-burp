@@ -422,10 +422,10 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
-        saveWorkspaceState();
         if (ui != null) {
             ui.cleanup();
         }
+        saveWorkspaceState(false);
         clearVariables();
     }
 
@@ -441,15 +441,19 @@ public class UniversalImporter {
     }
 
     private void saveWorkspaceState() {
+        saveWorkspaceState(true);
+    }
+
+    private void saveWorkspaceState(boolean allowSensitivePrompt) {
         if (workspaceStateService == null || ui == null) {
             return;
         }
-        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptionsForSave();
+        WorkspacePersistenceOptions options = resolveWorkspacePersistenceOptionsForSave(allowSensitivePrompt);
         WorkspaceState state = WorkspaceState.fromCollections(ui.getLoadedCollectionsSnapshot(), options);
         workspaceStateService.save(state);
     }
 
-    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForSave() {
+    private WorkspacePersistenceOptions resolveWorkspacePersistenceOptionsForSave(boolean allowSensitivePrompt) {
         if (workspaceStateService == null || !isProjectOnDisk()) {
             workspaceSensitivePersistenceOptIn = null;
             workspacePersistenceOptions = WorkspacePersistenceOptions.defaults();
@@ -458,7 +462,7 @@ public class UniversalImporter {
 
         if (workspaceSensitivePersistenceOptIn == null) {
             Boolean stored = workspaceStateService.loadSensitivePersistenceOptIn();
-            if (shouldPromptForSensitivePersistence(stored, true)) {
+            if (shouldPromptForSensitivePersistence(stored, true, allowSensitivePrompt)) {
                 stored = promptForSensitivePersistenceOptIn();
                 workspaceStateService.saveSensitivePersistenceOptIn(stored);
             }
@@ -529,7 +533,13 @@ public class UniversalImporter {
     }
 
     static boolean shouldPromptForSensitivePersistence(Boolean storedOptIn, boolean currentProjectOnDisk) {
-        return currentProjectOnDisk && storedOptIn == null;
+        return shouldPromptForSensitivePersistence(storedOptIn, currentProjectOnDisk, true);
+    }
+
+    static boolean shouldPromptForSensitivePersistence(Boolean storedOptIn,
+                                                       boolean currentProjectOnDisk,
+                                                       boolean allowSensitivePrompt) {
+        return allowSensitivePrompt && currentProjectOnDisk && storedOptIn == null;
     }
 
     public interface LogCallback {
