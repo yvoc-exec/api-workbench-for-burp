@@ -11,7 +11,7 @@ import burp.UniversalImporter;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
-import burp.ui.tree.CheckBoxTreeCellRenderer;
+import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -252,7 +252,8 @@ public class ImporterPanel {
         treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Collections"));
         requestTree = new JTree(treeModel);
         requestTree.setRootVisible(false);
-        requestTree.setCellRenderer(new DefaultTreeCellRenderer());
+        requestTree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
+        requestTree.setRowHeight(20);
         requestTree.setShowsRootHandles(true);
         requestTree.addMouseListener(new TreeMouseListener());
         requestTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -1515,7 +1516,8 @@ public class ImporterPanel {
         JTree tree = new JTree(model);
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
-        tree.setCellRenderer(new CheckBoxTreeCellRenderer());
+        tree.setCellRenderer(new BurpLikeTreeCellRenderer(true));
+        tree.setRowHeight(20);
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {

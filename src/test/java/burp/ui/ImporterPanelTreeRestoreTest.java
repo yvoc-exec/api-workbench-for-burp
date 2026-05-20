@@ -4,6 +4,7 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.auth.OAuth2Manager;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -1025,6 +1026,30 @@ class ImporterPanelTreeRestoreTest {
 
     private static List<String> directRequestNames(CollectionTreeNode parent) {
         return requestNames(parent);
+    }
+
+    @Test
+    void mainRequestTreeUsesBurpLikeRendererInNonCheckboxMode() throws Exception {
+        ImporterPanel panel = newPanel();
+        JTree tree = requestTree(panel);
+        assertThat(tree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) tree.getCellRenderer()).isCheckboxMode()).isFalse();
+    }
+
+    @Test
+    void popupSelectionTreeUsesBurpLikeRendererInCheckboxMode() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collectionWithRequests("APIM", "req-a", "Alpha", null, null);
+        panel.restoreWorkspaceCollections(List.of(collection));
+
+        Method buildTree = ImporterPanel.class.getDeclaredMethod("buildPopupSelectionTree", DefaultMutableTreeNode.class, JLabel.class);
+        buildTree.setAccessible(true);
+
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
+        JTree popupTree = (JTree) buildTree.invoke(panel, root, new JLabel());
+
+        assertThat(popupTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) popupTree.getCellRenderer()).isCheckboxMode()).isTrue();
     }
 
 }
