@@ -57,6 +57,7 @@ public class ImporterPanel {
     private JCheckBox repeaterBtn, sitemapBtn, intruderBtn;
     private JSpinner delaySpinner;
     private JButton importBtn, sendToRunnerBtn, addCollectionBtn, removeCollectionBtn;
+    private JButton actionsBtn;
     private JCheckBox debugRawRequestBox;
     private JTextField envField;
     private JButton envBrowseBtn, envApplyCheckedBtn, envApplyCheckedCollectionsBtn, envApplyAllBtn;
@@ -132,6 +133,7 @@ public class ImporterPanel {
 
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
+    private final List<ApiRequest> runnerQueuedRequests = new ArrayList<>();
 
     private static class OAuthAutoRefreshState {
         boolean enabled;
@@ -150,7 +152,8 @@ public class ImporterPanel {
         this.runner = runner;
         this.mainPanel = createUI();
         if (oauth2Panel.getPopulateButton() != null) {
-            oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromCheckedRequest());
+            oauth2Panel.getPopulateButton().setText("Populate from Request");
+            oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromRequest());
         }
     }
 
@@ -234,8 +237,8 @@ public class ImporterPanel {
         panel.setBorder(BorderFactory.createTitledBorder("Collections"));
         addCollectionBtn = new JButton("+ Add Collection");
         addCollectionBtn.addActionListener(e -> addCollection());
-        removeCollectionBtn = new JButton("- Remove Selected");
-        removeCollectionBtn.addActionListener(e -> removeSelectedCollections());
+        removeCollectionBtn = new JButton("- Remove Collection");
+        removeCollectionBtn.addActionListener(e -> showRemoveCollectionsDialog());
         removeCollectionBtn.setEnabled(false);
         panel.add(addCollectionBtn);
         panel.add(removeCollectionBtn);
@@ -253,7 +256,7 @@ public class ImporterPanel {
         treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Collections"));
         requestTree = new JTree(treeModel);
         requestTree.setRootVisible(false);
-        requestTree.setCellRenderer(new CheckBoxTreeCellRenderer());
+        requestTree.setCellRenderer(new DefaultTreeCellRenderer());
         requestTree.setShowsRootHandles(true);
         requestTree.addMouseListener(new TreeMouseListener());
         requestTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -278,16 +281,6 @@ public class ImporterPanel {
         treeScroll.setBorder(BorderFactory.createTitledBorder("Request Tree"));
         panel.add(treeScroll, BorderLayout.CENTER);
 
-        // Select controls
-        JPanel selectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton selectAllBtn = new JButton("Check All");
-        selectAllBtn.addActionListener(e -> setTreeCheckState(true));
-        JButton deselectAllBtn = new JButton("Uncheck All");
-        deselectAllBtn.addActionListener(e -> setTreeCheckState(false));
-        selectPanel.add(selectAllBtn);
-        selectPanel.add(deselectAllBtn);
-        panel.add(selectPanel, BorderLayout.SOUTH);
-
         return panel;
     }
 
@@ -299,7 +292,7 @@ public class ImporterPanel {
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         split.setTopComponent(requestEditor);
         split.setBottomComponent(createWorkbenchDetailTabs());
-        split.setResizeWeight(0.50);
+        split.setResizeWeight(0.68);
         split.setOneTouchExpandable(true);
         split.setContinuousLayout(true);
         split.setDividerSize(8);
@@ -340,9 +333,6 @@ public class ImporterPanel {
         panel.add(new JLabel("Env:"));
         panel.add(envField);
         panel.add(envBrowseBtn);
-        panel.add(envApplyCheckedBtn);
-        panel.add(envApplyCheckedCollectionsBtn);
-        panel.add(envApplyAllBtn);
         return panel;
     }
 
@@ -351,34 +341,22 @@ public class ImporterPanel {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createTitledBorder("Actions"));
 
-        // Destination + Delay + Debug
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        // Persisted defaults for the Actions popup.
         repeaterBtn = new JCheckBox("Repeater", true);
         sitemapBtn = new JCheckBox("Sitemap (Live)");
         intruderBtn = new JCheckBox("Intruder");
-        actionPanel.add(repeaterBtn);
-        actionPanel.add(sitemapBtn);
-        actionPanel.add(intruderBtn);
-        actionPanel.add(Box.createHorizontalStrut(10));
-        actionPanel.add(new JLabel("Delay (ms):"));
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
         delaySpinner.setPreferredSize(new Dimension(70, 22));
-        actionPanel.add(delaySpinner);
         debugRawRequestBox = new JCheckBox("Debug final raw request");
-        actionPanel.add(debugRawRequestBox);
-        panel.add(actionPanel);
 
-        // Import / Run Checked buttons
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 2));
-        importBtn = new JButton("Import Checked");
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+        importBtn = new JButton("Actions");
         importBtn.setEnabled(false);
-        importBtn.addActionListener(e -> startImport());
+        importBtn.addActionListener(e -> showActionsDialog());
+        actionsBtn = importBtn;
         sendToRunnerBtn = new JButton("Run Checked");
         sendToRunnerBtn.setEnabled(false);
-        sendToRunnerBtn.addActionListener(e -> sendToRunner());
-
         btnPanel.add(importBtn);
-        btnPanel.add(sendToRunnerBtn);
         panel.add(btnPanel);
 
         // Progress + Log
@@ -1053,26 +1031,10 @@ public class ImporterPanel {
         public void mouseClicked(MouseEvent e) {
             TreePath path = requestTree.getPathForLocation(e.getX(), e.getY());
             if (path == null) return;
-            Rectangle bounds = requestTree.getPathBounds(path);
-            if (bounds == null) return;
             Object node = path.getLastPathComponent();
             if (SwingUtilities.isRightMouseButton(e) && node instanceof CollectionTreeNode) {
                 requestTree.setSelectionPath(path);
                 showTreeContextMenu(e, (CollectionTreeNode) node);
-                return;
-            }
-            // Check if click is in checkbox area (left side)
-            if (e.getX() < bounds.x + 20) {
-                if (node instanceof CollectionTreeNode) {
-                    CollectionTreeNode ctn = (CollectionTreeNode) node;
-                    ctn.propagateCheck(!ctn.isChecked());
-                    javax.swing.tree.TreeNode parent = ctn.getParent();
-                    if (parent instanceof CollectionTreeNode) {
-                        ((CollectionTreeNode) parent).updateParentCheckState();
-                    }
-                    requestTree.repaint();
-                    updateScopeControlState();
-                }
             }
         }
     }
@@ -1453,29 +1415,24 @@ public class ImporterPanel {
         return folder;
     }
 
-    private void setTreeCheckState(boolean checked) {
-        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
-        for (int i = 0; i < root.getChildCount(); i++) {
-            if (root.getChildAt(i) instanceof CollectionTreeNode) {
-                ((CollectionTreeNode) root.getChildAt(i)).propagateCheck(checked);
-            }
-        }
-        requestTree.repaint();
-        updateScopeControlState();
+    private List<ApiRequest> getCheckedRequestsFromTree() {
+        return collectCheckedRequests((DefaultMutableTreeNode) treeModel.getRoot());
     }
 
-    private List<ApiRequest> getCheckedRequestsFromTree() {
+    private List<ApiCollection> getCheckedCollectionsFromTree() {
+        return new ArrayList<>(collectCheckedCollections((DefaultMutableTreeNode) treeModel.getRoot()));
+    }
+
+    private List<ApiRequest> collectCheckedRequests(DefaultMutableTreeNode root) {
         List<ApiRequest> selected = new ArrayList<>();
-        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         enumerateCheckedRequests(root, selected);
         return selected;
     }
 
-    private List<ApiCollection> getCheckedCollectionsFromTree() {
+    private Set<ApiCollection> collectCheckedCollections(DefaultMutableTreeNode root) {
         LinkedHashSet<ApiCollection> checked = new LinkedHashSet<>();
-        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         enumerateCheckedCollections(root, checked);
-        return new ArrayList<>(checked);
+        return checked;
     }
 
     private void enumerateCheckedRequests(DefaultMutableTreeNode node, List<ApiRequest> out) {
@@ -1520,6 +1477,84 @@ public class ImporterPanel {
             }
         }
         return affected;
+    }
+
+    private DefaultMutableTreeNode cloneRequestTreeRootForSelection() {
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return new DefaultMutableTreeNode("Collections");
+        }
+        return cloneTreeNodeForSelection((DefaultMutableTreeNode) treeModel.getRoot());
+    }
+
+    private DefaultMutableTreeNode cloneTreeNodeForSelection(DefaultMutableTreeNode node) {
+        DefaultMutableTreeNode copy;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode source = (CollectionTreeNode) node;
+            if (source.getNodeType() == CollectionTreeNode.Type.COLLECTION && source.collection != null) {
+                copy = new CollectionTreeNode(source.collection);
+            } else if (source.getNodeType() == CollectionTreeNode.Type.FOLDER && source.folderPath != null) {
+                copy = new CollectionTreeNode(source.folderPath);
+            } else if (source.getNodeType() == CollectionTreeNode.Type.REQUEST && source.request != null) {
+                copy = new CollectionTreeNode(source.request);
+            } else {
+                copy = new DefaultMutableTreeNode(source.getUserObject(), source.getAllowsChildren());
+            }
+        } else {
+            copy = new DefaultMutableTreeNode(node.getUserObject(), node.getAllowsChildren());
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            copy.add(cloneTreeNodeForSelection((DefaultMutableTreeNode) node.getChildAt(i)));
+        }
+        return copy;
+    }
+
+    private JTree buildPopupSelectionTree(DefaultMutableTreeNode selectionRoot, JLabel selectedCountLabel) {
+        DefaultTreeModel model = new DefaultTreeModel(selectionRoot);
+        JTree tree = new JTree(model);
+        tree.setRootVisible(false);
+        tree.setShowsRootHandles(true);
+        tree.setCellRenderer(new CheckBoxTreeCellRenderer());
+        tree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                TreePath path = tree.getPathForLocation(e.getX(), e.getY());
+                if (path == null) {
+                    return;
+                }
+                Rectangle bounds = tree.getPathBounds(path);
+                if (bounds == null || e.getX() >= bounds.x + 20) {
+                    return;
+                }
+                Object node = path.getLastPathComponent();
+                if (!(node instanceof CollectionTreeNode)) {
+                    return;
+                }
+                CollectionTreeNode ctn = (CollectionTreeNode) node;
+                ctn.propagateCheck(!ctn.isChecked());
+                TreeNode parent = ctn.getParent();
+                if (parent instanceof CollectionTreeNode) {
+                    ((CollectionTreeNode) parent).updateParentCheckState();
+                }
+                tree.repaint();
+                if (selectedCountLabel != null) {
+                    selectedCountLabel.setText(collectCheckedRequests((DefaultMutableTreeNode) tree.getModel().getRoot()).size() + " requests selected");
+                }
+            }
+        });
+        expandAllTreeRows(tree);
+        if (selectedCountLabel != null) {
+            selectedCountLabel.setText("0 requests selected");
+        }
+        return tree;
+    }
+
+    private void expandAllTreeRows(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        for (int i = 0; i < tree.getRowCount(); i++) {
+            tree.expandRow(i);
+        }
     }
 
     private ApiCollection findCollectionForNode(CollectionTreeNode node) {
@@ -2038,7 +2073,9 @@ public class ImporterPanel {
                     startRunnerBtn.setEnabled(true);
                     previewRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
-                    envApplyAllBtn.setEnabled(selectedEnv != null);
+                    if (envApplyAllBtn != null) {
+                        envApplyAllBtn.setEnabled(selectedEnv != null);
+                    }
                     notifyWorkspaceChanged();
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
@@ -2048,16 +2085,64 @@ public class ImporterPanel {
         worker.execute();
     }
 
-    private void removeSelectedCollections() {
-        List<ApiCollection> checkedCollections = getCheckedCollectionsFromTree();
-        if (checkedCollections.isEmpty()) {
-            appendImportLog("No checked collection nodes to remove.");
+    private void showRemoveCollectionsDialog() {
+        if (loadedCollections.isEmpty()) {
+            appendImportLog("No collections loaded.");
             return;
         }
-        for (ApiCollection target : checkedCollections) {
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Remove Collection", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setLayout(new BorderLayout(8, 8));
+        JPanel listPanel = new JPanel();
+        listPanel.setLayout(new BoxLayout(listPanel, BoxLayout.Y_AXIS));
+        List<JCheckBox> checkboxes = new ArrayList<>();
+        for (CollectionRef ref : buildCollectionRefs()) {
+            JCheckBox box = new JCheckBox(ref.label);
+            box.putClientProperty("collection", ref.collection);
+            checkboxes.add(box);
+            listPanel.add(box);
+        }
+        JScrollPane scrollPane = new JScrollPane(listPanel);
+        scrollPane.setBorder(BorderFactory.createTitledBorder("Select collection(s) to remove"));
+        dialog.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton cancel = new JButton("Cancel");
+        JButton remove = new JButton("Remove Collection");
+        cancel.addActionListener(e -> dialog.dispose());
+        remove.addActionListener(e -> {
+            List<ApiCollection> selected = new ArrayList<>();
+            for (JCheckBox box : checkboxes) {
+                if (box.isSelected()) {
+                    Object value = box.getClientProperty("collection");
+                    if (value instanceof ApiCollection) {
+                        selected.add((ApiCollection) value);
+                    }
+                }
+            }
+            if (selected.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog, "Select at least one collection to remove.", "No Selection", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            removeCollections(selected);
+            dialog.dispose();
+        });
+        buttons.add(cancel);
+        buttons.add(remove);
+        dialog.add(buttons, BorderLayout.SOUTH);
+        dialog.setSize(420, 380);
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
+    }
+
+    private void removeCollections(List<ApiCollection> targets) {
+        if (targets == null || targets.isEmpty()) {
+            return;
+        }
+        for (ApiCollection target : targets) {
             stopAutoRefreshForCollection(target, "Collection removed");
             oauthAutoStates.remove(target);
             target.clearChangeListeners();
+            requestToCollectionMap.entrySet().removeIf(entry -> entry.getValue() == target);
             loadedCollections.remove(target);
             appendImportLog("Removed collection: " + target.name);
         }
@@ -2070,8 +2155,8 @@ public class ImporterPanel {
             startRunnerBtn.setEnabled(false);
             previewRunnerBtn.setEnabled(false);
             removeCollectionBtn.setEnabled(false);
-            envApplyAllBtn.setEnabled(false);
         }
+        runnerQueuedRequests.removeIf(req -> requestToCollectionMap.get(req) == null);
     }
 
     private void registerCollectionRuntimeListener(ApiCollection col) {
@@ -2212,6 +2297,7 @@ public class ImporterPanel {
             existing.clearChangeListeners();
         }
         loadedCollections.clear();
+        runnerQueuedRequests.clear();
         requestToCollectionMap.clear();
         if (collections != null) {
             for (ApiCollection col : collections) {
@@ -3008,7 +3094,9 @@ public class ImporterPanel {
             }
         }
 
-        // Env apply checked requires one or more checked requests
+        if (actionsBtn != null) {
+            actionsBtn.setEnabled(!loadedCollections.isEmpty());
+        }
         if (requestTree != null && envApplyCheckedBtn != null) {
             envApplyCheckedBtn.setEnabled(!getCheckedRequestsFromTree().isEmpty() && !loadedCollections.isEmpty());
         }
@@ -3032,7 +3120,62 @@ public class ImporterPanel {
             selectedEnv = chooser.getSelectedFile();
             envField.setText(selectedEnv.getAbsolutePath());
             updateScopeControlState();
+            showEnvironmentBindingDialog();
         }
+    }
+
+    private void showEnvironmentBindingDialog() {
+        if (selectedEnv == null) {
+            appendImportLog("No environment file selected. Browse first.");
+            return;
+        }
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Environment Binding", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setLayout(new BorderLayout(8, 8));
+
+        JLabel selectedCountLabel = new JLabel("0 requests selected");
+        DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
+        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel);
+        JScrollPane treeScroll = new JScrollPane(selectionTree);
+        treeScroll.setBorder(BorderFactory.createTitledBorder("Select collections / requests"));
+        dialog.add(treeScroll, BorderLayout.CENTER);
+
+        JLabel envLabel = new JLabel("Env: " + selectedEnv.getAbsolutePath());
+        JPanel topPanel = new JPanel(new BorderLayout());
+        topPanel.add(envLabel, BorderLayout.CENTER);
+        topPanel.add(selectedCountLabel, BorderLayout.EAST);
+        dialog.add(topPanel, BorderLayout.NORTH);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton cancelBtn = new JButton("Cancel");
+        JButton applyRequestBtn = new JButton("Apply to Checked Request");
+        JButton applyCollectionBtn = new JButton("Apply to Checked Collection");
+        JButton applyAllBtn = new JButton("Apply to All Collection");
+        cancelBtn.addActionListener(e -> dialog.dispose());
+        applyRequestBtn.addActionListener(e -> {
+            List<ApiRequest> checkedRequests = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
+            applyEnvToRequests(checkedRequests);
+            dialog.dispose();
+        });
+        applyCollectionBtn.addActionListener(e -> {
+            DefaultMutableTreeNode root = (DefaultMutableTreeNode) selectionTree.getModel().getRoot();
+            Set<ApiCollection> selectedCollections = new LinkedHashSet<>(collectCheckedCollections(root));
+            selectedCollections.addAll(resolveCheckedRequestCollections(collectCheckedRequests(root)));
+            applyEnvToCollections(selectedCollections);
+            dialog.dispose();
+        });
+        applyAllBtn.addActionListener(e -> {
+            applyEnvToAllCollectionsFromPopup();
+            dialog.dispose();
+        });
+        buttonPanel.add(cancelBtn);
+        buttonPanel.add(applyRequestBtn);
+        buttonPanel.add(applyCollectionBtn);
+        buttonPanel.add(applyAllBtn);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+
+        dialog.setSize(720, 520);
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
     }
 
     static int applyEnvVarsToRequestVariables(ApiRequest request, Map<String, String> envVars) {
@@ -3070,20 +3213,15 @@ public class ImporterPanel {
         return changed;
     }
 
-    private void applyEnvToCheckedRequests() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
-            return;
-        }
-        List<ApiRequest> targets = getCheckedRequestsFromTree();
-        if (targets.isEmpty()) {
-            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
+    private void applyEnvToRequests(List<ApiRequest> targets) {
+        if (targets == null || targets.isEmpty()) {
+            appendImportLog("No requests selected. Select one or more requests to bind env.");
             return;
         }
         Map<String, String> parsed = new LinkedHashMap<>();
         UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, parsed);
         if (!result.isSuccess()) {
-            appendImportLog("Env bind FAILED for checked requests: " + result.errorMessage);
+            appendImportLog("Env bind FAILED for selected requests: " + result.errorMessage);
             return;
         }
         Set<ApiCollection> affectedCollections = new LinkedHashSet<>();
@@ -3098,7 +3236,7 @@ public class ImporterPanel {
                 affectedCollections.add(collection);
             }
         }
-        appendImportLog("Env bound to " + targets.size() + " checked request(s): " + totalApplied + " var(s) total.");
+        appendImportLog("Env bound to " + targets.size() + " request(s): " + totalApplied + " var(s) total.");
         for (ApiCollection collection : affectedCollections) {
             refreshRuntimeViewsForCollection(collection);
         }
@@ -3106,7 +3244,7 @@ public class ImporterPanel {
         renderEffectiveVariablesForSelectedCollection();
     }
 
-    private void applyEnvToCheckedCollections() {
+    private void applyEnvToCheckedRequests() {
         if (selectedEnv == null) {
             appendImportLog("No environment file selected. Browse first.");
             return;
@@ -3116,9 +3254,12 @@ public class ImporterPanel {
             appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
             return;
         }
-        Set<ApiCollection> affectedCollections = resolveCheckedRequestCollections(targets);
+        applyEnvToRequests(targets);
+    }
+
+    private void applyEnvToCollections(Set<ApiCollection> affectedCollections) {
         if (affectedCollections.isEmpty()) {
-            appendImportLog("No checked request nodes resolved to collections. Nothing to apply.");
+            appendImportLog("No collections selected. Nothing to apply.");
             return;
         }
         int totalLoaded = 0;
@@ -3141,15 +3282,33 @@ public class ImporterPanel {
         renderEffectiveVariablesForSelectedCollection();
     }
 
-    private void applyEnvToAllCollections() {
+    private void applyEnvToCheckedCollections() {
         if (selectedEnv == null) {
             appendImportLog("No environment file selected. Browse first.");
             return;
         }
-        int confirm = JOptionPane.showConfirmDialog(mainPanel,
-            "This will bind the selected environment file to ALL " + loadedCollections.size() + " collection(s). Continue?",
-            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
-        if (confirm != JOptionPane.YES_OPTION) return;
+        List<ApiRequest> targets = getCheckedRequestsFromTree();
+        if (targets.isEmpty()) {
+            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
+            return;
+        }
+        Set<ApiCollection> affectedCollections = resolveCheckedRequestCollections(targets);
+        if (affectedCollections.isEmpty()) {
+            appendImportLog("No checked request nodes resolved to collections. Nothing to apply.");
+            return;
+        }
+        applyEnvToCollections(affectedCollections);
+    }
+
+    private void applyEnvToAllCollectionsFromPopup() {
+        if (selectedEnv == null) {
+            appendImportLog("No environment file selected. Browse first.");
+            return;
+        }
+        if (loadedCollections.isEmpty()) {
+            appendImportLog("No collections loaded.");
+            return;
+        }
         int totalLoaded = 0;
         List<String> errors = new ArrayList<>();
         for (ApiCollection col : loadedCollections) {
@@ -3165,7 +3324,20 @@ public class ImporterPanel {
         for (String err : errors) {
             appendImportLog("  Env bind error - " + err);
         }
+        notifyWorkspaceChanged();
         renderEffectiveVariablesForSelectedCollection();
+    }
+
+    private void applyEnvToAllCollections() {
+        if (selectedEnv == null) {
+            appendImportLog("No environment file selected. Browse first.");
+            return;
+        }
+        int confirm = JOptionPane.showConfirmDialog(mainPanel,
+            "This will bind the selected environment file to ALL " + loadedCollections.size() + " collection(s). Continue?",
+            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
+        applyEnvToAllCollectionsFromPopup();
     }
 
     private void switchVarsView(boolean tableView) {
@@ -3345,19 +3517,103 @@ public class ImporterPanel {
     // ========================================================================
     // Import / Destination Flow
     // ========================================================================
-    private void startImport() {
+    private void showActionsDialog() {
+        if (loadedCollections.isEmpty()) {
+            appendImportLog("No collections loaded.");
+            return;
+        }
+        persistCurrentRequestEditorState();
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Actions", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setLayout(new BorderLayout(8, 8));
+
+        JLabel selectedCountLabel = new JLabel("0 requests selected");
+        DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
+        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel);
+        JScrollPane treeScroll = new JScrollPane(selectionTree);
+        treeScroll.setBorder(BorderFactory.createTitledBorder("Select requests"));
+        dialog.add(treeScroll, BorderLayout.CENTER);
+
+        JCheckBox popupRepeater = new JCheckBox("Repeater", repeaterBtn != null && repeaterBtn.isSelected());
+        JCheckBox popupSitemap = new JCheckBox("Sitemap (Live)", sitemapBtn != null && sitemapBtn.isSelected());
+        JCheckBox popupIntruder = new JCheckBox("Intruder", intruderBtn != null && intruderBtn.isSelected());
+        JSpinner popupDelay = new JSpinner(new SpinnerNumberModel(delaySpinner != null ? spinnerIntValue(delaySpinner) : 200, 0, 5000, 50));
+        popupDelay.setPreferredSize(new Dimension(80, 22));
+
+        JPanel options = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        options.add(popupRepeater);
+        options.add(popupSitemap);
+        options.add(popupIntruder);
+        options.add(Box.createHorizontalStrut(10));
+        options.add(new JLabel("Delay (ms):"));
+        options.add(popupDelay);
+
+        JPanel topPanel = new JPanel(new BorderLayout());
+        topPanel.add(options, BorderLayout.CENTER);
+        topPanel.add(selectedCountLabel, BorderLayout.EAST);
+        dialog.add(topPanel, BorderLayout.NORTH);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton cancel = new JButton("Cancel");
+        JButton importChecked = new JButton("Import Checked");
+        JButton runChecked = new JButton("Run Checked");
+        importChecked.setEnabled(false);
+        runChecked.setEnabled(false);
+
+        Runnable updateActionsState = () -> {
+            int checkedRequests = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot()).size();
+            boolean hasRequest = checkedRequests > 0;
+            boolean hasDestination = popupRepeater.isSelected() || popupSitemap.isSelected() || popupIntruder.isSelected();
+            importChecked.setEnabled(hasRequest && hasDestination);
+            runChecked.setEnabled(hasRequest);
+        };
+        popupRepeater.addActionListener(e -> updateActionsState.run());
+        popupSitemap.addActionListener(e -> updateActionsState.run());
+        popupIntruder.addActionListener(e -> updateActionsState.run());
+        selectionTree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                updateActionsState.run();
+            }
+        });
+        updateActionsState.run();
+
+        cancel.addActionListener(e -> dialog.dispose());
+        importChecked.addActionListener(e -> {
+            List<ApiRequest> selected = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
+            List<String> destinations = new ArrayList<>();
+            if (popupRepeater.isSelected()) destinations.add("repeater");
+            if (popupSitemap.isSelected()) destinations.add("sitemap");
+            if (popupIntruder.isSelected()) destinations.add("intruder");
+            if (repeaterBtn != null) repeaterBtn.setSelected(popupRepeater.isSelected());
+            if (sitemapBtn != null) sitemapBtn.setSelected(popupSitemap.isSelected());
+            if (intruderBtn != null) intruderBtn.setSelected(popupIntruder.isSelected());
+            if (delaySpinner != null) delaySpinner.setValue(popupDelay.getValue());
+            startImport(selected, destinations, (Integer) popupDelay.getValue());
+            dialog.dispose();
+        });
+        runChecked.addActionListener(e -> {
+            List<ApiRequest> selected = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
+            queueRunnerRequests(selected);
+            dialog.dispose();
+        });
+        buttons.add(cancel);
+        buttons.add(importChecked);
+        buttons.add(runChecked);
+        dialog.add(buttons, BorderLayout.SOUTH);
+
+        dialog.setSize(780, 560);
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
+    }
+
+    private void startImport(List<ApiRequest> selected, List<String> destinations, int delay) {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty()) {
-            appendImportLog("No checked requests.");
+            appendImportLog("No requests selected.");
             return;
         }
-        List<String> destinations = new ArrayList<>();
-        if (repeaterBtn.isSelected()) destinations.add("repeater");
-        if (sitemapBtn.isSelected()) destinations.add("sitemap");
-        if (intruderBtn.isSelected()) destinations.add("intruder");
         if (destinations.isEmpty()) {
             appendImportLog("No destination selected.");
             return;
@@ -3371,7 +3627,6 @@ public class ImporterPanel {
                 return;
             }
         }
-        int delay = (Integer) delaySpinner.getValue();
         importer.setDebugRawRequest(debugRawRequestBox.isSelected());
 
         // Build deterministic queue preserving collection order + request order
@@ -3392,15 +3647,16 @@ public class ImporterPanel {
         );
     }
 
-    private void sendToRunner() {
+    private void queueRunnerRequests(List<ApiRequest> selected) {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        List<ApiRequest> selected = getCheckedRequestsFromTree();
         if (selected.isEmpty()) {
-            appendImportLog("No checked requests to send to runner.");
+            appendImportLog("No requests selected to run.");
             return;
         }
+        runnerQueuedRequests.clear();
+        runnerQueuedRequests.addAll(selected);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
     }
@@ -3418,9 +3674,9 @@ public class ImporterPanel {
     // Runner
     // ========================================================================
     private void startRunner(boolean showPreviewDialog) {
-        List<ApiRequest> selected = getCheckedRequestsFromTree();
+        List<ApiRequest> selected = new ArrayList<>(runnerQueuedRequests);
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
-            appendRunnerLog("No requests to run. Load collections first.");
+            appendRunnerLog("No requests queued. Use Workbench > Actions > Run Checked first.");
             return;
         }
 
@@ -3693,18 +3949,48 @@ public class ImporterPanel {
     }
 
     // ========================================================================
-    // Populate OAuth2 from checked request
+    // Populate OAuth2 from selected request
     // ========================================================================
-    private void populateOAuth2FromCheckedRequest() {
-        List<ApiRequest> selected = getCheckedRequestsFromTree();
-        if (selected.isEmpty()) {
-            appendImportLog("Populate OAuth2: No checked request. Check at least one request node.");
+    private void populateOAuth2FromRequest() {
+        if (loadedCollections.isEmpty()) {
+            appendImportLog("Populate OAuth2: No collections loaded.");
             return;
         }
-        if (selected.size() > 1) {
-            appendImportLog("Populate OAuth2: Multiple checked requests; using first in tree order: \"" + selected.get(0).name + "\".");
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Populate OAuth2 from Request", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setLayout(new BorderLayout(8, 8));
+        JLabel selectedCountLabel = new JLabel("0 requests selected");
+        DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
+        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel);
+        JScrollPane treeScroll = new JScrollPane(selectionTree);
+        treeScroll.setBorder(BorderFactory.createTitledBorder("Select exactly one request"));
+        dialog.add(treeScroll, BorderLayout.CENTER);
+        dialog.add(selectedCountLabel, BorderLayout.NORTH);
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton cancel = new JButton("Cancel");
+        JButton populate = new JButton("Populate");
+        cancel.addActionListener(e -> dialog.dispose());
+        populate.addActionListener(e -> {
+            List<ApiRequest> selected = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
+            if (selected.size() != 1) {
+                JOptionPane.showMessageDialog(dialog, "Select exactly one request.", "Selection Required", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            populateOAuth2FromRequest(selected.get(0));
+            dialog.dispose();
+        });
+        buttons.add(cancel);
+        buttons.add(populate);
+        dialog.add(buttons, BorderLayout.SOUTH);
+        dialog.setSize(700, 520);
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
+    }
+
+    private void populateOAuth2FromRequest(ApiRequest req) {
+        if (req == null) {
+            appendImportLog("Populate OAuth2: Request selection is empty.");
+            return;
         }
-        ApiRequest req = selected.get(0);
         ApiCollection owningCollection = requestToCollectionMap.get(req);
         if (owningCollection == null) {
             owningCollection = findCollectionByName(req.sourceCollection);
@@ -3713,7 +3999,7 @@ public class ImporterPanel {
         VariableResolver populateResolver = buildOAuth2PopulateResolver(owningCollection, req);
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
         if (extracted.isEmpty()) {
-            appendImportLog("Populate OAuth2: Checked request has no OAuth2-relevant data.");
+            appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data.");
             return;
         }
 
