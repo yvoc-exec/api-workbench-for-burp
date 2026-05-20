@@ -32,11 +32,17 @@ public final class WorkspaceStateJson {
         if (out.checkedRequestKeys == null) {
             out.checkedRequestKeys = new java.util.ArrayList<>();
         }
+        if (out.checkedRequestIdentityKeys == null) {
+            out.checkedRequestIdentityKeys = new java.util.ArrayList<>();
+        }
         if (out.expandedTreePathKeys == null) {
             out.expandedTreePathKeys = new java.util.ArrayList<>();
         }
         if (out.requestTreePaths == null) {
             out.requestTreePaths = new java.util.LinkedHashMap<>();
+        }
+        if (out.oauthAutoRefreshByCollection == null) {
+            out.oauthAutoRefreshByCollection = new java.util.LinkedHashMap<>();
         }
         if (out.collections != null) {
             for (burp.models.ApiCollection collection : out.collections) {

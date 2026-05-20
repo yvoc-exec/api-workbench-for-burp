@@ -12,11 +12,36 @@ public class WorkspaceState {
     public String selectedVariablesCollectionName;
     public String selectedOAuth2CollectionName;
     public String selectedRequestCollectionName;
+    public String selectedRequestIdentityKey;
     public String selectedRequestName;
     public String selectedRequestPath;
     public List<String> checkedRequestKeys = new ArrayList<>();
+    public List<String> checkedRequestIdentityKeys = new ArrayList<>();
     public List<String> expandedTreePathKeys = new ArrayList<>();
     public Map<String, String> requestTreePaths = new LinkedHashMap<>();
+    public Boolean workbenchRepeaterSelected;
+    public Boolean workbenchSitemapSelected;
+    public Boolean workbenchIntruderSelected;
+    public Integer workbenchDelayMs;
+    public Boolean workbenchDebugRawRequest;
+    public Integer workbenchDetailTabIndex;
+    public Integer runnerDelayMs;
+    public Integer runnerRetries;
+    public Boolean runnerStopOnError;
+    public Boolean runnerStopOnAssertionFailure;
+    public Boolean runnerStopOnStatusAtLeast400;
+    public Boolean runnerStopOnMissingVariable;
+    public Integer runnerStopAfterFailures;
+    public Boolean runnerFollowRedirects;
+    public Boolean runnerDebugRawRequest;
+    public Integer runnerDetailTabIndex;
+    public Map<String, OAuthAutoRefreshSnapshot> oauthAutoRefreshByCollection = new LinkedHashMap<>();
+
+    public static class OAuthAutoRefreshSnapshot {
+        public Boolean enabled;
+        public Integer intervalSeconds = 300;
+        public String lastStatus;
+    }
 
     public static WorkspaceState fromCollections(List<ApiCollection> source) {
         WorkspaceState state = new WorkspaceState();
@@ -35,11 +60,30 @@ public class WorkspaceState {
         copy.selectedVariablesCollectionName = source.selectedVariablesCollectionName;
         copy.selectedOAuth2CollectionName = source.selectedOAuth2CollectionName;
         copy.selectedRequestCollectionName = source.selectedRequestCollectionName;
+        copy.selectedRequestIdentityKey = source.selectedRequestIdentityKey;
         copy.selectedRequestName = source.selectedRequestName;
         copy.selectedRequestPath = source.selectedRequestPath;
         copy.checkedRequestKeys = source.checkedRequestKeys != null ? new ArrayList<>(source.checkedRequestKeys) : new ArrayList<>();
+        copy.checkedRequestIdentityKeys = source.checkedRequestIdentityKeys != null ? new ArrayList<>(source.checkedRequestIdentityKeys) : new ArrayList<>();
         copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
+        copy.workbenchRepeaterSelected = source.workbenchRepeaterSelected;
+        copy.workbenchSitemapSelected = source.workbenchSitemapSelected;
+        copy.workbenchIntruderSelected = source.workbenchIntruderSelected;
+        copy.workbenchDelayMs = source.workbenchDelayMs;
+        copy.workbenchDebugRawRequest = source.workbenchDebugRawRequest;
+        copy.workbenchDetailTabIndex = source.workbenchDetailTabIndex;
+        copy.runnerDelayMs = source.runnerDelayMs;
+        copy.runnerRetries = source.runnerRetries;
+        copy.runnerStopOnError = source.runnerStopOnError;
+        copy.runnerStopOnAssertionFailure = source.runnerStopOnAssertionFailure;
+        copy.runnerStopOnStatusAtLeast400 = source.runnerStopOnStatusAtLeast400;
+        copy.runnerStopOnMissingVariable = source.runnerStopOnMissingVariable;
+        copy.runnerStopAfterFailures = source.runnerStopAfterFailures;
+        copy.runnerFollowRedirects = source.runnerFollowRedirects;
+        copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
+        copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
+        copy.oauthAutoRefreshByCollection = copyOAuthAutoRefreshMap(source.oauthAutoRefreshByCollection);
         return copy;
     }
 
@@ -147,6 +191,27 @@ public class WorkspaceState {
                         ? new LinkedHashMap<>(entry.getValue())
                         : new LinkedHashMap<>());
             }
+        }
+        return out;
+    }
+
+    private static Map<String, OAuthAutoRefreshSnapshot> copyOAuthAutoRefreshMap(Map<String, OAuthAutoRefreshSnapshot> src) {
+        Map<String, OAuthAutoRefreshSnapshot> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, OAuthAutoRefreshSnapshot> entry : src.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            OAuthAutoRefreshSnapshot snapshot = entry.getValue();
+            OAuthAutoRefreshSnapshot copy = new OAuthAutoRefreshSnapshot();
+            if (snapshot != null) {
+                copy.enabled = snapshot.enabled;
+                copy.intervalSeconds = snapshot.intervalSeconds;
+                copy.lastStatus = snapshot.lastStatus;
+            }
+            out.put(entry.getKey(), copy);
         }
         return out;
     }

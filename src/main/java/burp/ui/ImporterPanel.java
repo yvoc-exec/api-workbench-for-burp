@@ -71,6 +71,7 @@ public class ImporterPanel {
     private RunnerResultTableModel resultModel;
     private JTable timelineTable;
     private RunnerTimelineTableModel timelineModel;
+    private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
     private JCheckBox stopOnErrorBox;
@@ -124,6 +125,7 @@ public class ImporterPanel {
     private Runnable workspaceChangeListener;
     private boolean suppressWorkspaceChangeNotifications = false;
     private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
+    private List<String> pendingWorkspaceExpandedTreePathKeys = Collections.emptyList();
 
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
@@ -302,18 +304,18 @@ public class ImporterPanel {
     }
 
     private JTabbedPane createWorkbenchDetailTabs() {
-        JTabbedPane tabs = new JTabbedPane();
+        workbenchDetailTabs = new JTabbedPane();
         workbenchRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        tabs.addTab("Request", workbenchRequestEditor.uiComponent());
+        workbenchDetailTabs.addTab("Request", workbenchRequestEditor.uiComponent());
 
         workbenchResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        tabs.addTab("Response", workbenchResponseEditor.uiComponent());
+        workbenchDetailTabs.addTab("Response", workbenchResponseEditor.uiComponent());
 
         workbenchMetaText = new JTextArea();
         workbenchMetaText.setEditable(false);
         workbenchMetaText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        tabs.addTab("Meta", new JScrollPane(workbenchMetaText));
-        return tabs;
+        workbenchDetailTabs.addTab("Meta", new JScrollPane(workbenchMetaText));
+        return workbenchDetailTabs;
     }
 
     private JPanel createEnvBindingRow() {
@@ -947,24 +949,24 @@ public class ImporterPanel {
         timelineScroll.setPreferredSize(new Dimension(350, 180));
         timelineScroll.setMinimumSize(new Dimension(200, 120));
 
-        JTabbedPane detailTabs = new JTabbedPane();
+        runnerDetailTabs = new JTabbedPane();
         detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        detailTabs.addTab("Request", detailRequestEditor.uiComponent());
+        runnerDetailTabs.addTab("Request", detailRequestEditor.uiComponent());
 
         detailResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        detailTabs.addTab("Response", detailResponseEditor.uiComponent());
+        runnerDetailTabs.addTab("Response", detailResponseEditor.uiComponent());
 
         detailVarsText = new JTextArea();
         detailVarsText.setEditable(false);
         detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        detailTabs.addTab("Vars", new JScrollPane(detailVarsText));
+        runnerDetailTabs.addTab("Vars", new JScrollPane(detailVarsText));
 
         JSplitPane resultsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, timelineScroll);
         resultsSplit.setResizeWeight(0.70);
         resultsSplit.setOneTouchExpandable(true);
         resultsSplit.setContinuousLayout(true);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, resultsSplit, detailTabs);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, resultsSplit, runnerDetailTabs);
         splitPane.setResizeWeight(0.5);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
@@ -1215,15 +1217,23 @@ public class ImporterPanel {
     }
 
     private void rebuildTree() {
-        rebuildTree(pendingWorkspaceRequestTreePaths);
+        rebuildTree(pendingWorkspaceRequestTreePaths, Collections.emptyList());
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths) {
+        rebuildTree(requestTreePaths, Collections.emptyList());
+    }
+
+    private void rebuildTree(Map<String, String> requestTreePaths, List<String> expandedTreePathKeys) {
         requestToCollectionMap.clear();
         DefaultMutableTreeNode root = buildRequestTreeRoot(loadedCollections, requestTreePaths, requestToCollectionMap);
         treeModel.setRoot(root);
-        for (int i = 0; i < requestTree.getRowCount(); i++) {
-            requestTree.expandRow(i);
+        if (expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
+            for (int i = 0; i < requestTree.getRowCount(); i++) {
+                requestTree.expandRow(i);
+            }
+        } else {
+            restoreExpandedTreePathKeys(expandedTreePathKeys);
         }
     }
 
@@ -1943,11 +1953,13 @@ public class ImporterPanel {
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
         state.requestTreePaths = collectRequestTreePaths();
+        state.expandedTreePathKeys = collectExpandedTreePathKeys();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
         }
         state.selectedVariablesCollectionName = getSelectedCollectionName(varsCollectionCombo);
         state.selectedOAuth2CollectionName = getSelectedCollectionName(oauth2CollectionCombo);
+        state.selectedRequestIdentityKey = getSelectedRequestIdentityKey();
 
         CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
         if (selectedNode != null && selectedNode.request != null) {
@@ -1957,8 +1969,12 @@ public class ImporterPanel {
             state.selectedRequestPath = selectedNode.request.path;
         }
 
+        state.checkedRequestIdentityKeys = collectCheckedRequestIdentityKeys();
         state.checkedRequestKeys = collectCheckedRequestKeys();
-        state.expandedTreePathKeys = new ArrayList<>();
+        captureWorkbenchSettings(state);
+        captureRunnerSettings(state);
+        captureRunnerDetailState(state);
+        captureOAuthAutoRefreshState(state);
         return state;
     }
 
@@ -1971,18 +1987,31 @@ public class ImporterPanel {
             pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
                     ? new LinkedHashMap<>(state.requestTreePaths)
                     : Collections.emptyMap();
+            pendingWorkspaceExpandedTreePathKeys = state.expandedTreePathKeys != null
+                    ? new ArrayList<>(state.expandedTreePathKeys)
+                    : Collections.emptyList();
             try {
                 restoreWorkspaceCollections(state.collections);
+                restoreExpandedTreePathKeys(pendingWorkspaceExpandedTreePathKeys);
+                if (state.checkedRequestIdentityKeys != null && !state.checkedRequestIdentityKeys.isEmpty()) {
+                    restoreCheckedRequestIdentityKeys(state.checkedRequestIdentityKeys);
+                } else {
+                    restoreCheckedRequestKeys(state.checkedRequestKeys);
+                }
+                restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
-                restoreCheckedRequestKeys(state.checkedRequestKeys);
-                restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestPath, state.selectedRequestName);
+                restoreWorkbenchSettings(state);
+                restoreRunnerSettings(state);
+                restoreRunnerDetailState(state);
+                restoreOAuthAutoRefreshState(state.oauthAutoRefreshByCollection);
                 if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
+                pendingWorkspaceExpandedTreePathKeys = Collections.emptyList();
             }
         });
     }
@@ -2006,6 +2035,9 @@ public class ImporterPanel {
                 }
                 String requestName = request.name != null ? request.name : "";
                 if (folderPath.isBlank()) {
+                    if (isNestedRequestPath(request.path, requestName)) {
+                        continue;
+                    }
                     request.path = requestName;
                 } else if (requestName.isBlank()) {
                     request.path = folderPath;
@@ -2014,6 +2046,21 @@ public class ImporterPanel {
                 }
             }
         }
+    }
+
+    static boolean isNestedRequestPath(String requestPath, String requestName) {
+        if (requestPath == null || requestPath.isBlank()) {
+            return false;
+        }
+        String normalized = requestPath.replace('\\', '/').trim();
+        if (!normalized.contains("/")) {
+            return false;
+        }
+        String name = requestName != null ? requestName.trim() : "";
+        if (name.isEmpty()) {
+            return true;
+        }
+        return normalized.equals(name) || normalized.endsWith("/" + name);
     }
 
     public void restoreWorkspaceCollections(List<ApiCollection> collections) {
@@ -2037,7 +2084,7 @@ public class ImporterPanel {
                 }
             }
         }
-        rebuildTree(pendingWorkspaceRequestTreePaths);
+        rebuildTree(pendingWorkspaceRequestTreePaths, pendingWorkspaceExpandedTreePathKeys);
         refreshCollectionCombos();
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
@@ -2117,6 +2164,33 @@ public class ImporterPanel {
         }
     }
 
+    private List<String> collectCheckedRequestIdentityKeys() {
+        List<String> keys = new ArrayList<>();
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return keys;
+        }
+        collectCheckedRequestIdentityKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, keys);
+        return keys;
+    }
+
+    private void collectCheckedRequestIdentityKeys(DefaultMutableTreeNode node, String collectionName, List<String> out) {
+        String currentCollectionName = collectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollectionName = ctn.collection != null ? ctn.collection.name : collectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.isChecked() && ctn.request != null) {
+                int requestIndex = findRequestIndex(currentCollectionName, ctn.request);
+                out.add(requestIndex >= 0
+                        ? workspaceRequestIdentityKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request, requestIndex)
+                        : workspaceRequestIdentityKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectCheckedRequestIdentityKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollectionName, out);
+        }
+    }
+
     private String getSelectedCollectionName(JComboBox<CollectionRef> combo) {
         CollectionRef ref = combo != null && combo.getSelectedItem() != null ? (CollectionRef) combo.getSelectedItem() : null;
         return ref != null && ref.collection != null ? ref.collection.name : null;
@@ -2134,6 +2208,55 @@ public class ImporterPanel {
             }
         }
         return false;
+    }
+
+    private String getSelectedRequestIdentityKey() {
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
+        if (selectedNode == null || selectedNode.request == null) {
+            return null;
+        }
+        ApiCollection selectedCollection = findCollectionForNode(selectedNode);
+        String collectionName = selectedCollection != null ? selectedCollection.name : selectedNode.request.sourceCollection;
+        int requestIndex = findRequestIndex(collectionName, selectedNode.request);
+        return requestIndex >= 0
+                ? workspaceRequestIdentityKey(collectionName, selectedNode.request, requestIndex)
+                : workspaceRequestIdentityKey(collectionName, selectedNode.request);
+    }
+
+    private int findRequestIndex(String collectionName, ApiRequest request) {
+        ApiCollection collection = collectionName != null ? findCollectionByName(collectionName) : null;
+        if (collection == null || collection.requests == null || request == null) {
+            return -1;
+        }
+        return collection.requests.indexOf(request);
+    }
+
+    private void restoreCheckedRequestIdentityKeys(List<String> checkedKeys) {
+        if (treeModel == null || treeModel.getRoot() == null || checkedKeys == null || checkedKeys.isEmpty()) {
+            return;
+        }
+        Set<String> keySet = new LinkedHashSet<>(checkedKeys);
+        applyCheckedRequestIdentityKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, keySet);
+        updateCheckedParentStates();
+    }
+
+    private void applyCheckedRequestIdentityKeys(DefaultMutableTreeNode node, String collectionName, Set<String> checkedKeys) {
+        String currentCollectionName = collectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollectionName = ctn.collection != null ? ctn.collection.name : collectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
+                int requestIndex = findRequestIndex(currentCollectionName, ctn.request);
+                String key = requestIndex >= 0
+                        ? workspaceRequestIdentityKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request, requestIndex)
+                        : workspaceRequestIdentityKey(currentCollectionName != null ? currentCollectionName : ctn.request.sourceCollection, ctn.request);
+                ctn.setChecked(checkedKeys.contains(key));
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            applyCheckedRequestIdentityKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollectionName, checkedKeys);
+        }
     }
 
     private CollectionTreeNode getSelectedRequestTreeNode() {
@@ -2178,15 +2301,7 @@ public class ImporterPanel {
         }
         Set<String> keySet = checkedKeys != null ? new LinkedHashSet<>(checkedKeys) : Collections.emptySet();
         applyCheckedRequestKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, keySet);
-        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
-        for (int i = 0; i < root.getChildCount(); i++) {
-            Object child = root.getChildAt(i);
-            if (child instanceof CollectionTreeNode) {
-                ((CollectionTreeNode) child).updateParentCheckState();
-            }
-        }
-        requestTree.repaint();
-        updateScopeControlState();
+        updateCheckedParentStates();
     }
 
     private void applyCheckedRequestKeys(DefaultMutableTreeNode node, String collectionName, Set<String> checkedKeys) {
@@ -2205,15 +2320,317 @@ public class ImporterPanel {
         }
     }
 
-    private void restoreSelectedRequest(String collectionName, String requestPath, String requestName) {
+    private void updateCheckedParentStates() {
+        if (treeModel == null || treeModel.getRoot() == null) {
+            return;
+        }
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            Object child = root.getChildAt(i);
+            if (child instanceof CollectionTreeNode) {
+                ((CollectionTreeNode) child).updateParentCheckState();
+            }
+        }
+        requestTree.repaint();
+        updateScopeControlState();
+    }
+
+    private void restoreSelectedRequest(String collectionName, String requestIdentityKey, String requestPath, String requestName) {
         if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
             return;
         }
-        TreePath path = findRequestTreePath((DefaultMutableTreeNode) treeModel.getRoot(), collectionName, requestPath, requestName, null);
+        TreePath path = null;
+        if (requestIdentityKey != null && !requestIdentityKey.isBlank()) {
+            path = findRequestTreePathByIdentity((DefaultMutableTreeNode) treeModel.getRoot(), collectionName, requestIdentityKey, null);
+        }
+        if (path == null) {
+            path = findRequestTreePath((DefaultMutableTreeNode) treeModel.getRoot(), collectionName, requestPath, requestName, null);
+        }
         if (path != null) {
+            expandTreePath(path);
             requestTree.setSelectionPath(path);
             requestTree.scrollPathToVisible(path);
         }
+    }
+
+    private TreePath findRequestTreePathByIdentity(DefaultMutableTreeNode node,
+                                                   String collectionName,
+                                                   String requestIdentityKey,
+                                                   String currentCollectionName) {
+        String nextCollectionName = currentCollectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                nextCollectionName = ctn.collection != null ? ctn.collection.name : currentCollectionName;
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
+                int requestIndex = findRequestIndex(nextCollectionName, ctn.request);
+                String key = requestIndex >= 0
+                        ? workspaceRequestIdentityKey(nextCollectionName != null ? nextCollectionName : ctn.request.sourceCollection, ctn.request, requestIndex)
+                        : workspaceRequestIdentityKey(nextCollectionName != null ? nextCollectionName : ctn.request.sourceCollection, ctn.request);
+                if ((collectionName == null || Objects.equals(collectionName, nextCollectionName)) && Objects.equals(requestIdentityKey, key)) {
+                    return new TreePath(ctn.getPath());
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            TreePath path = findRequestTreePathByIdentity((DefaultMutableTreeNode) node.getChildAt(i), collectionName, requestIdentityKey, nextCollectionName);
+            if (path != null) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    private List<String> collectExpandedTreePathKeys() {
+        List<String> keys = new ArrayList<>();
+        if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
+            return keys;
+        }
+        collectExpandedTreePathKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, "", new TreePath(treeModel.getRoot()), keys);
+        return keys;
+    }
+
+    private void collectExpandedTreePathKeys(DefaultMutableTreeNode node,
+                                             ApiCollection collection,
+                                             String folderPath,
+                                             TreePath path,
+                                             List<String> out) {
+        ApiCollection currentCollection = collection;
+        String currentFolderPath = folderPath != null ? folderPath : "";
+        TreePath currentPath = path;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollection = ctn.collection != null ? ctn.collection : collection;
+                currentFolderPath = "";
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                currentFolderPath = ctn.folderPath != null ? ctn.folderPath : currentFolderPath;
+            }
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION || ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                if (requestTree.isExpanded(currentPath)) {
+                    out.add(workspaceTreePathKey(currentCollection != null ? currentCollection.name : null, currentFolderPath));
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectExpandedTreePathKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollection, currentFolderPath, currentPath.pathByAddingChild(node.getChildAt(i)), out);
+        }
+    }
+
+    private void restoreExpandedTreePathKeys(List<String> expandedKeys) {
+        if (requestTree == null || treeModel == null || treeModel.getRoot() == null || expandedKeys == null || expandedKeys.isEmpty()) {
+            return;
+        }
+        Set<String> keySet = new LinkedHashSet<>(expandedKeys);
+        restoreExpandedTreePathKeys((DefaultMutableTreeNode) treeModel.getRoot(), null, "", new TreePath(treeModel.getRoot()), keySet);
+    }
+
+    private boolean restoreExpandedTreePathKeys(DefaultMutableTreeNode node,
+                                                ApiCollection collection,
+                                                String folderPath,
+                                                TreePath path,
+                                                Set<String> expandedKeys) {
+        ApiCollection currentCollection = collection;
+        String currentFolderPath = folderPath != null ? folderPath : "";
+        boolean descendantExpanded = false;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                currentCollection = ctn.collection != null ? ctn.collection : collection;
+                currentFolderPath = "";
+            } else if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                currentFolderPath = ctn.folderPath != null ? ctn.folderPath : currentFolderPath;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            descendantExpanded |= restoreExpandedTreePathKeys((DefaultMutableTreeNode) node.getChildAt(i), currentCollection, currentFolderPath, path.pathByAddingChild(node.getChildAt(i)), expandedKeys);
+        }
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION || ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                boolean selfExpanded = expandedKeys.contains(workspaceTreePathKey(currentCollection != null ? currentCollection.name : null, currentFolderPath));
+                if (selfExpanded || descendantExpanded) {
+                    requestTree.expandPath(path);
+                    return true;
+                }
+            }
+        }
+        return descendantExpanded;
+    }
+
+    private void expandTreePath(TreePath path) {
+        if (requestTree == null || path == null) {
+            return;
+        }
+        TreePath current = path.getParentPath();
+        if (current != null) {
+            expandTreePath(current);
+        }
+        requestTree.expandPath(path);
+    }
+
+    static String workspaceTreePathKey(String collectionName, String folderPath) {
+        return (collectionName != null ? collectionName : "") + '\u001F' + (folderPath != null ? folderPath : "");
+    }
+
+    private void captureWorkbenchSettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        if (repeaterBtn != null) state.workbenchRepeaterSelected = repeaterBtn.isSelected();
+        if (sitemapBtn != null) state.workbenchSitemapSelected = sitemapBtn.isSelected();
+        if (intruderBtn != null) state.workbenchIntruderSelected = intruderBtn.isSelected();
+        if (delaySpinner != null) state.workbenchDelayMs = spinnerIntValue(delaySpinner);
+        if (debugRawRequestBox != null) state.workbenchDebugRawRequest = debugRawRequestBox.isSelected();
+        if (workbenchDetailTabs != null) state.workbenchDetailTabIndex = workbenchDetailTabs.getSelectedIndex();
+    }
+
+    private void captureRunnerSettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        if (runnerDelaySpinner != null) state.runnerDelayMs = spinnerIntValue(runnerDelaySpinner);
+        if (runnerRetriesSpinner != null) state.runnerRetries = spinnerIntValue(runnerRetriesSpinner);
+        if (stopOnErrorBox != null) state.runnerStopOnError = stopOnErrorBox.isSelected();
+        if (stopOnAssertionFailureBox != null) state.runnerStopOnAssertionFailure = stopOnAssertionFailureBox.isSelected();
+        if (stopOnStatusAtLeast400Box != null) state.runnerStopOnStatusAtLeast400 = stopOnStatusAtLeast400Box.isSelected();
+        if (stopOnMissingVariableBox != null) state.runnerStopOnMissingVariable = stopOnMissingVariableBox.isSelected();
+        if (stopAfterFailuresSpinner != null) state.runnerStopAfterFailures = spinnerIntValue(stopAfterFailuresSpinner);
+        if (followRedirectsBox != null) state.runnerFollowRedirects = followRedirectsBox.isSelected();
+        if (runnerDebugRawRequestBox != null) state.runnerDebugRawRequest = runnerDebugRawRequestBox.isSelected();
+        if (runnerDetailTabs != null) state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
+    }
+
+    private void captureRunnerDetailState(WorkspaceState state) {
+        if (state == null || runnerDetailTabs == null) {
+            return;
+        }
+        state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
+    }
+
+    private void captureOAuthAutoRefreshState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        state.oauthAutoRefreshByCollection = new LinkedHashMap<>();
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || collection.name == null) {
+                continue;
+            }
+            OAuthAutoRefreshState autoState = oauthAutoStates.get(collection);
+            if (autoState == null) {
+                continue;
+            }
+            WorkspaceState.OAuthAutoRefreshSnapshot snapshot = new WorkspaceState.OAuthAutoRefreshSnapshot();
+            snapshot.enabled = autoState.enabled;
+            snapshot.intervalSeconds = autoState.intervalSeconds;
+            snapshot.lastStatus = autoState.lastStatus;
+            state.oauthAutoRefreshByCollection.put(collection.name, snapshot);
+        }
+    }
+
+    private void restoreWorkbenchSettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        applyCheckboxState(repeaterBtn, state.workbenchRepeaterSelected, true);
+        applyCheckboxState(sitemapBtn, state.workbenchSitemapSelected, false);
+        applyCheckboxState(intruderBtn, state.workbenchIntruderSelected, false);
+        applySpinnerState(delaySpinner, state.workbenchDelayMs, 200);
+        applyCheckboxState(debugRawRequestBox, state.workbenchDebugRawRequest, false);
+        applyTabIndex(workbenchDetailTabs, state.workbenchDetailTabIndex);
+    }
+
+    private void restoreRunnerSettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        applySpinnerState(runnerDelaySpinner, state.runnerDelayMs, 200);
+        applySpinnerState(runnerRetriesSpinner, state.runnerRetries, 1);
+        applyCheckboxState(stopOnErrorBox, state.runnerStopOnError, false);
+        applyCheckboxState(stopOnAssertionFailureBox, state.runnerStopOnAssertionFailure, false);
+        applyCheckboxState(stopOnStatusAtLeast400Box, state.runnerStopOnStatusAtLeast400, false);
+        applyCheckboxState(stopOnMissingVariableBox, state.runnerStopOnMissingVariable, false);
+        applySpinnerState(stopAfterFailuresSpinner, state.runnerStopAfterFailures, 0);
+        applyCheckboxState(followRedirectsBox, state.runnerFollowRedirects, true);
+        applyCheckboxState(runnerDebugRawRequestBox, state.runnerDebugRawRequest, false);
+    }
+
+    private void restoreRunnerDetailState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        applyTabIndex(runnerDetailTabs, state.runnerDetailTabIndex);
+    }
+
+    private void restoreOAuthAutoRefreshState(Map<String, WorkspaceState.OAuthAutoRefreshSnapshot> snapshots) {
+        if (snapshots == null || snapshots.isEmpty()) {
+            return;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || collection.name == null) {
+                continue;
+            }
+            WorkspaceState.OAuthAutoRefreshSnapshot snapshot = snapshots.get(collection.name);
+            if (snapshot == null) {
+                continue;
+            }
+            OAuthAutoRefreshState state = getAutoState(collection);
+            state.intervalSeconds = Math.max(30, snapshot.intervalSeconds != null ? snapshot.intervalSeconds : 300);
+            state.lastStatus = snapshot.lastStatus;
+            if (Boolean.TRUE.equals(snapshot.enabled)) {
+                startAutoRefreshForCollection(collection, state.intervalSeconds);
+            } else {
+                if (state.future != null) {
+                    state.future.cancel(false);
+                    state.future = null;
+                }
+                state.enabled = false;
+                applyAutoRefreshUiForSelectedCollection();
+            }
+        }
+    }
+
+    private static Integer spinnerIntValue(JSpinner spinner) {
+        if (spinner == null) {
+            return null;
+        }
+        Object value = spinner.getValue();
+        return value instanceof Number ? ((Number) value).intValue() : null;
+    }
+
+    private static void applyCheckboxState(JCheckBox box, Boolean value, boolean defaultValue) {
+        if (box != null) {
+            box.setSelected(value != null ? value : defaultValue);
+        }
+    }
+
+    private static void applySpinnerState(JSpinner spinner, Integer value, int defaultValue) {
+        if (spinner == null) {
+            return;
+        }
+        SpinnerNumberModel model = spinner.getModel() instanceof SpinnerNumberModel ? (SpinnerNumberModel) spinner.getModel() : null;
+        int result = value != null ? value : defaultValue;
+        if (model != null) {
+            Object minimum = model.getMinimum();
+            Object maximum = model.getMaximum();
+            if (minimum instanceof Number) {
+                result = Math.max(result, ((Number) minimum).intValue());
+            }
+            if (maximum instanceof Number) {
+                result = Math.min(result, ((Number) maximum).intValue());
+            }
+        }
+        spinner.setValue(result);
+    }
+
+    private static void applyTabIndex(JTabbedPane tabs, Integer index) {
+        if (tabs == null || tabs.getTabCount() == 0) {
+            return;
+        }
+        int clamped = index != null ? index : 0;
+        clamped = Math.max(0, Math.min(clamped, tabs.getTabCount() - 1));
+        tabs.setSelectedIndex(clamped);
     }
 
     private TreePath findRequestTreePath(DefaultMutableTreeNode node,
