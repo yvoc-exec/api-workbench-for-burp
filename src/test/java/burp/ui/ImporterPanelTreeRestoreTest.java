@@ -858,6 +858,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     private static String importLogText(ImporterPanel panel) throws Exception {
+        SwingUtilities.invokeAndWait(() -> { });
         return ((JTextArea) privateField(panel, "importLog")).getText();
     }
 
