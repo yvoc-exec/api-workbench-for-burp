@@ -149,6 +149,21 @@ class RequestBuilderTest {
     }
 
     @Test
+    void disabledHeadersAreNotEmitted() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("X-Enabled", "yes", false));
+        req.headers.add(new ApiRequest.Header("X-Disabled", "no", true));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.hasHeader("X-Enabled")).isTrue();
+        assertThat(parsed.hasHeader("X-Disabled")).isFalse();
+    }
+
+    @Test
     void staleContentLengthAndTransferEncodingAreRemoved() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";

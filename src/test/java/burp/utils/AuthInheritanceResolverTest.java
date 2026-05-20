@@ -76,4 +76,67 @@ class AuthInheritanceResolverTest {
         assertThat(request.authExplicitlyDisabled).isTrue();
         assertThat(request.authSource).isEqualTo("folder: Public");
     }
+
+    @Test
+    void explicitRequestAuthSurvivesCollectionAuthRecompute() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        ApiRequest.Auth collectionAuth = new ApiRequest.Auth();
+        collectionAuth.type = "bearer";
+        collectionAuth.properties.put("token", "{{collectionToken}}");
+        collection.auth = collectionAuth;
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Special";
+        request.path = "Admin/Special";
+        ApiRequest.Auth requestAuth = new ApiRequest.Auth();
+        requestAuth.type = "basic";
+        requestAuth.properties.put("username", "u");
+        requestAuth.properties.put("password", "p");
+
+        AuthInheritanceResolver.markRequestExplicitAuth(request, requestAuth);
+        collection.requests.add(request);
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
+        assertThat(request.auth.type).isEqualTo("basic");
+        assertThat(request.auth.properties).containsEntry("username", "u");
+        assertThat(request.authOverrideMode).isEqualTo("explicit");
+        assertThat(request.explicitAuth.type).isEqualTo("basic");
+        assertThat(request.authInherited).isFalse();
+        assertThat(request.authExplicitlyDisabled).isFalse();
+        assertThat(request.authSource).isEqualTo("request: Special");
+    }
+
+    @Test
+    void requestNoAuthStopsCollectionAndFolderInheritanceAfterRecompute() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        ApiRequest.Auth collectionAuth = new ApiRequest.Auth();
+        collectionAuth.type = "bearer";
+        collectionAuth.properties.put("token", "{{collectionToken}}");
+        collection.auth = collectionAuth;
+
+        ApiRequest.Auth folderAuth = new ApiRequest.Auth();
+        folderAuth.type = "bearer";
+        folderAuth.properties.put("token", "{{folderToken}}");
+        collection.folderAuthModes.put("Admin", "explicit");
+        collection.folderAuth.put("Admin", folderAuth);
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Public";
+        request.path = "Admin/Public";
+        AuthInheritanceResolver.markRequestNoAuth(request);
+        collection.requests.add(request);
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
+        assertThat(request.hasAuth()).isFalse();
+        assertThat(request.auth.type).isEqualTo("none");
+        assertThat(request.authOverrideMode).isEqualTo("none");
+        assertThat(request.explicitAuth.type).isEqualTo("none");
+        assertThat(request.authInherited).isFalse();
+        assertThat(request.authExplicitlyDisabled).isTrue();
+        assertThat(request.authSource).isEqualTo("request: Public");
+    }
 }

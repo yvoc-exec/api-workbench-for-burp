@@ -86,6 +86,7 @@ public class UnresolvedVariableAnalyzer {
         if (collection != null) {
             resolver.addEnvironmentVariables(collection);
             resolver.addCollectionVariables(collection);
+            resolver.addFolderVariables(collection, request);
             if (collection.runtimeOAuth2 != null) {
                 resolver.addAll(collection.runtimeOAuth2);
             }

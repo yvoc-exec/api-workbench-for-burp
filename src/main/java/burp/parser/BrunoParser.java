@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.AuthInheritanceResolver;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -13,6 +14,15 @@ import javax.script.*;
  * Bruno stores each request as a separate .bru file in a folder structure.
  */
 public class BrunoParser implements CollectionParser {
+    private static final Pattern BRUNO_STANDARD_METHOD_PATTERN = Pattern.compile(
+            "^\\s*(get|post|put|delete|patch|head|options|trace|connect)\\s*(\\{|[^\\n]*$)",
+            Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    private static final Pattern BRUNO_CUSTOM_METHOD_PATTERN = Pattern.compile(
+            "^\\s*([A-Za-z][A-Za-z0-9_-]*)\\s*\\{",
+            Pattern.MULTILINE);
+    private static final Set<String> BRUNO_RESERVED_TOKENS = Set.of(
+            "meta", "vars", "headers", "auth", "body", "script", "assert",
+            "get", "post", "put", "delete", "patch", "head", "options", "trace", "connect");
 
     @Override
     public boolean canParse(File file) {
@@ -36,28 +46,18 @@ public class BrunoParser implements CollectionParser {
         collection.name = file.getName().replace(".bru", "");
 
         if (file.isDirectory()) {
-            // Walk directory recursively
-            try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(file.toPath())) {
-            paths.forEach(path -> {
-                if (path.toString().endsWith(".bru")) {
-                    try {
-                        String relativePath = file.toPath().relativize(path.getParent()).toString();
-                        ApiRequest req = parseBruFile(path.toFile(), relativePath);
-                        if (req != null) {
-                            req.sourceCollection = collection.name;
-                            collection.requests.add(req);
-                        }
-                    } catch (Exception e) {
-                        // Skip malformed files
-                    }
-                }
-            });
-            }
+            parseBrunoDirectory(file, collection);
         } else {
-            ApiRequest req = parseBruFile(file, "");
-            if (req != null) {
-                req.sourceCollection = collection.name;
-                collection.requests.add(req);
+            String content = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            if (looksLikeRequestBru(content)) {
+                ApiRequest req = parseBruFile(file, "");
+                if (req != null) {
+                    req.sourceCollection = collection.name;
+                    collection.requests.add(req);
+                }
+            } else {
+                Map<String, String> vars = parseVarsBlock(content);
+                putCollectionVariables(collection, vars);
             }
         }
 
@@ -104,7 +104,50 @@ public class BrunoParser implements CollectionParser {
             }
         }
 
+        for (ApiRequest request : collection.requests) {
+            if (request != null) {
+                request.sourceCollection = collection.name;
+            }
+        }
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
         return collection;
+    }
+
+    private void parseBrunoDirectory(File root, ApiCollection collection) throws IOException {
+        File rootDir = root != null ? root : null;
+        if (rootDir == null || collection == null) {
+            return;
+        }
+        try (java.util.stream.Stream<java.nio.file.Path> paths = Files.walk(rootDir.toPath())) {
+            paths.forEach(path -> {
+                if (!path.toString().endsWith(".bru")) {
+                    return;
+                }
+                try {
+                    String content = new String(Files.readAllBytes(path), java.nio.charset.StandardCharsets.UTF_8);
+                    String folderPath = normalizeBrunoMetadataPath(rootDir.toPath(), path.getParent());
+                    if (looksLikeRequestBru(content)) {
+                        ApiRequest req = parseBruFile(path.toFile(), folderPath);
+                        if (req != null) {
+                            req.sourceCollection = collection.name;
+                            collection.requests.add(req);
+                        }
+                    } else {
+                        Map<String, String> vars = parseVarsBlock(content);
+                        if (!vars.isEmpty()) {
+                            if (folderPath.isEmpty()) {
+                                putCollectionVariables(collection, vars);
+                            } else {
+                                putFolderVariables(collection, folderPath, vars);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Skip malformed files
+                }
+            });
+        }
     }
 
     private ApiRequest parseBruFile(File file, String folderPath) {
@@ -112,7 +155,6 @@ public class BrunoParser implements CollectionParser {
             String content = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
             ApiRequest req = new ApiRequest();
             req.name = file.getName().replace(".bru", "");
-            req.path = folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;
 
             // Parse meta block
             Pattern metaPattern = Pattern.compile("meta\\s*\\{\\s*name:\\s*(.+?)\\s*type:\\s*(.+?)\\s*seq:\\s*(\\d+)\\s*\\}");
@@ -121,16 +163,13 @@ public class BrunoParser implements CollectionParser {
                 req.name = metaMatcher.group(1).trim();
                 req.sequenceOrder = Integer.parseInt(metaMatcher.group(3).trim());
             }
+            req.path = folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;
 
-            // Parse method from first line
-            Pattern methodPattern = Pattern.compile("^(get|post|put|delete|patch|head|options|trace)\\s*([^\\{\n]*?)$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
-            Matcher methodMatcher = methodPattern.matcher(content);
-            if (methodMatcher.find()) {
-                req.method = methodMatcher.group(1).toUpperCase();
-                // URL might be on same line (rare) or inside the { url: ... } block
-                String sameLineUrl = methodMatcher.group(2).trim();
-                if (!sameLineUrl.isEmpty()) {
-                    req.url = sameLineUrl;
+            BrunoMethodMatch methodMatch = extractBrunoMethod(content);
+            if (methodMatch != null) {
+                req.method = methodMatch.method;
+                if (methodMatch.sameLineUrl != null && !methodMatch.sameLineUrl.isBlank()) {
+                    req.url = methodMatch.sameLineUrl;
                 }
             }
 
@@ -149,11 +188,16 @@ public class BrunoParser implements CollectionParser {
                 for (String line : headersBlock.split("\n")) {
                     line = line.trim();
                     if (line.isEmpty() || line.startsWith("#")) continue;
+                    boolean disabled = false;
+                    if (line.startsWith("~")) {
+                        disabled = true;
+                        line = line.substring(1).trim();
+                    }
                     int colonIdx = line.indexOf(':');
                     if (colonIdx > 0) {
                         String key = line.substring(0, colonIdx).trim();
                         String value = line.substring(colonIdx + 1).trim();
-                        req.headers.add(new ApiRequest.Header(key, value));
+                        req.headers.add(new ApiRequest.Header(key, value, disabled));
                     }
                 }
             }
@@ -186,7 +230,14 @@ public class BrunoParser implements CollectionParser {
             // Parse auth (basic, bearer, apikey, oauth2)
             String authBlock = extractBlock(content, "auth");
             if (authBlock != null) {
-                req.auth = parseBrunoAuthBlock(authBlock);
+                ApiRequest.Auth parsedAuth = parseBrunoAuthBlock(authBlock);
+                if ("none".equalsIgnoreCase(AuthInheritanceResolver.normalizeParsedAuthMode(parsedAuth))) {
+                    AuthInheritanceResolver.markRequestNoAuth(req);
+                } else {
+                    AuthInheritanceResolver.markRequestExplicitAuth(req, parsedAuth);
+                }
+            } else {
+                AuthInheritanceResolver.markRequestInherit(req);
             }
 
             // Parse vars (pre-request variables)
@@ -234,6 +285,136 @@ public class BrunoParser implements CollectionParser {
         }
     }
 
+    private boolean looksLikeRequestBru(String content) {
+        return extractBrunoMethod(content) != null;
+    }
+
+    private BrunoMethodMatch extractBrunoMethod(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+
+        Matcher standardMatcher = BRUNO_STANDARD_METHOD_PATTERN.matcher(content);
+        if (standardMatcher.find()) {
+            String method = standardMatcher.group(1) != null ? standardMatcher.group(1).trim().toUpperCase() : null;
+            String sameLineUrl = standardMatcher.group(2) != null ? standardMatcher.group(2).trim() : "";
+            return method != null ? new BrunoMethodMatch(method, sameLineUrl) : null;
+        }
+
+        if (!hasHttpMeta(content)) {
+            return null;
+        }
+
+        Matcher customMatcher = BRUNO_CUSTOM_METHOD_PATTERN.matcher(content);
+        while (customMatcher.find()) {
+            String methodToken = customMatcher.group(1) != null ? customMatcher.group(1).trim() : "";
+            if (methodToken.isEmpty() || BRUNO_RESERVED_TOKENS.contains(methodToken.toLowerCase())) {
+                continue;
+            }
+            return new BrunoMethodMatch(methodToken.toUpperCase(), "");
+        }
+        return null;
+    }
+
+    private boolean hasHttpMeta(String content) {
+        String metaBlock = extractBlock(content, "meta");
+        if (metaBlock == null) {
+            return false;
+        }
+        Pattern typePattern = Pattern.compile("^\\s*type\\s*:\\s*http\\s*$", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+        return typePattern.matcher(metaBlock).find();
+    }
+
+    private String normalizeBrunoMetadataPath(Path root, Path parent) {
+        if (root == null || parent == null) {
+            return "";
+        }
+        Path relative = root.relativize(parent);
+        String value = relative.toString().replace(File.separatorChar, '/').trim();
+        if (".".equals(value)) {
+            return "";
+        }
+        return AuthInheritanceResolver.normalizeFolderPath(value);
+    }
+
+    private Map<String, String> parseVarsBlock(String content) {
+        Map<String, String> vars = new LinkedHashMap<>();
+        String varsBlock = extractBlock(content, "vars");
+        if (varsBlock == null) {
+            return vars;
+        }
+        for (String rawLine : varsBlock.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+            int colonIdx = line.indexOf(':');
+            if (colonIdx <= 0) {
+                continue;
+            }
+            String key = line.substring(0, colonIdx).trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            String value = line.substring(colonIdx + 1).trim();
+            vars.put(key, value);
+        }
+        return vars;
+    }
+
+    private void putCollectionVariables(ApiCollection collection, Map<String, String> vars) {
+        if (collection == null || vars == null || vars.isEmpty()) {
+            return;
+        }
+        Map<String, ApiRequest.Variable> byKey = new LinkedHashMap<>();
+        for (ApiRequest.Variable existing : collection.variables) {
+            if (existing != null && existing.key != null) {
+                byKey.put(existing.key, existing);
+            }
+        }
+        for (Map.Entry<String, String> entry : vars.entrySet()) {
+            ApiRequest.Variable variable = byKey.get(entry.getKey());
+            if (variable == null) {
+                variable = new ApiRequest.Variable();
+                variable.key = entry.getKey();
+                variable.type = "string";
+                variable.enabled = true;
+                collection.variables.add(variable);
+                byKey.put(entry.getKey(), variable);
+            }
+            variable.value = entry.getValue();
+        }
+    }
+
+    private void putFolderVariables(ApiCollection collection, String folderPath, Map<String, String> vars) {
+        if (collection == null || vars == null || vars.isEmpty()) {
+            return;
+        }
+        String normalizedPath = AuthInheritanceResolver.normalizeFolderPath(folderPath);
+        if (normalizedPath.isEmpty()) {
+            return;
+        }
+        if (collection.folderVars == null) {
+            collection.folderVars = new LinkedHashMap<>();
+        }
+        Map<String, String> existing = collection.folderVars.get(normalizedPath);
+        if (existing == null) {
+            existing = new LinkedHashMap<>();
+            collection.folderVars.put(normalizedPath, existing);
+        }
+        existing.putAll(vars);
+    }
+
+    private static final class BrunoMethodMatch {
+        private final String method;
+        private final String sameLineUrl;
+
+        private BrunoMethodMatch(String method, String sameLineUrl) {
+            this.method = method;
+            this.sameLineUrl = sameLineUrl;
+        }
+    }
+
     /**
      * Extracts the inner content of a named block by counting braces.
      * Returns null if the block is not found.
@@ -261,6 +442,65 @@ public class BrunoParser implements CollectionParser {
      * Parses a Bruno auth block content into an ApiRequest.Auth object.
      */
     private ApiRequest.Auth parseBrunoAuthBlock(String authContent) {
+        String flatMode = extractValue(authContent, "mode");
+        if (flatMode == null) {
+            flatMode = extractValue(authContent, "type");
+        }
+        if (flatMode != null) {
+            String normalized = flatMode.trim().toLowerCase();
+            switch (normalized) {
+                case "none":
+                case "noauth":
+                case "no_auth": {
+                    ApiRequest.Auth auth = new ApiRequest.Auth();
+                    auth.type = "none";
+                    return auth;
+                }
+                case "basic": {
+                    ApiRequest.Auth auth = new ApiRequest.Auth();
+                    auth.type = "basic";
+                    auth.properties.put("username", extractValue(authContent, "username"));
+                    auth.properties.put("password", extractValue(authContent, "password"));
+                    return auth;
+                }
+                case "bearer": {
+                    ApiRequest.Auth auth = new ApiRequest.Auth();
+                    auth.type = "bearer";
+                    auth.properties.put("token", extractValue(authContent, "token"));
+                    return auth;
+                }
+                case "apikey": {
+                    ApiRequest.Auth auth = new ApiRequest.Auth();
+                    auth.type = "apikey";
+                    auth.properties.put("key", extractValue(authContent, "key"));
+                    auth.properties.put("value", extractValue(authContent, "value"));
+                    String placement = extractValue(authContent, "placement");
+                    auth.properties.put("in", placement != null ? placement : "header");
+                    return auth;
+                }
+                case "oauth2": {
+                    ApiRequest.Auth auth = new ApiRequest.Auth();
+                    auth.type = "oauth2";
+                    String grantType = extractValue(authContent, "grant_type");
+                    auth.properties.put("grantType", grantType != null ? grantType : "client_credentials");
+                    auth.properties.put("accessTokenUrl", extractValue(authContent, "access_token_url"));
+                    auth.properties.put("authorizationUrl", extractValue(authContent, "authorization_url"));
+                    auth.properties.put("clientId", extractValue(authContent, "client_id"));
+                    auth.properties.put("clientSecret", extractValue(authContent, "client_secret"));
+                    auth.properties.put("scope", extractValue(authContent, "scope"));
+                    auth.properties.put("accessToken", extractValue(authContent, "access_token"));
+                    return auth;
+                }
+            }
+        }
+        // Explicit no-auth blocks in Bruno syntax.
+        if (extractBlock(authContent, "none") != null
+                || extractBlock(authContent, "noauth") != null
+                || extractBlock(authContent, "no_auth") != null) {
+            ApiRequest.Auth auth = new ApiRequest.Auth();
+            auth.type = "none";
+            return auth;
+        }
         // Try basic
         String basicBlock = extractBlock(authContent, "basic");
         if (basicBlock != null) {

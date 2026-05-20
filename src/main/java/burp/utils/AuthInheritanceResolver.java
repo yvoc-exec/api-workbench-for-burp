@@ -32,6 +32,16 @@ public final class AuthInheritanceResolver {
         return copy;
     }
 
+    public static String normalizeParsedAuthMode(ApiRequest.Auth auth) {
+        if (auth == null || auth.type == null || auth.type.isBlank()) {
+            return MODE_INHERIT;
+        }
+        if ("none".equalsIgnoreCase(auth.type) || "noauth".equalsIgnoreCase(auth.type)) {
+            return MODE_NONE;
+        }
+        return MODE_EXPLICIT;
+    }
+
     public static String normalizeFolderPath(String path) {
         if (path == null || path.isBlank()) {
             return "";
@@ -81,6 +91,52 @@ public final class AuthInheritanceResolver {
             }
         }
         return MODE_INHERIT;
+    }
+
+    public static void markRequestInherit(ApiRequest request) {
+        if (request == null) {
+            return;
+        }
+        request.authOverrideMode = MODE_INHERIT;
+        request.explicitAuth = null;
+        request.authInherited = false;
+        request.authExplicitlyDisabled = false;
+        request.authSource = "none";
+    }
+
+    public static void markRequestExplicitAuth(ApiRequest request, ApiRequest.Auth auth) {
+        if (request == null) {
+            return;
+        }
+        String mode = normalizeParsedAuthMode(auth);
+        if (MODE_INHERIT.equals(mode)) {
+            markRequestInherit(request);
+            return;
+        }
+        if (MODE_NONE.equals(mode)) {
+            markRequestNoAuth(request);
+            return;
+        }
+        ApiRequest.Auth explicit = copyAuth(auth);
+        request.auth = copyAuth(explicit);
+        request.explicitAuth = copyAuth(explicit);
+        request.authOverrideMode = MODE_EXPLICIT;
+        request.authInherited = false;
+        request.authExplicitlyDisabled = false;
+        request.authSource = requestLayerSource(request);
+    }
+
+    public static void markRequestNoAuth(ApiRequest request) {
+        if (request == null) {
+            return;
+        }
+        ApiRequest.Auth none = noneAuth();
+        request.auth = copyAuth(none);
+        request.explicitAuth = copyAuth(none);
+        request.authOverrideMode = MODE_NONE;
+        request.authInherited = false;
+        request.authExplicitlyDisabled = true;
+        request.authSource = requestLayerSource(request);
     }
 
     public static void setCollectionAuth(ApiCollection collection, ApiRequest.Auth auth) {

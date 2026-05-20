@@ -49,6 +49,9 @@ public final class WorkspaceStateJson {
                 if (collection.folderAuth == null) {
                     collection.folderAuth = new java.util.LinkedHashMap<>();
                 }
+                if (collection.folderVars == null) {
+                    collection.folderVars = new java.util.LinkedHashMap<>();
+                }
                 if (collection.runtimeVars == null) {
                     collection.runtimeVars = new java.util.LinkedHashMap<>();
                 }

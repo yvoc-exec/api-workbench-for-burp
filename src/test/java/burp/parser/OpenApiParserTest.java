@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.AuthInheritanceResolver;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -112,10 +113,118 @@ class OpenApiParserTest {
                 .contains("id=7");
     }
 
+    @Test
+    void topLevelSecurityBecomesCollectionAuthInheritedByOperations() throws Exception {
+        ApiCollection collection = parseOpenApiJson("""
+                {
+                  "openapi": "3.0.0",
+                  "info": {"title": "Demo", "version": "1.0"},
+                  "servers": [{"url": "https://api.example.test"}],
+                  "components": {
+                    "securitySchemes": {
+                      "bearerAuth": {"type": "http", "scheme": "bearer"}
+                    }
+                  },
+                  "security": [{"bearerAuth": []}],
+                  "paths": {
+                    "/me": {
+                      "get": {"operationId": "GetMe", "responses": {"200": {"description": "ok"}}}
+                    }
+                  }
+                }
+                """);
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(collection.auth).isNotNull();
+        assertThat(collection.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.authInherited).isTrue();
+        assertThat(request.authOverrideMode).isEqualTo("inherit");
+        assertThat(request.authSource).isEqualTo("collection: Demo");
+    }
+
+    @Test
+    void operationSecurityOverridesTopLevelSecurityAndSurvivesRecompute() throws Exception {
+        ApiCollection collection = parseOpenApiJson("""
+                {
+                  "openapi": "3.0.0",
+                  "info": {"title": "Demo", "version": "1.0"},
+                  "servers": [{"url": "https://api.example.test"}],
+                  "components": {
+                    "securitySchemes": {
+                      "bearerAuth": {"type": "http", "scheme": "bearer"},
+                      "basicAuth": {"type": "http", "scheme": "basic"}
+                    }
+                  },
+                  "security": [{"bearerAuth": []}],
+                  "paths": {
+                    "/admin": {
+                      "get": {
+                        "operationId": "Admin",
+                        "security": [{"basicAuth": []}],
+                        "responses": {"200": {"description": "ok"}}
+                      }
+                    }
+                  }
+                }
+                """);
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth.type).isEqualTo("basic");
+        assertThat(request.authOverrideMode).isEqualTo("explicit");
+        assertThat(request.explicitAuth.type).isEqualTo("basic");
+        assertThat(request.authInherited).isFalse();
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
+        assertThat(request.auth.type).isEqualTo("basic");
+        assertThat(request.authSource).isEqualTo("request: Admin");
+    }
+
+    @Test
+    void operationEmptySecurityStopsTopLevelSecurityInheritance() throws Exception {
+        ApiCollection collection = parseOpenApiJson("""
+                {
+                  "openapi": "3.0.0",
+                  "info": {"title": "Demo", "version": "1.0"},
+                  "servers": [{"url": "https://api.example.test"}],
+                  "components": {
+                    "securitySchemes": {
+                      "bearerAuth": {"type": "http", "scheme": "bearer"}
+                    }
+                  },
+                  "security": [{"bearerAuth": []}],
+                  "paths": {
+                    "/public": {
+                      "get": {
+                        "operationId": "Public",
+                        "security": [],
+                        "responses": {"200": {"description": "ok"}}
+                      }
+                    }
+                  }
+                }
+                """);
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.hasAuth()).isFalse();
+        assertThat(request.auth.type).isEqualTo("none");
+        assertThat(request.authOverrideMode).isEqualTo("none");
+        assertThat(request.authExplicitlyDisabled).isTrue();
+        assertThat(request.authSource).isEqualTo("request: Public");
+    }
+
     private Path createTempSpecFile(String content) throws Exception {
         Path tempFile = Files.createTempFile(Path.of("target"), "openapi-parser-", ".yaml").toAbsolutePath().normalize();
         Files.writeString(tempFile, content, StandardCharsets.UTF_8);
         tempFile.toFile().deleteOnExit();
         return tempFile;
+    }
+
+    private ApiCollection parseOpenApiJson(String json) throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "openapi-auth-", ".json").toAbsolutePath().normalize();
+        Files.writeString(file, json, StandardCharsets.UTF_8);
+        file.toFile().deleteOnExit();
+        return new OpenApiParser().parse(file.toFile());
     }
 }

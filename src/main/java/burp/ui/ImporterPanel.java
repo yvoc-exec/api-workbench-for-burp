@@ -2360,7 +2360,7 @@ public class ImporterPanel {
     // ========================================================================
     private void selectEnvironment() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setFileFilter(new FileNameExtensionFilter("JSON files", "json"));
+        chooser.setFileFilter(new FileNameExtensionFilter("Environment files", "json", "bru"));
         if (chooser.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
             selectedEnv = chooser.getSelectedFile();
             envField.setText(selectedEnv.getAbsolutePath());
@@ -3035,6 +3035,7 @@ public class ImporterPanel {
         if (collection != null) {
             resolver.addEnvironmentVariables(collection);
             resolver.addCollectionVariables(collection);
+            resolver.addFolderVariables(collection, request);
             if (collection.runtimeOAuth2 != null) {
                 resolver.addAll(collection.runtimeOAuth2);
             }
@@ -3342,6 +3343,7 @@ public class ImporterPanel {
         VariableResolver vr = new VariableResolver();
         vr.addEnvironmentVariables(col);
         vr.addCollectionVariables(col);
+        vr.addFolderVariables(col, req);
         if (col.runtimeOAuth2 != null) vr.addAll(col.runtimeOAuth2);
         if (col.runtimeVars != null) vr.addAll(col.runtimeVars);
         vr.addRequestVariables(req);

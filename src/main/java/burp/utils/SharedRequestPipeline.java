@@ -22,9 +22,10 @@ import java.util.*;
  * Precedence (lowest -> highest, as added to resolver):
  *   1. Collection environment
  *   2. Collection definition variables
- *   3. Scoped OAuth2 runtime vars (runtimeOAuth2)
- *   4. Scoped runtime vars (runtimeVars, includes previously extracted)
- *   5. Request-level variables
+ *   3. Bruno folder variables
+ *   4. Scoped OAuth2 runtime vars (runtimeOAuth2)
+ *   5. Scoped runtime vars (runtimeVars, includes previously extracted)
+ *   6. Request-level variables
  *   6. Default values {{var|default}} handled by resolver internally
  */
 public class SharedRequestPipeline {
@@ -62,6 +63,7 @@ public class SharedRequestPipeline {
             if (col != null) {
                 resolver.addEnvironmentVariables(col);
                 resolver.addCollectionVariables(col);
+                resolver.addFolderVariables(col, req);
                 if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
                 if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
             }

@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.AuthInheritanceResolver;
 import com.google.gson.*;
 import org.yaml.snakeyaml.Yaml;
 import java.io.*;
@@ -71,6 +72,10 @@ public class OpenApiParser implements CollectionParser {
         if (spec.containsKey("security") && spec.get("security") instanceof List) {
             defaultSecurity = (List) spec.get("security");
         }
+        collection.auth = resolveSecurity(defaultSecurity, securitySchemes);
+        if (collection.auth != null && "noauth".equalsIgnoreCase(collection.auth.type)) {
+            collection.auth.type = "none";
+        }
 
         // Extract servers/base URLs and server variable defaults
         List<String> baseUrls = new ArrayList<>();
@@ -133,6 +138,8 @@ public class OpenApiParser implements CollectionParser {
                 }
             }
         }
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
 
         return collection;
     }
@@ -227,13 +234,17 @@ public class OpenApiParser implements CollectionParser {
         }
 
         // Parse security/auth with scheme resolution
-        List<Map<String, Object>> security = null;
         if (op.containsKey("security") && op.get("security") instanceof List) {
-            security = (List) op.get("security");
+            List<Map<String, Object>> operationSecurity = (List) op.get("security");
+            ApiRequest.Auth operationAuth = resolveSecurity(operationSecurity, securitySchemes);
+            if ("none".equalsIgnoreCase(AuthInheritanceResolver.normalizeParsedAuthMode(operationAuth))) {
+                AuthInheritanceResolver.markRequestNoAuth(req);
+            } else {
+                AuthInheritanceResolver.markRequestExplicitAuth(req, operationAuth);
+            }
         } else {
-            security = defaultSecurity;
+            AuthInheritanceResolver.markRequestInherit(req);
         }
-        req.auth = resolveSecurity(security, securitySchemes);
 
         return req;
     }

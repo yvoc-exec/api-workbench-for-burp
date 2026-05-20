@@ -67,6 +67,7 @@ public class WorkspaceState {
         copy.folderAuth = copyAuthMap(src.folderAuth);
         copy.requests = copyRequests(src.requests);
         copy.variables = copyVariables(src.variables);
+        copy.folderVars = copyNestedStringMap(src.folderVars);
         copy.environment = src.environment != null ? new LinkedHashMap<>(src.environment) : new LinkedHashMap<>();
         copy.runtimeVars = src.runtimeVars != null ? new LinkedHashMap<>(src.runtimeVars) : new LinkedHashMap<>();
         copy.runtimeOAuth2 = src.runtimeOAuth2 != null ? new LinkedHashMap<>(src.runtimeOAuth2) : new LinkedHashMap<>();
@@ -130,6 +131,21 @@ public class WorkspaceState {
         for (Map.Entry<String, ApiRequest.Auth> entry : src.entrySet()) {
             if (entry.getKey() != null) {
                 out.put(entry.getKey(), copyAuth(entry.getValue()));
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Map<String, String>> copyNestedStringMap(Map<String, Map<String, String>> src) {
+        Map<String, Map<String, String>> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, Map<String, String>> entry : src.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(entry.getKey(), entry.getValue() != null
+                        ? new LinkedHashMap<>(entry.getValue())
+                        : new LinkedHashMap<>());
             }
         }
         return out;
