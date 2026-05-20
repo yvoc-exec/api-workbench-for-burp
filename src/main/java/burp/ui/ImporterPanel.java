@@ -1268,6 +1268,8 @@ public class ImporterPanel {
                 String path = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, col, req, requestIndex);
                 if (path == null) {
                     path = req.path != null ? req.path : "";
+                } else if (path.isBlank() && isNestedRequestPath(req.path, req.name)) {
+                    path = req.path;
                 }
                 String[] parts = path.split("/");
                 java.util.List<String> segments = new java.util.ArrayList<>();
@@ -1310,6 +1312,10 @@ public class ImporterPanel {
         String legacyKey = workspaceRequestIdentityKey(collectionName, request);
         if (requestTreePaths.containsKey(legacyKey)) {
             return requestTreePaths.get(legacyKey);
+        }
+        String workspaceKey = workspaceRequestKey(collectionName, request);
+        if (requestTreePaths.containsKey(workspaceKey)) {
+            return requestTreePaths.get(workspaceKey);
         }
         return null;
     }
@@ -2088,6 +2094,52 @@ public class ImporterPanel {
         refreshCollectionCombos();
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
+        refreshSessionActionControls();
+    }
+
+    /**
+     * Recomputes primary action controls from live session state.
+     * This is used after restore so a re-opened project is immediately runnable.
+     */
+    private void refreshSessionActionControls() {
+        boolean hasCollections = !loadedCollections.isEmpty();
+
+        if (importBtn != null) {
+            importBtn.setEnabled(hasCollections);
+        }
+        if (sendToRunnerBtn != null) {
+            sendToRunnerBtn.setEnabled(hasCollections);
+        }
+        if (removeCollectionBtn != null) {
+            removeCollectionBtn.setEnabled(hasCollections);
+        }
+        if (envApplyAllBtn != null) {
+            envApplyAllBtn.setEnabled(hasCollections);
+        }
+
+        // Runner controls are stateful; derive from actual runner status.
+        if (runner != null) {
+            setRunnerControlsRunning(runner.isRunning());
+        } else {
+            if (startRunnerBtn != null) {
+                startRunnerBtn.setEnabled(hasCollections);
+            }
+            if (previewRunnerBtn != null) {
+                previewRunnerBtn.setEnabled(hasCollections);
+            }
+            if (cancelRunnerBtn != null) {
+                cancelRunnerBtn.setEnabled(false);
+            }
+            if (pauseRunnerBtn != null) {
+                pauseRunnerBtn.setEnabled(false);
+            }
+            if (resumeRunnerBtn != null) {
+                resumeRunnerBtn.setEnabled(false);
+            }
+            if (stepRunnerBtn != null) {
+                stepRunnerBtn.setEnabled(false);
+            }
+        }
     }
 
     static String workspaceRequestIdentityKey(String collectionName, ApiRequest request, int requestIndex) {

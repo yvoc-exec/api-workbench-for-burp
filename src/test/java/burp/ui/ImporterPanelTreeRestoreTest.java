@@ -153,7 +153,97 @@ class ImporterPanelTreeRestoreTest {
 
         assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
 
-        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, null);
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+        CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(requestNames(oauthNode)).containsExactly("Get Token");
+    }
+
+    @Test
+    void legacyWorkspaceTreePathOnlyRestoresNestedFoldersAndRequestPaths() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-legacy-tree", "Get Token", "POST", "https://auth.example.test/token", 1);
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestKey("APIM", state.collections.get(0).requests.get(0)),
+                "Auth/OAuth"
+        );
+
+        ImporterPanel.applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+        CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(requestNames(oauthNode)).containsExactly("Get Token");
+    }
+
+    @Test
+    void identityKeyWorkspaceTreePathWinsOverLegacyWorkspaceRequestKey() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-mixed-tree", "Get Token", "POST", "https://auth.example.test/token", 1);
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestKey("APIM", state.collections.get(0).requests.get(0)),
+                "Legacy/Auth"
+        );
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0),
+                "Preferred/Auth"
+        );
+
+        ImporterPanel.applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Preferred/Auth/Get Token");
+
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode preferredNode = childFolder(apimNode, "Preferred");
+        CollectionTreeNode authNode = childFolder(preferredNode, "Auth");
+
+        assertThat(childFolderNames(apimNode)).containsExactly("Preferred");
+        assertThat(requestNames(authNode)).containsExactly("Get Token");
+    }
+
+    @Test
+    void nonIndexedIdentityWorkspaceTreePathFallbackRestoresNestedFoldersAndRequestPath() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("", "Get Token", "POST", "https://auth.example.test/token", 1);
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String nonIndexedKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0));
+        String indexedKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0);
+        String legacyKey = ImporterPanel.workspaceRequestKey("APIM", state.collections.get(0).requests.get(0));
+
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(nonIndexedKey, "Auth/OAuth");
+
+        assertThat(state.requestTreePaths).containsOnlyKeys(nonIndexedKey);
+        assertThat(state.requestTreePaths).doesNotContainKey(indexedKey);
+        assertThat(state.requestTreePaths).doesNotContainKey(legacyKey);
+
+        ImporterPanel.applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
         CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
         CollectionTreeNode authNode = childFolder(apimNode, "Auth");
         CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
@@ -179,7 +269,7 @@ class ImporterPanelTreeRestoreTest {
 
         assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Ping");
 
-        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, null);
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
         CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
 
         assertThat(childFolderNames(apimNode)).isEmpty();
@@ -407,6 +497,25 @@ class ImporterPanelTreeRestoreTest {
         assertThat((Integer) privateField(restoredAutoState, "intervalSeconds")).isEqualTo(90);
     }
 
+    @Test
+    void restoreWorkspaceCollectionsLeavesPrimaryActionsReadyForNextSession() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.requests.add(request("req-ready", "Ready", "GET", "https://api.example.test/ready", 0));
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        panel.restoreWorkspaceState(state);
+
+        assertThat(isButtonEnabled(panel, "importBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "sendToRunnerBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "removeCollectionBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "startRunnerBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "previewRunnerBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "cancelRunnerBtn")).isFalse();
+    }
+
     private static ApiRequest request(String id, String name, String method, String url, int sequenceOrder) {
         ApiRequest request = new ApiRequest();
         request.id = id;
@@ -466,6 +575,10 @@ class ImporterPanelTreeRestoreTest {
 
     private static int tabIndex(ImporterPanel panel, String fieldName) throws Exception {
         return ((JTabbedPane) privateField(panel, fieldName)).getSelectedIndex();
+    }
+
+    private static boolean isButtonEnabled(ImporterPanel panel, String fieldName) throws Exception {
+        return ((JButton) privateField(panel, fieldName)).isEnabled();
     }
 
     private static CollectionTreeNode findRequestNode(JTree tree, String requestId) {
