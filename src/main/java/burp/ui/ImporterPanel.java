@@ -2038,7 +2038,7 @@ public class ImporterPanel {
                     startRunnerBtn.setEnabled(true);
                     previewRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
-                    envApplyAllBtn.setEnabled(true);
+                    envApplyAllBtn.setEnabled(selectedEnv != null);
                     notifyWorkspaceChanged();
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
@@ -2252,7 +2252,7 @@ public class ImporterPanel {
             removeCollectionBtn.setEnabled(hasCollections);
         }
         if (envApplyAllBtn != null) {
-            envApplyAllBtn.setEnabled(hasCollections);
+            envApplyAllBtn.setEnabled(hasCollections && selectedEnv != null);
         }
 
         // Runner controls are stateful; derive from actual runner status.
@@ -3016,6 +3016,9 @@ public class ImporterPanel {
             boolean hasSelectedEnv = selectedEnv != null;
             boolean hasCheckedRequests = !getCheckedRequestsFromTree().isEmpty();
             envApplyCheckedCollectionsBtn.setEnabled(hasSelectedEnv && hasCheckedRequests && !loadedCollections.isEmpty());
+        }
+        if (envApplyAllBtn != null) {
+            envApplyAllBtn.setEnabled(selectedEnv != null && !loadedCollections.isEmpty());
         }
     }
 

@@ -651,7 +651,7 @@ class ImporterPanelTreeRestoreTest {
         assertThat(isButtonEnabled(panel, "importBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "sendToRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "removeCollectionBtn")).isTrue();
-        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
         assertThat(isButtonEnabled(panel, "startRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "previewRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "cancelRunnerBtn")).isFalse();
@@ -664,10 +664,12 @@ class ImporterPanelTreeRestoreTest {
         panel.restoreWorkspaceState(state);
 
         assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
+        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
 
         setPrivateField(panel, "selectedEnv", tempEnvFile("baseUrl", "https://api.example.test", "token", "abc"));
         invokePrivateMethod(panel, "updateScopeControlState");
         assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
+        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isTrue();
 
         CollectionTreeNode alphaNode = findRequestNode(requestTree(panel), "req-a");
         alphaNode.setChecked(true);
@@ -677,6 +679,7 @@ class ImporterPanelTreeRestoreTest {
         setPrivateField(panel, "selectedEnv", null);
         invokePrivateMethod(panel, "updateScopeControlState");
         assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
+        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
     }
 
     @Test
