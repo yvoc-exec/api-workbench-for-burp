@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.AuthInheritanceResolver;
 import com.google.gson.*;
 import java.io.*;
 import java.util.*;
@@ -65,6 +66,9 @@ public class InsomniaParser implements CollectionParser {
                 }
             }
         }
+        for (Map.Entry<String, ApiRequest.Auth> entry : folderAuths.entrySet()) {
+            storeInsomniaFolderAuth(collection, entry.getKey(), folderNames, folderParents, entry.getValue());
+        }
 
         // Parse environment resources into collection.environment
         for (JsonElement r : resources) {
@@ -95,6 +99,8 @@ public class InsomniaParser implements CollectionParser {
                 collection.requests.add(req);
             }
         }
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
 
         return collection;
     }
@@ -176,18 +182,51 @@ public class InsomniaParser implements CollectionParser {
 
         // Auth
         if (res.has("authentication") && res.get("authentication").isJsonObject()) {
-            req.auth = parseAuth(res.getAsJsonObject("authentication"));
-        }
-        // Inherit from parent groups if no local auth
-        if ((req.auth == null || req.auth.type == null || "none".equals(req.auth.type))) {
-            String folderId = getString(res, "parentId", "");
-            ApiRequest.Auth inherited = findInheritedAuth(folderId, folderParents, folderAuths);
-            if (inherited != null) {
-                req.auth = deepCopyAuth(inherited);
+            ApiRequest.Auth parsedAuth = parseAuth(res.getAsJsonObject("authentication"));
+            String mode = AuthInheritanceResolver.normalizeParsedAuthMode(parsedAuth);
+            if ("none".equalsIgnoreCase(mode)) {
+                AuthInheritanceResolver.markRequestNoAuth(req);
+            } else {
+                AuthInheritanceResolver.markRequestExplicitAuth(req, parsedAuth);
             }
+        } else {
+            AuthInheritanceResolver.markRequestInherit(req);
         }
 
         return req;
+    }
+
+    private String buildFolderPath(String folderId, Map<String, String> folderNames, Map<String, String> folderParents) {
+        if (folderId == null || folderId.isBlank()) {
+            return "";
+        }
+        List<String> pathParts = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        String current = folderId;
+        while (current != null && !current.isBlank() && folderNames.containsKey(current) && visited.add(current)) {
+            String name = folderNames.get(current);
+            if (name != null && !name.isBlank()) {
+                pathParts.add(0, name);
+            }
+            current = folderParents.getOrDefault(current, "");
+        }
+        return String.join("/", pathParts);
+    }
+
+    private void storeInsomniaFolderAuth(ApiCollection collection,
+                                         String folderId,
+                                         Map<String, String> folderNames,
+                                         Map<String, String> folderParents,
+                                         ApiRequest.Auth auth) {
+        if (collection == null || auth == null || auth.type == null) {
+            return;
+        }
+        String folderPath = AuthInheritanceResolver.normalizeFolderPath(buildFolderPath(folderId, folderNames, folderParents));
+        if (folderPath.isEmpty()) {
+            return;
+        }
+        String mode = AuthInheritanceResolver.normalizeParsedAuthMode(auth);
+        AuthInheritanceResolver.setFolderAuth(collection, folderPath, mode, auth);
     }
 
     private ApiRequest.Auth parseAuth(JsonObject authObj) {

@@ -584,6 +584,7 @@ public class CollectionRunner {
         if (col != null) {
             resolver.addEnvironmentVariables(col);
             resolver.addCollectionVariables(col);
+            resolver.addFolderVariables(col, req);
             if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
             if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
         }

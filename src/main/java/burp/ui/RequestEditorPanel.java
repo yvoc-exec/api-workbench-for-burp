@@ -764,6 +764,17 @@ public class RequestEditorPanel extends JPanel {
             return;
         }
         VariableResolver vr = new VariableResolver();
+        if (currentCollection != null) {
+            vr.addEnvironmentVariables(currentCollection);
+            vr.addCollectionVariables(currentCollection);
+            vr.addFolderVariables(currentCollection, currentRequest);
+            if (currentCollection.runtimeOAuth2 != null && !currentCollection.runtimeOAuth2.isEmpty()) {
+                vr.addAll(currentCollection.runtimeOAuth2);
+            }
+            if (currentCollection.runtimeVars != null && !currentCollection.runtimeVars.isEmpty()) {
+                vr.addAll(currentCollection.runtimeVars);
+            }
+        }
         if (runtimeVariables != null && !runtimeVariables.isEmpty()) {
             vr.addAll(runtimeVariables);
         }

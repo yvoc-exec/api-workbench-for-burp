@@ -58,6 +58,36 @@ class VariableResolverTest {
     }
 
     @Test
+    void folderVariablesApplyParentThenChildScope() {
+        ApiCollection col = new ApiCollection();
+        col.folderVars.put("Admin", new java.util.LinkedHashMap<>(java.util.Map.of("token", "parent", "role", "admin")));
+        col.folderVars.put("Admin/Nested", new java.util.LinkedHashMap<>(java.util.Map.of("token", "child")));
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Get Detail";
+        req.path = "Admin/Nested/Get Detail";
+
+        resolver.addFolderVariables(col, req);
+
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("child");
+        assertThat(resolver.resolve("{{role}}")).isEqualTo("admin");
+    }
+
+    @Test
+    void folderVariablesNoOpWhenRequestHasNoFolderPath() {
+        ApiCollection col = new ApiCollection();
+        col.folderVars.put("Admin", new java.util.LinkedHashMap<>(java.util.Map.of("token", "parent")));
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Root";
+        req.path = "Root";
+
+        resolver.addFolderVariables(col, req);
+
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("{{token}}");
+    }
+
+    @Test
     void requestVariablesAreAdded() {
         ApiRequest req = new ApiRequest();
         req.variables.add(createVar("req_key", "req_value"));

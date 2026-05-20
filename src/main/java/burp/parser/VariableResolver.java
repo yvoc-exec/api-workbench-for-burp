@@ -27,6 +27,31 @@ public class VariableResolver {
         }
     }
 
+    public void addFolderVariables(ApiCollection collection, ApiRequest request) {
+        if (collection == null || request == null || collection.folderVars == null || collection.folderVars.isEmpty()) {
+            return;
+        }
+        String folderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
+        if (folderPath == null || folderPath.isBlank()) {
+            return;
+        }
+        String[] parts = folderPath.split("/");
+        StringBuilder current = new StringBuilder();
+        for (String part : parts) {
+            if (part == null || part.isBlank()) {
+                continue;
+            }
+            if (current.length() > 0) {
+                current.append("/");
+            }
+            current.append(part.trim());
+            Map<String, String> vars = collection.folderVars.get(current.toString());
+            if (vars != null) {
+                variables.putAll(vars);
+            }
+        }
+    }
+
     public void addRequestVariables(ApiRequest request) {
         for (ApiRequest.Variable var : request.variables) {
             if (var.value != null) {

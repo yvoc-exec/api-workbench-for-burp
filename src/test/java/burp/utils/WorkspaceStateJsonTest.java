@@ -18,6 +18,7 @@ class WorkspaceStateJsonTest {
         collection.format = "postman";
         collection.runtimeVars.put("baseUrl", "https://api.example.test");
         collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+        collection.folderVars.put("Admin", new java.util.LinkedHashMap<>(java.util.Map.of("role", "admin")));
 
         WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
         String json = WorkspaceStateJson.toJson(state);
@@ -28,6 +29,8 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.collections.get(0).name).isEqualTo("Demo");
         assertThat(parsed.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
         assertThat(parsed.collections.get(0).runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
+        assertThat(parsed.collections.get(0).folderVars).containsKey("Admin");
+        assertThat(parsed.collections.get(0).folderVars.get("Admin")).containsEntry("role", "admin");
     }
 
     @Test
@@ -161,6 +164,7 @@ class WorkspaceStateJsonTest {
         collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
         collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
         collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+        collection.folderVars.put("Admin", new java.util.LinkedHashMap<>(java.util.Map.of("role", "admin")));
 
         WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
         state.selectedTabIndex = 2;
@@ -178,6 +182,8 @@ class WorkspaceStateJsonTest {
         assertThat(copy.collections.get(0)).isNotSameAs(state.collections.get(0));
         assertThat(copy.collections.get(0).runtimeVars).containsEntry("api_key", "secret-key");
         assertThat(copy.collections.get(0).runtimeOAuth2).containsEntry("oauth2_access_token", "access");
+        assertThat(copy.collections.get(0).folderVars).containsKey("Admin");
+        assertThat(copy.collections.get(0).folderVars.get("Admin")).containsEntry("role", "admin");
         assertThat(copy.selectedTabIndex).isEqualTo(2);
         assertThat(copy.selectedVariablesCollectionName).isEqualTo("Demo");
         assertThat(copy.selectedOAuth2CollectionName).isEqualTo("Demo");
@@ -188,9 +194,11 @@ class WorkspaceStateJsonTest {
         assertThat(copy.expandedTreePathKeys).containsExactly("Demo\u001FFolder");
 
         state.collections.get(0).runtimeVars.put("later", "mutation");
+        state.collections.get(0).folderVars.get("Admin").put("later", "mutation");
         state.checkedRequestKeys.add("another");
 
         assertThat(copy.collections.get(0).runtimeVars).doesNotContainKey("later");
+        assertThat(copy.collections.get(0).folderVars.get("Admin")).doesNotContainKey("later");
         assertThat(copy.checkedRequestKeys).containsExactly("Demo\u001FFolder/Get Me\u001FGet Me\u001FGET\u001F7");
     }
 
