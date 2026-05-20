@@ -222,12 +222,8 @@ public class ImporterPanel {
         mainSplit.setDividerSize(8);
         panel.add(mainSplit, BorderLayout.CENTER);
 
-        // Bottom full-width rows: env binding + destination/actions
-        JPanel bottomPanel = new JPanel();
-        bottomPanel.setLayout(new BoxLayout(bottomPanel, BoxLayout.Y_AXIS));
-        bottomPanel.add(createEnvBindingRow());
-        bottomPanel.add(createDestinationRow());
-        panel.add(bottomPanel, BorderLayout.SOUTH);
+        // Bottom full-width workbench log.
+        panel.add(createWorkbenchLogRow(), BorderLayout.SOUTH);
 
         return panel;
     }
@@ -280,6 +276,12 @@ public class ImporterPanel {
         JScrollPane treeScroll = new JScrollPane(requestTree);
         treeScroll.setBorder(BorderFactory.createTitledBorder("Request Tree"));
         panel.add(treeScroll, BorderLayout.CENTER);
+
+        JPanel lowerControls = new JPanel();
+        lowerControls.setLayout(new BoxLayout(lowerControls, BoxLayout.Y_AXIS));
+        lowerControls.add(createEnvBindingRow());
+        lowerControls.add(createActionsRow());
+        panel.add(lowerControls, BorderLayout.SOUTH);
 
         return panel;
     }
@@ -336,11 +338,10 @@ public class ImporterPanel {
         return panel;
     }
 
-    private JPanel createDestinationRow() {
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createTitledBorder("Actions"));
-
+    private void ensureWorkbenchActionDefaultsInitialized() {
+        if (repeaterBtn != null && sitemapBtn != null && intruderBtn != null && delaySpinner != null && debugRawRequestBox != null) {
+            return;
+        }
         // Persisted defaults for the Actions popup.
         repeaterBtn = new JCheckBox("Repeater", true);
         sitemapBtn = new JCheckBox("Sitemap (Live)");
@@ -348,33 +349,34 @@ public class ImporterPanel {
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
         delaySpinner.setPreferredSize(new Dimension(70, 22));
         debugRawRequestBox = new JCheckBox("Debug final raw request");
+    }
 
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+    private JPanel createActionsRow() {
+        ensureWorkbenchActionDefaultsInitialized();
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+        panel.setBorder(BorderFactory.createTitledBorder("Actions"));
+
         importBtn = new JButton("Actions");
         importBtn.setEnabled(false);
         importBtn.addActionListener(e -> showActionsDialog());
         actionsBtn = importBtn;
         sendToRunnerBtn = new JButton("Run Checked");
         sendToRunnerBtn.setEnabled(false);
-        btnPanel.add(importBtn);
-        panel.add(btnPanel);
+        panel.add(importBtn);
+        return panel;
+    }
 
-        // Progress + Log
+    private JPanel createWorkbenchLogRow() {
         JPanel logPanel = new JPanel(new BorderLayout(5, 5));
-        importProgress = new JProgressBar(0, 100);
-        importProgress.setStringPainted(true);
-        importProgress.setPreferredSize(new Dimension(180, 20));
-        logPanel.add(importProgress, BorderLayout.WEST);
+        importProgress = null;
         importLog = new JTextArea(3, 50);
         importLog.setEditable(false);
         importLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         JScrollPane logScroll = new JScrollPane(importLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Workbench Log"));
-        logScroll.setPreferredSize(new Dimension(400, 70));
+        logScroll.setPreferredSize(new Dimension(400, 100));
         logPanel.add(logScroll, BorderLayout.CENTER);
-        panel.add(logPanel);
-
-        return panel;
+        return logPanel;
     }
 
     private void executeWorkbenchSend() {
@@ -3641,7 +3643,9 @@ public class ImporterPanel {
         importer.importRequestsSequential(queue, destinations, delay,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
-                importProgress.setValue(100);
+                if (importProgress != null) {
+                    importProgress.setValue(100);
+                }
                 appendImportLog("Import complete: " + result.successCount + "/" + result.totalRequests + " succeeded.");
             })
         );
