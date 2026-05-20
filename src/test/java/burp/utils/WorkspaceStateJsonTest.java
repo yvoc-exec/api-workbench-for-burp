@@ -203,6 +203,93 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void roundTripsWorkspaceRestoreMetadataState() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.selectedRequestIdentityKey = "Demo\u001Fid=req-1";
+        state.checkedRequestIdentityKeys = new java.util.ArrayList<>(List.of("Demo\u001Fid=req-1", "Demo\u001Findex=1"));
+        state.expandedTreePathKeys = new java.util.ArrayList<>(List.of("Demo\u001F", "Demo\u001FAdmin"));
+
+        state.workbenchRepeaterSelected = Boolean.FALSE;
+        state.workbenchSitemapSelected = Boolean.TRUE;
+        state.workbenchIntruderSelected = Boolean.TRUE;
+        state.workbenchDelayMs = 275;
+        state.workbenchDebugRawRequest = Boolean.TRUE;
+        state.workbenchDetailTabIndex = 2;
+
+        state.runnerDelayMs = 410;
+        state.runnerRetries = 3;
+        state.runnerStopOnError = Boolean.TRUE;
+        state.runnerStopOnAssertionFailure = Boolean.TRUE;
+        state.runnerStopOnStatusAtLeast400 = Boolean.TRUE;
+        state.runnerStopOnMissingVariable = Boolean.TRUE;
+        state.runnerStopAfterFailures = 7;
+        state.runnerFollowRedirects = Boolean.FALSE;
+        state.runnerDebugRawRequest = Boolean.TRUE;
+        state.runnerDetailTabIndex = 1;
+
+        WorkspaceState.OAuthAutoRefreshSnapshot autoRefresh = new WorkspaceState.OAuthAutoRefreshSnapshot();
+        autoRefresh.enabled = Boolean.TRUE;
+        autoRefresh.intervalSeconds = 180;
+        autoRefresh.lastStatus = "Running";
+        state.oauthAutoRefreshByCollection = new java.util.LinkedHashMap<>();
+        state.oauthAutoRefreshByCollection.put("Demo", autoRefresh);
+
+        WorkspaceState copy = WorkspaceState.copyOf(state);
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(copy.selectedRequestIdentityKey).isEqualTo("Demo\u001Fid=req-1");
+        assertThat(copy.checkedRequestIdentityKeys).containsExactly("Demo\u001Fid=req-1", "Demo\u001Findex=1");
+        assertThat(copy.expandedTreePathKeys).containsExactly("Demo\u001F", "Demo\u001FAdmin");
+        assertThat(copy.workbenchRepeaterSelected).isFalse();
+        assertThat(copy.workbenchSitemapSelected).isTrue();
+        assertThat(copy.workbenchIntruderSelected).isTrue();
+        assertThat(copy.workbenchDelayMs).isEqualTo(275);
+        assertThat(copy.workbenchDebugRawRequest).isTrue();
+        assertThat(copy.workbenchDetailTabIndex).isEqualTo(2);
+        assertThat(copy.runnerDelayMs).isEqualTo(410);
+        assertThat(copy.runnerRetries).isEqualTo(3);
+        assertThat(copy.runnerStopOnError).isTrue();
+        assertThat(copy.runnerStopOnAssertionFailure).isTrue();
+        assertThat(copy.runnerStopOnStatusAtLeast400).isTrue();
+        assertThat(copy.runnerStopOnMissingVariable).isTrue();
+        assertThat(copy.runnerStopAfterFailures).isEqualTo(7);
+        assertThat(copy.runnerFollowRedirects).isFalse();
+        assertThat(copy.runnerDebugRawRequest).isTrue();
+        assertThat(copy.runnerDetailTabIndex).isEqualTo(1);
+        assertThat(copy.oauthAutoRefreshByCollection).containsKey("Demo");
+        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").enabled).isTrue();
+        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").intervalSeconds).isEqualTo(180);
+        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").lastStatus).isEqualTo("Running");
+
+        assertThat(parsed.selectedRequestIdentityKey).isEqualTo("Demo\u001Fid=req-1");
+        assertThat(parsed.checkedRequestIdentityKeys).containsExactly("Demo\u001Fid=req-1", "Demo\u001Findex=1");
+        assertThat(parsed.expandedTreePathKeys).containsExactly("Demo\u001F", "Demo\u001FAdmin");
+        assertThat(parsed.workbenchRepeaterSelected).isFalse();
+        assertThat(parsed.workbenchSitemapSelected).isTrue();
+        assertThat(parsed.workbenchIntruderSelected).isTrue();
+        assertThat(parsed.workbenchDelayMs).isEqualTo(275);
+        assertThat(parsed.workbenchDebugRawRequest).isTrue();
+        assertThat(parsed.workbenchDetailTabIndex).isEqualTo(2);
+        assertThat(parsed.runnerDelayMs).isEqualTo(410);
+        assertThat(parsed.runnerRetries).isEqualTo(3);
+        assertThat(parsed.runnerStopOnError).isTrue();
+        assertThat(parsed.runnerStopOnAssertionFailure).isTrue();
+        assertThat(parsed.runnerStopOnStatusAtLeast400).isTrue();
+        assertThat(parsed.runnerStopOnMissingVariable).isTrue();
+        assertThat(parsed.runnerStopAfterFailures).isEqualTo(7);
+        assertThat(parsed.runnerFollowRedirects).isFalse();
+        assertThat(parsed.runnerDebugRawRequest).isTrue();
+        assertThat(parsed.runnerDetailTabIndex).isEqualTo(1);
+        assertThat(parsed.oauthAutoRefreshByCollection).containsKey("Demo");
+        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").enabled).isTrue();
+        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").intervalSeconds).isEqualTo(180);
+        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").lastStatus).isEqualTo("Running");
+    }
+
+    @Test
     void snapshotDeepCopiesRequestsAndNestedState() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Demo";
