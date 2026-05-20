@@ -33,8 +33,11 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 public class ImporterPanel {
+    private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
+
     private final UniversalImporter importer;
     private final CollectionRunner runner;
     private final OAuth2Manager oauth2Manager;
@@ -56,7 +59,7 @@ public class ImporterPanel {
     private JButton importBtn, sendToRunnerBtn, addCollectionBtn, removeCollectionBtn;
     private JCheckBox debugRawRequestBox;
     private JTextField envField;
-    private JButton envBrowseBtn, envApplyCheckedBtn, envApplyAllBtn;
+    private JButton envBrowseBtn, envApplyCheckedBtn, envApplyCheckedCollectionsBtn, envApplyAllBtn;
     private RequestEditorPanel requestEditor;
     private JTabbedPane workbenchDetailTabs;
     private HttpRequestEditor workbenchRequestEditor;
@@ -328,6 +331,9 @@ public class ImporterPanel {
         envApplyCheckedBtn = new JButton("Apply to Checked Requests");
         envApplyCheckedBtn.setEnabled(false);
         envApplyCheckedBtn.addActionListener(e -> applyEnvToCheckedRequests());
+        envApplyCheckedCollectionsBtn = new JButton("Apply to Checked Collections");
+        envApplyCheckedCollectionsBtn.setEnabled(false);
+        envApplyCheckedCollectionsBtn.addActionListener(e -> applyEnvToCheckedCollections());
         envApplyAllBtn = new JButton("Apply to All Collections");
         envApplyAllBtn.setEnabled(false);
         envApplyAllBtn.addActionListener(e -> applyEnvToAllCollections());
@@ -335,6 +341,7 @@ public class ImporterPanel {
         panel.add(envField);
         panel.add(envBrowseBtn);
         panel.add(envApplyCheckedBtn);
+        panel.add(envApplyCheckedCollectionsBtn);
         panel.add(envApplyAllBtn);
         return panel;
     }
@@ -1248,7 +1255,8 @@ public class ImporterPanel {
         if (collections == null) {
             return root;
         }
-        for (ApiCollection col : collections) {
+        for (int collectionIndex = 0; collectionIndex < collections.size(); collectionIndex++) {
+            ApiCollection col = collections.get(collectionIndex);
             if (col == null) {
                 continue;
             }
@@ -1265,7 +1273,7 @@ public class ImporterPanel {
                 if (requestToCollectionMap != null) {
                     requestToCollectionMap.put(req, col);
                 }
-                String path = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, col, req, requestIndex);
+                String path = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collectionIndex, col, req, requestIndex);
                 if (path == null) {
                     path = req.path != null ? req.path : "";
                 } else if (path.isBlank() && isNestedRequestPath(req.path, req.name)) {
@@ -1300,24 +1308,134 @@ public class ImporterPanel {
                                                        ApiCollection collection,
                                                        ApiRequest request,
                                                        int requestIndex) {
+        return lookupWorkspaceRequestTreeFolderPath(requestTreePaths, -1, collection, request, requestIndex);
+    }
+
+    static String lookupWorkspaceRequestTreeFolderPath(Map<String, String> requestTreePaths,
+                                                       int collectionIndex,
+                                                       ApiCollection collection,
+                                                       ApiRequest request,
+                                                       int requestIndex) {
         if (requestTreePaths == null || request == null) {
             return null;
         }
         String collectionName = collection != null ? collection.name : request.sourceCollection;
-        String indexedKey = workspaceRequestIdentityKey(collectionName, request, requestIndex);
-        if (requestTreePaths.containsKey(indexedKey)) {
-            return requestTreePaths.get(indexedKey);
+        String path = lookupWorkspaceRequestTreePathFamily(
+                requestTreePaths,
+                workspaceRequestTreePathKey(collectionName, collectionIndex, request, requestIndex),
+                requestIndex
+        );
+        if (path != null) {
+            return path;
+        }
+        path = lookupWorkspaceRequestTreePathFamily(
+                requestTreePaths,
+                workspaceRequestTreePathKeyLegacy(collectionName, collectionIndex, request, requestIndex),
+                requestIndex
+        );
+        if (path != null) {
+            return path;
+        }
+        path = lookupWorkspaceRequestTreePathFamily(
+                requestTreePaths,
+                workspaceRequestIdentityKey(collectionName, request, requestIndex),
+                requestIndex
+        );
+        if (path != null) {
+            return path;
+        }
+        path = lookupWorkspaceRequestTreePathFamily(
+                requestTreePaths,
+                workspaceRequestIdentityKey(collectionName, request),
+                requestIndex
+        );
+        if (path != null) {
+            return path;
+        }
+        return lookupWorkspaceRequestTreePathFamily(
+                requestTreePaths,
+                workspaceRequestKey(collectionName, request),
+                requestIndex
+        );
+    }
+
+    private static String lookupWorkspaceRequestTreePathFamily(Map<String, String> requestTreePaths,
+                                                               String baseKey,
+                                                               int requestIndex) {
+        if (requestTreePaths == null || baseKey == null || baseKey.isBlank()) {
+            return null;
+        }
+        List<DuplicateTreePathCandidate> candidates = new ArrayList<>();
+        if (requestTreePaths.containsKey(baseKey)) {
+            candidates.add(new DuplicateTreePathCandidate(1, baseKey, requestTreePaths.get(baseKey)));
+        }
+        String prefix = baseKey + '\u001F' + "duplicate=";
+        for (Map.Entry<String, String> entry : requestTreePaths.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || !key.startsWith(prefix)) {
+                continue;
+            }
+            int ordinal = parseDuplicateOrdinal(key.substring(prefix.length()));
+            if (ordinal < 0) {
+                continue;
+            }
+            candidates.add(new DuplicateTreePathCandidate(ordinal, key, entry.getValue()));
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        candidates.sort(Comparator.comparingInt(DuplicateTreePathCandidate::ordinal)
+                .thenComparing(DuplicateTreePathCandidate::key));
+        int candidateIndex = requestIndex >= 0 ? Math.min(requestIndex, candidates.size() - 1) : 0;
+        return candidates.get(candidateIndex).value();
+    }
+
+    private static int parseDuplicateOrdinal(String value) {
+        if (value == null || value.isBlank()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
+    }
+
+    private static String workspaceRequestTreePathKeyLegacy(String collectionName,
+                                                            int collectionIndex,
+                                                            ApiRequest request,
+                                                            int requestIndex) {
+        return "collectionIndex=" + collectionIndex
+                + '\u001F' + workspaceRequestIdentityKey(collectionName, request, requestIndex);
+    }
+
+    /**
+     * Legacy snapshots may have saved duplicate request tree entries as baseKey + "\u001Fduplicate=N".
+     * The base key is ordinal 1 and duplicate suffixes are ordinals N, then the family is sorted
+     * deterministically so restore does not depend on map iteration order.
+     */
+    private static final class DuplicateTreePathCandidate {
+        private final int ordinal;
+        private final String key;
+        private final String value;
+
+        private DuplicateTreePathCandidate(int ordinal, String key, String value) {
+            this.ordinal = ordinal;
+            this.key = key;
+            this.value = value;
         }
 
-        String legacyKey = workspaceRequestIdentityKey(collectionName, request);
-        if (requestTreePaths.containsKey(legacyKey)) {
-            return requestTreePaths.get(legacyKey);
+        private int ordinal() {
+            return ordinal;
         }
-        String workspaceKey = workspaceRequestKey(collectionName, request);
-        if (requestTreePaths.containsKey(workspaceKey)) {
-            return requestTreePaths.get(workspaceKey);
+
+        private String key() {
+            return key;
         }
-        return null;
+
+        private String value() {
+            return value;
+        }
     }
 
     private static CollectionTreeNode getOrCreateFolderNode(CollectionTreeNode parent, String cumulativePath) {
@@ -1382,6 +1500,26 @@ public class ImporterPanel {
         for (int i = 0; i < node.getChildCount(); i++) {
             enumerateCheckedCollections((DefaultMutableTreeNode) node.getChildAt(i), out);
         }
+    }
+
+    private Set<ApiCollection> resolveCheckedRequestCollections(List<ApiRequest> checkedRequests) {
+        LinkedHashSet<ApiCollection> affected = new LinkedHashSet<>();
+        if (checkedRequests == null || checkedRequests.isEmpty()) {
+            return affected;
+        }
+        for (ApiRequest request : checkedRequests) {
+            if (request == null) {
+                continue;
+            }
+            ApiCollection collection = requestToCollectionMap.get(request);
+            if (collection == null) {
+                collection = findCollectionByName(request.sourceCollection);
+            }
+            if (collection != null) {
+                affected.add(collection);
+            }
+        }
+        return affected;
     }
 
     private ApiCollection findCollectionForNode(CollectionTreeNode node) {
@@ -1989,7 +2127,6 @@ public class ImporterPanel {
             return;
         }
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
             pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
                     ? new LinkedHashMap<>(state.requestTreePaths)
                     : Collections.emptyMap();
@@ -2026,7 +2163,8 @@ public class ImporterPanel {
         if (collections == null || collections.isEmpty()) {
             return;
         }
-        for (ApiCollection collection : collections) {
+        for (int collectionIndex = 0; collectionIndex < collections.size(); collectionIndex++) {
+            ApiCollection collection = collections.get(collectionIndex);
             if (collection == null || collection.requests == null || collection.requests.isEmpty()) {
                 continue;
             }
@@ -2035,7 +2173,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                String folderPath = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collection, request, requestIndex);
+                String folderPath = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collectionIndex, collection, request, requestIndex);
                 if (folderPath == null) {
                     continue;
                 }
@@ -2163,6 +2301,16 @@ public class ImporterPanel {
         return workspaceRequestIdentityKey(collectionName, request, request != null ? request.sequenceOrder : -1);
     }
 
+    static String workspaceRequestTreePathKey(String collectionName, int collectionIndex, ApiRequest request, int requestIndex) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("collectionIndex=").append(collectionIndex);
+        builder.append('\u001F');
+        builder.append("requestIndex=").append(requestIndex);
+        builder.append('\u001F');
+        builder.append(workspaceRequestIdentityKey(collectionName, request, requestIndex));
+        return builder.toString();
+    }
+
     static String workspaceRequestKey(String collectionName, ApiRequest request) {
         StringBuilder builder = new StringBuilder();
         builder.append(collectionName != null ? collectionName : "");
@@ -2184,20 +2332,23 @@ public class ImporterPanel {
         if (treeModel == null || treeModel.getRoot() == null) {
             return out;
         }
-        collectRequestTreePaths((DefaultMutableTreeNode) treeModel.getRoot(), null, "", out);
+        collectRequestTreePaths((DefaultMutableTreeNode) treeModel.getRoot(), null, -1, "", out);
         return out;
     }
 
     private void collectRequestTreePaths(DefaultMutableTreeNode node,
-                                        ApiCollection collection,
-                                        String folderPath,
-                                        Map<String, String> out) {
+                                         ApiCollection collection,
+                                         int collectionIndex,
+                                         String folderPath,
+                                         Map<String, String> out) {
         ApiCollection currentCollection = collection;
+        int currentCollectionIndex = collectionIndex;
         String currentFolderPath = folderPath != null ? folderPath : "";
         if (node instanceof CollectionTreeNode) {
             CollectionTreeNode ctn = (CollectionTreeNode) node;
             if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
                 currentCollection = ctn.collection != null ? ctn.collection : collection;
+                currentCollectionIndex = findCollectionIndex(currentCollection);
                 currentFolderPath = "";
             } else if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER) {
                 currentFolderPath = ctn.folderPath != null ? ctn.folderPath : currentFolderPath;
@@ -2205,15 +2356,54 @@ public class ImporterPanel {
                 int requestIndex = currentCollection != null && currentCollection.requests != null
                         ? currentCollection.requests.indexOf(ctn.request)
                         : -1;
-                String key = requestIndex >= 0
-                        ? workspaceRequestIdentityKey(currentCollection != null ? currentCollection.name : ctn.request.sourceCollection, ctn.request, requestIndex)
-                        : workspaceRequestIdentityKey(currentCollection != null ? currentCollection.name : ctn.request.sourceCollection, ctn.request);
-                out.put(key, currentFolderPath);
+                String collectionName = currentCollection != null ? currentCollection.name : ctn.request.sourceCollection;
+                String key = workspaceRequestTreePathKey(collectionName, currentCollectionIndex, ctn.request, requestIndex);
+                putRequestTreePath(out, key, currentFolderPath, collectionName, currentCollectionIndex, ctn.request, requestIndex);
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
-            collectRequestTreePaths((DefaultMutableTreeNode) node.getChildAt(i), currentCollection, currentFolderPath, out);
+            collectRequestTreePaths((DefaultMutableTreeNode) node.getChildAt(i), currentCollection, currentCollectionIndex, currentFolderPath, out);
         }
+    }
+
+    private int findCollectionIndex(ApiCollection collection) {
+        if (collection == null) {
+            return -1;
+        }
+        for (int i = 0; i < loadedCollections.size(); i++) {
+            if (loadedCollections.get(i) == collection) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void putRequestTreePath(Map<String, String> out,
+                                    String key,
+                                    String folderPath,
+                                    String collectionName,
+                                    int collectionIndex,
+                                    ApiRequest request,
+                                    int requestIndex) {
+        String resolvedKey = key;
+        if (out.containsKey(resolvedKey)) {
+            String duplicateKey = resolvedKey + '\u001F' + "duplicate=2";
+            int duplicateOrdinal = 2;
+            while (out.containsKey(duplicateKey)) {
+                duplicateOrdinal++;
+                duplicateKey = resolvedKey + '\u001F' + "duplicate=" + duplicateOrdinal;
+            }
+            LOGGER.warning("Unexpected duplicate requestTreePaths key collision for collectionIndex="
+                    + collectionIndex
+                    + ", collection="
+                    + (collectionName != null ? collectionName : "")
+                    + ", requestIndex="
+                    + requestIndex
+                    + "; preserving entry with key "
+                    + duplicateKey);
+            resolvedKey = duplicateKey;
+        }
+        out.put(resolvedKey, folderPath);
     }
 
     private List<String> collectCheckedRequestIdentityKeys() {
@@ -2822,6 +3012,11 @@ public class ImporterPanel {
         if (requestTree != null && envApplyCheckedBtn != null) {
             envApplyCheckedBtn.setEnabled(!getCheckedRequestsFromTree().isEmpty() && !loadedCollections.isEmpty());
         }
+        if (requestTree != null && envApplyCheckedCollectionsBtn != null) {
+            boolean hasSelectedEnv = selectedEnv != null;
+            boolean hasCheckedRequests = !getCheckedRequestsFromTree().isEmpty();
+            envApplyCheckedCollectionsBtn.setEnabled(hasSelectedEnv && hasCheckedRequests && !loadedCollections.isEmpty());
+        }
     }
 
     // ========================================================================
@@ -2833,6 +3028,7 @@ public class ImporterPanel {
         if (chooser.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
             selectedEnv = chooser.getSelectedFile();
             envField.setText(selectedEnv.getAbsolutePath());
+            updateScopeControlState();
         }
     }
 
@@ -2902,6 +3098,41 @@ public class ImporterPanel {
         appendImportLog("Env bound to " + targets.size() + " checked request(s): " + totalApplied + " var(s) total.");
         for (ApiCollection collection : affectedCollections) {
             refreshRuntimeViewsForCollection(collection);
+        }
+        notifyWorkspaceChanged();
+        renderEffectiveVariablesForSelectedCollection();
+    }
+
+    private void applyEnvToCheckedCollections() {
+        if (selectedEnv == null) {
+            appendImportLog("No environment file selected. Browse first.");
+            return;
+        }
+        List<ApiRequest> targets = getCheckedRequestsFromTree();
+        if (targets.isEmpty()) {
+            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
+            return;
+        }
+        Set<ApiCollection> affectedCollections = resolveCheckedRequestCollections(targets);
+        if (affectedCollections.isEmpty()) {
+            appendImportLog("No checked request nodes resolved to collections. Nothing to apply.");
+            return;
+        }
+        int totalLoaded = 0;
+        List<String> errors = new ArrayList<>();
+        for (ApiCollection collection : affectedCollections) {
+            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, collection.runtimeVars);
+            if (result.isSuccess()) {
+                totalLoaded += result.loadedCount;
+            } else {
+                errors.add("\"" + collection.name + "\": " + result.errorMessage);
+            }
+            collection.fireChanged();
+            refreshRuntimeViewsForCollection(collection);
+        }
+        appendImportLog("Env bound to " + affectedCollections.size() + " collection(s): " + totalLoaded + " var(s) total.");
+        for (String err : errors) {
+            appendImportLog("  Env bind error - " + err);
         }
         notifyWorkspaceChanged();
         renderEffectiveVariablesForSelectedCollection();
