@@ -756,4 +756,74 @@ class RequestBuilderTest {
         assertThat(parsed.headerValue("User-Agent")).isEqualTo("BurpExtensionRuntime");
         assertThat(parsed.headerValue("Cache-Control")).isEqualTo("no-cache");
     }
+
+    // ===================================================================
+    // I) Effective headers (preview)
+    // ===================================================================
+
+    @Test
+    void buildEffectiveHeadersReturnsFinalHeaderSetWithoutTransportHeaders() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+        req.headers.add(new ApiRequest.Header("X-Custom", "value", false));
+
+        List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
+
+        Map<String, String> map = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : effective) {
+            map.put(e.getKey().toLowerCase(), e.getValue());
+        }
+
+        assertThat(map).containsKey("host");
+        assertThat(map).containsKey("accept");
+        assertThat(map).containsKey("user-agent");
+        assertThat(map).containsKey("x-custom");
+        assertThat(map).doesNotContainKey("content-length");
+        assertThat(map).doesNotContainKey("transfer-encoding");
+    }
+
+    @Test
+    void buildEffectiveHeadersRespectsDisabledHeaderSuppressions() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Accept", "text/html", true)); // disabled
+
+        List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
+
+        Map<String, String> map = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : effective) {
+            map.put(e.getKey().toLowerCase(), e.getValue());
+        }
+
+        // The default Accept should be suppressed because operator disabled an Accept row
+        assertThat(map).doesNotContainKey("accept");
+    }
+
+    @Test
+    void buildEffectiveHeadersIncludesAuthAndBodyHeaders() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{}";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+
+        List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
+
+        Map<String, String> map = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : effective) {
+            map.put(e.getKey().toLowerCase(), e.getValue());
+        }
+
+        assertThat(map).containsEntry("authorization", "Bearer tok123");
+        assertThat(map).containsEntry("content-type", "application/json");
+    }
 }

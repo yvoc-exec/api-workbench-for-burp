@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ImporterPanelTreeRestoreTest {
 
@@ -712,8 +713,75 @@ class ImporterPanelTreeRestoreTest {
         assertThat(isButtonEnabled(panel, "removeCollectionBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
         assertThat(isButtonEnabled(panel, "startRunnerBtn")).isTrue();
-        assertThat(isButtonEnabled(panel, "previewRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "cancelRunnerBtn")).isFalse();
+    }
+
+    @Test
+    void previewRunnerButtonIsRemoved() throws Exception {
+        ImporterPanel panel = newPanel();
+        assertThatThrownBy(() -> privateField(panel, "previewRunnerBtn"))
+                .isInstanceOf(NoSuchFieldException.class);
+    }
+
+    @Test
+    void selectingRequestInitializesEffectiveHeadersWithCollectionContext() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.environment.put("token", "resolved123");
+
+        ApiRequest req = new ApiRequest();
+        req.id = "req-auth";
+        req.name = "AuthTest";
+        req.method = "GET";
+        req.url = "https://api.example.test/auth";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "{{token}}");
+        collection.requests.add(req);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        panel.restoreWorkspaceState(state);
+
+        JTree tree = requestTree(panel);
+        // Find and select the request node
+        CollectionTreeNode requestNode = null;
+        for (int i = 0; i < tree.getRowCount(); i++) {
+            TreePath path = tree.getPathForRow(i);
+            Object node = path.getLastPathComponent();
+            if (node instanceof CollectionTreeNode) {
+                CollectionTreeNode ctn = (CollectionTreeNode) node;
+                if (ctn.request != null && "req-auth".equals(ctn.request.id)) {
+                    requestNode = ctn;
+                    break;
+                }
+            }
+        }
+        assertThat(requestNode).isNotNull();
+
+        // Select the request (triggers the tree selection listener)
+        tree.setSelectionPath(new TreePath(requestNode.getPath()));
+        SwingUtilities.invokeAndWait(() -> { });
+
+        // Access the request editor and verify effective headers
+        RequestEditorPanel editor = (RequestEditorPanel) privateField(panel, "requestEditor");
+        Field headersModelField = RequestEditorPanel.class.getDeclaredField("headersModel");
+        headersModelField.setAccessible(true);
+        javax.swing.table.DefaultTableModel model = (javax.swing.table.DefaultTableModel) headersModelField.get(editor);
+
+        boolean foundResolvedAuth = false;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            String value = (String) model.getValueAt(i, 1);
+            if ("Authorization".equalsIgnoreCase(key) && "Bearer resolved123".equals(value)) {
+                foundResolvedAuth = true;
+                break;
+            }
+        }
+        assertThat(foundResolvedAuth)
+                .as("Authorization header should be resolved using collection environment on first selection")
+                .isTrue();
     }
 
     @Test

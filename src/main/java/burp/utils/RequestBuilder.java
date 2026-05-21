@@ -39,6 +39,54 @@ public class RequestBuilder {
     }
 
     public byte[] buildRequest(ApiRequest request, VariableResolver resolver) throws Exception {
+        BuildContext ctx = buildHeadersAndBody(request, resolver);
+        List<String> rawHeaders = ctx.rawHeaders;
+        byte[] body = ctx.body;
+
+        // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
+        // have leaked through, then compute exact Content-Length from body bytes.
+        rawHeaders.removeIf(h -> {
+            String lower = h.toLowerCase();
+            return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
+        });
+        boolean shouldSendContentLength = body.length > 0
+                || ctx.method.equals("POST")
+                || ctx.method.equals("PUT")
+                || ctx.method.equals("PATCH");
+        if (shouldSendContentLength) {
+            rawHeaders.add("Content-Length: " + body.length);
+        }
+
+        // Build raw request bytes preserving CRLF line endings
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write(String.join("\r\n", rawHeaders).getBytes(StandardCharsets.UTF_8));
+        baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+        baos.write(body);
+        return baos.toByteArray();
+    }
+
+    /**
+     * Returns the effective header set that API Workbench intends to send,
+     * after synthesis and operator suppression, but excluding transport framing
+     * headers like Content-Length and Transfer-Encoding.
+     */
+    public List<Map.Entry<String, String>> buildEffectiveHeaders(ApiRequest request, VariableResolver resolver) throws Exception {
+        BuildContext ctx = buildHeadersAndBody(request, resolver);
+        List<Map.Entry<String, String>> effective = new ArrayList<>();
+        for (String h : ctx.rawHeaders) {
+            int colon = h.indexOf(':');
+            if (colon > 0) {
+                String key = h.substring(0, colon).trim();
+                String lower = key.toLowerCase();
+                if (!lower.equals("content-length") && !lower.equals("transfer-encoding")) {
+                    effective.add(new AbstractMap.SimpleEntry<>(key, h.substring(colon + 1).trim()));
+                }
+            }
+        }
+        return effective;
+    }
+
+    private BuildContext buildHeadersAndBody(ApiRequest request, VariableResolver resolver) throws Exception {
         if (request == null) {
             throw new IllegalArgumentException("Request cannot be null");
         }
@@ -53,6 +101,17 @@ public class RequestBuilder {
 
         String requestTarget = parsed.pathWithQuery;
         HeaderStore headers = new HeaderStore();
+
+        // Apply operator suppressions derived from disabled request headers
+        Set<String> suppressed = new HashSet<>();
+        if (request.headers != null) {
+            for (ApiRequest.Header header : request.headers) {
+                if (header.disabled && header.key != null) {
+                    suppressed.add(header.key.trim().toLowerCase());
+                }
+            }
+        }
+        headers.suppressAll(suppressed);
 
         // Layer 1: compatibility defaults (lowest precedence)
         headers.putDefault("Accept", "application/json, text/plain, */*");
@@ -92,26 +151,21 @@ public class RequestBuilder {
             body = buildBody(request.body, rawHeaders, request.name, resolver);
         }
 
-        // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
-        // have leaked through, then compute exact Content-Length from body bytes.
-        rawHeaders.removeIf(h -> {
-            String lower = h.toLowerCase();
-            return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
-        });
-        boolean shouldSendContentLength = body.length > 0
-                || method.equals("POST")
-                || method.equals("PUT")
-                || method.equals("PATCH");
-        if (shouldSendContentLength) {
-            rawHeaders.add("Content-Length: " + body.length);
-        }
+        return new BuildContext(rawHeaders, body, method, resolvedUrl);
+    }
 
-        // Build raw request bytes preserving CRLF line endings
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.write(String.join("\r\n", rawHeaders).getBytes(StandardCharsets.UTF_8));
-        baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-        baos.write(body);
-        return baos.toByteArray();
+    private static final class BuildContext {
+        final List<String> rawHeaders;
+        final byte[] body;
+        final String method;
+        final String resolvedUrl;
+
+        BuildContext(List<String> rawHeaders, byte[] body, String method, String resolvedUrl) {
+            this.rawHeaders = rawHeaders;
+            this.body = body;
+            this.method = method;
+            this.resolvedUrl = resolvedUrl;
+        }
     }
 
     /**
@@ -141,19 +195,38 @@ public class RequestBuilder {
     private static class HeaderStore {
         private final LinkedHashMap<String, String> headers = new LinkedHashMap<>();
         private final Set<String> keysLower = new HashSet<>();
+        private final Set<String> suppressed = new HashSet<>();
 
-        /** Adds only if absent (lowest precedence). */
+        /** Marks a header name as suppressed; putDefault and mergeCookie will skip it. */
+        void suppress(String key) {
+            suppressed.add(key.toLowerCase());
+        }
+
+        /** Marks multiple header names as suppressed. */
+        void suppressAll(Collection<String> keys) {
+            for (String key : keys) {
+                if (key != null) suppressed.add(key.toLowerCase());
+            }
+        }
+
+        boolean isSuppressed(String key) {
+            return suppressed.contains(key.toLowerCase());
+        }
+
+        /** Adds only if absent and not suppressed (lowest precedence). */
         void putDefault(String key, String value) {
             String lower = key.toLowerCase();
+            if (suppressed.contains(lower)) return;
             if (!keysLower.contains(lower)) {
                 headers.put(key, value);
                 keysLower.add(lower);
             }
         }
 
-        /** Overrides any existing value (medium precedence). */
+        /** Overrides any existing value and clears suppression (medium precedence). */
         void put(String key, String value) {
             String lower = key.toLowerCase();
+            suppressed.remove(lower);
             // Remove existing case variant to preserve latest insertion order
             headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(key));
             headers.put(key, value);
@@ -165,8 +238,9 @@ public class RequestBuilder {
             put(key, value);
         }
 
-        /** Merges a cookie into a single Cookie header. */
+        /** Merges a cookie into a single Cookie header unless Cookie is suppressed. */
         void mergeCookie(String cookieValue) {
+            if (isSuppressed("Cookie")) return;
             String existing = get("Cookie");
             if (existing != null) {
                 putComputed("Cookie", existing + "; " + cookieValue);

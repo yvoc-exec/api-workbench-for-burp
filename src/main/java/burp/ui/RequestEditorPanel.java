@@ -2,6 +2,7 @@ package burp.ui;
 
 import burp.models.ApiRequest;
 import burp.parser.VariableResolver;
+import burp.utils.RequestBuilder;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -47,6 +48,11 @@ public class RequestEditorPanel extends JPanel {
 
     private ApiRequest currentRequest;
     private burp.models.ApiCollection currentCollection;
+    private burp.utils.RequestBuilder requestBuilder;
+    private Set<String> editorSynthesizedKeys = new LinkedHashSet<>();
+    private Map<String, String> editorSynthesizedValues = new LinkedHashMap<>();
+    private boolean refreshingHeaders = false;
+    private boolean loadingRequest = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -107,6 +113,10 @@ public class RequestEditorPanel extends JPanel {
         this.sendActionListener = listener;
     }
 
+    public void setRequestBuilder(burp.utils.RequestBuilder requestBuilder) {
+        this.requestBuilder = requestBuilder;
+    }
+
     public void setSendEnabled(boolean enabled) {
         sendBtn.setEnabled(enabled);
         sendDropdownBtn.setEnabled(enabled);
@@ -149,10 +159,13 @@ public class RequestEditorPanel extends JPanel {
     private JPanel createAuthPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
         authTypeBox = new JComboBox<>(new String[]{"inherit", "none", "bearer", "basic", "apikey", "oauth2"});
-        authTypeBox.addActionListener(e -> rebuildAuthFields());
+        authTypeBox.addActionListener(e -> {
+            rebuildAuthFields();
+            refreshAll();
+        });
         panel.add(authTypeBox, BorderLayout.NORTH);
         JPanel authFieldsPanel = new JPanel(new GridLayout(0, 2, 5, 5));
-        authUi = new RequestEditorAuthSupport.AuthUi(authFieldsPanel, this::refreshResolvedMirror);
+        authUi = new RequestEditorAuthSupport.AuthUi(authFieldsPanel, this::refreshAll);
         panel.add(authFieldsPanel, BorderLayout.CENTER);
         rebuildAuthFields();
         return panel;
@@ -179,7 +192,7 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private JPanel createBodyPanel() {
-        bodyUi = RequestEditorBodySupport.createBodyUi(this::refreshResolvedMirror);
+        bodyUi = RequestEditorBodySupport.createBodyUi(this::refreshAll);
         bodyRawArea = bodyUi.bodyRawArea;
         bodyFormTable = bodyUi.bodyFormTable;
         bodyFormModel = bodyUi.bodyFormModel;
@@ -221,14 +234,26 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void attachLiveRefreshListeners() {
-        methodBox.addActionListener(e -> refreshResolvedMirror());
-        urlField.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
-        headersModel.addTableModelListener(e -> refreshResolvedMirror());
-        paramsModel.addTableModelListener(e -> refreshResolvedMirror());
-        bodyFormModel.addTableModelListener(e -> refreshResolvedMirror());
-        bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
-        preScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
-        postScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirror));
+        methodBox.addActionListener(e -> refreshAllIfReady());
+        urlField.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshAllIfReady));
+        headersModel.addTableModelListener(e -> refreshResolvedMirrorIfReady());
+        paramsModel.addTableModelListener(e -> refreshAllIfReady());
+        bodyFormModel.addTableModelListener(e -> refreshAllIfReady());
+        bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshAllIfReady));
+        preScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
+        postScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
+    }
+
+    private void refreshAllIfReady() {
+        if (!loadingRequest) {
+            refreshAll();
+        }
+    }
+
+    private void refreshResolvedMirrorIfReady() {
+        if (!loadingRequest) {
+            refreshResolvedMirror();
+        }
     }
 
     private static class SimpleDocumentListener implements DocumentListener {
@@ -241,18 +266,32 @@ public class RequestEditorPanel extends JPanel {
 
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
-        RequestEditorStateMapper.loadRequest(req, createStateMapperContext());
+        loadingRequest = true;
+        try {
+            RequestEditorStateMapper.Context ctx = createStateMapperContext();
+            RequestEditorStateMapper.loadRequest(req, ctx);
+            this.editorSynthesizedKeys = new LinkedHashSet<>(ctx.synthesizedKeys);
+            this.editorSynthesizedValues = new LinkedHashMap<>(ctx.synthesizedValues);
+        } finally {
+            loadingRequest = false;
+        }
+        refreshAll();
     }
 
     public ApiRequest getCurrentRequest() { return currentRequest; }
     public burp.models.ApiCollection getCurrentCollection() { return currentCollection; }
     public void setCurrentCollection(burp.models.ApiCollection col) {
         this.currentCollection = col;
-        refreshResolvedMirror();
+        refreshAll();
     }
 
     public void setRuntimeVariables(Map<String, String> vars) {
         runtimeVariables = vars != null ? new HashMap<>(vars) : new HashMap<>();
+        refreshAll();
+    }
+
+    private void refreshAll() {
+        refreshEffectiveHeaders();
         refreshResolvedMirror();
     }
 
@@ -380,6 +419,194 @@ public class RequestEditorPanel extends JPanel {
         return source != null && !source.isBlank() && !"none".equalsIgnoreCase(source.trim());
     }
 
+    private void refreshEffectiveHeaders() {
+        if (currentRequest == null) return;
+        if (refreshingHeaders) return;
+        refreshingHeaders = true;
+        try {
+            // 1. Capture operator intent from current model
+            Set<String> suppressedKeys = new HashSet<>();
+            Map<String, String> editedSynthValues = new HashMap<>();
+            Map<String, Integer> rowIndexByKey = new HashMap<>();
+
+            for (int i = 0; i < headersModel.getRowCount(); i++) {
+                String key = (String) headersModel.getValueAt(i, 0);
+                String value = (String) headersModel.getValueAt(i, 1);
+                Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
+                if (key == null || key.trim().isEmpty()) continue;
+
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+                rowIndexByKey.put(lowerKey, i);
+
+                boolean isSynth = editorSynthesizedKeys.contains(lowerKey);
+                String synthValue = editorSynthesizedValues.get(lowerKey);
+                boolean isEdited = isSynth && (synthValue == null || !synthValue.equals(value));
+
+                if (isSynth && !isEdited && !Boolean.TRUE.equals(enabled)) {
+                    suppressedKeys.add(lowerKey);
+                } else if (isSynth && isEdited) {
+                    editedSynthValues.put(lowerKey, value);
+                }
+            }
+
+            // 2. Build temporary request from current UI state while preserving
+            // request metadata required for folder vars and body-mode-specific synthesis.
+            ApiRequest temp = new ApiRequest();
+            if (currentRequest != null) {
+                temp.name = currentRequest.name;
+                temp.path = currentRequest.path;
+                temp.sourceCollection = currentRequest.sourceCollection;
+                temp.id = currentRequest.id;
+                temp.sequenceOrder = currentRequest.sequenceOrder;
+            }
+            temp.method = (String) methodBox.getSelectedItem();
+            temp.url = RequestEditorStateMapper.rebuildUrlWithParams(urlField.getText(), paramsModel);
+
+            String selectedAuthType = (String) authTypeBox.getSelectedItem();
+            if ("inherit".equals(selectedAuthType) && currentRequest != null && currentRequest.auth != null) {
+                temp.auth = currentRequest.auth;
+            } else {
+                temp.auth = buildAuthFromFields(selectedAuthType);
+            }
+
+            String bodyMode = getBodyModeInternal();
+            if (!"none".equals(bodyMode)) {
+                temp.body = new ApiRequest.Body();
+                temp.body.mode = bodyMode;
+                if ("raw".equals(bodyMode)) {
+                    temp.body.raw = bodyRawArea.getText();
+                } else if ("graphql".equals(bodyMode)) {
+                    ApiRequest.Body.GraphQL graphQL = new ApiRequest.Body.GraphQL();
+                    if (currentRequest != null && currentRequest.body != null && currentRequest.body.graphql != null) {
+                        graphQL.variables = currentRequest.body.graphql.variables;
+                    }
+                    graphQL.query = bodyRawArea.getText();
+                    temp.body.graphql = graphQL;
+                    if (currentRequest != null && currentRequest.body != null) {
+                        temp.body.contentType = currentRequest.body.contentType;
+                    }
+                } else if ("file".equals(bodyMode)) {
+                    temp.body.raw = bodyRawArea.getText();
+                    if (currentRequest != null && currentRequest.body != null) {
+                        temp.body.contentType = currentRequest.body.contentType;
+                        temp.body.formdata = currentRequest.body.formdata != null ? new ArrayList<>(currentRequest.body.formdata) : new ArrayList<>();
+                        temp.body.urlencoded = currentRequest.body.urlencoded != null ? new ArrayList<>(currentRequest.body.urlencoded) : new ArrayList<>();
+                    }
+                } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
+                    List<ApiRequest.Body.FormField> fields = new ArrayList<>();
+                    for (int i = 0; i < bodyFormModel.getRowCount(); i++) {
+                        String k = (String) bodyFormModel.getValueAt(i, 0);
+                        String v = (String) bodyFormModel.getValueAt(i, 1);
+                        if (k != null && !k.trim().isEmpty()) {
+                            fields.add(new ApiRequest.Body.FormField(k, v != null ? v : ""));
+                        }
+                    }
+                    if ("urlencoded".equals(bodyMode)) {
+                        temp.body.urlencoded = fields;
+                    } else {
+                        temp.body.formdata = fields;
+                    }
+                }
+            }
+
+            temp.headers = new ArrayList<>();
+            for (int i = 0; i < headersModel.getRowCount(); i++) {
+                String key = (String) headersModel.getValueAt(i, 0);
+                String value = (String) headersModel.getValueAt(i, 1);
+                Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
+                if (key == null || key.trim().isEmpty()) continue;
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+                boolean isSynth = editorSynthesizedKeys.contains(lowerKey);
+                String synthValue = editorSynthesizedValues.get(lowerKey);
+                boolean isEdited = isSynth && (synthValue == null || !synthValue.equals(value));
+                if (isSynth && !isEdited) {
+                    continue; // unmodified synthesized rows are recomputed live
+                }
+                temp.headers.add(new ApiRequest.Header(key, value != null ? value : "", !Boolean.TRUE.equals(enabled)));
+            }
+
+            // 3. Compute effective headers with current collection context
+            VariableResolver vr = new VariableResolver();
+            if (currentCollection != null) {
+                vr.addEnvironmentVariables(currentCollection);
+                vr.addCollectionVariables(currentCollection);
+                vr.addFolderVariables(currentCollection, temp);
+                if (currentCollection.runtimeOAuth2 != null && !currentCollection.runtimeOAuth2.isEmpty()) {
+                    vr.addAll(currentCollection.runtimeOAuth2);
+                }
+                if (currentCollection.runtimeVars != null && !currentCollection.runtimeVars.isEmpty()) {
+                    vr.addAll(currentCollection.runtimeVars);
+                }
+            }
+            if (runtimeVariables != null && !runtimeVariables.isEmpty()) {
+                vr.addAll(runtimeVariables);
+            }
+            vr.addRequestVariables(temp);
+
+            RequestBuilder builder = requestBuilder != null ? requestBuilder : new RequestBuilder(null, null);
+            List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(temp, vr);
+
+            // 4. Update existing rows and track what needs to be added
+            Set<String> newSynthKeys = new LinkedHashSet<>();
+            Map<String, String> newSynthValues = new LinkedHashMap<>();
+            Set<String> seenInEffective = new HashSet<>();
+
+            for (Map.Entry<String, String> e : effective) {
+                String key = e.getKey();
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+                seenInEffective.add(lowerKey);
+
+                if (suppressedKeys.contains(lowerKey)) {
+                    Integer idx = rowIndexByKey.get(lowerKey);
+                    if (idx != null) {
+                        headersModel.setValueAt(e.getValue(), idx, 1);
+                    }
+                    newSynthKeys.add(lowerKey);
+                    newSynthValues.put(lowerKey, e.getValue());
+                    continue;
+                }
+
+                if (editedSynthValues.containsKey(lowerKey)) {
+                    continue; // edited - keep as-is
+                }
+
+                Integer idx = rowIndexByKey.get(lowerKey);
+                if (idx != null) {
+                    if (editorSynthesizedKeys.contains(lowerKey)) {
+                        headersModel.setValueAt(e.getValue(), idx, 1);
+                    }
+                } else {
+                    headersModel.addRow(new Object[]{key, e.getValue(), true});
+                }
+                newSynthKeys.add(lowerKey);
+                newSynthValues.put(lowerKey, e.getValue());
+            }
+
+            // 5. Remove obsolete synthesized rows (no longer in effective set and not edited/suppressed)
+            for (int i = headersModel.getRowCount() - 1; i >= 0; i--) {
+                String key = (String) headersModel.getValueAt(i, 0);
+                if (key == null || key.trim().isEmpty()) continue;
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+
+                boolean isSynth = editorSynthesizedKeys.contains(lowerKey);
+                boolean isEdited = editedSynthValues.containsKey(lowerKey);
+                boolean isSuppressed = suppressedKeys.contains(lowerKey);
+
+                if (isSynth && !isEdited && !seenInEffective.contains(lowerKey)) {
+                    headersModel.removeRow(i);
+                }
+            }
+
+            editorSynthesizedKeys = newSynthKeys;
+            editorSynthesizedValues = newSynthValues;
+            RequestEditorStateMapper.ensureStarterRow(headersModel);
+        } catch (Exception ex) {
+            // Effective headers are best-effort; fall back to current model state.
+        } finally {
+            refreshingHeaders = false;
+        }
+    }
+
     private void refreshResolvedMirror() {
         if (resolvedViewArea == null) return;
         if (currentRequest == null) {
@@ -419,14 +646,46 @@ public class RequestEditorPanel extends JPanel {
             }
         }
 
-        out.append("\nResolved Headers\n");
-        out.append("----------------\n");
+        out.append("\nResolved Headers (Effective)\n");
+        out.append("-----------------------------\n");
+        boolean usedEffective = false;
+        if (requestBuilder != null) {
+            try {
+                ApiRequest built = buildRequestFromUI();
+                if (built != null) {
+                    List<Map.Entry<String, String>> effective = requestBuilder.buildEffectiveHeaders(built, vr);
+                    for (Map.Entry<String, String> e : effective) {
+                        out.append(e.getKey()).append(": ").append(e.getValue()).append("\n");
+                    }
+                    usedEffective = true;
+                }
+            } catch (Exception ex) {
+                // Fallback to explicit-only view
+            }
+        }
+        if (!usedEffective) {
+            for (int i = 0; i < headersModel.getRowCount(); i++) {
+                String key = (String) headersModel.getValueAt(i, 0);
+                String value = (String) headersModel.getValueAt(i, 1);
+                Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
+                if (key != null && !key.trim().isEmpty() && (enabled == null || enabled)) {
+                    out.append(vr.resolve(key)).append(": ").append(vr.resolve(value != null ? value : "")).append("\n");
+                }
+            }
+        }
+        // Show disabled explicit headers as suppressions
+        boolean hasDisabled = false;
         for (int i = 0; i < headersModel.getRowCount(); i++) {
             String key = (String) headersModel.getValueAt(i, 0);
             String value = (String) headersModel.getValueAt(i, 1);
             Boolean enabled = (Boolean) headersModel.getValueAt(i, 2);
-            if (key != null && !key.trim().isEmpty() && (enabled == null || enabled)) {
-                out.append(vr.resolve(key)).append(": ").append(vr.resolve(value != null ? value : "")).append("\n");
+            if (key != null && !key.trim().isEmpty() && Boolean.FALSE.equals(enabled)) {
+                if (!hasDisabled) {
+                    out.append("\nDisabled (suppressed)\n");
+                    out.append("---------------------\n");
+                    hasDisabled = true;
+                }
+                out.append("(disabled) ").append(vr.resolve(key)).append(": ").append(vr.resolve(value != null ? value : "")).append("\n");
             }
         }
 
@@ -454,11 +713,13 @@ public class RequestEditorPanel extends JPanel {
     public JComboBox<String> getMethodBox() { return methodBox; }
 
     private void clearAll() {
+        editorSynthesizedKeys.clear();
+        editorSynthesizedValues.clear();
         RequestEditorStateMapper.clearEditor(createStateMapperContext());
     }
 
     private RequestEditorStateMapper.Context createStateMapperContext() {
-        return new RequestEditorStateMapper.Context(
+        RequestEditorStateMapper.Context ctx = new RequestEditorStateMapper.Context(
                 methodBox,
                 urlField,
                 paramsModel,
@@ -475,7 +736,11 @@ public class RequestEditorPanel extends JPanel {
                 () -> currentCollection,
                 this::resolveEditorAuthMode,
                 this::buildAuthFromFields,
-                this::refreshResolvedMirror
+                this::refreshResolvedMirror,
+                requestBuilder
         );
+        ctx.synthesizedKeys = new LinkedHashSet<>(editorSynthesizedKeys);
+        ctx.synthesizedValues = new LinkedHashMap<>(editorSynthesizedValues);
+        return ctx;
     }
 }
