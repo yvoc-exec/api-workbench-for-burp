@@ -1607,6 +1607,7 @@ public class ImporterPanel {
         if (tree == null) {
             return;
         }
+        tree.treeDidChange();
         tree.revalidate();
         tree.repaint();
     }
