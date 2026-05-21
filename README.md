@@ -57,7 +57,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Results table with status, timing, size, assertion pass/fail
 - Runner timeline table with collection, request, status, time, retries, changed vars, and assertion summary
 - Auto-populates Sitemap with runner responses
-- Disabled headers, form-data fields, and URL-encoded fields are skipped when building requests
+- Disabled headers, form-data fields, and URL-encoded fields are skipped when building requests. Disabling `Content-Type` also suppresses synthesized body-mode `Content-Type` headers until the operator re-enables or adds one explicitly.
 - Per-request OAuth2 auth scoping is resolved per send through the shared pipeline's fresh resolver
 - **Execution model**: pre/post scripts and response extraction/assertions run in both Collection Runner and Workbench direct send via a shared pipeline
 
@@ -70,7 +70,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 
 ### JavaScript Script Engine (Nashorn)
 - Executes **pre-request** and **post-response** scripts using Nashorn
-- Supports **Postman** script API: `pm.environment.set()`, `pm.expect().to.have.status()`, etc.
+- Supports **Postman** script API: `pm.test(...)`, `pm.environment.get/set/unset()`, `pm.collectionVariables.get/set/unset()`, `pm.expect(pm.response.code()).to.have.status(...)`, `pm.expect(pm.response).to.have.header(...)`, `pm.expect(jsonData).to.have.property(...)`, `pm.expect(value).to.equal(...)`, and `pm.expect(value).to.eql(...)`
 - Supports **Bruno** script API: `bru.setVar()`, `res.getBody()`, etc.
 - Regex fallback for environments where Nashorn is unavailable
 - Variable extraction from JSON responses via script execution
@@ -79,17 +79,19 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### OAuth2 Token Management
 - **Client Credentials** - fully automated, no browser
 - **Password (ROPC)** - automated with username/password
-- **Authorization Code + PKCE** - opens browser, localhost callback listener
+- **Authorization Code + PKCE** - opens browser and uses the configured `oauth2_redirect_uri` loopback callback listener; default remains `http://localhost:9876/callback`
 - **Refresh Token** - auto-refresh before expiry
 - Live token cache stored in-memory via `TokenStore`; workspace snapshots can still persist runtime OAuth2 values in Burp project data
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
+- For safety, Authorization Code callback handling only accepts HTTP loopback redirect URIs such as `http://localhost:9876/callback` or `http://127.0.0.1:9988/oauth/callback`
 
 > **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use Export Runtime JSON only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
+- Resolves local schema refs such as `#/components/schemas/User` and `#/definitions/User`; external refs are not fetched over the network
 - Handles `$ref`, `oneOf`, `anyOf`, `allOf`, `enum`, `format`
 - Generates realistic examples: emails, UUIDs, dates, URLs
 - Respects `minLength`, `minimum`, `maximum`, `multipleOf` constraints
@@ -329,14 +331,14 @@ src/main/java/burp/
 - **Runtime JSON exports**: Manual exports can include runtime OAuth2 values such as access/refresh tokens. Treat exported JSON files as sensitive.
 - **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JPasswordField` for secret fields.
 - **PKCE**: Used for Authorization Code flow (S256 method).
-- **Localhost listener**: Binds to `127.0.0.1:9876`, validates `state` parameter.
+- **Loopback listener**: Binds to the configured `oauth2_redirect_uri` host, port, and path, validates `state`, and only accepts HTTP loopback redirect URIs. The default remains `http://localhost:9876/callback`.
 
 ## Known Limitations
 
 - **No sandbox**: Nashorn scripts can access any Java class via `Java.type()`. Only run trusted collection scripts.
 - **No script timeout**: Infinite loops in pre/post-request scripts will hang the runner thread.
 - **File uploads**: Multipart file reading is supported only when a field is explicitly marked as a file upload with file metadata. Plain path-looking values are treated as text.
-- **Hardcoded OAuth2 port**: Authorization Code callback listens on fixed port `9876`.
+- **Loopback-only OAuth2 callback**: Authorization Code callback requires an HTTP loopback redirect URI. If the configured loopback port is occupied, the flow fails until the redirect URI is adjusted or the port is freed.
 - **Test suite**: Automated tests cover parsers, request building, shared pipeline behavior, runner controls/stop conditions/timeline, variable preflight, and runtime JSON import/export. Run with `mvn test`.
 - **Parser encoding**: All JSON/YAML/HAR parsers and Bruno request decoding use explicit UTF-8.
 

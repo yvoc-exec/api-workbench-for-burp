@@ -216,6 +216,23 @@ class RequestBuilderTest {
     }
 
     @Test
+    void disabledContentTypeSuppressesRawBodySynthesizedContentType() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Content-Type", "application/json", true));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"a\":1}";
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.hasHeader("Content-Type")).isFalse();
+        assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("{\"a\":1}");
+    }
+
+    @Test
     void rawBodyRespectsExplicitContentType() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";
@@ -246,6 +263,23 @@ class RequestBuilderTest {
 
         assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/x-www-form-urlencoded");
         assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("a=1&b=2");
+    }
+
+    @Test
+    void disabledContentTypeSuppressesUrlencodedSynthesizedContentType() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Content-Type", "application/x-www-form-urlencoded", true));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "urlencoded";
+        req.body.urlencoded.add(new ApiRequest.Body.FormField("a", "1"));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.hasHeader("Content-Type")).isFalse();
+        assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("a=1");
     }
 
     @Test
@@ -306,6 +340,28 @@ class RequestBuilderTest {
         // Body must contain the exact boundary delimiters
         assertThat(bodyStr).contains("--" + boundary);
         assertThat(bodyStr).contains("--" + boundary + "--");
+    }
+
+    @Test
+    void formdataBodySkipsDisabledFields() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("enabled", "yes"));
+        ApiRequest.Body.FormField disabled = new ApiRequest.Body.FormField("disabled", "no");
+        disabled.disabled = true;
+        req.body.formdata.add(disabled);
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+
+        assertThat(body).contains("name=\"enabled\"");
+        assertThat(body).contains("yes");
+        assertThat(body).doesNotContain("name=\"disabled\"");
+        assertThat(body).doesNotContain("no");
     }
 
     @Test
@@ -594,6 +650,29 @@ class RequestBuilderTest {
 
         String cookie = parsed.headerValue("Cookie");
         assertThat(cookie).contains("existing=1").contains("session=abc");
+    }
+
+    @Test
+    void oauth2AuthUsesResolverTokenWithoutAcquiringTokenInRequestBuilder() throws Exception {
+        burp.auth.OAuth2Manager manager = org.mockito.Mockito.mock(burp.auth.OAuth2Manager.class);
+        RequestBuilder builderWithManager = new RequestBuilder(null, manager);
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "oauth2";
+        req.auth.properties.put("accessToken", "{{oauth2_access_token}}");
+        resolver.addCustomVariable("oauth2_token_url", "https://auth.example.test/token");
+        resolver.addCustomVariable("oauth2_client_id", "client");
+        resolver.addCustomVariable("oauth2_client_secret", "secret");
+        resolver.addCustomVariable("oauth2_grant", "client_credentials");
+        resolver.addCustomVariable("oauth2_access_token", "resolver-token");
+
+        byte[] raw = builderWithManager.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.headerValue("Authorization")).isEqualTo("Bearer resolver-token");
+        org.mockito.Mockito.verifyNoInteractions(manager);
     }
 
     @Test

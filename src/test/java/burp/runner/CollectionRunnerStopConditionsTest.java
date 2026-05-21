@@ -101,6 +101,45 @@ class CollectionRunnerStopConditionsTest {
     }
 
     @Test
+    void stopOnStatusStillEmitsCompleteWithPartialResults() throws Exception {
+        AtomicInteger completeCount = new AtomicInteger();
+        CopyOnWriteArrayList<List<RunnerResult>> completedResults = new CopyOnWriteArrayList<>();
+        AtomicInteger errorCount = new AtomicInteger();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse(500, "ERR");
+                return exec;
+            }
+        }, null);
+        RunnerStopConditions conditions = new RunnerStopConditions();
+        conditions.stopOnStatusAtLeast400 = true;
+        runner.setStopConditions(conditions);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onTimeline(burp.models.RunnerTimelineRow row) { }
+            @Override public void onComplete(List<RunnerResult> results) {
+                completeCount.incrementAndGet();
+                completedResults.add(results);
+            }
+            @Override public void onError(String message) { errorCount.incrementAndGet(); }
+        });
+
+        ApiCollection collection = collectionWithTwoRequests();
+        runner.runCollections(List.of(collection), collection.requests);
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(errorCount.get()).isEqualTo(1);
+        assertThat(completeCount.get()).isEqualTo(1);
+        assertThat(completedResults.get(0)).hasSize(1);
+    }
+
+    @Test
     void stopOnMissingVariableStopsBeforeRequestExecution() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CopyOnWriteArrayList<String> errors = new CopyOnWriteArrayList<>();
@@ -231,6 +270,18 @@ class CollectionRunnerStopConditionsTest {
         return collection;
     }
 
+    private static ApiCollection collectionWithTwoRequests() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Status Collection";
+        ApiRequest first = request("First", 1, "http://example.com/first");
+        first.sourceCollection = collection.name;
+        ApiRequest second = request("Second", 2, "http://example.com/second");
+        second.sourceCollection = collection.name;
+        collection.requests.add(first);
+        collection.requests.add(second);
+        return collection;
+    }
+
     private static ApiRequest request(String name, int order, String url) {
         ApiRequest request = new ApiRequest();
         request.name = name;
@@ -252,12 +303,16 @@ class CollectionRunnerStopConditionsTest {
     }
 
     private static HttpRequestResponse mockResponse(int statusCode) {
+        return mockResponse(statusCode, "OK");
+    }
+
+    private static HttpRequestResponse mockResponse(int statusCode, String bodyText) {
         HttpResponse response = mock(HttpResponse.class);
         when(response.statusCode()).thenReturn((short) statusCode);
         ByteArray body = mock(ByteArray.class);
-        when(body.length()).thenReturn(2);
+        when(body.length()).thenReturn(bodyText.length());
         when(response.body()).thenReturn(body);
-        when(response.bodyToString()).thenReturn("OK");
+        when(response.bodyToString()).thenReturn(bodyText);
         when(response.headers()).thenReturn(Collections.emptyList());
 
         HttpRequestResponse responseWrapper = mock(HttpRequestResponse.class);

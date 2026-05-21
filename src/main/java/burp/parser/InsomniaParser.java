@@ -158,10 +158,12 @@ public class InsomniaParser implements CollectionParser {
                     if (bodyObj.has("params") && bodyObj.get("params").isJsonArray()) {
                         for (JsonElement p : bodyObj.getAsJsonArray("params")) {
                             JsonObject param = p.getAsJsonObject();
-                            req.body.urlencoded.add(new ApiRequest.Body.FormField(
-                                getString(param, "name", ""),
-                                getString(param, "value", "")
-                            ));
+                            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
+                                    getString(param, "name", ""),
+                                    getString(param, "value", "")
+                            );
+                            field.disabled = param.has("disabled") && param.get("disabled").getAsBoolean();
+                            req.body.urlencoded.add(field);
                         }
                     }
                     break;
@@ -170,10 +172,12 @@ public class InsomniaParser implements CollectionParser {
                     if (bodyObj.has("params") && bodyObj.get("params").isJsonArray()) {
                         for (JsonElement p : bodyObj.getAsJsonArray("params")) {
                             JsonObject param = p.getAsJsonObject();
-                            req.body.formdata.add(new ApiRequest.Body.FormField(
-                                getString(param, "name", ""),
-                                getString(param, "value", "")
-                            ));
+                            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
+                                    getString(param, "name", ""),
+                                    getString(param, "value", "")
+                            );
+                            field.disabled = param.has("disabled") && param.get("disabled").getAsBoolean();
+                            req.body.formdata.add(field);
                         }
                     }
                     break;

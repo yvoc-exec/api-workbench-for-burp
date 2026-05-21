@@ -214,6 +214,54 @@ class OpenApiParserTest {
         assertThat(request.authSource).isEqualTo("request: Public");
     }
 
+    @Test
+    void generatesJsonExampleFromLocalSchemaRef() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "openapi-ref-", ".json");
+        Files.writeString(file, """
+                {
+                  "openapi": "3.0.0",
+                  "info": {"title": "Ref API", "version": "1"},
+                  "servers": [{"url": "https://api.example.test"}],
+                  "paths": {
+                    "/users": {
+                      "post": {
+                        "operationId": "Create User",
+                        "requestBody": {
+                          "content": {
+                            "application/json": {
+                              "schema": {"$ref": "#/components/schemas/UserCreate"}
+                            }
+                          }
+                        },
+                        "responses": {"200": {"description": "ok"}}
+                      }
+                    }
+                  },
+                  "components": {
+                    "schemas": {
+                      "UserCreate": {
+                        "type": "object",
+                        "required": ["email"],
+                        "properties": {
+                          "email": {"type": "string", "format": "email"},
+                          "active": {"type": "boolean"}
+                        }
+                      }
+                    }
+                  }
+                }
+                """, StandardCharsets.UTF_8);
+
+        ApiCollection collection = new OpenApiParser().parse(file.toFile());
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).body.raw)
+                .contains("\"email\"")
+                .contains("user@example.com")
+                .contains("\"active\"");
+        assertThat(collection.requests.get(0).body.raw).doesNotContain("\"$ref\"");
+    }
+
     private Path createTempSpecFile(String content) throws Exception {
         Path tempFile = Files.createTempFile(Path.of("target"), "openapi-parser-", ".yaml").toAbsolutePath().normalize();
         Files.writeString(tempFile, content, StandardCharsets.UTF_8);

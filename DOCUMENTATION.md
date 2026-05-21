@@ -109,7 +109,7 @@ Load multiple collections simultaneously:
 ### 2.6 Script Engine
 
 - **Nashorn JavaScript** execution for pre/post request scripts
-- **Postman API** compatibility: `pm.environment.set()`, `pm.expect()`
+- **Postman API** compatibility: `pm.test()`, `pm.environment.get/set/unset()`, `pm.collectionVariables.get/set/unset()`, `pm.expect(...).to.have.status()`, `pm.expect(...).to.have.header()`, `pm.expect(...).to.have.property()`, `pm.expect(...).to.equal()`, `pm.expect(...).to.eql()`
 - **Bruno API** compatibility: `bru.setVar()`, `res.getBody()`
 - **Regex fallback** when Nashorn is unavailable
 - **Comment extraction**: `// extract: key = $.json.path`
@@ -663,15 +663,15 @@ public class TokenStore {
    https://auth.example.com/authorize?
      response_type=code
      &client_id=client_id
-     &redirect_uri=http://localhost:9876/callback
+     &redirect_uri=<configured oauth2_redirect_uri>
      &state=state_value
      &code_challenge=challenge_value
      &code_challenge_method=S256
      &scope=api:read
    ```
-5. Start `ServerSocket` on `127.0.0.1:9876` with 5-minute timeout
+5. Parse `oauth2_redirect_uri`, require an HTTP loopback host (`localhost`, `127.0.0.1`, or `::1`), and bind `ServerSocket` to that host/port/path with a 5-minute timeout
 6. Open browser via `Desktop.getDesktop().browse()`
-7. User authenticates -> redirected to `http://localhost:9876/callback?code=abc&state=xyz`
+7. User authenticates -> redirected to the configured loopback callback, for example `http://localhost:9876/callback?code=abc&state=xyz`
 8. Listener extracts `code`, validates `state`
 9. Exchange code for token:
    ```
@@ -680,10 +680,12 @@ public class TokenStore {
    &client_id=client_id
    &client_secret=client_secret
    &code=code
-   &redirect_uri=http://localhost:9876/callback
+   &redirect_uri=<configured oauth2_redirect_uri>
    &code_verifier=verifier
    ```
 10. Store token, shut down listener
+
+The default redirect URI remains `http://localhost:9876/callback`.
 
 **Error Handling**
 - Non-JSON token response -> descriptive error with status code + preview
@@ -762,6 +764,7 @@ Shared pipeline steps (used by both Workbench Send and Collection Runner):
 4. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
 5. RequestBuilder.buildRequest() -> HTTP bytes
    - Skips disabled headers, form-data fields, and URL-encoded fields
+   - Disabling `Content-Type` suppresses synthesized body-mode `Content-Type` headers too
    - Applies operator suppressions: disabled explicit headers suppress synthesized defaults, auth, and body-derived headers of the same name
    - Header precedence: explicit request headers > auth headers > compatibility defaults
    - Computed headers (Host, Content-Type, Content-Length) are applied last and cannot be overridden by defaults
@@ -884,18 +887,21 @@ if (engine == null) {
 
 ```javascript
 // Variable management
+pm.test("name", function () { /* assertions */ });
 pm.environment.set("key", value);
 pm.environment.get("key");
 pm.environment.has("key");
 pm.environment.unset("key");
 pm.collectionVariables.set("key", value);
 pm.collectionVariables.get("key");
+pm.collectionVariables.unset("key");
 
 // Assertions
-pm.expect(pm.response.code).to.have.status(200);
+pm.expect(pm.response.code()).to.have.status(200);
 pm.expect(pm.response).to.have.header("X-Frame-Options");
 pm.expect(jsonData).to.have.property("token");
 pm.expect(value).to.equal(expected);
+pm.expect(value).to.eql(expected);
 
 // Response access
 pm.response.code();      // status code
@@ -1003,7 +1009,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **PKCE** enforced for Authorization Code flow (S256 method)
 - **State parameter** validated to prevent CSRF
 - **Localhost only** (`127.0.0.1`) - no remote callback exposure
-- **Fixed localhost port** (9876) with socket timeout
+- **Loopback-only callback** using the configured `oauth2_redirect_uri`, with `http://localhost:9876/callback` as the default
 - **Auto-shutdown** of listener after callback or timeout
 
 ### 11.5 Script Execution
@@ -1034,7 +1040,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
 - **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and runtime JSON.
-- **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
+- **Loopback callback requirement**: Authorization Code callback must use an HTTP loopback redirect URI. If the configured loopback port is occupied, the flow fails.
 - **Project-scoped state**: Montoya extension data is scoped to the Burp project/session. Disk-backed projects carry the saved workspace into the next session; temporary projects do not.
 
 ### 12.3 Request Editor Empty-State Behavior
@@ -1048,7 +1054,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 
 - **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
 - **Bruno parser**: Uses block extraction for known blocks but is not a full Bruno grammar parser. New Bruno syntax may still need parser updates.
-- **OpenAPI parser**: Generates examples for all schema types but casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
+- **OpenAPI parser**: Generates examples for all schema types, resolves local `#/components/schemas/...` and `#/definitions/...` refs for example bodies, and casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
 - **Insomnia parser**: Only supports v4 exports. v3 or earlier are not detected.
 
 ---

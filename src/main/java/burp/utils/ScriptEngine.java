@@ -259,23 +259,64 @@ public class ScriptEngine {
         public ExpectApi expect(Object target) { return new ExpectApi(target); }
         public ResponseApi response = new ResponseApi();
 
+        public void test(String name, Runnable fn) {
+            String assertionName = name != null ? name : "pm.test";
+            if (result == null) {
+                if (fn != null) {
+                    fn.run();
+                }
+                return;
+            }
+            if (fn == null) {
+                result.assertions.add(new RunnerResult.AssertionResult(assertionName, false, "callback", "null"));
+                return;
+            }
+
+            int before = result.assertions.size();
+            try {
+                fn.run();
+                if (result.assertions.size() == before) {
+                    result.assertions.add(new RunnerResult.AssertionResult(assertionName, true, "no exception", "no exception"));
+                }
+            } catch (Throwable t) {
+                while (result.assertions.size() > before) {
+                    result.assertions.remove(result.assertions.size() - 1);
+                }
+                String actual = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+                result.assertions.add(new RunnerResult.AssertionResult(assertionName, false, "no exception", actual));
+            }
+        }
+
+        private Map<String, String> resolverVariables() {
+            if (resolver == null) {
+                return Collections.emptyMap();
+            }
+            Map<String, String> vars = resolver.getVariables();
+            return vars != null ? vars : Collections.emptyMap();
+        }
+
         public class EnvironmentApi {
             public void set(String key, Object value) {
                 String str = value != null ? value.toString() : "";
                 context.put(key, str);
-                resolver.addCustomVariable(key, str);
+                if (resolver != null) {
+                    resolver.addCustomVariable(key, str);
+                }
                 extractedVars.put(key, str);
                 if (result != null) result.extractedVariables.put(key, str);
             }
             public String get(String key) {
-                return context.getOrDefault(key, resolver.getVariables().getOrDefault(key, ""));
+                if (context.containsKey(key)) {
+                    return context.get(key);
+                }
+                return resolverVariables().getOrDefault(key, "");
             }
             public boolean has(String key) {
-                return context.containsKey(key) || resolver.getVariables().containsKey(key);
+                return context.containsKey(key) || resolverVariables().containsKey(key);
             }
             public void unset(String key) {
                 context.remove(key);
-                Map<String, String> live = resolver.mutableVariables();
+                Map<String, String> live = resolver != null ? resolver.mutableVariables() : null;
                 if (live != null) {
                     live.remove(key);
                 }
@@ -286,15 +327,20 @@ public class ScriptEngine {
             public void set(String key, Object value) {
                 String str = value != null ? value.toString() : "";
                 context.put(key, str);
-                resolver.addCustomVariable(key, str);
+                if (resolver != null) {
+                    resolver.addCustomVariable(key, str);
+                }
                 extractedVars.put(key, str);
             }
             public String get(String key) {
-                return context.getOrDefault(key, "");
+                if (context.containsKey(key)) {
+                    return context.get(key);
+                }
+                return resolverVariables().getOrDefault(key, "");
             }
             public void unset(String key) {
                 context.remove(key);
-                Map<String, String> live = resolver.mutableVariables();
+                Map<String, String> live = resolver != null ? resolver.mutableVariables() : null;
                 if (live != null) {
                     live.remove(key);
                 }
@@ -306,22 +352,54 @@ public class ScriptEngine {
             private final Object target;
             public ExpectApi(Object target) { this.target = target; }
             public ExpectApi to = this;
+            public ExpectApi be = this;
+            public ExpectApi have = this;
+
             public void have_status(int expected) {
-                boolean passed = statusCode == expected;
+                status(expected);
+            }
+
+            public void status(int expected) {
+                int actual = extractStatusCode(target);
+                boolean passed = actual == expected;
                 if (result != null) {
                     result.assertions.add(new RunnerResult.AssertionResult(
-                        "Status " + expected, passed, String.valueOf(expected), String.valueOf(statusCode)
+                        "Status " + expected, passed, String.valueOf(expected), String.valueOf(actual)
                     ));
                 }
+                if (!passed) {
+                    throw new AssertionError("expected status " + expected + " but got " + actual);
+                }
             }
+
             public void have_header(String name) {
-                boolean passed = headers != null && headers.containsKey(name.toLowerCase());
+                header(name);
+            }
+
+            public void header(String name) {
+                boolean passed = hasResponseHeader(name);
                 if (result != null) {
                     result.assertions.add(new RunnerResult.AssertionResult(
                         "Header: " + name, passed, "present", passed ? "present" : "missing"
                     ));
                 }
+                if (!passed) {
+                    throw new AssertionError("expected header " + name + " to be present");
+                }
             }
+
+            public void property(String name) {
+                boolean passed = hasProperty(target, name);
+                if (result != null) {
+                    result.assertions.add(new RunnerResult.AssertionResult(
+                            "Property: " + name, passed, "present", passed ? "present" : "missing"
+                    ));
+                }
+                if (!passed) {
+                    throw new AssertionError("expected property " + name + " to be present");
+                }
+            }
+
             public void equal(Object expected) {
                 boolean passed = Objects.equals(target, expected);
                 if (result != null) {
@@ -329,7 +407,78 @@ public class ScriptEngine {
                         "Equals " + expected, passed, String.valueOf(expected), String.valueOf(target)
                     ));
                 }
+                if (!passed) {
+                    throw new AssertionError("expected " + expected + " but got " + target);
+                }
             }
+
+            public void eql(Object expected) {
+                equal(expected);
+            }
+        }
+
+        private int extractStatusCode(Object target) {
+            if (target instanceof Number number) {
+                return number.intValue();
+            }
+            if (target instanceof ResponseApi) {
+                return statusCode;
+            }
+            if (target instanceof ResponseCodeWrapper wrapper) {
+                return wrapper.code;
+            }
+            try {
+                if (target != null) {
+                    java.lang.reflect.Method codeMethod = target.getClass().getMethod("code");
+                    Object value = codeMethod.invoke(target);
+                    if (value instanceof Number number) {
+                        return number.intValue();
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            return statusCode;
+        }
+
+        private boolean hasResponseHeader(String name) {
+            if (name == null || headers == null) {
+                return false;
+            }
+            for (String key : headers.keySet()) {
+                if (key != null && key.equalsIgnoreCase(name)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean hasProperty(Object target, String name) {
+            if (target == null || name == null || name.isEmpty()) {
+                return false;
+            }
+            if (target instanceof Map<?, ?> map) {
+                return map.containsKey(name);
+            }
+            if (target instanceof List<?> list) {
+                try {
+                    int index = Integer.parseInt(name);
+                    return index >= 0 && index < list.size();
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+            }
+            try {
+                java.lang.reflect.Field field = target.getClass().getField(name);
+                return field != null;
+            } catch (NoSuchFieldException ignored) {
+            }
+            try {
+                String suffix = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+                java.lang.reflect.Method getter = target.getClass().getMethod("get" + suffix);
+                return getter != null;
+            } catch (Exception ignored) {
+            }
+            return false;
         }
 
         public class ResponseApi {

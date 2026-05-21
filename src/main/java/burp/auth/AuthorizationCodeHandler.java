@@ -22,6 +22,8 @@ public class AuthorizationCodeHandler {
     private static final String CALLBACK_PATH = "/callback";
     private final MontoyaApi api;
 
+    public record CallbackEndpoint(String host, int port, String path) {}
+
     public AuthorizationCodeHandler(MontoyaApi api) {
         this.api = api;
     }
@@ -46,7 +48,8 @@ public class AuthorizationCodeHandler {
                     : "");
 
         // Start localhost listener
-        CompletableFuture<String> codeFuture = startCallbackListener(state);
+        CallbackEndpoint callbackEndpoint = parseCallbackEndpoint(config.redirectUri);
+        CompletableFuture<String> codeFuture = startCallbackListener(state, callbackEndpoint);
 
         // Open browser
         api.logging().logToOutput("Opening browser for OAuth2 authorization: " + config.authUrl);
@@ -80,18 +83,56 @@ public class AuthorizationCodeHandler {
         return ClientCredentialsHandler.executeTokenRequest(config, body.toString(), api);
     }
 
-    private CompletableFuture<String> startCallbackListener(String expectedState) {
+    static CallbackEndpoint parseCallbackEndpoint(String redirectUri) {
+        try {
+            URI uri = new URI(redirectUri != null && !redirectUri.isBlank()
+                    ? redirectUri
+                    : "http://localhost:9876/callback");
+            String scheme = uri.getScheme();
+            if (!"http".equalsIgnoreCase(scheme)) {
+                throw new IllegalArgumentException("OAuth2 redirect URI must use http loopback for local callback flow");
+            }
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                throw new IllegalArgumentException("OAuth2 redirect URI missing host");
+            }
+            if (!isLoopbackHost(host)) {
+                throw new IllegalArgumentException("OAuth2 redirect URI must use a loopback host");
+            }
+            int port = uri.getPort();
+            if (port <= 0) {
+                port = CALLBACK_PORT;
+            }
+            String path = uri.getPath();
+            if (path == null || path.isBlank()) {
+                path = CALLBACK_PATH;
+            }
+            return new CallbackEndpoint(host, port, path);
+        } catch (URISyntaxException e) {
+            throw new IllegalArgumentException("Invalid OAuth2 redirect URI: " + e.getMessage(), e);
+        }
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        return "localhost".equalsIgnoreCase(host)
+                || "127.0.0.1".equals(host)
+                || "::1".equals(host)
+                || "[::1]".equals(host);
+    }
+
+    private CompletableFuture<String> startCallbackListener(String expectedState, CallbackEndpoint endpoint) {
         CompletableFuture<String> future = new CompletableFuture<>();
         new Thread(() -> {
-            try (ServerSocket server = new ServerSocket(CALLBACK_PORT, 1, InetAddress.getByName("127.0.0.1"))) {
+            try (ServerSocket server = new ServerSocket(endpoint.port(), 1, InetAddress.getByName(endpoint.host()))) {
                 server.setSoTimeout(300000); // 5 min timeout
                 try (Socket client = server.accept();
                      BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
                      OutputStream out = client.getOutputStream()) {
 
                     String line = in.readLine();
-                    if (line != null && line.startsWith("GET " + CALLBACK_PATH)) {
-                        String query = line.split(" ")[1].substring(CALLBACK_PATH.length());
+                    String expectedPrefix = "GET " + endpoint.path();
+                    if (line != null && line.startsWith(expectedPrefix)) {
+                        String query = line.split(" ")[1].substring(endpoint.path().length());
                         if (query.startsWith("?")) query = query.substring(1);
 
                         String code = null;
