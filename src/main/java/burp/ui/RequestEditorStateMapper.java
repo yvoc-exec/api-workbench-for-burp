@@ -44,8 +44,6 @@ final class RequestEditorStateMapper {
         final Function<String, ApiRequest.Auth> buildAuthFromFields;
         final Runnable refreshResolvedMirror;
         final RequestBuilder requestBuilder;
-        Set<String> synthesizedKeys = new LinkedHashSet<>();
-        Map<String, String> synthesizedValues = new LinkedHashMap<>();
 
         Context(JComboBox<String> methodBox,
                 JTextField urlField,
@@ -86,6 +84,10 @@ final class RequestEditorStateMapper {
         }
     }
 
+    private static final Set<String> TRANSPORT_HEADER_NAMES = Set.of(
+            "host", "content-length", "transfer-encoding"
+    );
+
     static void loadRequest(ApiRequest req, Context ctx) {
         if (req == null) {
             ctx.methodBox.setSelectedItem("GET");
@@ -106,12 +108,7 @@ final class RequestEditorStateMapper {
         ctx.rebuildAuthFields.run();
 
         ctx.headersModel.setRowCount(0);
-        if (req.headers != null) {
-            for (ApiRequest.Header h : req.headers) {
-                ctx.headersModel.addRow(new Object[]{h.key, h.value, !h.disabled});
-            }
-        }
-        loadEffectiveHeaders(req, ctx);
+        loadEditorHeaders(req, ctx);
         ensureStarterRow(ctx.headersModel);
 
         ctx.bodyRawArea.setText("");
@@ -129,12 +126,16 @@ final class RequestEditorStateMapper {
             }
             if (req.body.urlencoded != null) {
                 for (ApiRequest.Body.FormField f : req.body.urlencoded) {
-                    ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    if (f != null && !f.disabled) {
+                        ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    }
                 }
             }
             if (req.body.formdata != null) {
                 for (ApiRequest.Body.FormField f : req.body.formdata) {
-                    ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    if (f != null && !f.disabled) {
+                        ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    }
                 }
             }
             ensureStarterRow(ctx.bodyFormModel);
@@ -162,6 +163,7 @@ final class RequestEditorStateMapper {
         req.sequenceOrder = currentRequest.sequenceOrder;
         req.method = (String) ctx.methodBox.getSelectedItem();
         req.url = rebuildUrlWithParams(ctx.urlField.getText(), ctx.paramsModel);
+        req.editorMaterialized = true;
 
         String authMode = (String) ctx.authTypeBox.getSelectedItem();
         req.authOverrideMode = RequestEditorPanel.selectionToOverrideMode(authMode);
@@ -172,33 +174,16 @@ final class RequestEditorStateMapper {
         }
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(ctx.currentCollectionSupplier.get(), req);
 
-        Set<String> synthesizedKeys = ctx.synthesizedKeys != null ? ctx.synthesizedKeys : Collections.emptySet();
-        Map<String, String> synthesizedValues = ctx.synthesizedValues != null ? ctx.synthesizedValues : Collections.emptyMap();
-
         for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
             String key = (String) ctx.headersModel.getValueAt(i, 0);
             String value = (String) ctx.headersModel.getValueAt(i, 1);
-            Boolean enabled = (Boolean) ctx.headersModel.getValueAt(i, 2);
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            String lowerKey = key.toLowerCase(Locale.ROOT);
-            boolean isSynthesized = synthesizedKeys.contains(lowerKey);
-            String synthValue = synthesizedValues.get(lowerKey);
-            boolean isEdited = isSynthesized && (synthValue == null || !synthValue.equals(value));
-
-            if (isSynthesized && !isEdited && Boolean.TRUE.equals(enabled)) {
-                // Unmodified synthesized header, checked: let RequestBuilder synthesize it;
-                // do not persist into explicit headers.
+            if (TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
                 continue;
             }
-            if (isSynthesized && !isEdited && !Boolean.TRUE.equals(enabled)) {
-                // Unmodified synthesized header, unchecked: persist as disabled suppression.
-                req.headers.add(new ApiRequest.Header(key, value != null ? value : "", true));
-                continue;
-            }
-            // Explicit or edited header: persist normally.
-            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", enabled == null || !enabled));
+            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", false));
         }
 
         String bodyMode = ctx.getBodyModeInternal.get();
@@ -262,7 +247,7 @@ final class RequestEditorStateMapper {
         ctx.refreshResolvedMirror.run();
     }
 
-    static void loadEffectiveHeaders(ApiRequest req, Context ctx) {
+    static void loadEditorHeaders(ApiRequest req, Context ctx) {
         if (req == null) {
             return;
         }
@@ -284,49 +269,31 @@ final class RequestEditorStateMapper {
 
         try {
             List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
-            Set<String> explicitKeys = new HashSet<>();
-            if (req.headers != null) {
-                for (ApiRequest.Header h : req.headers) {
-                    if (h.key != null) {
-                        explicitKeys.add(h.key.toLowerCase(Locale.ROOT));
-                    }
-                }
-            }
-
-            Set<String> synthesizedKeys = new LinkedHashSet<>();
-            Map<String, String> synthesizedValues = new LinkedHashMap<>();
             for (Map.Entry<String, String> entry : effective) {
                 String key = entry.getKey();
                 String lowerKey = key.toLowerCase(Locale.ROOT);
-                if (!explicitKeys.contains(lowerKey)) {
-                    boolean alreadyInModel = false;
-                    for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
-                        String modelKey = (String) ctx.headersModel.getValueAt(i, 0);
-                        if (modelKey != null && modelKey.equalsIgnoreCase(key)) {
-                            alreadyInModel = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyInModel) {
-                        ctx.headersModel.addRow(new Object[]{key, entry.getValue(), true});
-                    }
-                    synthesizedKeys.add(lowerKey);
-                    synthesizedValues.put(lowerKey, entry.getValue());
+                if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
+                    ctx.headersModel.addRow(new Object[]{key, entry.getValue()});
                 }
             }
-            ctx.synthesizedKeys = synthesizedKeys;
-            ctx.synthesizedValues = synthesizedValues;
         } catch (Exception e) {
             // Effective headers are best-effort; fall back to explicit-only view.
+            if (req.headers != null) {
+                for (ApiRequest.Header header : req.headers) {
+                    if (header == null || header.disabled || header.key == null) {
+                        continue;
+                    }
+                    String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
+                    if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
+                        ctx.headersModel.addRow(new Object[]{header.key, header.value});
+                    }
+                }
+            }
         }
     }
 
     static void ensureStarterRow(DefaultTableModel model) {
-        boolean isHeaders = model.getColumnCount() == 3;
         if (model.getRowCount() > 0) {
-            if (!isHeaders) {
-                return;
-            }
             String lastKey = (String) model.getValueAt(model.getRowCount() - 1, 0);
             if (lastKey == null || lastKey.trim().isEmpty()) {
                 return;
@@ -335,9 +302,6 @@ final class RequestEditorStateMapper {
         int cols = model.getColumnCount();
         Object[] row = new Object[cols];
         java.util.Arrays.fill(row, "");
-        if (cols == 3) {
-            row[2] = true;
-        }
         model.addRow(row);
     }
 

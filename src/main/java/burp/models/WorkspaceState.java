@@ -151,6 +151,7 @@ public class WorkspaceState {
         copy.method = src.method;
         copy.url = src.url;
         copy.description = src.description;
+        copy.editorMaterialized = src.editorMaterialized;
         copy.disabled = src.disabled;
         copy.sequenceOrder = src.sequenceOrder;
         copy.authInherited = src.authInherited;

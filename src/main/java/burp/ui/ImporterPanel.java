@@ -470,6 +470,7 @@ public class ImporterPanel {
 
         liveRequest.method = edited.method;
         liveRequest.url = edited.url;
+        liveRequest.editorMaterialized = edited.editorMaterialized;
         liveRequest.headers = copyHeaders(edited.headers);
         liveRequest.body = copyBody(edited.body);
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
