@@ -1261,6 +1261,7 @@ class ImporterPanelTreeRestoreTest {
 
         refreshTreePresentation.invoke(panel, spyTree);
 
+        assertThat(spyTree.treeDidChangeCount).isGreaterThan(0);
         assertThat(spyTree.revalidateCount).isGreaterThan(0);
         assertThat(spyTree.repaintCount).isGreaterThan(0);
     }
@@ -1316,6 +1317,7 @@ class ImporterPanelTreeRestoreTest {
     private static final class SpyTree extends JTree {
         private int repaintCount;
         private int revalidateCount;
+        private int treeDidChangeCount;
 
         private SpyTree(javax.swing.tree.TreeModel model) {
             super(model);
@@ -1340,6 +1342,12 @@ class ImporterPanelTreeRestoreTest {
         }
 
         @Override
+        public void treeDidChange() {
+            treeDidChangeCount++;
+            super.treeDidChange();
+        }
+
+        @Override
         public Graphics getGraphics() {
             return null;
         }
@@ -1347,6 +1355,7 @@ class ImporterPanelTreeRestoreTest {
         private void resetRefreshCounters() {
             repaintCount = 0;
             revalidateCount = 0;
+            treeDidChangeCount = 0;
         }
     }
 }

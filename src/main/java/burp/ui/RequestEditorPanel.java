@@ -281,12 +281,19 @@ public class RequestEditorPanel extends JPanel {
     public ApiRequest getCurrentRequest() { return currentRequest; }
     public burp.models.ApiCollection getCurrentCollection() { return currentCollection; }
     public void setCurrentCollection(burp.models.ApiCollection col) {
+        if (this.currentCollection == col) {
+            return;
+        }
         this.currentCollection = col;
         refreshAll();
     }
 
     public void setRuntimeVariables(Map<String, String> vars) {
-        runtimeVariables = vars != null ? new HashMap<>(vars) : new HashMap<>();
+        Map<String, String> next = vars != null ? new HashMap<>(vars) : new HashMap<>();
+        if (Objects.equals(runtimeVariables, next)) {
+            return;
+        }
+        runtimeVariables = next;
         refreshAll();
     }
 

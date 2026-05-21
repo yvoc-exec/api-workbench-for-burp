@@ -150,17 +150,21 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
     // ------------------------------------------------------------------------
     private static Icon drawCollectionIcon() {
         return new FlatIcon(g -> {
-            // Server / database cylinder
-            g.setColor(new Color(120, 120, 120));
-            g.fillRoundRect(2, 3, 12, 4, 2, 2);
-            g.fillRoundRect(2, 8, 12, 4, 2, 2);
-            g.setColor(new Color(90, 90, 90));
-            g.drawRoundRect(2, 3, 12, 4, 2, 2);
-            g.drawRoundRect(2, 8, 12, 4, 2, 2);
-            // small highlight dots
-            g.setColor(new Color(200, 200, 200));
-            g.fillRect(4, 5, 2, 1);
-            g.fillRect(4, 10, 2, 1);
+            // Stacked pages to read as a request collection, not a server/database.
+            g.setColor(new Color(232, 232, 232));
+            g.fillRect(2, 4, 9, 10);
+            g.setColor(new Color(170, 170, 170));
+            g.drawRect(2, 4, 9, 10);
+
+            g.setColor(new Color(244, 244, 244));
+            g.fillRect(5, 2, 9, 10);
+            g.setColor(new Color(140, 140, 140));
+            g.drawRect(5, 2, 9, 10);
+
+            g.setColor(new Color(190, 190, 190));
+            g.drawLine(7, 5, 12, 5);
+            g.drawLine(7, 7, 12, 7);
+            g.drawLine(7, 9, 11, 9);
         });
     }
 

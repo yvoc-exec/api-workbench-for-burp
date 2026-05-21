@@ -356,6 +356,55 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void settingSameRuntimeVariablesDoesNotRecomputeEffectiveHeadersAgain() throws Exception {
+        CountingRequestBuilder builder = new CountingRequestBuilder();
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(builder);
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "{{token}}");
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+
+        int afterLoad = builder.calls;
+
+        panel.setRuntimeVariables(Map.of("token", "same"));
+        int afterFirstUpdate = builder.calls;
+
+        panel.setRuntimeVariables(Map.of("token", "same"));
+        int afterSecondUpdate = builder.calls;
+
+        assertThat(afterFirstUpdate).isGreaterThan(afterLoad);
+        assertThat(afterSecondUpdate)
+            .as("Same runtime vars should not trigger another full effective-header recompute")
+            .isEqualTo(afterFirstUpdate);
+    }
+
+    @Test
+    void settingSameCollectionDoesNotRecomputeEffectiveHeadersAgain() throws Exception {
+        CountingRequestBuilder builder = new CountingRequestBuilder();
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(builder);
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest req = minimalRequest();
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+        int afterLoad = builder.calls;
+
+        panel.setCurrentCollection(collection);
+
+        assertThat(builder.calls)
+            .as("Reapplying the same collection should not trigger another full effective-header recompute")
+            .isEqualTo(afterLoad);
+    }
+
+    @Test
     void changingUrlUpdatesHeadersTabHostLive() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         ApiRequest req = minimalRequest();
@@ -786,5 +835,19 @@ class RequestEditorPanelTest {
             }
         }
         return null;
+    }
+
+    private static final class CountingRequestBuilder extends burp.utils.RequestBuilder {
+        int calls;
+
+        private CountingRequestBuilder() {
+            super(null, null);
+        }
+
+        @Override
+        public List<Map.Entry<String, String>> buildEffectiveHeaders(ApiRequest request, burp.parser.VariableResolver resolver) throws Exception {
+            calls++;
+            return super.buildEffectiveHeaders(request, resolver);
+        }
     }
 }
