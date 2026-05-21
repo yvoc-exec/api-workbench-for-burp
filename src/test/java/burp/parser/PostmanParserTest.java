@@ -24,6 +24,42 @@ class PostmanParserTest {
     }
 
     @Test
+    void reconstructsUrlObjectWhenRawIsMissing() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "postman-url-object-", ".json");
+        Files.writeString(file, """
+                {
+                  "info": {
+                    "name": "URL Object Collection",
+                    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+                  },
+                  "item": [
+                    {
+                      "name": "Get User",
+                      "request": {
+                        "method": "GET",
+                        "url": {
+                          "protocol": "https",
+                          "host": ["api", "example", "test"],
+                          "path": ["users", "{{user_id}}"],
+                          "query": [
+                            {"key": "include", "value": "roles"},
+                            {"key": "disabled", "value": "true", "disabled": true}
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+                """, StandardCharsets.UTF_8);
+
+        ApiCollection collection = new PostmanParser().parse(file.toFile());
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).url)
+                .isEqualTo("https://api.example.test/users/{{user_id}}?include=roles");
+    }
+
+    @Test
     void parsesFormDataFileItemIntoExplicitFileUploadMetadata() throws Exception {
         Path tempJson = Files.createTempFile(Path.of("target"), "postman-", ".json").toAbsolutePath().normalize();
         String json = """

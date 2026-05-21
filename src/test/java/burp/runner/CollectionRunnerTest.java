@@ -205,6 +205,62 @@ class CollectionRunnerTest {
     }
 
     @Test
+    void runnerPreservesSelectionOrderWhenSequenceOrderIsDefaultZero() throws Exception {
+        CopyOnWriteArrayList<String> executed = new CopyOnWriteArrayList<>();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                executed.add(req.name);
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse();
+                return exec;
+            }
+        }, null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Postman";
+        collection.format = "postman";
+        ApiRequest first = requestForOrder("First", 0, collection);
+        ApiRequest second = requestForOrder("Second", 0, collection);
+        ApiRequest third = requestForOrder("Third", 0, collection);
+
+        runner.runCollections(List.of(collection), List.of(third, first, second));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(executed).containsExactly("Third", "First", "Second");
+    }
+
+    @Test
+    void runnerUsesSequenceOrderWhenAllSelectedRequestsHavePositiveOrder() throws Exception {
+        CopyOnWriteArrayList<String> executed = new CopyOnWriteArrayList<>();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                executed.add(req.name);
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse();
+                return exec;
+            }
+        }, null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Bruno";
+        collection.format = "bruno";
+        ApiRequest first = requestForOrder("First", 30, collection);
+        ApiRequest second = requestForOrder("Second", 10, collection);
+        ApiRequest third = requestForOrder("Third", 20, collection);
+
+        runner.runCollections(List.of(collection), List.of(first, second, third));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(executed).containsExactly("Second", "Third", "First");
+    }
+
+    @Test
     void cancelInterruptsActiveRun() throws Exception {
         AtomicInteger pipelineCalls = new AtomicInteger();
         CountDownLatch started = new CountDownLatch(1);
@@ -305,6 +361,17 @@ class CollectionRunnerTest {
         when(responseWrapper.response()).thenReturn(response);
         when(responseWrapper.withAnnotations(any(Annotations.class))).thenReturn(responseWrapper);
         return responseWrapper;
+    }
+
+    private static ApiRequest requestForOrder(String name, int sequenceOrder, ApiCollection collection) {
+        ApiRequest request = new ApiRequest();
+        request.name = name;
+        request.url = "http://example.com/" + name.toLowerCase();
+        request.method = "GET";
+        request.sequenceOrder = sequenceOrder;
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+        return request;
     }
 
     private static class RecordingPipeline extends SharedRequestPipeline {

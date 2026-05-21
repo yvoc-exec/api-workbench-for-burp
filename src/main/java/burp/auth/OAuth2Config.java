@@ -34,6 +34,11 @@ public class OAuth2Config {
         }
         config.tokenUrl = vars.get("oauth2_token_url");
         config.authUrl = vars.get("oauth2_auth_url");
+        if (vars.containsKey("oauth2_redirect_uri")
+                && vars.get("oauth2_redirect_uri") != null
+                && !vars.get("oauth2_redirect_uri").isBlank()) {
+            config.redirectUri = vars.get("oauth2_redirect_uri");
+        }
         config.clientId = vars.get("oauth2_client_id");
         config.clientSecret = vars.get("oauth2_client_secret");
         if (vars.containsKey("oauth2_client_auth")) {

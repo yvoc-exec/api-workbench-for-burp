@@ -155,9 +155,7 @@ public class CollectionRunner {
             }
         }
 
-        // Sort by sequence order if available
-        List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
-        ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
+        List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         activeExecutor = executor;
@@ -241,7 +239,7 @@ public class CollectionRunner {
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     fireOnDebug("Runner cancelled.");
-                } else if (!stoppedByCondition) {
+                } else {
                     fireOnComplete(results);
                 }
             } catch (Exception e) {
@@ -281,8 +279,7 @@ public class CollectionRunner {
             }
         }
 
-        List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
-        ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
+        List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
 
         for (ApiRequest req : ordered) {
             if (req == null || req.disabled) {
@@ -307,6 +304,16 @@ public class CollectionRunner {
         }
 
         return previewRows;
+    }
+
+    private List<ApiRequest> orderRequestsForRun(List<ApiRequest> selectedRequests) {
+        List<ApiRequest> ordered = new ArrayList<>(selectedRequests);
+        boolean allHavePositiveSequence = !ordered.isEmpty()
+                && ordered.stream().allMatch(r -> r != null && r.sequenceOrder > 0);
+        if (allHavePositiveSequence) {
+            ordered.sort(Comparator.comparingInt(r -> r.sequenceOrder));
+        }
+        return ordered;
     }
 
     private String describeAuth(ApiRequest req) {

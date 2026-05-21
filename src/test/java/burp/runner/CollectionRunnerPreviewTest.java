@@ -94,4 +94,29 @@ class CollectionRunnerPreviewTest {
         assertThat(rows.get(0).authStatus).contains("bearer");
         assertThat(rows.get(0).authStatus).contains("collection:");
     }
+
+    @Test
+    void previewPreservesSelectionOrderWhenSequenceOrderIsDefaultZero() {
+        CollectionRunner runner = new CollectionRunner(null, new burp.utils.SharedRequestPipeline(null, null, null, null), null);
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Postman";
+        collection.format = "postman";
+
+        ApiRequest first = new ApiRequest();
+        first.name = "First";
+        first.method = "GET";
+        first.url = "https://example.test/first";
+        first.sourceCollection = collection.name;
+        ApiRequest second = new ApiRequest();
+        second.name = "Second";
+        second.method = "GET";
+        second.url = "https://example.test/second";
+        second.sourceCollection = collection.name;
+        collection.requests.add(first);
+        collection.requests.add(second);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(second, first));
+
+        assertThat(rows).extracting(row -> row.requestName).containsExactly("Second", "First");
+    }
 }

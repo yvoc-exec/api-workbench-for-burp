@@ -159,15 +159,7 @@ public class PostmanParser implements CollectionParser {
         req.description = getString(reqObj, "description", "");
 
         // URL - handle both string and object
-        JsonElement urlElem = reqObj.get("url");
-        if (urlElem != null) {
-            if (urlElem.isJsonPrimitive()) {
-                req.url = urlElem.getAsString();
-            } else if (urlElem.isJsonObject()) {
-                JsonObject urlObj = urlElem.getAsJsonObject();
-                req.url = getString(urlObj, "raw", "");
-            }
-        }
+        req.url = parsePostmanUrl(reqObj.get("url"));
 
         // Headers
         if (reqObj.has("header") && reqObj.get("header").isJsonArray()) {
@@ -405,6 +397,88 @@ public class PostmanParser implements CollectionParser {
             }
         }
         return null;
+    }
+
+    private String parsePostmanUrl(JsonElement urlElem) {
+        if (urlElem == null || urlElem.isJsonNull()) {
+            return "";
+        }
+        if (urlElem.isJsonPrimitive()) {
+            return urlElem.getAsString();
+        }
+        if (!urlElem.isJsonObject()) {
+            return "";
+        }
+        JsonObject urlObj = urlElem.getAsJsonObject();
+        String raw = getString(urlObj, "raw", "");
+        if (raw != null && !raw.isBlank()) {
+            return raw;
+        }
+
+        String protocol = getString(urlObj, "protocol", "https");
+        String host = joinUrlParts(urlObj.get("host"), ".");
+        String path = joinUrlParts(urlObj.get("path"), "/");
+        StringBuilder out = new StringBuilder();
+        if (!host.isBlank()) {
+            out.append(protocol != null && !protocol.isBlank() ? protocol : "https").append("://").append(host);
+        }
+        if (!path.isBlank()) {
+            if (out.length() > 0 && !path.startsWith("/")) {
+                out.append("/");
+            }
+            out.append(path);
+        }
+        String query = buildPostmanQuery(urlObj.get("query"));
+        if (!query.isBlank()) {
+            out.append("?").append(query);
+        }
+        return out.toString();
+    }
+
+    private String joinUrlParts(JsonElement element, String delimiter) {
+        if (element == null || element.isJsonNull()) {
+            return "";
+        }
+        if (element.isJsonPrimitive()) {
+            return element.getAsString();
+        }
+        if (!element.isJsonArray()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        for (JsonElement part : element.getAsJsonArray()) {
+            if (part != null && part.isJsonPrimitive()) {
+                String value = part.getAsString();
+                if (value != null && !value.isBlank()) {
+                    parts.add(value);
+                }
+            }
+        }
+        return String.join(delimiter, parts);
+    }
+
+    private String buildPostmanQuery(JsonElement queryElement) {
+        if (queryElement == null || !queryElement.isJsonArray()) {
+            return "";
+        }
+        List<String> params = new ArrayList<>();
+        for (JsonElement elem : queryElement.getAsJsonArray()) {
+            if (elem == null || !elem.isJsonObject()) {
+                continue;
+            }
+            JsonObject param = elem.getAsJsonObject();
+            boolean disabled = param.has("disabled") && param.get("disabled").getAsBoolean();
+            if (disabled) {
+                continue;
+            }
+            String key = getString(param, "key", "");
+            if (key.isBlank()) {
+                continue;
+            }
+            String value = getString(param, "value", "");
+            params.add(key + "=" + value);
+        }
+        return String.join("&", params);
     }
 
     private ApiRequest.Auth parseAuth(JsonObject authObj) {

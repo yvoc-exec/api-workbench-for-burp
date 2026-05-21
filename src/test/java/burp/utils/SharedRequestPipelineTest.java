@@ -80,6 +80,72 @@ class SharedRequestPipelineTest {
     }
 
     @Test
+    void preRequestScriptCanReadCollectionVariablesThroughPostmanApi() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
+            @Override
+            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
+                ScriptEngine.PostmanApi pm = new ScriptEngine.PostmanApi(resolver, context, null);
+                String token = pm.collectionVariables.get("collection_token");
+                pm.environment.set("header_token", token);
+            }
+        };
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "collection_token";
+        variable.value = "abc123";
+        col.variables.add(variable);
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{header_token}}";
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).contains("/abc123");
+        assertThat(col.runtimeVars).containsEntry("header_token", "abc123");
+    }
+
+    @Test
+    void sharedPipelineInjectsOauth2TokenBeforeRequestBuilderBuildsAuthorization() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        burp.auth.OAuth2Manager manager = org.mockito.Mockito.mock(burp.auth.OAuth2Manager.class);
+        burp.auth.TokenStore.TokenEntry entry = new burp.auth.TokenStore.TokenEntry();
+        entry.accessToken = "pipeline-token";
+        entry.expiresAt = System.currentTimeMillis() + 60_000;
+        org.mockito.Mockito.when(manager.getValidToken(org.mockito.Mockito.any())).thenReturn(entry);
+
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), manager);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "OAuth Collection";
+        col.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+        col.runtimeOAuth2.put("oauth2_client_id", "client");
+        col.runtimeOAuth2.put("oauth2_client_secret", "secret");
+        col.runtimeOAuth2.put("oauth2_grant", "client_credentials");
+
+        ApiRequest req = new ApiRequest();
+        req.name = "OAuth Request";
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "oauth2";
+        req.auth.properties.put("accessToken", "{{oauth2_access_token}}");
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
+        assertThat(col.runtimeOAuth2).containsEntry("oauth2_access_token", "pipeline-token");
+    }
+
+    @Test
     void buildPreservesMultipartFileBytes() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);

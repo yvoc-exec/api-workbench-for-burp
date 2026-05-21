@@ -3,9 +3,7 @@ package burp.utils;
 import burp.models.ApiRequest;
 import burp.parser.VariableResolver;
 import burp.api.montoya.MontoyaApi;
-import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
-import burp.auth.TokenStore;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -27,14 +25,12 @@ public class RequestBuilder {
     );
     private final MontoyaApi api;
     private final boolean debugMode = false;
-    private final OAuth2Manager oauth2Manager;
 
     public RequestBuilder(MontoyaApi api) {
         this(api, null);
     }
 
     public RequestBuilder(MontoyaApi api, OAuth2Manager oauth2Manager) {
-        this.oauth2Manager = oauth2Manager;
         this.api = api;
     }
 
@@ -138,17 +134,17 @@ public class RequestBuilder {
         String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
         headers.putComputed("Host", hostValue);
 
+        // Body
+        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver);
+        if (body == null) {
+            body = buildBody(request.body, headers, request.name, resolver);
+        }
+
         // Insert request line at index 0
         List<String> rawHeaders = new ArrayList<>();
         rawHeaders.add(method + " " + requestTarget + " HTTP/1.1");
         for (Map.Entry<String, String> entry : headers.entries()) {
             rawHeaders.add(entry.getKey() + ": " + entry.getValue());
-        }
-
-        // Body
-        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, rawHeaders, resolver);
-        if (body == null) {
-            body = buildBody(request.body, rawHeaders, request.name, resolver);
         }
 
         return new BuildContext(rawHeaders, body, method, resolvedUrl);
@@ -329,22 +325,8 @@ public class RequestBuilder {
             case "oauth2":
                 if (!headers.has("Authorization")) {
                     String accessToken = auth.properties.get("accessToken");
-                    // Auto-acquire live token if static token is missing/empty/templated
-                    if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{")) && oauth2Manager != null) {
-                        try {
-                            OAuth2Config config = OAuth2Config.fromVariables(resolver != null ? resolver.getVariables() : Collections.emptyMap());
-                            if (config.isValid()) {
-                                TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
-                                accessToken = entry.accessToken;
-                            }
-                        } catch (Exception e) {
-                            if (api != null) {
-                                api.logging().logToOutput("OAuth2 auto-acquire failed: " + e.getMessage());
-                            }
-                        }
-                    }
-                    // Also check resolver variable injected by CollectionRunner
-                    if ((accessToken == null || accessToken.isEmpty()) && resolver != null && resolver.getVariables() != null) {
+                    if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{"))
+                            && resolver != null && resolver.getVariables() != null) {
                         accessToken = resolver.getVariables().get("oauth2_access_token");
                     }
                     if (accessToken != null && !accessToken.isEmpty()) {
@@ -356,18 +338,9 @@ public class RequestBuilder {
         return requestTarget;
     }
 
-    private byte[] buildBody(ApiRequest.Body body, List<String> headers, String requestName, VariableResolver resolver) throws Exception {
+    private byte[] buildBody(ApiRequest.Body body, HeaderStore hs, String requestName, VariableResolver resolver) throws Exception {
         if (body == null || body.mode == null || "none".equals(body.mode)) {
             return new byte[0];
-        }
-
-        // Re-wrap List<String> into a temporary HeaderStore for body-derived headers
-        HeaderStore hs = new HeaderStore();
-        for (String h : headers) {
-            int colon = h.indexOf(':');
-            if (colon > 0) {
-                hs.put(h.substring(0, colon).trim(), h.substring(colon + 1).trim());
-            }
         }
 
         byte[] result;
@@ -428,7 +401,9 @@ public class RequestBuilder {
                             }
                         }
                     }
-                    hs.put("Content-Type", expected);
+                    if (!hs.isSuppressed("Content-Type")) {
+                        hs.put("Content-Type", expected);
+                    }
                     result = buildMultipartBody(body.formdata, boundary, resolver);
                 } else {
                     result = new byte[0];
@@ -439,30 +414,13 @@ public class RequestBuilder {
                 result = new byte[0];
         }
 
-        // Synchronize any newly-added body headers back into the raw list
-        // (replace existing case variants or append)
-        for (Map.Entry<String, String> entry : hs.entries()) {
-            String key = entry.getKey();
-            String full = key + ": " + entry.getValue();
-            boolean replaced = false;
-            for (int i = 0; i < headers.size(); i++) {
-                String existing = headers.get(i);
-                int colon = existing.indexOf(':');
-                if (colon > 0 && existing.substring(0, colon).trim().equalsIgnoreCase(key)) {
-                    headers.set(i, full);
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                headers.add(full);
-            }
-        }
-
         return result;
     }
 
     private void enforceContentType(HeaderStore hs, String expectedType, String requestName) {
+        if (hs.isSuppressed("Content-Type")) {
+            return;
+        }
         if (hs.has("Content-Type")) {
             String existing = hs.get("Content-Type");
             if (existing != null && !existing.toLowerCase().startsWith(expectedType.toLowerCase())) {
@@ -505,7 +463,9 @@ public class RequestBuilder {
     private byte[] buildMultipartBody(List<ApiRequest.Body.FormField> formData, String boundary, VariableResolver resolver) throws Exception {
         java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
         for (ApiRequest.Body.FormField field : formData) {
-            if (field.key == null) continue;
+            if (field == null || field.disabled || field.key == null) {
+                continue;
+            }
             String resolvedKey = resolver != null ? resolver.resolve(field.key) : field.key;
             String resolvedValue = field.value != null ? (resolver != null ? resolver.resolve(field.value) : field.value) : "";
             String uploadPath = field.fileUpload ? field.filePath : null;
@@ -539,15 +499,6 @@ public class RequestBuilder {
     }
 
     // Check for any header by name (case-insensitive) in a raw List
-    private boolean hasHeader(List<String> headers, String headerName) {
-        String target = headerName.toLowerCase();
-        return headers.stream().anyMatch(h -> {
-            int colonIdx = h.indexOf(':');
-            if (colonIdx == -1) return false;
-            return h.substring(0, colonIdx).trim().toLowerCase().equals(target);
-        });
-    }
-
     /**
      * Detects whether the current request targets an OAuth2 token endpoint.
      * Primary: resolved URL matches resolved oauth2_token_url.
@@ -580,7 +531,7 @@ public class RequestBuilder {
      * Supports client_credentials, password, refresh_token, and authorization_code grants.
      * Returns null when no auto-build is needed.
      */
-    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, List<String> headers, VariableResolver resolver) {
+    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, HeaderStore headers, VariableResolver resolver) {
         Map<String, String> vars = resolver != null ? resolver.mutableVariables() : Collections.emptyMap();
         if (vars == null) return null;
 
@@ -654,10 +605,10 @@ public class RequestBuilder {
 
         // If using basic auth for client credentials, set Authorization header
         if (useBasicAuth && clientSecret != null && !clientSecret.isBlank()) {
-            if (!hasHeader(headers, "Authorization")) {
+            if (!headers.has("Authorization")) {
                 String credentials = clientId + ":" + clientSecret;
                 String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-                headers.add("Authorization: Basic " + encoded);
+                headers.put("Authorization", "Basic " + encoded);
             }
         }
 
@@ -699,8 +650,9 @@ public class RequestBuilder {
         }
 
         // Ensure correct Content-Type for the auto-built body
-        headers.removeIf(h -> h.toLowerCase().startsWith("content-type:"));
-        headers.add("Content-Type: application/x-www-form-urlencoded");
+        if (!headers.isSuppressed("Content-Type")) {
+            headers.put("Content-Type", "application/x-www-form-urlencoded");
+        }
 
         return String.join("&", params).getBytes(StandardCharsets.UTF_8);
     }

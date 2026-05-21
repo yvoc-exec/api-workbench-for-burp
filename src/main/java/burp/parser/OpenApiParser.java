@@ -17,6 +17,7 @@ import java.util.HashSet;
  */
 public class OpenApiParser implements CollectionParser {
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    private Map<String, Object> currentSpecRoot;
 
     @Override
     public boolean canParse(File file) {
@@ -58,90 +59,95 @@ public class OpenApiParser implements CollectionParser {
             }
         }
 
-        ApiCollection collection = new ApiCollection();
-        collection.format = "openapi";
-        collection.name = getString(spec, "info.title", "OpenAPI Spec");
-        collection.description = getString(spec, "info.description", "");
-        collection.version = getString(spec, "openapi", getString(spec, "swagger", "3.0"));
+        this.currentSpecRoot = spec;
+        try {
+            ApiCollection collection = new ApiCollection();
+            collection.format = "openapi";
+            collection.name = getString(spec, "info.title", "OpenAPI Spec");
+            collection.description = getString(spec, "info.description", "");
+            collection.version = getString(spec, "openapi", getString(spec, "swagger", "3.0"));
 
-        // Extract security schemes (OAS3 or Swagger2)
-        Map<String, Map<String, Object>> securitySchemes = extractSecuritySchemes(spec);
+            // Extract security schemes (OAS3 or Swagger2)
+            Map<String, Map<String, Object>> securitySchemes = extractSecuritySchemes(spec);
 
-        // Top-level default security
-        List<Map<String, Object>> defaultSecurity = null;
-        if (spec.containsKey("security") && spec.get("security") instanceof List) {
-            defaultSecurity = (List) spec.get("security");
-        }
-        collection.auth = resolveSecurity(defaultSecurity, securitySchemes);
-        if (collection.auth != null && "noauth".equalsIgnoreCase(collection.auth.type)) {
-            collection.auth.type = "none";
-        }
+            // Top-level default security
+            List<Map<String, Object>> defaultSecurity = null;
+            if (spec.containsKey("security") && spec.get("security") instanceof List) {
+                defaultSecurity = (List) spec.get("security");
+            }
+            collection.auth = resolveSecurity(defaultSecurity, securitySchemes);
+            if (collection.auth != null && "noauth".equalsIgnoreCase(collection.auth.type)) {
+                collection.auth.type = "none";
+            }
 
-        // Extract servers/base URLs and server variable defaults
-        List<String> baseUrls = new ArrayList<>();
-        if (spec.containsKey("servers") && spec.get("servers") instanceof List) {
-            for (Object s : (List) spec.get("servers")) {
-                if (s instanceof Map) {
-                    Map<String, Object> server = (Map) s;
-                    String url = (String) server.get("url");
-                    if (url != null) baseUrls.add(url);
-                    // Extract variable defaults from servers[].variables
-                    if (server.containsKey("variables") && server.get("variables") instanceof Map) {
-                        Map<String, Object> vars = (Map) server.get("variables");
-                        for (Map.Entry<String, Object> ve : vars.entrySet()) {
-                            if (ve.getValue() instanceof Map) {
-                                Map<String, Object> varDef = (Map) ve.getValue();
-                                if (varDef.containsKey("default")) {
-                                    collection.environment.put(ve.getKey(), String.valueOf(varDef.get("default")));
+            // Extract servers/base URLs and server variable defaults
+            List<String> baseUrls = new ArrayList<>();
+            if (spec.containsKey("servers") && spec.get("servers") instanceof List) {
+                for (Object s : (List) spec.get("servers")) {
+                    if (s instanceof Map) {
+                        Map<String, Object> server = (Map) s;
+                        String url = (String) server.get("url");
+                        if (url != null) baseUrls.add(url);
+                        // Extract variable defaults from servers[].variables
+                        if (server.containsKey("variables") && server.get("variables") instanceof Map) {
+                            Map<String, Object> vars = (Map) server.get("variables");
+                            for (Map.Entry<String, Object> ve : vars.entrySet()) {
+                                if (ve.getValue() instanceof Map) {
+                                    Map<String, Object> varDef = (Map) ve.getValue();
+                                    if (varDef.containsKey("default")) {
+                                        collection.environment.put(ve.getKey(), String.valueOf(varDef.get("default")));
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        } else if (spec.containsKey("host")) {
-            String scheme = "https";
-            if (spec.containsKey("schemes") && spec.get("schemes") instanceof List) {
-                List<?> schemes = (List<?>) spec.get("schemes");
-                if (!schemes.isEmpty() && schemes.get(0) != null) {
-                    String first = schemes.get(0).toString().toLowerCase();
-                    if (first.equals("http") || first.equals("https")) {
-                        scheme = first;
+            } else if (spec.containsKey("host")) {
+                String scheme = "https";
+                if (spec.containsKey("schemes") && spec.get("schemes") instanceof List) {
+                    List<?> schemes = (List<?>) spec.get("schemes");
+                    if (!schemes.isEmpty() && schemes.get(0) != null) {
+                        String first = schemes.get(0).toString().toLowerCase();
+                        if (first.equals("http") || first.equals("https")) {
+                            scheme = first;
+                        }
                     }
                 }
+                String host = (String) spec.get("host");
+                String basePath = getString(spec, "basePath", "");
+                baseUrls.add(scheme + "://" + host + basePath);
             }
-            String host = (String) spec.get("host");
-            String basePath = getString(spec, "basePath", "");
-            baseUrls.add(scheme + "://" + host + basePath);
-        }
 
-        String defaultBaseUrl = baseUrls.isEmpty() ? "http://localhost" : baseUrls.get(0);
+            String defaultBaseUrl = baseUrls.isEmpty() ? "http://localhost" : baseUrls.get(0);
 
-        // Parse paths
-        if (spec.containsKey("paths") && spec.get("paths") instanceof Map) {
-            Map<String, Object> paths = (Map) spec.get("paths");
-            for (Map.Entry<String, Object> pathEntry : paths.entrySet()) {
-                String path = pathEntry.getKey();
-                if (pathEntry.getValue() instanceof Map) {
-                    Map<String, Object> methods = (Map) pathEntry.getValue();
-                    for (Map.Entry<String, Object> methodEntry : methods.entrySet()) {
-                        String method = methodEntry.getKey().toUpperCase();
-                        if (isHttpMethod(method)) {
-                            ApiRequest req = parseOpenApiOperation(
-                                method, path, methods, (Map) methodEntry.getValue(), defaultBaseUrl,
-                                securitySchemes, defaultSecurity
-                            );
-                            req.sourceCollection = collection.name;
-                            collection.requests.add(req);
+            // Parse paths
+            if (spec.containsKey("paths") && spec.get("paths") instanceof Map) {
+                Map<String, Object> paths = (Map) spec.get("paths");
+                for (Map.Entry<String, Object> pathEntry : paths.entrySet()) {
+                    String path = pathEntry.getKey();
+                    if (pathEntry.getValue() instanceof Map) {
+                        Map<String, Object> methods = (Map) pathEntry.getValue();
+                        for (Map.Entry<String, Object> methodEntry : methods.entrySet()) {
+                            String method = methodEntry.getKey().toUpperCase();
+                            if (isHttpMethod(method)) {
+                                ApiRequest req = parseOpenApiOperation(
+                                    method, path, methods, (Map) methodEntry.getValue(), defaultBaseUrl,
+                                    securitySchemes, defaultSecurity
+                                );
+                                req.sourceCollection = collection.name;
+                                collection.requests.add(req);
+                            }
                         }
                     }
                 }
             }
+
+            AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
+            return collection;
+        } finally {
+            this.currentSpecRoot = null;
         }
-
-        AuthInheritanceResolver.recomputeCollectionAuth(collection);
-
-        return collection;
     }
 
     private Map<String, Map<String, Object>> extractSecuritySchemes(Map<String, Object> spec) {
@@ -539,8 +545,14 @@ public class OpenApiParser implements CollectionParser {
             if (visited.contains(ref)) {
                 return "{\"$ref\": \"" + ref + " (recursive)\"}";
             }
+            Map<String, Object> resolved = resolveLocalRef(ref);
+            if (resolved == null) {
+                return "{\"$ref\": \"" + ref + "\"}";
+            }
             visited.add(ref);
-            return "{\"$ref\": \"" + ref + "\"}";
+            Object value = generateExampleValue(resolved, visited, depth + 1);
+            visited.remove(ref);
+            return value;
         }
 
         // Handle oneOf/anyOf/allOf
@@ -631,6 +643,22 @@ public class OpenApiParser implements CollectionParser {
                 }
                 return obj;
         }
+    }
+
+    private Map<String, Object> resolveLocalRef(String ref) {
+        if (ref == null || !ref.startsWith("#/") || currentSpecRoot == null) {
+            return null;
+        }
+        String[] parts = ref.substring(2).split("/");
+        Object current = currentSpecRoot;
+        for (String rawPart : parts) {
+            String part = rawPart.replace("~1", "/").replace("~0", "~");
+            if (!(current instanceof Map)) {
+                return null;
+            }
+            current = ((Map<?, ?>) current).get(part);
+        }
+        return current instanceof Map ? (Map<String, Object>) current : null;
     }
 
     private boolean isHttpMethod(String method) {

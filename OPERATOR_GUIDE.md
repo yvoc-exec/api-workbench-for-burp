@@ -160,7 +160,7 @@ Editable request areas:
 | Area | What You Can Change |
 ------|---------------------|
 | Method / URL | HTTP method, URL, query parameters |
-| Headers | Add, remove, enable, disable headers. Effective headers (Accept, User-Agent, Cache-Control, Host, auth, and body-derived Content-Type) are synthesized into the table automatically. Uncheck a synthesized header to suppress it; edit its value to override it permanently. |
+| Headers | Add, remove, enable, disable headers. Effective headers (Accept, User-Agent, Cache-Control, Host, auth, and body-derived Content-Type) are synthesized into the table automatically. Uncheck a synthesized header to suppress it; edit its value to override it permanently. If you disable `Content-Type`, synthesized body-mode `Content-Type` headers stay suppressed until you re-enable or add one explicitly. |
 | Auth | Select inherit or an auth type, then edit auth properties |
 | Body | Raw, URL-encoded, form-data, GraphQL, file-like modes where supported |
 | Scripts | Pre-request and post-response scripts |
@@ -336,7 +336,7 @@ Select the collection in the top dropdown. OAuth2 form edits autosave to that co
 |------------|-----------------|-------|
 | Client Credentials | Token URL, Client ID, Client Secret unless `oauth2_client_auth=none` | Common service-to-service flow |
 | Password | Token URL, Client ID, Client Secret, Username, Password | Legacy/internal use only |
-| Authorization Code | Token URL, Auth URL, Client ID, Redirect URI, optional secret, PKCE | Opens browser and listens on localhost |
+| Authorization Code | Token URL, Auth URL, Client ID, Redirect URI, optional secret, PKCE | Opens browser and listens on the configured HTTP loopback redirect URI |
 | Refresh Token | Token URL, Client ID, optional secret, Refresh Token | Useful for renewing a known session |
 
 ### OAuth2 Controls
@@ -618,6 +618,12 @@ API Workbench supports Postman-style and Bruno-style scripts when Nashorn is ava
 Postman style:
 
 ```javascript
+pm.test("status is 200", function () {
+  pm.expect(pm.response.code()).to.have.status(200);
+});
+```
+
+```javascript
 const jsonData = pm.response.json();
 pm.environment.set("auth_token", jsonData.access_token);
 ```
@@ -641,9 +647,11 @@ Comment extraction:
 Examples:
 
 ```javascript
-pm.expect(pm.response.code).to.have.status(200);
+pm.expect(pm.response.code()).to.have.status(200);
 pm.expect(pm.response).to.have.header("Content-Type");
 pm.expect(jsonData).to.have.property("id");
+pm.expect(jsonData.id).to.equal("123");
+pm.expect(jsonData.id).to.eql("123");
 ```
 
 Assertions are reflected in Runner results and timeline. Stop-on-assertion-failure can halt the run.
@@ -660,11 +668,11 @@ Nashorn is not sandboxed. Only run trusted collection scripts.
 |--------|------------------|-------|
 | Postman | v2.0/v2.1 JSON | Variables, folders, auth inheritance, scripts, body modes |
 | Bruno | `.bru` file or folder | Variables, scripts, assertions, sequence order |
-| OpenAPI/Swagger | JSON/YAML | Generates requests and example bodies from schemas |
+| OpenAPI/Swagger | JSON/YAML | Generates requests and example bodies from schemas, including local `#/components/schemas/...` and `#/definitions/...` refs |
 | Insomnia | v4 JSON export | Requests, groups, headers, auth, body |
 | HAR | `.har` | Imports captured requests and bodies |
 
-Disabled headers, URL-encoded fields, and form-data fields are skipped when building requests.
+Disabled headers, URL-encoded fields, and form-data fields are skipped when building requests. Disabling `Content-Type` suppresses synthesized `Content-Type` headers too.
 
 Multipart file uploads only read local files when the field is explicitly marked as a file upload with metadata. Plain path-looking values are sent as text.
 
@@ -770,7 +778,7 @@ Options:
 | `invalid_client` | Wrong client ID/secret or auth mode | Try `oauth2_client_auth=basic`, `body`, or `none` |
 | Missing refresh token | Auto-refresh enabled without refresh token | Acquire token again or import refresh token |
 | Browser not supported | Headless environment | Use non-browser grant if possible |
-| Authorization code timeout | No callback received | Check localhost port `9876` and redirect URI |
+| Authorization code timeout | No callback received | Check the configured loopback redirect URI, port availability, and redirect URI match |
 
 ### Runner Errors
 
@@ -807,7 +815,7 @@ Options:
 - **Scripts are not sandboxed.** Collection scripts can access Java classes through Nashorn. Only run trusted scripts.
 - **Project snapshots can contain tokens and secrets.** Live token cache is memory-only, but Burp project data can store OAuth access/refresh tokens and other secret values.
 - **Runtime JSON can contain secrets.** Treat exported files as sensitive.
-- **Authorization Code callback uses localhost port 9876.** Ensure redirect URI matches.
+- **Authorization Code callback uses the configured HTTP loopback redirect URI.** The default remains `http://localhost:9876/callback`. Loopback examples include `http://localhost:9876/callback` and `http://127.0.0.1:9988/oauth/callback`.
 - **File uploads are explicit only.** Path-like text values are not read as files unless the field is marked as a file upload.
 - **Autosave follows selected collection.** Check the Target dropdown before editing Variables or OAuth2 settings.
 
