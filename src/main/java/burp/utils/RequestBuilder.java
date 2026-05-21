@@ -23,6 +23,9 @@ public class RequestBuilder {
             "host", "content-length", "transfer-encoding", "connection", "proxy-connection",
             "accept-encoding", "postman-token"
     );
+    private static final Set<String> TRANSPORT_HEADER_NAMES = Set.of(
+            "host", "content-length", "transfer-encoding"
+    );
     private final MontoyaApi api;
     private final boolean debugMode = false;
 
@@ -63,8 +66,8 @@ public class RequestBuilder {
 
     /**
      * Returns the effective header set that API Workbench intends to send,
-     * after synthesis and operator suppression, but excluding transport framing
-     * headers like Content-Length and Transfer-Encoding.
+     * excluding transport framing headers like Content-Length and
+     * Transfer-Encoding.
      */
     public List<Map.Entry<String, String>> buildEffectiveHeaders(ApiRequest request, VariableResolver resolver) throws Exception {
         BuildContext ctx = buildHeadersAndBody(request, resolver);
@@ -97,47 +100,31 @@ public class RequestBuilder {
 
         String requestTarget = parsed.pathWithQuery;
         HeaderStore headers = new HeaderStore();
+        boolean editorMaterialized = request.editorMaterialized;
 
-        // Apply operator suppressions derived from disabled request headers
-        Set<String> suppressed = new HashSet<>();
-        if (request.headers != null) {
-            for (ApiRequest.Header header : request.headers) {
-                if (header.disabled && header.key != null) {
-                    suppressed.add(header.key.trim().toLowerCase());
-                }
-            }
-        }
-        headers.suppressAll(suppressed);
-
-        // Layer 1: compatibility defaults (lowest precedence)
-        headers.putDefault("Accept", "application/json, text/plain, */*");
-        headers.putDefault("User-Agent", "BurpExtensionRuntime");
-        headers.putDefault("Cache-Control", "no-cache");
-
-        // Layer 2: request-level headers (override defaults)
-        if (request.headers != null) {
-            for (ApiRequest.Header header : request.headers) {
-                if (!header.disabled && header.key != null && header.value != null) {
-                    String key = resolve(resolver, header.key);
-                    String value = resolve(resolver, header.value);
-                    if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
-                        headers.put(key.trim(), value);
-                    }
-                }
-            }
+        if (!editorMaterialized) {
+            headers.putDefault("Accept", "application/json, text/plain, */*");
+            headers.putDefault("User-Agent", "BurpExtensionRuntime");
+            headers.putDefault("Cache-Control", "no-cache");
         }
 
-        // Layer 3: authentication (only if not already present at request level)
-        requestTarget = applyAuthentication(headers, request.auth, requestTarget, resolver);
+        applyExplicitHeaders(request, headers, resolver);
 
-        // Layer 4: Host header (computed, must be correct)
+        if (!editorMaterialized) {
+            requestTarget = applyAuthentication(headers, request.auth, requestTarget, resolver);
+        }
+
         String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
         headers.putComputed("Host", hostValue);
 
-        // Body
-        byte[] body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver);
-        if (body == null) {
-            body = buildBody(request.body, headers, request.name, resolver);
+        byte[] body;
+        if (!editorMaterialized) {
+            body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver);
+            if (body == null) {
+                body = buildBody(request.body, headers, request.name, resolver, true);
+            }
+        } else {
+            body = buildBody(request.body, headers, request.name, resolver, false);
         }
 
         // Insert request line at index 0
@@ -191,38 +178,19 @@ public class RequestBuilder {
     private static class HeaderStore {
         private final LinkedHashMap<String, String> headers = new LinkedHashMap<>();
         private final Set<String> keysLower = new HashSet<>();
-        private final Set<String> suppressed = new HashSet<>();
 
-        /** Marks a header name as suppressed; putDefault and mergeCookie will skip it. */
-        void suppress(String key) {
-            suppressed.add(key.toLowerCase());
-        }
-
-        /** Marks multiple header names as suppressed. */
-        void suppressAll(Collection<String> keys) {
-            for (String key : keys) {
-                if (key != null) suppressed.add(key.toLowerCase());
-            }
-        }
-
-        boolean isSuppressed(String key) {
-            return suppressed.contains(key.toLowerCase());
-        }
-
-        /** Adds only if absent and not suppressed (lowest precedence). */
+        /** Adds only if absent (lowest precedence). */
         void putDefault(String key, String value) {
             String lower = key.toLowerCase();
-            if (suppressed.contains(lower)) return;
             if (!keysLower.contains(lower)) {
                 headers.put(key, value);
                 keysLower.add(lower);
             }
         }
 
-        /** Overrides any existing value and clears suppression (medium precedence). */
+        /** Overrides any existing value (medium precedence). */
         void put(String key, String value) {
             String lower = key.toLowerCase();
-            suppressed.remove(lower);
             // Remove existing case variant to preserve latest insertion order
             headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(key));
             headers.put(key, value);
@@ -234,9 +202,8 @@ public class RequestBuilder {
             put(key, value);
         }
 
-        /** Merges a cookie into a single Cookie header unless Cookie is suppressed. */
+        /** Merges a cookie into a single Cookie header. */
         void mergeCookie(String cookieValue) {
-            if (isSuppressed("Cookie")) return;
             String existing = get("Cookie");
             if (existing != null) {
                 putComputed("Cookie", existing + "; " + cookieValue);
@@ -258,6 +225,22 @@ public class RequestBuilder {
 
         Collection<Map.Entry<String, String>> entries() {
             return new ArrayList<>(headers.entrySet());
+        }
+    }
+
+    private void applyExplicitHeaders(ApiRequest request, HeaderStore headers, VariableResolver resolver) {
+        if (request.headers == null) {
+            return;
+        }
+        for (ApiRequest.Header header : request.headers) {
+            if (header == null || header.disabled || header.key == null || header.value == null) {
+                continue;
+            }
+            String key = resolve(resolver, header.key);
+            String value = resolve(resolver, header.value);
+            if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
+                headers.put(key.trim(), value);
+            }
         }
     }
 
@@ -338,7 +321,7 @@ public class RequestBuilder {
         return requestTarget;
     }
 
-    private byte[] buildBody(ApiRequest.Body body, HeaderStore hs, String requestName, VariableResolver resolver) throws Exception {
+    private byte[] buildBody(ApiRequest.Body body, HeaderStore hs, String requestName, VariableResolver resolver, boolean synthesizeHeaders) throws Exception {
         if (body == null || body.mode == null || "none".equals(body.mode)) {
             return new byte[0];
         }
@@ -348,13 +331,14 @@ public class RequestBuilder {
             case "raw":
                 if (body.raw != null) {
                     String resolved = resolver != null ? resolver.resolve(body.raw) : body.raw;
-                    String ct = body.contentType;
-                    if (ct == null || ct.isBlank()) {
-                        // Heuristic: if it looks like JSON, default to application/json
-                        String trimmed = resolved.trim();
-                        ct = (trimmed.startsWith("{") || trimmed.startsWith("[")) ? "application/json" : "text/plain";
+                    if (synthesizeHeaders) {
+                        String ct = body.contentType;
+                        if (ct == null || ct.isBlank()) {
+                            String trimmed = resolved.trim();
+                            ct = (trimmed.startsWith("{") || trimmed.startsWith("[")) ? "application/json" : "text/plain";
+                        }
+                        enforceContentType(hs, ct, requestName);
                     }
-                    enforceContentType(hs, ct, requestName);
                     result = resolved.getBytes(StandardCharsets.UTF_8);
                 } else {
                     result = new byte[0];
@@ -363,8 +347,10 @@ public class RequestBuilder {
 
             case "graphql":
                 if (body.graphql != null) {
-                    result = buildGraphQLBody(body.graphql, hs, resolver);
-                    enforceContentType(hs, "application/json", requestName);
+                    result = buildGraphQLBody(body.graphql, hs, resolver, synthesizeHeaders);
+                    if (synthesizeHeaders) {
+                        enforceContentType(hs, "application/json", requestName);
+                    }
                 } else {
                     result = new byte[0];
                 }
@@ -382,7 +368,9 @@ public class RequestBuilder {
                                 URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
                         params.add(key + "=" + value);
                     }
-                    enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
+                    if (synthesizeHeaders) {
+                        enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
+                    }
                     result = String.join("&", params).getBytes(StandardCharsets.UTF_8);
                 } else {
                     result = new byte[0];
@@ -391,17 +379,20 @@ public class RequestBuilder {
 
             case "formdata":
                 if (body.formdata != null) {
-                    String boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
-                    String expected = "multipart/form-data; boundary=" + boundary;
-                    if (hs.has("Content-Type")) {
-                        String existing = hs.get("Content-Type");
-                        if (existing != null && !existing.toLowerCase().startsWith("multipart/form-data")) {
-                            if (api != null) {
-                                api.logging().logToOutput("[WARN] Request '" + requestName + "': replacing imported Content-Type '" + existing + "' with '" + expected + "' for body mode=formdata");
+                    String boundary = resolveMultipartBoundary(hs.get("Content-Type"));
+                    if (boundary == null || boundary.isBlank()) {
+                        boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
+                    }
+                    if (synthesizeHeaders) {
+                        String expected = "multipart/form-data; boundary=" + boundary;
+                        if (hs.has("Content-Type")) {
+                            String existing = hs.get("Content-Type");
+                            if (existing != null && !existing.toLowerCase().startsWith("multipart/form-data")) {
+                                if (api != null) {
+                                    api.logging().logToOutput("[WARN] Request '" + requestName + "': replacing imported Content-Type '" + existing + "' with '" + expected + "' for body mode=formdata");
+                                }
                             }
                         }
-                    }
-                    if (!hs.isSuppressed("Content-Type")) {
                         hs.put("Content-Type", expected);
                     }
                     result = buildMultipartBody(body.formdata, boundary, resolver);
@@ -418,9 +409,6 @@ public class RequestBuilder {
     }
 
     private void enforceContentType(HeaderStore hs, String expectedType, String requestName) {
-        if (hs.isSuppressed("Content-Type")) {
-            return;
-        }
         if (hs.has("Content-Type")) {
             String existing = hs.get("Content-Type");
             if (existing != null && !existing.toLowerCase().startsWith(expectedType.toLowerCase())) {
@@ -434,7 +422,7 @@ public class RequestBuilder {
         }
     }
 
-    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, HeaderStore headers, VariableResolver resolver) {
+    private byte[] buildGraphQLBody(ApiRequest.Body.GraphQL graphql, HeaderStore headers, VariableResolver resolver, boolean synthesizeHeaders) {
         if (graphql == null) return new byte[0];
         try {
             com.google.gson.JsonObject body = new com.google.gson.JsonObject();
@@ -451,7 +439,7 @@ public class RequestBuilder {
             } else {
                 body.add("variables", new com.google.gson.JsonObject());
             }
-            if (!headers.has("Content-Type")) {
+            if (synthesizeHeaders && !headers.has("Content-Type")) {
                 headers.putDefault("Content-Type", "application/json");
             }
             return new com.google.gson.GsonBuilder().serializeNulls().create().toJson(body).getBytes(StandardCharsets.UTF_8);
@@ -650,11 +638,24 @@ public class RequestBuilder {
         }
 
         // Ensure correct Content-Type for the auto-built body
-        if (!headers.isSuppressed("Content-Type")) {
-            headers.put("Content-Type", "application/x-www-form-urlencoded");
-        }
+        headers.put("Content-Type", "application/x-www-form-urlencoded");
 
         return String.join("&", params).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String resolveMultipartBoundary(String contentType) {
+        if (contentType == null) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("boundary=([^;]+)", Pattern.CASE_INSENSITIVE).matcher(contentType);
+        if (!matcher.find()) {
+            return null;
+        }
+        String boundary = matcher.group(1).trim();
+        if (boundary.startsWith("\"") && boundary.endsWith("\"") && boundary.length() >= 2) {
+            boundary = boundary.substring(1, boundary.length() - 1);
+        }
+        return boundary;
     }
 
     private static String stripFragment(String url) {

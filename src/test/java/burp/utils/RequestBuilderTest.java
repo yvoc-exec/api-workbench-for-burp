@@ -216,7 +216,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void disabledContentTypeSuppressesRawBodySynthesizedContentType() throws Exception {
+    void disabledContentTypeNoLongerSuppressesRawBodyContentTypeSynthesis() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";
         req.url = "http://example.com/api";
@@ -228,7 +228,7 @@ class RequestBuilderTest {
         byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
-        assertThat(parsed.hasHeader("Content-Type")).isFalse();
+        assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/json");
         assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("{\"a\":1}");
     }
 
@@ -266,7 +266,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void disabledContentTypeSuppressesUrlencodedSynthesizedContentType() throws Exception {
+    void disabledContentTypeNoLongerSuppressesUrlencodedContentTypeSynthesis() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";
         req.url = "http://example.com/api";
@@ -278,7 +278,7 @@ class RequestBuilderTest {
         byte[] raw = builder.buildRequest(req, resolver);
         RawRequestParser parsed = RawRequestParser.parse(raw);
 
-        assertThat(parsed.hasHeader("Content-Type")).isFalse();
+        assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/x-www-form-urlencoded");
         assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("a=1");
     }
 
@@ -866,7 +866,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void buildEffectiveHeadersRespectsDisabledHeaderSuppressions() throws Exception {
+    void buildEffectiveHeadersStillIncludeDefaultsWhenMatchingDisabledHeaderExists() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";
         req.url = "http://example.com/api";
@@ -879,8 +879,7 @@ class RequestBuilderTest {
             map.put(e.getKey().toLowerCase(), e.getValue());
         }
 
-        // The default Accept should be suppressed because operator disabled an Accept row
-        assertThat(map).doesNotContainKey("accept");
+        assertThat(map).containsEntry("accept", "application/json, text/plain, */*");
     }
 
     @Test
@@ -904,5 +903,85 @@ class RequestBuilderTest {
 
         assertThat(map).containsEntry("authorization", "Bearer tok123");
         assertThat(map).containsEntry("content-type", "application/json");
+    }
+
+    @Test
+    void editorMaterializedRequestsDoNotResynthesizeDefaultsAuthOrContentType() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.editorMaterialized = true;
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Accept", "text/html", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{}";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+
+        List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
+
+        Map<String, String> map = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : effective) {
+            map.put(e.getKey().toLowerCase(), e.getValue());
+        }
+
+        assertThat(map).containsEntry("accept", "text/html");
+        assertThat(map).containsKey("host");
+        assertThat(map).doesNotContainKeys("authorization", "content-type", "user-agent", "cache-control");
+    }
+
+    @Test
+    void editorMaterializedRequestsStillComputeTransportHeadersAtBuildTime() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.editorMaterialized = true;
+        req.method = "POST";
+        req.url = "https://other.example.test/path";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.headerValue("Host")).isEqualTo("other.example.test");
+        assertThat(parsed.contentLength()).isEqualTo(5);
+    }
+
+    @Test
+    void editorMaterializedMultipartWithoutContentTypeDoesNotBackfillHeader() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.editorMaterialized = true;
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("field1", "value1"));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+
+        assertThat(parsed.hasHeader("Content-Type")).isFalse();
+        assertThat(new String(parsed.body, StandardCharsets.UTF_8)).contains("name=\"field1\"");
+    }
+
+    @Test
+    void editorMaterializedMultipartUsesExistingBoundaryWhenPresent() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.editorMaterialized = true;
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Content-Type", "multipart/form-data; boundary=my-boundary", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("field1", "value1"));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+
+        assertThat(parsed.headerValue("Content-Type")).isEqualTo("multipart/form-data; boundary=my-boundary");
+        assertThat(body).contains("--my-boundary");
+        assertThat(body).contains("--my-boundary--");
     }
 }

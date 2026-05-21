@@ -17,6 +17,8 @@ public class ApiRequest {
     public List<Header> headers = new ArrayList<>();
     public Body body;
     public Auth auth;
+    /** True when the editor has materialized request-owned headers/body after load/import. */
+    public boolean editorMaterialized = false;
     public List<Variable> variables = new ArrayList<>();  // collection-level vars
     public List<Script> preRequestScripts = new ArrayList<>();
     public List<Script> postResponseScripts = new ArrayList<>();
