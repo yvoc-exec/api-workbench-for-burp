@@ -20,9 +20,11 @@ import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.MatteBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreePath;
 import java.awt.Component;
+import java.awt.Graphics;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,6 +32,7 @@ import java.nio.file.Path;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1152,6 +1155,48 @@ class ImporterPanelTreeRestoreTest {
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false))).isTrue();
     }
 
+    @Test
+    void rebuildTreeRefreshesMainRequestTreePresentation() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTree spyTree = installSpyRequestTree(panel);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-refresh-main", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        @SuppressWarnings("unchecked")
+        List<ApiCollection> loadedCollections = (List<ApiCollection>) privateField(panel, "loadedCollections");
+        loadedCollections.clear();
+        loadedCollections.add(collection);
+
+        Method rebuildTree = ImporterPanel.class.getDeclaredMethod("rebuildTree", Map.class, List.class);
+        rebuildTree.setAccessible(true);
+
+        spyTree.resetRefreshCounters();
+        rebuildTree.invoke(panel, Collections.emptyMap(), Collections.emptyList());
+
+        assertThat(spyTree.revalidateCount).isGreaterThan(0);
+        assertThat(spyTree.repaintCount).isGreaterThan(0);
+    }
+
+    @Test
+    void buildPopupSelectionTreeRefreshesPresentationAfterExpansion() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        Method refreshTreePresentation = ImporterPanel.class.getDeclaredMethod("refreshTreePresentation", JTree.class);
+        refreshTreePresentation.setAccessible(true);
+
+        SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
+        spyTree.resetRefreshCounters();
+
+        refreshTreePresentation.invoke(panel, spyTree);
+
+        assertThat(spyTree.revalidateCount).isGreaterThan(0);
+        assertThat(spyTree.repaintCount).isGreaterThan(0);
+    }
+
     private static int leftInsetOf(Component c) {
         Border border = extractBorder(c);
         if (border == null) return 0;
@@ -1183,5 +1228,57 @@ class ImporterPanelTreeRestoreTest {
             return containsMatteBorder(cb.getOutsideBorder()) || containsMatteBorder(cb.getInsideBorder());
         }
         return false;
+    }
+
+    private static SpyTree installSpyRequestTree(ImporterPanel panel) throws Exception {
+        JTree existing = requestTree(panel);
+        SpyTree spyTree = new SpyTree(existing.getModel());
+        spyTree.setRootVisible(existing.isRootVisible());
+        spyTree.setShowsRootHandles(existing.getShowsRootHandles());
+        spyTree.setCellRenderer(existing.getCellRenderer());
+        spyTree.setRowHeight(existing.getRowHeight());
+        spyTree.setSelectionModel(existing.getSelectionModel());
+
+        Field requestTreeField = ImporterPanel.class.getDeclaredField("requestTree");
+        requestTreeField.setAccessible(true);
+        requestTreeField.set(panel, spyTree);
+        return spyTree;
+    }
+
+    private static final class SpyTree extends JTree {
+        private int repaintCount;
+        private int revalidateCount;
+
+        private SpyTree(javax.swing.tree.TreeModel model) {
+            super(model);
+        }
+
+        @Override
+        public void repaint() {
+            repaintCount++;
+            super.repaint();
+        }
+
+        @Override
+        public void repaint(long tm, int x, int y, int width, int height) {
+            repaintCount++;
+            super.repaint(tm, x, y, width, height);
+        }
+
+        @Override
+        public void revalidate() {
+            revalidateCount++;
+            super.revalidate();
+        }
+
+        @Override
+        public Graphics getGraphics() {
+            return null;
+        }
+
+        private void resetRefreshCounters() {
+            repaintCount = 0;
+            revalidateCount = 0;
+        }
     }
 }

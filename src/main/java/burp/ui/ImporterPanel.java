@@ -1210,6 +1210,7 @@ public class ImporterPanel {
         } else {
             restoreExpandedTreePathKeys(expandedTreePathKeys);
         }
+        refreshTreePresentation(requestTree);
     }
 
     static DefaultMutableTreeNode buildRequestTreeRoot(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
@@ -1587,6 +1588,7 @@ public class ImporterPanel {
             }
         });
         expandAllTreeRows(tree);
+        refreshTreePresentation(tree);
         if (selectedCountLabel != null) {
             selectedCountLabel.setText("0 requests selected");
         }
@@ -1600,6 +1602,14 @@ public class ImporterPanel {
         for (int i = 0; i < tree.getRowCount(); i++) {
             tree.expandRow(i);
         }
+    }
+
+    private void refreshTreePresentation(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        tree.revalidate();
+        tree.repaint();
     }
 
     private ApiCollection findCollectionForNode(CollectionTreeNode node) {
