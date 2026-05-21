@@ -122,44 +122,66 @@ Load multiple collections simultaneously:
 
 ```
 burp/
-├── BurpExtender.java              # Extension entry point (Montoya API)
-├── UniversalImporter.java         # Core orchestrator
-├── auth/                          # OAuth2 token lifecycle
-│   ├── OAuth2Config.java          # Configuration model
-│   ├── OAuth2Manager.java         # Token acquisition/refresh
-│   ├── TokenStore.java            # In-memory token cache
-│   ├── ClientCredentialsHandler.java
-│   ├── PasswordGrantHandler.java
-│   ├── RefreshTokenHandler.java
-│   └── AuthorizationCodeHandler.java
-├── models/                        # Unified data models
-│   ├── ApiRequest.java            # Request (all formats normalize to this)
-│   ├── ApiCollection.java         # Collection container
-│   ├── ImportResult.java          # Import operation result
-│   └── RunnerResult.java          # Runner operation result
-├── parser/                        # Collection parsers
-│   ├── CollectionParser.java      # Parser interface
-│   ├── ParserRegistry.java        # Auto-detect registry
-│   ├── PostmanParser.java
-│   ├── BrunoParser.java
-│   ├── OpenApiParser.java
-│   ├── InsomniaParser.java
-│   ├── HarParser.java
-│   └── VariableResolver.java    # {{variable}} resolution engine
-├── runner/                        # Execution engine
-│   └── CollectionRunner.java      # Sequential request runner
-├── ui/                            # Swing UI
-│   ├── ImporterPanel.java         # Main 4-tab panel
-│   ├── OAuth2Panel.java           # OAuth2 configuration
-│   ├── RequestPreviewTableModel.java
-│   └── RunnerResultTableModel.java
-└── utils/                         # Utilities
-    ├── HttpUtils.java             # URL parsing
-    ├── RequestBuilder.java        # HTTP message construction
-    └── ScriptEngine.java          # Nashorn JS execution
+|-- BurpExtender.java              # Extension entry point (Montoya API)
+|-- UniversalImporter.java         # Core import orchestrator
+|-- auth/
+|   |-- OAuth2Config.java          # OAuth2 configuration model
+|   |-- OAuth2Manager.java         # Token acquisition and refresh coordinator
+|   |-- TokenStore.java            # In-memory token cache
+|   |-- ClientCredentialsHandler.java # Client Credentials grant handler
+|   |-- PasswordGrantHandler.java  # Resource Owner Password Credentials grant handler
+|   |-- RefreshTokenHandler.java   # Refresh Token grant handler
+|   `-- AuthorizationCodeHandler.java # PKCE + localhost callback grant handler
+|-- models/
+|   |-- ApiRequest.java            # Unified request model
+|   |-- ApiCollection.java         # Unified collection model
+|   |-- ImportResult.java          # Import operation result
+|   |-- RunnerPreviewRow.java      # Runner preview row model
+|   |-- RunnerResult.java          # Runner operation result
+|   |-- RunnerStopConditions.java  # Runner stop-condition config
+|   |-- RunnerTimelineRow.java     # Runner timeline row model
+|   `-- UnresolvedVariableIssue.java # Variable preflight issue model
+|-- parser/
+|   |-- CollectionParser.java      # Parser interface
+|   |-- ParserRegistry.java        # Auto-detect registry
+|   |-- PostmanParser.java         # Postman v2.0/v2.1 parser
+|   |-- BrunoParser.java           # Bruno parser and script normalization
+|   |-- OpenApiParser.java         # OpenAPI 2.x/3.x parser
+|   |-- InsomniaParser.java        # Insomnia v4 parser
+|   |-- HarParser.java             # HAR parser
+|   `-- VariableResolver.java      # {{variable}} resolution engine
+|-- runner/
+|   `-- CollectionRunner.java      # Sequential request runner
+|-- ui/
+|   |-- ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
+|   |-- OAuth2Panel.java           # OAuth2 configuration UI
+|   |-- RequestEditorAuthSupport.java # Auth-field orchestration helper
+|   |-- RequestEditorBodySupport.java # Body-mode UI and form table helper
+|   |-- RequestEditorPanel.java    # Workbench request editor
+|   |-- RequestEditorStateMapper.java # Request model <-> editor state mapping helper
+|   |-- RequestEditorTableSupport.java # Shared request-editor table behavior
+|   |-- RequestPreviewTableModel.java # Import preview table model
+|   |-- ResponsePane.java          # Workbench response display
+|   |-- RunnerPreviewTableModel.java # Runner preview table model
+|   |-- RunnerResultTableModel.java # Runner results table model
+|   |-- RunnerTimelineTableModel.java # Runner timeline table model
+|   |-- UnresolvedVariablesDialog.java # Variable preflight modal dialog
+|   `-- tree/
+|       |-- BurpLikeTreeCellRenderer.java # Shared request-tree renderer with explicit hierarchy cues
+|       |-- CheckBoxTreeCellRenderer.java # Legacy checkbox tree renderer
+|       `-- CollectionTreeNode.java # Tree node wrapper for collections, folders, and requests
+`-- utils/
+    |-- HttpUtils.java             # URL parsing utilities
+    |-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
+    |-- RequestBuilder.java        # HTTP message construction + OAuth2 + file uploads
+    |-- RuntimeVariablesJson.java  # Runtime vars/OAuth2 JSON import-export helper
+    |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
+    |-- SharedRequestPipeline.java # Shared build/send/script/OAuth pipeline
+    `-- UnresolvedVariableAnalyzer.java # Preflight unresolved-variable scanner
 ```
 
-Additional current models/UI utilities include `RunnerPreviewRow`, `RunnerStopConditions`, `RunnerTimelineRow`, `UnresolvedVariableIssue`, `RunnerPreviewTableModel`, `RunnerTimelineTableModel`, `UnresolvedVariablesDialog`, `SharedRequestPipeline`, `RuntimeVariablesJson`, and `UnresolvedVariableAnalyzer`.
+Additional current models/UI utilities include `RequestEditorPanel`, `RequestEditorAuthSupport`, `RequestEditorStateMapper`, `RequestEditorBodySupport`, `RequestEditorTableSupport`, `ResponsePane`, `BurpLikeTreeCellRenderer`, `CollectionTreeNode`, `RunnerPreviewRow`, `RunnerStopConditions`, `RunnerTimelineRow`, `UnresolvedVariableIssue`, `RunnerPreviewTableModel`, `RunnerTimelineTableModel`, `UnresolvedVariablesDialog`, `SharedRequestPipeline`, `RuntimeVariablesJson`, and `UnresolvedVariableAnalyzer`.
+
 
 ### 3.2 Class Diagram (Simplified)
 
@@ -288,11 +310,13 @@ Based on grant type:
     Refresh Token -> POST with refresh_token
     |
     v
-TokenStore.store(key, TokenEntry) -> in-memory only (static map, survives extension reloads in same JVM)
+TokenStore.store(key, TokenEntry) -> live in-memory cache (static map, survives extension reloads in same JVM)
     |
     v
 Token auto-injected as {{oauth2_access_token}} in VariableResolver
 ```
+
+If the active collection/runtime state contains OAuth2 values, those values can also be mirrored into workspace snapshots saved through Burp project extension data.
 
 ---
 
@@ -612,7 +636,8 @@ public class TokenStore {
     }
 }
 ```
-- **In-memory only** - never persisted to disk, but stored in a `static ConcurrentHashMap` so tokens survive extension reloads within the same Burp JVM session
+- **Live cache is in-memory** - `TokenStore` uses a `static ConcurrentHashMap`, so live tokens survive extension reloads within the same Burp JVM session
+- **Workspace persistence is separate** - runtime OAuth2 values can also be saved into Burp project extension data when they are present in the captured workspace snapshot
 - Key = `grantType|tokenUrl|clientId`
 - Buffer: 60 seconds before expiry for proactive refresh
 
@@ -915,6 +940,7 @@ API Workbench saves its full workspace state through Burp project extension data
 - On a disk-backed Burp project, the workspace is stored with the project and restored the next time that project is opened.
 - On a temporary Burp project, the workspace stays in memory for the current Burp session only.
 - The saved workspace includes loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime/config values, including access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
+- Workspace saves are coalesced through a debounced final save path, and unchanged serialized snapshots are skipped.
 - Treat Burp project files as sensitive because API Workbench may store secrets there.
 
 ### 10.2 Autosave
@@ -995,7 +1021,13 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **Hardcoded OAuth2 port**: Authorization Code callback is fixed at `localhost:9876`. If occupied, the flow fails.
 - **Project-scoped state**: Montoya extension data is scoped to the Burp project/session. Disk-backed projects carry the saved workspace into the next session; temporary projects do not.
 
-### 12.3 Parser Limitations
+### 12.3 Request Editor Empty-State Behavior
+
+- `RequestEditorPanel` seeds a single blank starter row into empty **Params**, **Headers**, and shared body form tables so operators can type immediately without pressing `+`.
+- The same starter-row behavior is restored after loading a request with no entries, clearing the editor, deleting the last remaining row, or switching into `form-data` / `x-www-form-urlencoded` body modes.
+- Blank starter rows are a UI affordance only. Request building still skips blank-key rows, so untouched starter rows do not serialize into params, headers, or form fields.
+
+### 12.4 Parser Limitations
 
 - **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
 - **Bruno parser**: Uses block extraction for known blocks but is not a full Bruno grammar parser. New Bruno syntax may still need parser updates.
@@ -1058,7 +1090,14 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **Concurrent requests**: 1 (runner is strictly sequential)
 - **Retry backoff**: `delayMs x attempt_number`
 
-### 14.3 Scalability Limits
+### 14.3 Workspace Persistence Write Behavior
+
+- Workspace snapshots are serialized from the EDT-facing UI state through a debounced coordinator.
+- Repeated change notifications within the debounce window collapse into one final save.
+- If the serialized workspace JSON is unchanged from the last successful save, persistence is skipped.
+- This reduces unnecessary disk churn for Burp project files without changing request-editor or runtime behavior.
+
+### 14.4 Scalability Limits
 
 | Metric | Limit | Rationale |
 |--------|-------|-----------|

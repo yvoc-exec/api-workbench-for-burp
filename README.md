@@ -18,7 +18,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Workbench
 - **Collection tree** - checkbox tree with Collection > Folder > Request hierarchy
 - **Env binding** - bind environment files to specific collections (or all) explicitly
-- **Request editor** - edit method, URL, headers, body, auth, and scripts inline
+- **Request editor** - edit method, URL, headers, body, auth, and scripts inline; empty Params, Headers, and form tables expose a starter row so you can type immediately without pressing `+`
 - **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex); pre/post scripts run automatically (respecting script mode)
 - **Import destinations** - Repeater, Sitemap, Intruder
 
@@ -80,7 +80,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Password (ROPC)** - automated with username/password
 - **Authorization Code + PKCE** - opens browser, localhost callback listener
 - **Refresh Token** - auto-refresh before expiry
-- Token storage in-memory only (never persisted to disk)
+- Live token cache stored in-memory via `TokenStore`; workspace snapshots can still persist runtime OAuth2 values in Burp project data
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
@@ -268,9 +268,9 @@ src/main/java/burp/
 |   |-- OAuth2Config.java          # OAuth2 configuration model
 |   |-- OAuth2Manager.java         # Token lifecycle manager
 |   |-- TokenStore.java            # In-memory token cache
-|   |-- ClientCredentialsHandler.java
-|   |-- PasswordGrantHandler.java
-|   |-- RefreshTokenHandler.java
+|   |-- ClientCredentialsHandler.java # Client Credentials grant handler
+|   |-- PasswordGrantHandler.java # Resource Owner Password Credentials grant handler
+|   |-- RefreshTokenHandler.java  # Refresh Token grant handler
 |   `-- AuthorizationCodeHandler.java  # PKCE + localhost callback
 |-- models/
 |   |-- ApiRequest.java            # Unified request model
@@ -295,16 +295,21 @@ src/main/java/burp/
 |-- ui/
 |   |-- ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
 |   |-- OAuth2Panel.java           # OAuth2 configuration UI
+|   |-- RequestEditorAuthSupport.java # Auth-field orchestration helper
+|   |-- RequestEditorBodySupport.java # Body-mode UI and form table helper
 |   |-- RequestEditorPanel.java    # Workbench request editor (method, url, headers, body, auth, scripts)
+|   |-- RequestEditorStateMapper.java # Request model <-> editor state mapping helper
+|   |-- RequestEditorTableSupport.java # Shared request-editor table behavior
 |   |-- ResponsePane.java          # Workbench response display (Pretty/Raw/Hex)
-|   |-- RunnerPreviewTableModel.java
+|   |-- RunnerPreviewTableModel.java # Runner preview table model
 |   |-- tree/
-|   |   |-- CollectionTreeNode.java
-|   |   `-- CheckBoxTreeCellRenderer.java
-|   |-- RequestPreviewTableModel.java
-|   |-- RunnerResultTableModel.java
-|   |-- RunnerTimelineTableModel.java
-|   `-- UnresolvedVariablesDialog.java
+|   |   |-- CollectionTreeNode.java # Tree node wrapper for collections, folders, and requests
+|   |   |-- BurpLikeTreeCellRenderer.java # Shared request-tree renderer with explicit hierarchy cues
+|   |   `-- CheckBoxTreeCellRenderer.java # Legacy checkbox tree renderer
+|   |-- RequestPreviewTableModel.java # Import preview table model
+|   |-- RunnerResultTableModel.java # Runner results table model
+|   |-- RunnerTimelineTableModel.java # Runner timeline table model
+|   `-- UnresolvedVariablesDialog.java # Variable preflight modal dialog
 `-- utils/
     |-- HttpUtils.java             # URL parsing utilities
     |-- RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
@@ -319,7 +324,7 @@ src/main/java/burp/
 
 ## Security Notes
 
-- **Tokens**: Stored in-memory via `TokenStore` (static `ConcurrentHashMap`). Cleared on extension unload or via OAuth2 panel. Survives extension reloads within the same Burp JVM session.
+- **Tokens**: Live cache is stored in-memory via `TokenStore` (static `ConcurrentHashMap`) and is cleared on extension unload or via OAuth2 panel. Workspace snapshots and manual runtime JSON export can still persist OAuth2/runtime values, so treat Burp project files and exported runtime JSON as sensitive.
 - **Runtime JSON exports**: Manual exports can include runtime OAuth2 values such as access/refresh tokens. Treat exported JSON files as sensitive.
 - **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JPasswordField` for secret fields.
 - **PKCE**: Used for Authorization Code flow (S256 method).

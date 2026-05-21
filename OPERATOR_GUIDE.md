@@ -175,6 +175,13 @@ Buttons:
 
 Workbench send uses the same shared execution pipeline as the Collection Runner. That means variables, OAuth2 refresh, pre-request scripts, post-response scripts, and runtime variable updates behave consistently.
 
+Table-based editor tabs always keep one blank starter row available when empty:
+
+- **Params** can be edited immediately without pressing `+`
+- **Headers** can be edited immediately without pressing `+`
+- **form-data** and **x-www-form-urlencoded** body modes can be edited immediately without pressing `+`
+- Blank starter rows are ignored when requests are built, so they do not serialize unless you enter a key
+
 ### Workbench Detail Tabs
 
 | Tab | Purpose |
@@ -195,7 +202,9 @@ Controls:
 
 Environment binding mutates runtime variables. It can override keys already present in the target runtime layer.
 
-### Import Actions
+### Options Pane and Actions Button
+
+The Workbench control strip is titled **Options** and contains the **Actions** button. Use it to choose import destinations and related send options.
 
 Options:
 
@@ -549,6 +558,7 @@ API Workbench saves its full workspace state through Burp project extension data
 
 - Disk-backed Burp projects restore the saved workspace next time the project is opened.
 - Temporary Burp projects keep the workspace only for the current in-memory Burp session.
+- Workspace snapshots are coalesced after edits and unchanged snapshots are skipped to reduce unnecessary Burp project growth.
 - Saved workspace state includes loaded collections, request tree checks/selections, runtime variables, OAuth2 runtime/config values, access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
 - Treat Burp project files as sensitive because API Workbench may store secrets there.
 
