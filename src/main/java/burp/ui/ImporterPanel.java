@@ -37,6 +37,9 @@ import java.util.logging.Logger;
 
 public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
+    private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
+    private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
+    private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
 
     private final UniversalImporter importer;
     private final CollectionRunner runner;
@@ -1330,21 +1333,25 @@ public class ImporterPanel {
         if (requestTreePaths == null || baseKey == null || baseKey.isBlank()) {
             return null;
         }
+        String normalizedBaseKey = normalizeWorkspaceStateKeyDelimiters(baseKey);
         List<DuplicateTreePathCandidate> candidates = new ArrayList<>();
-        if (requestTreePaths.containsKey(baseKey)) {
-            candidates.add(new DuplicateTreePathCandidate(1, baseKey, requestTreePaths.get(baseKey)));
-        }
-        String prefix = baseKey + '\u001F' + "duplicate=";
         for (Map.Entry<String, String> entry : requestTreePaths.entrySet()) {
-            String key = entry.getKey();
-            if (key == null || !key.startsWith(prefix)) {
+            String key = normalizeWorkspaceStateKeyDelimiters(entry.getKey());
+            if (key == null || key.isBlank()) {
                 continue;
             }
-            int ordinal = parseDuplicateOrdinal(key.substring(prefix.length()));
-            if (ordinal < 0) {
+            if (normalizedBaseKey.equals(key)) {
+                candidates.add(new DuplicateTreePathCandidate(1, key, entry.getValue()));
                 continue;
             }
-            candidates.add(new DuplicateTreePathCandidate(ordinal, key, entry.getValue()));
+            String prefix = normalizedBaseKey + WORKSPACE_KEY_DELIMITER + "duplicate=";
+            if (key.startsWith(prefix)) {
+                int ordinal = parseDuplicateOrdinal(key.substring(prefix.length()));
+                if (ordinal < 0) {
+                    continue;
+                }
+                candidates.add(new DuplicateTreePathCandidate(ordinal, key, entry.getValue()));
+            }
         }
         if (candidates.isEmpty()) {
             return null;
@@ -1371,7 +1378,41 @@ public class ImporterPanel {
                                                             ApiRequest request,
                                                             int requestIndex) {
         return "collectionIndex=" + collectionIndex
-                + '\u001F' + workspaceRequestIdentityKey(collectionName, request, requestIndex);
+                + WORKSPACE_KEY_DELIMITER + workspaceRequestIdentityKey(collectionName, request, requestIndex);
+    }
+
+    static String normalizeWorkspaceStateKeyDelimiters(String key) {
+        if (key == null || key.isEmpty()) {
+            return key;
+        }
+        return key
+                .replace(WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER, String.valueOf(WORKSPACE_KEY_DELIMITER))
+                .replace(WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER, String.valueOf(WORKSPACE_KEY_DELIMITER));
+    }
+
+    static Map<String, String> normalizeWorkspaceRequestTreePaths(Map<String, String> requestTreePaths) {
+        LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
+        if (requestTreePaths == null || requestTreePaths.isEmpty()) {
+            return normalized;
+        }
+        for (Map.Entry<String, String> entry : requestTreePaths.entrySet()) {
+            String key = normalizeWorkspaceStateKeyDelimiters(entry.getKey());
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String resolvedKey = key;
+            if (normalized.containsKey(resolvedKey)) {
+                int duplicateOrdinal = 2;
+                String duplicateKey = resolvedKey + WORKSPACE_KEY_DELIMITER + "duplicate=" + duplicateOrdinal;
+                while (normalized.containsKey(duplicateKey)) {
+                    duplicateOrdinal++;
+                    duplicateKey = resolvedKey + WORKSPACE_KEY_DELIMITER + "duplicate=" + duplicateOrdinal;
+                }
+                resolvedKey = duplicateKey;
+            }
+            normalized.put(resolvedKey, entry.getValue());
+        }
+        return normalized;
     }
 
     /**
@@ -2217,7 +2258,7 @@ public class ImporterPanel {
         }
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
-                    ? new LinkedHashMap<>(state.requestTreePaths)
+                    ? normalizeWorkspaceRequestTreePaths(state.requestTreePaths)
                     : Collections.emptyMap();
             pendingWorkspaceExpandedTreePathKeys = state.expandedTreePathKeys != null
                     ? new ArrayList<>(state.expandedTreePathKeys)

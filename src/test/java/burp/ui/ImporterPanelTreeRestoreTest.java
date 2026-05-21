@@ -260,6 +260,56 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void restoreWorkspaceStateResolvesEscapedUppercaseTreePathKeys() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-escaped-upper", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String canonicalKey = ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0);
+        String escapedKey = canonicalKey.replace("\u001F", "\\u001F");
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(escapedKey, "Auth/OAuth");
+
+        panel.restoreWorkspaceState(state);
+
+        JTree tree = requestTree(panel);
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(requestNames(childFolder(childFolder(apimNode, "Auth"), "OAuth"))).containsExactly("Get Token");
+    }
+
+    @Test
+    void restoreWorkspaceStateResolvesEscapedLowercaseTreePathKeys() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-escaped-lower", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String canonicalKey = ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0);
+        String escapedKey = canonicalKey.replace("\u001F", "\\u001f");
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(escapedKey, "Auth/OAuth");
+
+        panel.restoreWorkspaceState(state);
+
+        JTree tree = requestTree(panel);
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(requestNames(childFolder(childFolder(apimNode, "Auth"), "OAuth"))).containsExactly("Get Token");
+    }
+
+    @Test
     void emptyWorkspaceTreePathKeepsRootLevelRequestAtRoot() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
