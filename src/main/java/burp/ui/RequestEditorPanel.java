@@ -53,7 +53,6 @@ public class RequestEditorPanel extends JPanel {
     private burp.utils.RequestBuilder requestBuilder;
     private boolean loadingRequest = false;
     private boolean syncingDerivedHeaders = false;
-    private boolean committingEdits = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -311,19 +310,10 @@ public class RequestEditorPanel extends JPanel {
     }
 
     public void commitAllEdits() {
-        if (committingEdits) {
-            return;
-        }
-        committingEdits = true;
-        try {
-            RequestEditorTableSupport.commitAllEdits(paramsTable, headersTable, bodyFormTable);
-        } finally {
-            committingEdits = false;
-        }
+        RequestEditorTableSupport.commitAllEdits(paramsTable, headersTable, bodyFormTable);
     }
 
     public ApiRequest buildRequestFromUI() {
-        commitAllEdits();
         return RequestEditorStateMapper.buildRequest(createStateMapperContext());
     }
 

@@ -392,6 +392,7 @@ public class ImporterPanel {
         }
         ApiRequest liveRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
         ApiCollection col = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+        requestEditor.commitAllEdits();
         ApiRequest edited = requestEditor.buildRequestFromUI();
         if (edited == null || liveRequest == null) {
             appendImportLog("No request loaded in editor.");
