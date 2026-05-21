@@ -9,6 +9,8 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.*;
 import java.util.List;
 
@@ -50,6 +52,7 @@ public class RequestEditorPanel extends JPanel {
     private burp.models.ApiCollection currentCollection;
     private burp.utils.RequestBuilder requestBuilder;
     private boolean loadingRequest = false;
+    private boolean syncingDerivedHeaders = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -158,11 +161,11 @@ public class RequestEditorPanel extends JPanel {
         authTypeBox = new JComboBox<>(new String[]{"inherit", "none", "bearer", "basic", "apikey", "oauth2"});
         authTypeBox.addActionListener(e -> {
             rebuildAuthFields();
-            refreshAll();
+            handleAuthUiChangedIfReady();
         });
         panel.add(authTypeBox, BorderLayout.NORTH);
         JPanel authFieldsPanel = new JPanel(new GridLayout(0, 2, 5, 5));
-        authUi = new RequestEditorAuthSupport.AuthUi(authFieldsPanel, this::refreshAll);
+        authUi = new RequestEditorAuthSupport.AuthUi(authFieldsPanel, this::handleAuthUiChangedIfReady);
         panel.add(authFieldsPanel, BorderLayout.CENTER);
         rebuildAuthFields();
         return panel;
@@ -185,7 +188,7 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private JPanel createBodyPanel() {
-        bodyUi = RequestEditorBodySupport.createBodyUi(this::refreshAll);
+        bodyUi = RequestEditorBodySupport.createBodyUi(this::handleBodyUiChangedIfReady);
         bodyRawArea = bodyUi.bodyRawArea;
         bodyFormTable = bodyUi.bodyFormTable;
         bodyFormModel = bodyUi.bodyFormModel;
@@ -231,8 +234,8 @@ public class RequestEditorPanel extends JPanel {
         urlField.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshAllIfReady));
         headersModel.addTableModelListener(e -> refreshResolvedMirrorIfReady());
         paramsModel.addTableModelListener(e -> refreshAllIfReady());
-        bodyFormModel.addTableModelListener(e -> refreshAllIfReady());
-        bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshAllIfReady));
+        bodyFormModel.addTableModelListener(e -> handleBodyUiChangedIfReady());
+        bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::handleBodyUiChangedIfReady));
         preScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
         postScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
     }
@@ -245,6 +248,20 @@ public class RequestEditorPanel extends JPanel {
 
     private void refreshResolvedMirrorIfReady() {
         if (!loadingRequest) {
+            refreshResolvedMirror();
+        }
+    }
+
+    private void handleAuthUiChangedIfReady() {
+        if (!loadingRequest && headersModel != null) {
+            syncAuthorizationHeaderFromCurrentAuth();
+            refreshResolvedMirror();
+        }
+    }
+
+    private void handleBodyUiChangedIfReady() {
+        if (!loadingRequest && headersModel != null) {
+            syncContentTypeHeaderFromCurrentBody();
             refreshResolvedMirror();
         }
     }
@@ -414,6 +431,146 @@ public class RequestEditorPanel extends JPanel {
 
     static boolean isMeaningfulAuthSource(String source) {
         return source != null && !source.isBlank() && !"none".equalsIgnoreCase(source.trim());
+    }
+
+    private void syncAuthorizationHeaderFromCurrentAuth() {
+        if (syncingDerivedHeaders) {
+            return;
+        }
+        String selectedType = (String) authTypeBox.getSelectedItem();
+        ApiRequest.Auth auth = "inherit".equals(selectedType)
+                ? (currentRequest != null ? currentRequest.auth : null)
+                : buildAuthFromFields(selectedType);
+
+        String authorization = buildAuthorizationHeaderValue(auth);
+        syncingDerivedHeaders = true;
+        try {
+            if (authorization == null) {
+                removeHeaderRow("Authorization");
+            } else {
+                upsertHeaderRow("Authorization", authorization);
+            }
+            RequestEditorStateMapper.ensureStarterRow(headersModel);
+        } finally {
+            syncingDerivedHeaders = false;
+        }
+    }
+
+    private String buildAuthorizationHeaderValue(ApiRequest.Auth auth) {
+        if (auth == null || auth.type == null) {
+            return null;
+        }
+        switch (auth.type.toLowerCase(Locale.ROOT)) {
+            case "bearer":
+                String token = auth.properties.getOrDefault("token", auth.properties.get("value"));
+                if (token == null || token.isBlank()) {
+                    return null;
+                }
+                String prefix = auth.properties.getOrDefault("prefix", "Bearer");
+                return prefix + " " + token;
+            case "basic":
+                String username = auth.properties.getOrDefault("username", auth.properties.get("user"));
+                String password = auth.properties.getOrDefault("password", auth.properties.get("pass"));
+                if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
+                    return null;
+                }
+                String credentials = (username != null ? username : "") + ":" + (password != null ? password : "");
+                return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+            case "oauth2":
+                String accessToken = auth.properties.get("accessToken");
+                if (accessToken == null || accessToken.isBlank()) {
+                    return null;
+                }
+                return "Bearer " + accessToken;
+            default:
+                return null;
+        }
+    }
+
+    private void syncContentTypeHeaderFromCurrentBody() {
+        if (syncingDerivedHeaders) {
+            return;
+        }
+        String bodyMode = getBodyModeInternal();
+        String contentType = null;
+        if ("raw".equals(bodyMode)) {
+            String raw = bodyRawArea.getText() != null ? bodyRawArea.getText().trim() : "";
+            String configured = currentRequest != null && currentRequest.body != null ? currentRequest.body.contentType : null;
+            if (configured != null && !configured.isBlank()) {
+                contentType = configured;
+            } else if (!raw.isEmpty()) {
+                contentType = (raw.startsWith("{") || raw.startsWith("[")) ? "application/json" : "text/plain";
+            }
+        } else if ("graphql".equals(bodyMode)) {
+            contentType = "application/json";
+        } else if ("urlencoded".equals(bodyMode)) {
+            contentType = "application/x-www-form-urlencoded";
+        } else if ("formdata".equals(bodyMode)) {
+            String existing = findHeaderValue("Content-Type");
+            contentType = (existing != null && existing.toLowerCase(Locale.ROOT).startsWith("multipart/form-data"))
+                    ? existing
+                    : "multipart/form-data";
+        } else if ("file".equals(bodyMode)) {
+            String configured = currentRequest != null && currentRequest.body != null ? currentRequest.body.contentType : null;
+            if (configured != null && !configured.isBlank()) {
+                contentType = configured;
+            }
+        }
+
+        syncingDerivedHeaders = true;
+        try {
+            if (contentType == null) {
+                removeHeaderRow("Content-Type");
+            } else {
+                upsertHeaderRow("Content-Type", contentType);
+            }
+            RequestEditorStateMapper.ensureStarterRow(headersModel);
+        } finally {
+            syncingDerivedHeaders = false;
+        }
+    }
+
+    private void upsertHeaderRow(String key, String value) {
+        int blankRow = -1;
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String existingKey = (String) headersModel.getValueAt(i, 0);
+            if (existingKey == null || existingKey.trim().isEmpty()) {
+                if (blankRow < 0) {
+                    blankRow = i;
+                }
+                continue;
+            }
+            if (existingKey.equalsIgnoreCase(key)) {
+                headersModel.setValueAt(key, i, 0);
+                headersModel.setValueAt(value, i, 1);
+                return;
+            }
+        }
+        if (blankRow >= 0) {
+            headersModel.setValueAt(key, blankRow, 0);
+            headersModel.setValueAt(value, blankRow, 1);
+        } else {
+            headersModel.addRow(new Object[]{key, value});
+        }
+    }
+
+    private void removeHeaderRow(String key) {
+        for (int i = headersModel.getRowCount() - 1; i >= 0; i--) {
+            String existingKey = (String) headersModel.getValueAt(i, 0);
+            if (existingKey != null && existingKey.equalsIgnoreCase(key)) {
+                headersModel.removeRow(i);
+            }
+        }
+    }
+
+    private String findHeaderValue(String key) {
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String existingKey = (String) headersModel.getValueAt(i, 0);
+            if (existingKey != null && existingKey.equalsIgnoreCase(key)) {
+                return (String) headersModel.getValueAt(i, 1);
+            }
+        }
+        return null;
     }
 
     private void refreshResolvedMirror() {
