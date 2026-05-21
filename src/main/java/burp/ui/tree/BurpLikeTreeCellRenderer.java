@@ -1,6 +1,7 @@
 package burp.ui.tree;
 
 import javax.swing.*;
+import javax.swing.border.Border;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.TreeCellRenderer;
 import java.awt.*;
@@ -12,10 +13,15 @@ import java.awt.*;
  *   <li>Popup selection trees (checkbox mode)</li>
  * </ul>
  *
- * <p>Provides consistent flat icons, compact spacing, and graceful fallback
- * to Swing defaults if icon creation fails.</p>
+ * <p>Provides consistent flat icons, compact spacing, explicit depth-based
+ * hierarchy padding, and a subtle guide cue so nesting is readable regardless
+ * of the current Look-and-Feel.</p>
  */
 public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
+
+    private static final int BASE_INDENT = 4;
+    private static final int LEVEL_INDENT = 14;
+    private static final Color GUIDE_COLOR = new Color(200, 200, 200);
 
     private final boolean checkboxMode;
     private final DefaultTreeCellRenderer fallback = new DefaultTreeCellRenderer();
@@ -65,11 +71,13 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
         CollectionTreeNode node = (CollectionTreeNode) value;
         Icon icon = resolveIcon(node, expanded, leaf);
         String text = value.toString();
+        int depth = computeDepth(node);
 
         if (checkboxMode) {
             checkBox.setSelected(node.isChecked());
             label.setText(text);
             label.setIcon(icon);
+            label.setBorder(createHierarchyBorder(depth));
             if (selected) {
                 label.setForeground(tree.hasFocus()
                         ? safeColor("Tree.selectionForeground", Color.WHITE)
@@ -83,8 +91,23 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
         Component c = fallback.getTreeCellRendererComponent(tree, text, selected, expanded, leaf, row, hasFocus);
         if (c instanceof JLabel) {
             ((JLabel) c).setIcon(icon);
+            ((JLabel) c).setBorder(createHierarchyBorder(depth));
         }
         return c;
+    }
+
+    private static int computeDepth(CollectionTreeNode node) {
+        return Math.max(0, node.getLevel() - 1);
+    }
+
+    private static Border createHierarchyBorder(int depth) {
+        int leftPadding = BASE_INDENT + depth * LEVEL_INDENT;
+        Border padding = BorderFactory.createEmptyBorder(0, leftPadding, 0, 0);
+        if (depth > 0) {
+            Border guide = BorderFactory.createMatteBorder(0, 1, 0, 0, GUIDE_COLOR);
+            return BorderFactory.createCompoundBorder(guide, padding);
+        }
+        return padding;
     }
 
     private static Icon resolveIcon(CollectionTreeNode node, boolean expanded, boolean leaf) {

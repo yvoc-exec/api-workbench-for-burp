@@ -358,7 +358,7 @@ public class ImporterPanel {
     private JPanel createActionsRow() {
         ensureWorkbenchActionDefaultsInitialized();
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        panel.setBorder(BorderFactory.createTitledBorder("Actions"));
+        panel.setBorder(BorderFactory.createTitledBorder("Options"));
 
         importBtn = new JButton("Actions");
         importBtn.setEnabled(false);
@@ -3568,7 +3568,7 @@ public class ImporterPanel {
             return;
         }
         persistCurrentRequestEditorState();
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Actions", Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Options", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setLayout(new BorderLayout(8, 8));
 
         JLabel selectedCountLabel = new JLabel("0 requests selected");
