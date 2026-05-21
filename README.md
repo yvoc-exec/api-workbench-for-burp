@@ -35,6 +35,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Custom manual variables (Variables tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
+- Effective header preview in the Workbench Resolved tab (shows synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
@@ -145,8 +146,8 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 1. Load and select an ordered set of requests in the Workbench tree.
 2. Switch to the **Collection Runner** tab.
 3. Configure delay, retries, follow-redirects, and stop conditions.
-4. Click **Preview Run** to inspect the final ordered request list, URL previews, unresolved variables, and auth status.
-5. Click **Start Collection Runner**. If unresolved variables remain after defaulted placeholders are ignored, use the modal quick-entry fields to apply runtime values or continue intentionally.
+4. Click **Start Collection Runner** to open the preview dialog, which shows the final ordered request list, URL previews, unresolved variables, and auth status.
+5. Click **Start Runner** in the preview dialog to begin execution. If unresolved variables remain after defaulted placeholders are ignored, use the modal quick-entry fields to apply runtime values or start intentionally.
 6. Use **Pause**, **Resume**, or **Step** while debugging chained APIs.
 7. Results and the runner timeline update in real time; extracted variables feed automatically into downstream requests.
 

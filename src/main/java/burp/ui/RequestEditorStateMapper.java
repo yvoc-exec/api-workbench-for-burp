@@ -2,14 +2,14 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.parser.VariableResolver;
+import burp.utils.RequestBuilder;
 
 import javax.swing.JComboBox;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -43,6 +43,9 @@ final class RequestEditorStateMapper {
         final Function<ApiRequest, String> resolveEditorAuthMode;
         final Function<String, ApiRequest.Auth> buildAuthFromFields;
         final Runnable refreshResolvedMirror;
+        final RequestBuilder requestBuilder;
+        Set<String> synthesizedKeys = new LinkedHashSet<>();
+        Map<String, String> synthesizedValues = new LinkedHashMap<>();
 
         Context(JComboBox<String> methodBox,
                 JTextField urlField,
@@ -60,7 +63,8 @@ final class RequestEditorStateMapper {
                 Supplier<ApiCollection> currentCollectionSupplier,
                 Function<ApiRequest, String> resolveEditorAuthMode,
                 Function<String, ApiRequest.Auth> buildAuthFromFields,
-                Runnable refreshResolvedMirror) {
+                Runnable refreshResolvedMirror,
+                RequestBuilder requestBuilder) {
             this.methodBox = methodBox;
             this.urlField = urlField;
             this.paramsModel = paramsModel;
@@ -78,6 +82,7 @@ final class RequestEditorStateMapper {
             this.resolveEditorAuthMode = resolveEditorAuthMode;
             this.buildAuthFromFields = buildAuthFromFields;
             this.refreshResolvedMirror = refreshResolvedMirror;
+            this.requestBuilder = requestBuilder;
         }
     }
 
@@ -106,6 +111,7 @@ final class RequestEditorStateMapper {
                 ctx.headersModel.addRow(new Object[]{h.key, h.value, !h.disabled});
             }
         }
+        loadEffectiveHeaders(req, ctx);
         ensureStarterRow(ctx.headersModel);
 
         ctx.bodyRawArea.setText("");
@@ -166,13 +172,33 @@ final class RequestEditorStateMapper {
         }
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(ctx.currentCollectionSupplier.get(), req);
 
+        Set<String> synthesizedKeys = ctx.synthesizedKeys != null ? ctx.synthesizedKeys : Collections.emptySet();
+        Map<String, String> synthesizedValues = ctx.synthesizedValues != null ? ctx.synthesizedValues : Collections.emptyMap();
+
         for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
             String key = (String) ctx.headersModel.getValueAt(i, 0);
             String value = (String) ctx.headersModel.getValueAt(i, 1);
             Boolean enabled = (Boolean) ctx.headersModel.getValueAt(i, 2);
-            if (key != null && !key.trim().isEmpty()) {
-                req.headers.add(new ApiRequest.Header(key, value != null ? value : "", enabled == null || !enabled));
+            if (key == null || key.trim().isEmpty()) {
+                continue;
             }
+            String lowerKey = key.toLowerCase(Locale.ROOT);
+            boolean isSynthesized = synthesizedKeys.contains(lowerKey);
+            String synthValue = synthesizedValues.get(lowerKey);
+            boolean isEdited = isSynthesized && (synthValue == null || !synthValue.equals(value));
+
+            if (isSynthesized && !isEdited && Boolean.TRUE.equals(enabled)) {
+                // Unmodified synthesized header, checked: let RequestBuilder synthesize it;
+                // do not persist into explicit headers.
+                continue;
+            }
+            if (isSynthesized && !isEdited && !Boolean.TRUE.equals(enabled)) {
+                // Unmodified synthesized header, unchecked: persist as disabled suppression.
+                req.headers.add(new ApiRequest.Header(key, value != null ? value : "", true));
+                continue;
+            }
+            // Explicit or edited header: persist normally.
+            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", enabled == null || !enabled));
         }
 
         String bodyMode = ctx.getBodyModeInternal.get();
@@ -236,9 +262,75 @@ final class RequestEditorStateMapper {
         ctx.refreshResolvedMirror.run();
     }
 
-    static void ensureStarterRow(DefaultTableModel model) {
-        if (model.getRowCount() > 0) {
+    static void loadEffectiveHeaders(ApiRequest req, Context ctx) {
+        if (req == null) {
             return;
+        }
+        RequestBuilder builder = ctx.requestBuilder != null ? ctx.requestBuilder : new RequestBuilder(null, null);
+        VariableResolver resolver = new VariableResolver();
+        ApiCollection collection = ctx.currentCollectionSupplier.get();
+        if (collection != null) {
+            resolver.addEnvironmentVariables(collection);
+            resolver.addCollectionVariables(collection);
+            resolver.addFolderVariables(collection, req);
+            if (collection.runtimeOAuth2 != null) {
+                resolver.addAll(collection.runtimeOAuth2);
+            }
+            if (collection.runtimeVars != null) {
+                resolver.addAll(collection.runtimeVars);
+            }
+        }
+        resolver.addRequestVariables(req);
+
+        try {
+            List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
+            Set<String> explicitKeys = new HashSet<>();
+            if (req.headers != null) {
+                for (ApiRequest.Header h : req.headers) {
+                    if (h.key != null) {
+                        explicitKeys.add(h.key.toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+
+            Set<String> synthesizedKeys = new LinkedHashSet<>();
+            Map<String, String> synthesizedValues = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : effective) {
+                String key = entry.getKey();
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+                if (!explicitKeys.contains(lowerKey)) {
+                    boolean alreadyInModel = false;
+                    for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
+                        String modelKey = (String) ctx.headersModel.getValueAt(i, 0);
+                        if (modelKey != null && modelKey.equalsIgnoreCase(key)) {
+                            alreadyInModel = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyInModel) {
+                        ctx.headersModel.addRow(new Object[]{key, entry.getValue(), true});
+                    }
+                    synthesizedKeys.add(lowerKey);
+                    synthesizedValues.put(lowerKey, entry.getValue());
+                }
+            }
+            ctx.synthesizedKeys = synthesizedKeys;
+            ctx.synthesizedValues = synthesizedValues;
+        } catch (Exception e) {
+            // Effective headers are best-effort; fall back to explicit-only view.
+        }
+    }
+
+    static void ensureStarterRow(DefaultTableModel model) {
+        boolean isHeaders = model.getColumnCount() == 3;
+        if (model.getRowCount() > 0) {
+            if (!isHeaders) {
+                return;
+            }
+            String lastKey = (String) model.getValueAt(model.getRowCount() - 1, 0);
+            if (lastKey == null || lastKey.trim().isEmpty()) {
+                return;
+            }
         }
         int cols = model.getColumnCount();
         Object[] row = new Object[cols];

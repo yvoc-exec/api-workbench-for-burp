@@ -59,7 +59,7 @@ This guide is for operators using API Workbench during API testing, debugging, a
    - **Edit/send one request**: click a request, edit it, then click **Send**.
    - **Create Repeater tabs**: check **Repeater**, then click **Import Checked**.
    - **Send live baseline traffic**: check **Sitemap (Live)**, then click **Import Checked**.
-   - **Run a chained flow**: switch to **Collection Runner**, click **Preview Run**, then start.
+   - **Run a chained flow**: switch to **Collection Runner**, click **Start Collection Runner**, review the preview, then confirm.
 
 ---
 
@@ -160,7 +160,7 @@ Editable request areas:
 | Area | What You Can Change |
 ------|---------------------|
 | Method / URL | HTTP method, URL, query parameters |
-| Headers | Add, remove, enable, disable headers |
+| Headers | Add, remove, enable, disable headers. Effective headers (Accept, User-Agent, Cache-Control, Host, auth, and body-derived Content-Type) are synthesized into the table automatically. Uncheck a synthesized header to suppress it; edit its value to override it permanently. |
 | Auth | Select inherit or an auth type, then edit auth properties |
 | Body | Raw, URL-encoded, form-data, GraphQL, file-like modes where supported |
 | Scripts | Pre-request and post-response scripts |
@@ -175,12 +175,13 @@ Buttons:
 
 Workbench send uses the same shared execution pipeline as the Collection Runner. That means variables, OAuth2 refresh, pre-request scripts, post-response scripts, and runtime variable updates behave consistently.
 
-Table-based editor tabs always keep one blank starter row available when empty:
+Table-based editor tabs always keep one blank starter row available when empty (params, body form) or after effective headers (headers):
 
 - **Params** can be edited immediately without pressing `+`
-- **Headers** can be edited immediately without pressing `+`
+- **Headers** shows effective headers plus a blank starter row for quick entry
 - **form-data** and **x-www-form-urlencoded** body modes can be edited immediately without pressing `+`
 - Blank starter rows are ignored when requests are built, so they do not serialize unless you enter a key
+- Unmodified synthesized headers are not persisted into the request; only explicit, edited, or disabled headers are saved
 
 ### Workbench Detail Tabs
 
@@ -189,6 +190,15 @@ Table-based editor tabs always keep one blank starter row available when empty:
 | **Request** | Final built request that was sent |
 | **Response** | Response returned by Burp HTTP client |
 | **Meta** | Request name, method, auth source, resolved URL, status, elapsed time, response size, unresolved tokens |
+
+### Resolved Tab
+
+The **Resolved** tab in the request editor shows the final effective request state after variable resolution:
+
+- **Resolved URL** — final URL with query parameters substituted
+- **Resolved Auth** — selected auth type and resolved properties
+- **Resolved Headers (Effective)** — the exact headers that will be sent, including synthesized defaults, auth headers, body Content-Type, and computed Host. Disabled headers are listed separately as suppressed.
+- **Resolved Body** — body mode and resolved content
 
 ### Environment Binding
 
@@ -424,8 +434,7 @@ Use the Collection Runner for stateful, ordered API flows.
 
 | Button | Behavior |
 |--------|----------|
-| **Preview Run** | Opens final ordered request list before sending |
-| **Start Collection Runner** | Starts selected run |
+| **Start Collection Runner** | Opens the preview dialog, then starts the selected run after operator confirmation |
 | **Cancel** | Requests cancellation and waits until runner is idle |
 | **Pause** | Pause after the current request completes |
 | **Resume** | Continue a paused run |
@@ -689,7 +698,7 @@ Use when you want Burp Target populated. This sends live traffic.
 2. Select login request and dependent API requests.
 3. Ensure login response script extracts token/user IDs.
 4. Open Runner.
-5. Click **Preview Run**.
+5. Click **Start Collection Runner** to preview and start the token request.
 6. Apply missing variables if prompted.
 7. Start runner.
 8. Watch timeline for variable changes.

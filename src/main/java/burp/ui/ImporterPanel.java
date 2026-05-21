@@ -44,6 +44,7 @@ public class ImporterPanel {
     private final UniversalImporter importer;
     private final CollectionRunner runner;
     private final OAuth2Manager oauth2Manager;
+    private final burp.utils.RequestBuilder requestBuilder;
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -88,7 +89,7 @@ public class ImporterPanel {
     private JSpinner stopAfterFailuresSpinner;
     private JCheckBox followRedirectsBox;
     private JCheckBox runnerDebugRawRequestBox;
-    private JButton pauseRunnerBtn, resumeRunnerBtn, stepRunnerBtn, previewRunnerBtn, startRunnerBtn, cancelRunnerBtn;
+    private JButton pauseRunnerBtn, resumeRunnerBtn, stepRunnerBtn, startRunnerBtn, cancelRunnerBtn;
     private RunnerPreviewTableModel runnerPreviewModel;
     private javax.swing.Timer runnerCancelPollTimer;
 
@@ -148,6 +149,7 @@ public class ImporterPanel {
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager, burp.utils.ScriptMode scriptMode) {
         this.scriptMode = scriptMode;
         this.oauth2Manager = oauth2Manager;
+        this.requestBuilder = new burp.utils.RequestBuilder(importer.getApi(), oauth2Manager);
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.oauth2Panel.setTokenAcquiredCollectionSupplier(this::getSelectedOAuth2Collection);
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
@@ -268,10 +270,10 @@ public class ImporterPanel {
                 if (node instanceof CollectionTreeNode) {
                     CollectionTreeNode ctn = (CollectionTreeNode) node;
                     if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
-                        requestEditor.loadRequest(ctn.request);
                         ApiCollection selectedCollection = findCollectionForNode(ctn);
                         requestEditor.setCurrentCollection(selectedCollection);
                         syncRequestEditorRuntimeContext(ctn.request, selectedCollection);
+                        requestEditor.loadRequest(ctn.request);
                     }
                 }
             }
@@ -292,6 +294,7 @@ public class ImporterPanel {
 
     private JComponent createRightWorkbenchPanel() {
         requestEditor = new RequestEditorPanel();
+        requestEditor.setRequestBuilder(requestBuilder);
 
         requestEditor.setSendActionListener(() -> executeWorkbenchSend());
 
@@ -997,12 +1000,9 @@ public class ImporterPanel {
         stepRunnerBtn = new JButton("Step");
         stepRunnerBtn.setEnabled(false);
         stepRunnerBtn.addActionListener(e -> stepRunnerFromUi());
-        previewRunnerBtn = new JButton("Preview Run");
-        previewRunnerBtn.setEnabled(false);
-        previewRunnerBtn.addActionListener(e -> startRunner(true));
         startRunnerBtn = new JButton("Start Collection Runner");
         startRunnerBtn.setEnabled(false);
-        startRunnerBtn.addActionListener(e -> startRunner(false));
+        startRunnerBtn.addActionListener(e -> startRunner(true));
         cancelRunnerBtn = new JButton("Cancel");
         cancelRunnerBtn.setEnabled(false);
         cancelRunnerBtn.addActionListener(e -> cancelRunnerFromUi());
@@ -1010,7 +1010,6 @@ public class ImporterPanel {
         btnPanel.add(pauseRunnerBtn);
         btnPanel.add(resumeRunnerBtn);
         btnPanel.add(stepRunnerBtn);
-        btnPanel.add(previewRunnerBtn);
         btnPanel.add(startRunnerBtn);
         btnPanel.add(cancelRunnerBtn);
         actionRow.add(btnPanel, BorderLayout.EAST);
@@ -1089,9 +1088,9 @@ public class ImporterPanel {
         refreshCollectionCombos();
         requestTree.repaint();
         if (requestEditor != null && requestEditor.getCurrentCollection() == collection && requestEditor.getCurrentRequest() != null) {
-            requestEditor.loadRequest(requestEditor.getCurrentRequest());
             requestEditor.setCurrentCollection(collection);
             syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
+            requestEditor.loadRequest(requestEditor.getCurrentRequest());
         }
         notifyWorkspaceChanged();
     }
@@ -2126,7 +2125,6 @@ public class ImporterPanel {
                     importBtn.setEnabled(true);
                     sendToRunnerBtn.setEnabled(true);
                     startRunnerBtn.setEnabled(true);
-                    previewRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
                     if (envApplyAllBtn != null) {
                         envApplyAllBtn.setEnabled(selectedEnv != null);
@@ -2208,7 +2206,6 @@ public class ImporterPanel {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
             startRunnerBtn.setEnabled(false);
-            previewRunnerBtn.setEnabled(false);
             removeCollectionBtn.setEnabled(false);
         }
         runnerQueuedRequests.removeIf(req -> requestToCollectionMap.get(req) == null);
@@ -2402,9 +2399,6 @@ public class ImporterPanel {
         } else {
             if (startRunnerBtn != null) {
                 startRunnerBtn.setEnabled(hasCollections);
-            }
-            if (previewRunnerBtn != null) {
-                previewRunnerBtn.setEnabled(hasCollections);
             }
             if (cancelRunnerBtn != null) {
                 cancelRunnerBtn.setEnabled(false);
@@ -3785,7 +3779,6 @@ public class ImporterPanel {
                         loadedCollections.size() + " collection(s))");
                     setRunnerControlsRunning(true);
                     startRunnerBtn.setEnabled(false);
-                    previewRunnerBtn.setEnabled(false);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
                 });
@@ -3816,7 +3809,6 @@ public class ImporterPanel {
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
                     setRunnerControlsRunning(false);
                     startRunnerBtn.setEnabled(true);
-                    previewRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -3828,7 +3820,6 @@ public class ImporterPanel {
                     appendRunnerLog("ERROR: " + message);
                     setRunnerControlsRunning(false);
                     startRunnerBtn.setEnabled(true);
-                    previewRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -3855,9 +3846,6 @@ public class ImporterPanel {
         boolean paused = running && runner != null && runner.isPaused();
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(!running && hasCollections);
-        }
-        if (previewRunnerBtn != null) {
-            previewRunnerBtn.setEnabled(!running && hasCollections);
         }
         if (cancelRunnerBtn != null) {
             cancelRunnerBtn.setEnabled(running);
@@ -3922,9 +3910,6 @@ public class ImporterPanel {
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(hasCollections);
         }
-        if (previewRunnerBtn != null) {
-            previewRunnerBtn.setEnabled(hasCollections);
-        }
     }
 
     private boolean hasRunnerPreviewWarnings(List<RunnerPreviewRow> previewRows) {
@@ -3986,7 +3971,7 @@ public class ImporterPanel {
         content.add(previewScroll, BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        JButton continueBtn = new JButton("Continue");
+        JButton continueBtn = new JButton("Start Runner");
         JButton cancelBtn = new JButton("Cancel");
         final boolean[] accepted = {false};
         continueBtn.addActionListener(e -> {

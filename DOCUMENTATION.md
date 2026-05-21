@@ -88,7 +88,7 @@ Load multiple collections simultaneously:
 ### 2.4 Collection Runner
 
 - **Sequential execution** with configurable inter-request delay
-- **Run preview** before sending, with collection, method, URL preview, unresolved variables, and auth status
+- **Run preview** shown automatically before sending, with collection, method, URL preview, unresolved variables, and auth status
 - **Pause / resume / step** controls for debugging chained APIs
 - **Variable extraction** from JSON responses via scripts or comments
 - **Assertions** (status code, header presence, JSON property existence)
@@ -519,6 +519,19 @@ Unified precedence across Workbench Send, Import, and Collection Runner (highest
 
 Before Workbench send, import, and runner start, `UnresolvedVariableAnalyzer` scans URL, headers, bodies, GraphQL payloads, form fields, and auth properties. Missing variables are shown in a modal with quick-entry fields; applied values are stored in the selected collection's runtime variables.
 
+### Effective Headers and Operator Suppressions
+
+`RequestBuilder` synthesizes headers in four layers:
+
+1. **Compatibility defaults** — `Accept`, `User-Agent`, `Cache-Control`
+2. **Explicit request headers** — from the request definition or editor
+3. **Auth headers** — `Authorization`, `Cookie`, or custom API-key headers (uses `putDefault` so explicit headers win)
+4. **Computed headers** — `Host` (from parsed URL), `Content-Type` (from body mode), `Content-Length` (recomputed from body bytes)
+
+The **Workbench Resolved tab** shows the effective header set after all layers are applied, plus a separate list of disabled (suppressed) headers.
+
+**Operator suppressions**: When an operator unchecks a header row in the editor, `RequestBuilder` suppresses any synthesized header with the same name. For example, unchecking an `Accept` row disables both the explicit value and the compatibility default. The suppression is persisted as a disabled header in the request.
+
 Runtime variables and OAuth2 runtime values can be exported/imported as JSON from the Variables tab. Import supports merge or replace, which makes repeat testing easier without persisting token data automatically.
 
 ### 6.3 Implementation
@@ -749,6 +762,9 @@ Shared pipeline steps (used by both Workbench Send and Collection Runner):
 4. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
 5. RequestBuilder.buildRequest() -> HTTP bytes
    - Skips disabled headers, form-data fields, and URL-encoded fields
+   - Applies operator suppressions: disabled explicit headers suppress synthesized defaults, auth, and body-derived headers of the same name
+   - Header precedence: explicit request headers > auth headers > compatibility defaults
+   - Computed headers (Host, Content-Type, Content-Length) are applied last and cannot be overridden by defaults
 6. api.http().sendRequest() -> HttpRequestResponse
 7. Execute post-response scripts -> extract variables
 8. Apply script/runtime variable delta into collection.runtimeVars
@@ -1023,9 +1039,10 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 
 ### 12.3 Request Editor Empty-State Behavior
 
-- `RequestEditorPanel` seeds a single blank starter row into empty **Params**, **Headers**, and shared body form tables so operators can type immediately without pressing `+`.
+- `RequestEditorPanel` seeds a single blank starter row into empty **Params** and shared body form tables so operators can type immediately without pressing `+`.
+- **Headers** table shows effective headers (Accept, User-Agent, Cache-Control, Host, auth, body-derived Content-Type) synthesized from `RequestBuilder`, plus a trailing blank row for quick entry.
 - The same starter-row behavior is restored after loading a request with no entries, clearing the editor, deleting the last remaining row, or switching into `form-data` / `x-www-form-urlencoded` body modes.
-- Blank starter rows are a UI affordance only. Request building still skips blank-key rows, so untouched starter rows do not serialize into params, headers, or form fields.
+- Blank starter rows and unmodified synthesized headers are UI affordances only. Request building skips blank-key rows and unmodified synthesized rows, so they do not serialize into explicit headers unless edited or disabled.
 
 ### 12.4 Parser Limitations
 
