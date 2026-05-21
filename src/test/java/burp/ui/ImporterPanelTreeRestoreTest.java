@@ -16,8 +16,13 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import javax.swing.border.Border;
+import javax.swing.border.CompoundBorder;
+import javax.swing.border.MatteBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreePath;
+import java.awt.Component;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -1102,4 +1107,81 @@ class ImporterPanelTreeRestoreTest {
         assertThat(((BurpLikeTreeCellRenderer) popupTree.getCellRenderer()).isCheckboxMode()).isTrue();
     }
 
+    @Test
+    void restoredNestedTreeRendersWithExplicitDepthAwareHierarchyCues() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = new ApiRequest();
+        request.name = "Get Token";
+        request.method = "POST";
+        request.url = "https://auth.example.test/token";
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
+
+        panel.restoreWorkspaceState(state);
+        JTree tree = requestTree(panel);
+
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+        CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+        CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
+
+        TreeCellRenderer renderer = tree.getCellRenderer();
+
+        int insetCollection = leftInsetOf(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false));
+        int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false));
+        int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false));
+        int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false));
+
+        assertThat(insetCollection).isLessThan(insetFolder);
+        assertThat(insetFolder).isLessThan(insetSubfolder);
+        assertThat(insetSubfolder).isLessThan(insetRequest);
+
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false))).isFalse();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false))).isTrue();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false))).isTrue();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false))).isTrue();
+    }
+
+    private static int leftInsetOf(Component c) {
+        Border border = extractBorder(c);
+        if (border == null) return 0;
+        return border.getBorderInsets(c).left;
+    }
+
+    private static boolean hasGuideCue(Component c) {
+        Border border = extractBorder(c);
+        return border != null && containsMatteBorder(border);
+    }
+
+    private static Border extractBorder(Component c) {
+        if (!(c instanceof JComponent)) return null;
+        if (c instanceof JPanel) {
+            for (Component child : ((JPanel) c).getComponents()) {
+                if (child instanceof JLabel && ((JLabel) child).getBorder() != null) {
+                    return ((JLabel) child).getBorder();
+                }
+            }
+            return ((JComponent) c).getBorder();
+        }
+        return ((JComponent) c).getBorder();
+    }
+
+    private static boolean containsMatteBorder(Border border) {
+        if (border instanceof MatteBorder) return true;
+        if (border instanceof CompoundBorder) {
+            CompoundBorder cb = (CompoundBorder) border;
+            return containsMatteBorder(cb.getOutsideBorder()) || containsMatteBorder(cb.getInsideBorder());
+        }
+        return false;
+    }
 }

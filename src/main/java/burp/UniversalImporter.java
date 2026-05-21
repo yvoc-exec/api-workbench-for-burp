@@ -29,6 +29,8 @@ public class UniversalImporter {
     private final Set<String> existingTabs = ConcurrentHashMap.newKeySet();
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
+    private final DebouncedSwingAction debouncedWorkspaceSave;
+    private String lastSavedWorkspaceJson;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -46,7 +48,8 @@ public class UniversalImporter {
         this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
-        this.ui.setWorkspaceChangeListener(this::saveWorkspaceState);
+        this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::saveWorkspaceState);
+        this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
         restoreWorkspaceState();
     }
 
@@ -513,7 +516,7 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
-        saveWorkspaceState();
+        flushWorkspaceStateSave();
         if (ui != null) {
             ui.cleanup();
         }
@@ -529,6 +532,7 @@ public class UniversalImporter {
             if (state == null || state.collections == null || state.collections.isEmpty()) {
                 return;
             }
+            lastSavedWorkspaceJson = WorkspaceStateJson.toJson(state);
             SwingUtilities.invokeLater(() -> {
                 try {
                     ui.restoreWorkspaceState(state);
@@ -541,13 +545,31 @@ public class UniversalImporter {
         }
     }
 
-    private void saveWorkspaceState() {
+    void requestWorkspaceStateSave() {
+        if (debouncedWorkspaceSave != null) {
+            debouncedWorkspaceSave.restart();
+        }
+    }
+
+    void flushWorkspaceStateSave() {
+        if (debouncedWorkspaceSave != null) {
+            debouncedWorkspaceSave.stop();
+        }
+        saveWorkspaceState();
+    }
+
+    void saveWorkspaceState() {
         if (workspaceStateService == null || ui == null) {
             return;
         }
         try {
             WorkspaceState state = SwingEdt.call(ui::getWorkspaceStateSnapshot);
-            workspaceStateService.save(state);
+            String json = WorkspaceStateJson.toJson(state);
+            if (json.equals(lastSavedWorkspaceJson)) {
+                return;
+            }
+            workspaceStateService.saveJson(json);
+            lastSavedWorkspaceJson = json;
         } catch (Exception e) {
             logWorkspaceStateError("save", e);
         }

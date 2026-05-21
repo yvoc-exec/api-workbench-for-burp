@@ -53,4 +53,25 @@ class WorkspaceStateServiceTest {
         assertThat(backing).containsKey("api_workbench_workspace_state_json");
         assertThat(backing).doesNotContainKey(legacyKey);
     }
+
+    @Test
+    void saveJsonWritesRawPayloadDirectly() {
+        Map<String, String> backing = new HashMap<>();
+        WorkspaceStateService service = new WorkspaceStateService(new WorkspaceStateService.StringStore() {
+            @Override
+            public String get(String key) {
+                return backing.get(key);
+            }
+
+            @Override
+            public void set(String key, String value) {
+                backing.put(key, value);
+            }
+        });
+
+        String rawJson = "{\"version\":2,\"collections\":[]}";
+        service.saveJson(rawJson);
+
+        assertThat(backing).containsEntry("api_workbench_workspace_state_json", rawJson);
+    }
 }

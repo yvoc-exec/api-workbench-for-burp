@@ -40,6 +40,13 @@ public class WorkspaceStateService {
         store.set(KEY, WorkspaceStateJson.toJson(state));
     }
 
+    public void saveJson(String json) {
+        if (store == null) {
+            return;
+        }
+        store.set(KEY, json != null ? json : "");
+    }
+
     private static class MontoyaStringStore implements StringStore {
         private final PersistedObject object;
 
