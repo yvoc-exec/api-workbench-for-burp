@@ -379,7 +379,8 @@ public class RequestBuilder {
 
             case "formdata":
                 if (body.formdata != null) {
-                    String boundary = resolveMultipartBoundary(hs.get("Content-Type"));
+                    String existingContentType = hs.get("Content-Type");
+                    String boundary = resolveMultipartBoundary(existingContentType);
                     if (boundary == null || boundary.isBlank()) {
                         boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
                     }
@@ -394,6 +395,9 @@ public class RequestBuilder {
                             }
                         }
                         hs.put("Content-Type", expected);
+                    } else if (existingContentType != null && existingContentType.toLowerCase().startsWith("multipart/form-data")
+                            && !existingContentType.toLowerCase().contains("boundary=")) {
+                        hs.put("Content-Type", "multipart/form-data; boundary=" + boundary);
                     }
                     result = buildMultipartBody(body.formdata, boundary, resolver);
                 } else {

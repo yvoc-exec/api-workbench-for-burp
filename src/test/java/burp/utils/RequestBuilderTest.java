@@ -984,4 +984,26 @@ class RequestBuilderTest {
         assertThat(body).contains("--my-boundary");
         assertThat(body).contains("--my-boundary--");
     }
+
+    @Test
+    void editorMaterializedMultipartCompletesBoundaryWhenGenericMultipartHeaderExists() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.editorMaterialized = true;
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("Content-Type", "multipart/form-data", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("field1", "value1"));
+
+        byte[] raw = builder.buildRequest(req, resolver);
+        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String ct = parsed.headerValue("Content-Type");
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+
+        assertThat(ct).startsWith("multipart/form-data; boundary=");
+        String boundary = ct.substring(ct.indexOf("boundary=") + "boundary=".length());
+        assertThat(body).contains("--" + boundary);
+        assertThat(body).contains("--" + boundary + "--");
+    }
 }

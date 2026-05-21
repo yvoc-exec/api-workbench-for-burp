@@ -124,6 +124,25 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void changingAuthTypeMaterializesAuthorizationHeaderInEditorAndBuiltRequest() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+
+        authTypeBox(panel).setSelectedItem("bearer");
+        authField(panel, "token").setText("mytoken");
+
+        assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer mytoken");
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.headers)
+                .anySatisfy(header -> {
+                    assertThat(header.key).isEqualTo("Authorization");
+                    assertThat(header.value).isEqualTo("Bearer mytoken");
+                });
+    }
+
+    @Test
     void urlEditsStillDriveHostAtSendTimeWithoutShowingHostRow() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -147,7 +166,7 @@ class RequestEditorPanelTest {
     }
 
     @Test
-    void switchingBodyModesDoesNotBackfillContentTypeAfterInitialMaterialization() throws Exception {
+    void switchingBodyModesMaterializesContentTypeAgain() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
         panel.loadRequest(minimalRequest());
@@ -161,7 +180,14 @@ class RequestEditorPanelTest {
         formModel.setValueAt("grant_type", 0, 0);
         formModel.setValueAt("client_credentials", 0, 1);
 
-        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Content-Type");
+        assertThat(headerValues(headersModel(panel))).containsEntry("Content-Type", "application/x-www-form-urlencoded");
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.headers)
+                .anySatisfy(header -> {
+                    assertThat(header.key).isEqualTo("Content-Type");
+                    assertThat(header.value).isEqualTo("application/x-www-form-urlencoded");
+                });
     }
 
     private static ApiRequest minimalRequest() {
@@ -226,6 +252,25 @@ class RequestEditorPanelTest {
         Field f = RequestEditorPanel.class.getDeclaredField("headersTable");
         f.setAccessible(true);
         return (JTable) f.get(panel);
+    }
+
+    private static JComboBox<String> authTypeBox(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("authTypeBox");
+        f.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        JComboBox<String> combo = (JComboBox<String>) f.get(panel);
+        return combo;
+    }
+
+    private static JTextField authField(RequestEditorPanel panel, String name) throws Exception {
+        Field authUiField = RequestEditorPanel.class.getDeclaredField("authUi");
+        authUiField.setAccessible(true);
+        Object authUi = authUiField.get(panel);
+        Field authFieldsField = authUi.getClass().getDeclaredField("authFields");
+        authFieldsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, JTextField> authFields = (Map<String, JTextField>) authFieldsField.get(authUi);
+        return authFields.get(name);
     }
 
     private static Map<String, String> headerValues(DefaultTableModel model) {
