@@ -18,7 +18,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Workbench
 - **Collection tree** - checkbox tree with Collection > Folder > Request hierarchy
 - **Env binding** - bind environment files to specific collections (or all) explicitly
-- **Request editor** - edit method, URL, headers, body, auth, and scripts inline; empty Params, Headers, and form tables expose a starter row so you can type immediately without pressing `+`
+- **Request editor** - edit method, URL, headers, body, auth, and scripts inline; Params and body form tables stay directly editable when empty, while the Headers tab shows the live effective header set plus a quick-entry blank row
 - **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex); pre/post scripts run automatically (respecting script mode)
 - **Import destinations** - Repeater, Sitemap, Intruder
 
@@ -35,7 +35,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Custom manual variables (Variables tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
-- Effective header preview in the Workbench Resolved tab (shows synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
+- Live effective headers in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
