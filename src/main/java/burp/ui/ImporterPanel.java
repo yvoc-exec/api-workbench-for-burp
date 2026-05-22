@@ -3965,7 +3965,6 @@ public class ImporterPanel {
 
     private void clearVariablesDirty() {
         variablesDirty = false;
-        updateVariablesSaveStatusForSelection();
     }
 
     private void updateVariablesSaveStatusForSelection() {
@@ -4064,7 +4063,7 @@ public class ImporterPanel {
         if (component == null) {
             return;
         }
-        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx());
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, variablesSaveShortcutMask());
         component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(saveKey, "saveVariablesDraft");
         component.getActionMap().put("saveVariablesDraft", new AbstractAction() {
             @Override
@@ -4072,6 +4071,11 @@ public class ImporterPanel {
                 bindVarsToSelectedCollection();
             }
         });
+    }
+
+    private int variablesSaveShortcutMask() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return osName.contains("mac") ? InputEvent.META_DOWN_MASK : InputEvent.CTRL_DOWN_MASK;
     }
 
     private CollectionRef getSelectedCollectionRef(JComboBox<CollectionRef> combo) {
