@@ -120,6 +120,11 @@ public class ImporterPanel {
     private JLabel varsAutosaveStatusLabel;
     private burp.utils.DebouncedSwingAction variablesAutosave;
     private boolean suppressVariablesAutosave = false;
+    private boolean variablesRawEditingActive = false;
+    private boolean variablesRawRefreshPending = false;
+    private ApiCollection variablesRawRefreshPendingCollection = null;
+    private long variablesRawLastEditAt = 0L;
+    private javax.swing.Timer variablesRawEditIdleTimer;
     private String varsBaseLayerText = "";
 
     // OAuth2 tab
@@ -677,10 +682,12 @@ public class ImporterPanel {
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
         variablesAutosave = new burp.utils.DebouncedSwingAction(500, this::autosaveVariablesToSelectedCollection);
+        variablesRawEditIdleTimer = new javax.swing.Timer(650, e -> expireVariablesRawEditingSession());
+        variablesRawEditIdleTimer.setRepeats(false);
         envVarsArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
-            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
-            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { scheduleVariablesAutosave(); }
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
         });
 
         varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
@@ -2062,6 +2069,7 @@ public class ImporterPanel {
     }
 
     private void clearVariablesEditorOnly() {
+        resetVariablesRawEditingSession();
         clearVariablesEditorOnly(
                 envVarsArea,
                 varsTableModel,
@@ -2261,7 +2269,12 @@ public class ImporterPanel {
         CollectionRef varsRef = varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null
                 ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
         if (varsRef != null && varsRef.collection == col) {
-            renderEffectiveVariablesForSelectedCollection();
+            if (variablesRawEditingActive) {
+                variablesRawRefreshPending = true;
+                variablesRawRefreshPendingCollection = col;
+            } else {
+                renderEffectiveVariablesForSelectedCollection();
+            }
         }
         CollectionRef oauthRef = oauth2CollectionCombo != null && oauth2CollectionCombo.getSelectedItem() != null
                 ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
@@ -3858,6 +3871,7 @@ public class ImporterPanel {
     private void switchVarsView(boolean tableView) {
         if (varsEditorCardPanel == null) return;
         if (tableView) {
+            resetVariablesRawEditingSession();
             renderVarsTableFromRaw();
         } else {
             syncRawFromVarsTable();
@@ -3922,6 +3936,47 @@ public class ImporterPanel {
         }
     }
 
+    private void handleVariablesRawDocumentEdit() {
+        if (suppressVariablesAutosave) {
+            return;
+        }
+        markVariablesRawEditingActive();
+        scheduleVariablesAutosave();
+    }
+
+    private void markVariablesRawEditingActive() {
+        variablesRawEditingActive = true;
+        variablesRawLastEditAt = System.currentTimeMillis();
+        if (variablesRawEditIdleTimer != null) {
+            variablesRawEditIdleTimer.restart();
+        }
+    }
+
+    private void resetVariablesRawEditingSession() {
+        variablesRawEditingActive = false;
+        variablesRawRefreshPending = false;
+        variablesRawRefreshPendingCollection = null;
+        variablesRawLastEditAt = 0L;
+        if (variablesRawEditIdleTimer != null) {
+            variablesRawEditIdleTimer.stop();
+        }
+    }
+
+    private void expireVariablesRawEditingSession() {
+        if (!variablesRawEditingActive) {
+            return;
+        }
+        variablesRawEditingActive = false;
+        boolean shouldRenderPendingRefresh = variablesRawRefreshPending
+                && variablesRawRefreshPendingCollection != null
+                && variablesRawRefreshPendingCollection == getSelectedVariablesCollection();
+        variablesRawRefreshPending = false;
+        variablesRawRefreshPendingCollection = null;
+        if (shouldRenderPendingRefresh) {
+            renderEffectiveVariablesForSelectedCollection();
+        }
+    }
+
     private boolean setVariablesEditorTextPreservingView(String text) {
         return setTextPreservingView(envVarsArea, text);
     }
@@ -3979,6 +4034,10 @@ public class ImporterPanel {
         if (variablesAutosave != null) {
             variablesAutosave.restart();
         }
+    }
+
+    void expireVariablesRawEditingForTests() {
+        expireVariablesRawEditingSession();
     }
 
     private void autosaveVariablesToSelectedCollection() {
