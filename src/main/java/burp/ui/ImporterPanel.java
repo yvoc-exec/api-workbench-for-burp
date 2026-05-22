@@ -4369,6 +4369,9 @@ public class ImporterPanel {
         if (owningCollection == null) {
             owningCollection = findCollectionByName(req.sourceCollection);
         }
+        if (owningCollection != null) {
+            selectOAuth2Collection(owningCollection);
+        }
 
         VariableResolver populateResolver = buildOAuth2PopulateResolver(owningCollection, req);
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
@@ -4391,6 +4394,20 @@ public class ImporterPanel {
         if (!unresolved.isEmpty()) {
             appendImportLog("Populate OAuth2: Unresolved variable(s) remain: " + String.join(", ", unresolved) + ".");
         }
+    }
+
+    private boolean selectOAuth2Collection(ApiCollection collection) {
+        if (oauth2CollectionCombo == null || collection == null) {
+            return false;
+        }
+        for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
+            CollectionRef ref = oauth2CollectionCombo.getItemAt(i);
+            if (ref != null && ref.collection == collection) {
+                oauth2CollectionCombo.setSelectedIndex(i);
+                return true;
+            }
+        }
+        return false;
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
