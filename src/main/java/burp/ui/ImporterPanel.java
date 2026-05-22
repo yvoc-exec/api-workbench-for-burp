@@ -20,6 +20,7 @@ import burp.api.montoya.ui.editor.HttpResponseEditor;
 
 import javax.swing.*;
 import javax.swing.plaf.basic.BasicTreeUI;
+import javax.swing.plaf.TreeUI;
 import javax.swing.border.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
@@ -276,7 +277,7 @@ public class ImporterPanel {
     }
 
     private JTree buildMainRequestTree() {
-        JTree tree = new JTree(treeModel);
+        JTree tree = new MainRequestTree(treeModel);
         tree.setRootVisible(false);
         tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
         tree.setRowHeight(20);
@@ -1669,6 +1670,24 @@ public class ImporterPanel {
         }
     }
 
+    private final class MainRequestTree extends JTree {
+        private MainRequestTree(TreeModel model) {
+            super(model);
+        }
+
+        @Override
+        public void setUI(TreeUI ui) {
+            super.setUI(ui);
+            configureMainTreeUi(this);
+        }
+
+        @Override
+        public void updateUI() {
+            super.updateUI();
+            configureMainTreeUi(this);
+        }
+    }
+
     private void recreateMainRequestTree() {
         if (treeModel == null || requestTreeScrollPane == null) {
             return;
@@ -2572,14 +2591,10 @@ public class ImporterPanel {
         if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
             return;
         }
+        recreateMainRequestTree();
         reinstallTreeUi(requestTree);
         treeModel.reload();
         restoreRequestTreeVisualState(state);
-        if (treeHasFlatHierarchyGeometry(requestTree)) {
-            recreateMainRequestTree();
-            treeModel.reload();
-            restoreRequestTreeVisualState(state);
-        }
     }
 
     /**

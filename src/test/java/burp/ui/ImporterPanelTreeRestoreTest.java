@@ -1256,17 +1256,6 @@ class ImporterPanelTreeRestoreTest {
             );
 
             panel.restoreWorkspaceState(state);
-            JTree tree = requestTree(panel);
-
-            CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
-            CollectionTreeNode authNode = childFolder(apimNode, "Auth");
-            CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
-            CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
-
-            assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
-            assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
-            assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
-
             UIManager.put("Tree.leftChildIndent", 7);
             UIManager.put("Tree.rightChildIndent", 13);
 
@@ -1277,9 +1266,15 @@ class ImporterPanelTreeRestoreTest {
             stabilizeRestoredRequestTreePresentation.setAccessible(true);
             stabilizeRestoredRequestTreePresentation.invoke(panel, state);
 
-            assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
-            assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
-            assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
+            JTree stabilizedTree = requestTree(panel);
+            CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) stabilizedTree.getModel().getRoot()).getChildAt(0);
+            CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+            CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+            CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
+
+            assertThat(rowXOf(stabilizedTree, apimNode)).isLessThan(rowXOf(stabilizedTree, authNode));
+            assertThat(rowXOf(stabilizedTree, authNode)).isLessThan(rowXOf(stabilizedTree, oauthNode));
+            assertThat(rowXOf(stabilizedTree, oauthNode)).isLessThan(rowXOf(stabilizedTree, requestNode));
         } finally {
             restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
             restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
@@ -1319,6 +1314,66 @@ class ImporterPanelTreeRestoreTest {
             restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
             restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
         }
+    }
+
+    @Test
+    void mainRequestTreeRetainsForcedChildIndentAcrossExternalUiRefresh() throws Exception {
+        Object originalLeftIndent = UIManager.get("Tree.leftChildIndent");
+        Object originalRightIndent = UIManager.get("Tree.rightChildIndent");
+        try {
+            UIManager.put("Tree.leftChildIndent", 7);
+            UIManager.put("Tree.rightChildIndent", 13);
+
+            ImporterPanel panel = newPanel();
+            JTree tree = requestTree(panel);
+            assertThat(tree.getUI()).isInstanceOf(BasicTreeUI.class);
+            BasicTreeUI initialUi = (BasicTreeUI) tree.getUI();
+            assertThat(initialUi.getLeftChildIndent()).isGreaterThan(0);
+            assertThat(initialUi.getRightChildIndent()).isGreaterThan(0);
+
+            UIManager.put("Tree.leftChildIndent", 0);
+            UIManager.put("Tree.rightChildIndent", 0);
+
+            tree.updateUI();
+
+            assertThat(tree.getUI()).isInstanceOf(BasicTreeUI.class);
+            BasicTreeUI refreshedUi = (BasicTreeUI) tree.getUI();
+            assertThat(refreshedUi.getLeftChildIndent()).isGreaterThan(0);
+            assertThat(refreshedUi.getRightChildIndent()).isGreaterThan(0);
+        } finally {
+            restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
+            restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
+        }
+    }
+
+    @Test
+    void restoreStabilizationRecreatesMainTreeAfterRestore() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-recreate-always", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
+
+        panel.restoreWorkspaceState(state);
+        JTree originalTree = requestTree(panel);
+
+        Method stabilizeRestoredRequestTreePresentation = ImporterPanel.class.getDeclaredMethod(
+                "stabilizeRestoredRequestTreePresentation",
+                WorkspaceState.class
+        );
+        stabilizeRestoredRequestTreePresentation.setAccessible(true);
+        stabilizeRestoredRequestTreePresentation.invoke(panel, state);
+
+        assertThat(requestTree(panel)).isNotSameAs(originalTree);
     }
 
     @Test
@@ -1511,15 +1566,20 @@ class ImporterPanelTreeRestoreTest {
 
         panel.restoreWorkspaceState(state);
 
-        int initialExpandRowCount = spyTree.expandRowCount;
-        int initialTreeDidChangeCount = spyTree.treeDidChangeCount;
-
         spyTree.setShowingForTest(true);
         spyTree.fireShowingChanged();
         drainEdt();
 
-        assertThat(spyTree.expandRowCount).isGreaterThan(initialExpandRowCount);
-        assertThat(spyTree.treeDidChangeCount).isGreaterThan(initialTreeDidChangeCount);
+        JTree recreatedTree = requestTree(panel);
+        assertThat(recreatedTree).isNotSameAs(spyTree);
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) recreatedTree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+        CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+        CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
+
+        assertThat(rowXOf(recreatedTree, apimNode)).isLessThan(rowXOf(recreatedTree, authNode));
+        assertThat(rowXOf(recreatedTree, authNode)).isLessThan(rowXOf(recreatedTree, oauthNode));
+        assertThat(rowXOf(recreatedTree, oauthNode)).isLessThan(rowXOf(recreatedTree, requestNode));
     }
 
     @Test
