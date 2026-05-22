@@ -1291,6 +1291,7 @@ class ImporterPanelTreeRestoreTest {
 
         spyTree.setShowingForTest(true);
         spyTree.fireShowingChanged();
+        drainEdt();
 
         assertThat(spyTree.treeDidChangeCount).isGreaterThan(initialTreeDidChangeCount);
         assertThat(spyTree.revalidateCount).isGreaterThan(initialRevalidateCount);
@@ -1301,10 +1302,35 @@ class ImporterPanelTreeRestoreTest {
         int afterFirstShowRepaintCount = spyTree.repaintCount;
 
         spyTree.fireShowingChanged();
+        drainEdt();
 
         assertThat(spyTree.treeDidChangeCount).isEqualTo(afterFirstShowTreeDidChangeCount);
         assertThat(spyTree.revalidateCount).isEqualTo(afterFirstShowRevalidateCount);
         assertThat(spyTree.repaintCount).isEqualTo(afterFirstShowRepaintCount);
+    }
+
+    @Test
+    void refreshTreePresentationRefreshesAgainOnNextEventCycleWhenTreeAlreadyShowing() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        Method refreshTreePresentation = ImporterPanel.class.getDeclaredMethod("refreshTreePresentation", JTree.class);
+        refreshTreePresentation.setAccessible(true);
+
+        SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
+        spyTree.setShowingForTest(true);
+        spyTree.resetRefreshCounters();
+
+        refreshTreePresentation.invoke(panel, spyTree);
+
+        int immediateTreeDidChangeCount = spyTree.treeDidChangeCount;
+        int immediateRevalidateCount = spyTree.revalidateCount;
+        int immediateRepaintCount = spyTree.repaintCount;
+
+        drainEdt();
+
+        assertThat(spyTree.treeDidChangeCount).isGreaterThan(immediateTreeDidChangeCount);
+        assertThat(spyTree.revalidateCount).isGreaterThan(immediateRevalidateCount);
+        assertThat(spyTree.repaintCount).isGreaterThan(immediateRepaintCount);
     }
 
     private static int leftInsetOf(Component c) {
@@ -1345,6 +1371,10 @@ class ImporterPanelTreeRestoreTest {
         Rectangle bounds = tree.getPathBounds(path);
         assertThat(bounds).as("row bounds for %s", node).isNotNull();
         return bounds.x;
+    }
+
+    private static void drainEdt() throws Exception {
+        SwingUtilities.invokeAndWait(() -> { });
     }
 
     private static SpyTree installSpyRequestTree(ImporterPanel panel) throws Exception {
