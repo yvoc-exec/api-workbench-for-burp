@@ -7,10 +7,10 @@ import org.junit.jupiter.api.Test;
 import javax.swing.*;
 import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
-import javax.swing.border.EmptyBorder;
 import javax.swing.border.MatteBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreePath;
 import java.awt.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,7 +104,7 @@ class BurpLikeTreeCellRendererTest {
     // ------------------------------------------------------------------------
 
     @Test
-    void nonCheckboxModeAppliesDepthAwareLeftPadding() {
+    void nonCheckboxModeReliesOnNativeTreeIndentationWithoutCustomLeftPadding() {
         BurpLikeTreeCellRenderer renderer = new BurpLikeTreeCellRenderer(false);
         JTree tree = buildNestedTree();
 
@@ -116,12 +116,12 @@ class BurpLikeTreeCellRendererTest {
         int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
         int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 2, false));
 
-        assertThat(insetFolder).isGreaterThan(insetCollection);
-        assertThat(insetRequest).isGreaterThan(insetFolder);
+        assertThat(insetFolder).isEqualTo(insetCollection);
+        assertThat(insetRequest).isEqualTo(insetFolder);
     }
 
     @Test
-    void checkboxModeAppliesDepthAwareLeftPadding() {
+    void checkboxModeReliesOnNativeTreeIndentationWithoutCustomLeftPadding() {
         BurpLikeTreeCellRenderer renderer = new BurpLikeTreeCellRenderer(true);
         JTree tree = buildNestedTree();
 
@@ -133,12 +133,12 @@ class BurpLikeTreeCellRendererTest {
         int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
         int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 2, false));
 
-        assertThat(insetFolder).isGreaterThan(insetCollection);
-        assertThat(insetRequest).isGreaterThan(insetFolder);
+        assertThat(insetFolder).isEqualTo(insetCollection);
+        assertThat(insetRequest).isEqualTo(insetFolder);
     }
 
     @Test
-    void nestedNodesExposeApplicationOwnedGuideCue() {
+    void nestedNodesDoNotAddApplicationOwnedGuideCue() {
         BurpLikeTreeCellRenderer renderer = new BurpLikeTreeCellRenderer(false);
         JTree tree = buildNestedTree();
 
@@ -146,32 +146,39 @@ class BurpLikeTreeCellRendererTest {
         CollectionTreeNode folder = (CollectionTreeNode) collection.getChildAt(0);
 
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false))).isFalse();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false))).isTrue();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false))).isFalse();
     }
 
     @Test
-    void rendererOutputDiffersInDepthAwareWayForCollectionFolderSubfolderRequest() {
+    void treePathBoundsProvideHierarchySpacingWhileRendererAddsNoExtraInsets() {
         BurpLikeTreeCellRenderer renderer = new BurpLikeTreeCellRenderer(false);
         JTree tree = buildDeepTree();
+        tree.expandRow(0);
+        tree.expandRow(1);
+        tree.expandRow(2);
 
         CollectionTreeNode collection = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
         CollectionTreeNode folder = (CollectionTreeNode) collection.getChildAt(0);
         CollectionTreeNode subfolder = (CollectionTreeNode) folder.getChildAt(0);
         CollectionTreeNode request = (CollectionTreeNode) subfolder.getChildAt(0);
 
+        assertThat(rowXOf(tree, collection)).isLessThan(rowXOf(tree, folder));
+        assertThat(rowXOf(tree, folder)).isLessThan(rowXOf(tree, subfolder));
+        assertThat(rowXOf(tree, subfolder)).isLessThan(rowXOf(tree, request));
+
         int insetCollection = leftInsetOf(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false));
         int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
         int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false));
         int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false));
 
-        assertThat(insetCollection).isLessThan(insetFolder);
-        assertThat(insetFolder).isLessThan(insetSubfolder);
-        assertThat(insetSubfolder).isLessThan(insetRequest);
+        assertThat(insetFolder).isEqualTo(insetCollection);
+        assertThat(insetSubfolder).isEqualTo(insetFolder);
+        assertThat(insetRequest).isEqualTo(insetSubfolder);
 
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false))).isFalse();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false))).isTrue();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false))).isTrue();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false))).isTrue();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false))).isFalse();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false))).isFalse();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false))).isFalse();
     }
 
     // ------------------------------------------------------------------------
@@ -221,6 +228,13 @@ class BurpLikeTreeCellRendererTest {
         JTree tree = new JTree(new DefaultTreeModel(root));
         tree.setRootVisible(false);
         return tree;
+    }
+
+    private static int rowXOf(JTree tree, CollectionTreeNode node) {
+        TreePath path = new TreePath(node.getPath());
+        Rectangle bounds = tree.getPathBounds(path);
+        assertThat(bounds).as("row bounds for %s", node).isNotNull();
+        return bounds.x;
     }
 
     private static int leftInsetOf(Component c) {

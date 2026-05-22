@@ -25,6 +25,9 @@ import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreePath;
 import java.awt.Component;
 import java.awt.Graphics;
+import java.awt.Rectangle;
+import java.awt.event.HierarchyEvent;
+import java.awt.event.HierarchyListener;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -1179,7 +1182,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoredNestedTreeRendersWithExplicitDepthAwareHierarchyCues() throws Exception {
+    void restoredNestedTreeUsesNativeTreeGeometryWithoutRendererOwnedIndentation() throws Exception {
         ImporterPanel panel = newPanel();
 
         ApiCollection collection = new ApiCollection();
@@ -1206,6 +1209,10 @@ class ImporterPanelTreeRestoreTest {
         CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
         CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
 
+        assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
+        assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
+        assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
+
         TreeCellRenderer renderer = tree.getCellRenderer();
 
         int insetCollection = leftInsetOf(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false));
@@ -1213,14 +1220,14 @@ class ImporterPanelTreeRestoreTest {
         int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false));
         int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false));
 
-        assertThat(insetCollection).isLessThan(insetFolder);
-        assertThat(insetFolder).isLessThan(insetSubfolder);
-        assertThat(insetSubfolder).isLessThan(insetRequest);
+        assertThat(insetFolder).isEqualTo(insetCollection);
+        assertThat(insetSubfolder).isEqualTo(insetFolder);
+        assertThat(insetRequest).isEqualTo(insetSubfolder);
 
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false))).isFalse();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false))).isTrue();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false))).isTrue();
-        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false))).isTrue();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false))).isFalse();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false))).isFalse();
+        assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false))).isFalse();
     }
 
     @Test
@@ -1266,6 +1273,40 @@ class ImporterPanelTreeRestoreTest {
         assertThat(spyTree.repaintCount).isGreaterThan(0);
     }
 
+    @Test
+    void refreshTreePresentationRefreshesAgainWhenTreeBecomesShowing() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        Method refreshTreePresentation = ImporterPanel.class.getDeclaredMethod("refreshTreePresentation", JTree.class);
+        refreshTreePresentation.setAccessible(true);
+
+        SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
+        spyTree.resetRefreshCounters();
+
+        refreshTreePresentation.invoke(panel, spyTree);
+
+        int initialTreeDidChangeCount = spyTree.treeDidChangeCount;
+        int initialRevalidateCount = spyTree.revalidateCount;
+        int initialRepaintCount = spyTree.repaintCount;
+
+        spyTree.setShowingForTest(true);
+        spyTree.fireShowingChanged();
+
+        assertThat(spyTree.treeDidChangeCount).isGreaterThan(initialTreeDidChangeCount);
+        assertThat(spyTree.revalidateCount).isGreaterThan(initialRevalidateCount);
+        assertThat(spyTree.repaintCount).isGreaterThan(initialRepaintCount);
+
+        int afterFirstShowTreeDidChangeCount = spyTree.treeDidChangeCount;
+        int afterFirstShowRevalidateCount = spyTree.revalidateCount;
+        int afterFirstShowRepaintCount = spyTree.repaintCount;
+
+        spyTree.fireShowingChanged();
+
+        assertThat(spyTree.treeDidChangeCount).isEqualTo(afterFirstShowTreeDidChangeCount);
+        assertThat(spyTree.revalidateCount).isEqualTo(afterFirstShowRevalidateCount);
+        assertThat(spyTree.repaintCount).isEqualTo(afterFirstShowRepaintCount);
+    }
+
     private static int leftInsetOf(Component c) {
         Border border = extractBorder(c);
         if (border == null) return 0;
@@ -1299,6 +1340,13 @@ class ImporterPanelTreeRestoreTest {
         return false;
     }
 
+    private static int rowXOf(JTree tree, CollectionTreeNode node) {
+        TreePath path = new TreePath(node.getPath());
+        Rectangle bounds = tree.getPathBounds(path);
+        assertThat(bounds).as("row bounds for %s", node).isNotNull();
+        return bounds.x;
+    }
+
     private static SpyTree installSpyRequestTree(ImporterPanel panel) throws Exception {
         JTree existing = requestTree(panel);
         SpyTree spyTree = new SpyTree(existing.getModel());
@@ -1318,6 +1366,7 @@ class ImporterPanelTreeRestoreTest {
         private int repaintCount;
         private int revalidateCount;
         private int treeDidChangeCount;
+        private boolean showingForTest;
 
         private SpyTree(javax.swing.tree.TreeModel model) {
             super(model);
@@ -1350,6 +1399,22 @@ class ImporterPanelTreeRestoreTest {
         @Override
         public Graphics getGraphics() {
             return null;
+        }
+
+        @Override
+        public boolean isShowing() {
+            return showingForTest || super.isShowing();
+        }
+
+        private void setShowingForTest(boolean showingForTest) {
+            this.showingForTest = showingForTest;
+        }
+
+        private void fireShowingChanged() {
+            HierarchyEvent event = new HierarchyEvent(this, HierarchyEvent.HIERARCHY_CHANGED, this, this, HierarchyEvent.SHOWING_CHANGED);
+            for (HierarchyListener listener : getHierarchyListeners()) {
+                listener.hierarchyChanged(event);
+            }
         }
 
         private void resetRefreshCounters() {
