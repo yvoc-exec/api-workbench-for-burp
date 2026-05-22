@@ -1341,9 +1341,14 @@ class ImporterPanelTreeRestoreTest {
         spyTree.setShowingForTest(true);
         AtomicInteger initializerCount = new AtomicInteger();
 
-        scheduleTreeInitializationAfterShowing.invoke(panel, spyTree, (Runnable) initializerCount::incrementAndGet);
-
-        assertThat(initializerCount.get()).isZero();
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                scheduleTreeInitializationAfterShowing.invoke(panel, spyTree, (Runnable) initializerCount::incrementAndGet);
+            } catch (ReflectiveOperationException e) {
+                throw new RuntimeException(e);
+            }
+            assertThat(initializerCount.get()).isZero();
+        });
 
         drainEdt();
 
