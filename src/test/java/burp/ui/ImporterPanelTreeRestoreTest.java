@@ -1649,6 +1649,26 @@ class ImporterPanelTreeRestoreTest {
         assertThat(liveTree.getRowHeight()).isEqualTo(20);
         assertThat(liveTree.getShowsRootHandles()).isTrue();
         assertThat(liveTree.getSelectionModel().getSelectionMode()).isEqualTo(TreeSelectionModel.SINGLE_TREE_SELECTION);
+        assertThat(liveTree.isExpanded(findPathByFolder(liveTree, "APIM", null))).isTrue();
+        assertThat(liveTree.isExpanded(findPathByFolder(liveTree, "APIM", "Auth"))).isTrue();
+        assertThat(liveTree.isExpanded(findPathByFolder(liveTree, "APIM", "OAuth"))).isTrue();
+        assertThat(liveTree.isExpanded(findPathByFolder(liveTree, "APIM", "Users"))).isFalse();
+    }
+
+    @Test
+    void expandMainRequestTreeRowsUsesLiveExpandTraversal() throws Exception {
+        ImporterPanel panel = newPanel();
+        WorkspaceState state = nestedRestoreState();
+        DefaultTreeModel model = new DefaultTreeModel(ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths));
+        SpyTree spyTree = new SpyTree(model);
+        spyTree.setRootVisible(false);
+        spyTree.setShowsRootHandles(true);
+        spyTree.setRowHeight(20);
+        setPrivateField(panel, "requestTree", spyTree);
+
+        invokePrivateMethod(panel, "expandMainRequestTreeRows");
+
+        assertThat(spyTree.expandRowCount).isGreaterThan(0);
     }
 
     @Test

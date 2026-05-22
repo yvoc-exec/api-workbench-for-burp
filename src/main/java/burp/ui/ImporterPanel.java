@@ -2512,7 +2512,9 @@ public class ImporterPanel {
     private void remountRestoredMainRequestTree(PendingMainRequestTreeRestore pendingRestore) {
         JTree liveTree = buildMainRequestTree();
         mountMainRequestTree(liveTree);
-        rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+        rebuildTree(pendingRestore.requestTreePaths, Collections.emptyList());
+        expandMainRequestTreeRows();
+        applySavedMainTreeExpansionShape(pendingRestore.expandedTreePathKeys);
         if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
             restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
         } else {
@@ -2525,6 +2527,78 @@ public class ImporterPanel {
                 pendingRestore.selectedRequestName
         );
         resetRequestTreeHorizontalViewport();
+    }
+
+    private void expandMainRequestTreeRows() {
+        if (requestTree == null) {
+            return;
+        }
+        for (int i = 0; i < requestTree.getRowCount(); i++) {
+            requestTree.expandRow(i);
+        }
+    }
+
+    private void applySavedMainTreeExpansionShape(List<String> expandedTreePathKeys) {
+        if (requestTree == null || treeModel == null || expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
+            return;
+        }
+        Set<String> savedExpandedKeys = new HashSet<>(expandedTreePathKeys);
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        collapseUnsavedMainTreePaths(root, null, savedExpandedKeys);
+    }
+
+    private void collapseUnsavedMainTreePaths(DefaultMutableTreeNode node,
+                                              String currentCollectionName,
+                                              Set<String> savedExpandedKeys) {
+        if (node == null) {
+            return;
+        }
+        String nextCollectionName = currentCollectionName;
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode collectionNode = (CollectionTreeNode) node;
+            if (collectionNode.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                nextCollectionName = collectionNode.collection != null ? collectionNode.collection.name : currentCollectionName;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collapseUnsavedMainTreePaths((DefaultMutableTreeNode) node.getChildAt(i), nextCollectionName, savedExpandedKeys);
+        }
+        if (!(node instanceof CollectionTreeNode)) {
+            return;
+        }
+        CollectionTreeNode treeNode = (CollectionTreeNode) node;
+        if (treeNode.getNodeType() != CollectionTreeNode.Type.COLLECTION && treeNode.getNodeType() != CollectionTreeNode.Type.FOLDER) {
+            return;
+        }
+        String collectionName = treeNode.getNodeType() == CollectionTreeNode.Type.COLLECTION
+                ? (treeNode.collection != null ? treeNode.collection.name : currentCollectionName)
+                : currentCollectionName;
+        if (collectionName == null || collectionName.isBlank()) {
+            return;
+        }
+        String folderPath = treeNode.getNodeType() == CollectionTreeNode.Type.COLLECTION
+                ? ""
+                : (treeNode.folderPath != null ? treeNode.folderPath : "");
+        String treePathKey = workspaceTreePathKey(collectionName, folderPath);
+        if (shouldKeepMainTreePathExpanded(treeNode.getNodeType(), treePathKey, savedExpandedKeys)) {
+            return;
+        }
+        requestTree.collapsePath(new TreePath(treeNode.getPath()));
+    }
+
+    private boolean shouldKeepMainTreePathExpanded(CollectionTreeNode.Type nodeType,
+                                                   String treePathKey,
+                                                   Set<String> savedExpandedKeys) {
+        if (savedExpandedKeys.contains(treePathKey)) {
+            return true;
+        }
+        String descendantPrefix = nodeType == CollectionTreeNode.Type.COLLECTION ? treePathKey : treePathKey + "/";
+        for (String savedKey : savedExpandedKeys) {
+            if (savedKey.startsWith(descendantPrefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static void applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
