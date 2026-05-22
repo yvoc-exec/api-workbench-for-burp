@@ -4,6 +4,7 @@ import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.ui.tree.CollectionTreeNode;
 import burp.runner.CollectionRunner;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
@@ -11,8 +12,14 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.TreePath;
+import java.awt.*;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -94,6 +101,65 @@ class ImporterPanelOAuth2WorkflowTest {
         assertThat(capturedCollection.get()).isSameAs(collectionB);
     }
 
+    @Test
+    void oauth2PopulatePopupSingleRequestModeKeepsExactlyOneCheckedRequest() throws Exception {
+        ImporterPanel panel = newPanel();
+        DefaultMutableTreeNode root = popupSelectionRoot(twoRequestCollection("Collection A"));
+        JLabel countLabel = new JLabel();
+        JTree tree = buildPopupSelectionTree(panel, root, countLabel, true);
+
+        CollectionTreeNode collectionNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode firstRequest = (CollectionTreeNode) collectionNode.getChildAt(0);
+        CollectionTreeNode secondRequest = (CollectionTreeNode) collectionNode.getChildAt(1);
+
+        clickCheckbox(tree, new TreePath(collectionNode.getPath()));
+        assertThat(firstRequest.isChecked()).isTrue();
+        assertThat(secondRequest.isChecked()).isFalse();
+        assertThat(countLabel.getText()).isEqualTo("1 requests selected");
+
+        clickCheckbox(tree, new TreePath(secondRequest.getPath()));
+        assertThat(firstRequest.isChecked()).isFalse();
+        assertThat(secondRequest.isChecked()).isTrue();
+        assertThat(countLabel.getText()).isEqualTo("1 requests selected");
+    }
+
+    @Test
+    void otherPopupTreesStillAllowMultipleCheckedRequests() throws Exception {
+        ImporterPanel panel = newPanel();
+        DefaultMutableTreeNode root = popupSelectionRoot(twoRequestCollection("Collection A"));
+        JLabel countLabel = new JLabel();
+        JTree tree = buildPopupSelectionTree(panel, root, countLabel, false);
+
+        CollectionTreeNode collectionNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode firstRequest = (CollectionTreeNode) collectionNode.getChildAt(0);
+        CollectionTreeNode secondRequest = (CollectionTreeNode) collectionNode.getChildAt(1);
+
+        clickCheckbox(tree, new TreePath(firstRequest.getPath()));
+        clickCheckbox(tree, new TreePath(secondRequest.getPath()));
+
+        assertThat(firstRequest.isChecked()).isTrue();
+        assertThat(secondRequest.isChecked()).isTrue();
+        assertThat(countLabel.getText()).isEqualTo("2 requests selected");
+    }
+
+    @Test
+    void oauth2PopulateSubmitHelperRequiresExactlyOneCheckedRequest() throws Exception {
+        ImporterPanel panel = newPanel();
+        DefaultMutableTreeNode root = popupSelectionRoot(twoRequestCollection("Collection A"));
+        JLabel countLabel = new JLabel();
+        JTree tree = buildPopupSelectionTree(panel, root, countLabel, false);
+
+        CollectionTreeNode collectionNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode firstRequest = (CollectionTreeNode) collectionNode.getChildAt(0);
+        CollectionTreeNode secondRequest = (CollectionTreeNode) collectionNode.getChildAt(1);
+
+        clickCheckbox(tree, new TreePath(firstRequest.getPath()));
+        assertThat(collectOAuth2PopulateRequests(panel, root)).hasSize(1);
+
+        clickCheckbox(tree, new TreePath(secondRequest.getPath()));
+        assertThat(collectOAuth2PopulateRequests(panel, root)).isEmpty();
+    }
+
     private static ImporterPanel newPanel() {
         burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
@@ -160,6 +226,72 @@ class ImporterPanelOAuth2WorkflowTest {
 
     private static void clickPrivateButton(OAuth2Panel oauth2Panel, String fieldName) throws Exception {
         ((JButton) privateField(oauth2Panel, fieldName)).doClick();
+    }
+
+    private static JTree buildPopupSelectionTree(ImporterPanel panel, DefaultMutableTreeNode root, JLabel label, boolean singleRequestMode) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(
+                "buildPopupSelectionTree",
+                DefaultMutableTreeNode.class,
+                JLabel.class,
+                boolean.class
+        );
+        method.setAccessible(true);
+        return (JTree) method.invoke(panel, root, label, singleRequestMode);
+    }
+
+    private static DefaultMutableTreeNode popupSelectionRoot(ApiCollection collection) {
+        return ImporterPanel.buildRequestTreeRoot(List.of(collection), Collections.emptyMap());
+    }
+
+    private static ApiCollection twoRequestCollection(String name) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = name;
+
+        ApiRequest first = new ApiRequest();
+        first.id = "req-1";
+        first.name = "First";
+        first.method = "GET";
+        first.url = "https://api.example.test/first";
+        collection.requests.add(first);
+
+        ApiRequest second = new ApiRequest();
+        second.id = "req-2";
+        second.name = "Second";
+        second.method = "POST";
+        second.url = "https://api.example.test/second";
+        collection.requests.add(second);
+
+        return collection;
+    }
+
+    private static void clickCheckbox(JTree tree, TreePath path) {
+        tree.setSize(600, 400);
+        tree.doLayout();
+        Rectangle bounds = tree.getPathBounds(path);
+        if (bounds == null) {
+            throw new AssertionError("No bounds for tree path: " + path);
+        }
+        MouseEvent event = new MouseEvent(
+                tree,
+                MouseEvent.MOUSE_CLICKED,
+                System.currentTimeMillis(),
+                0,
+                bounds.x + 4,
+                bounds.y + Math.max(4, bounds.height / 2),
+                1,
+                false,
+                MouseEvent.BUTTON1
+        );
+        for (MouseListener listener : tree.getMouseListeners()) {
+            listener.mouseClicked(event);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ApiRequest> collectOAuth2PopulateRequests(ImporterPanel panel, DefaultMutableTreeNode root) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("collectOAuth2PopulateRequests", DefaultMutableTreeNode.class);
+        method.setAccessible(true);
+        return (List<ApiRequest>) method.invoke(panel, root);
     }
 
     private static Object invokePrivateMethod(Object target, String methodName, Class<?>[] paramTypes, Object... args) throws Exception {

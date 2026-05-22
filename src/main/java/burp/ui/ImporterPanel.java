@@ -1585,6 +1585,10 @@ public class ImporterPanel {
     }
 
     private JTree buildPopupSelectionTree(DefaultMutableTreeNode selectionRoot, JLabel selectedCountLabel) {
+        return buildPopupSelectionTree(selectionRoot, selectedCountLabel, false);
+    }
+
+    private JTree buildPopupSelectionTree(DefaultMutableTreeNode selectionRoot, JLabel selectedCountLabel, boolean singleRequestMode) {
         DefaultTreeModel model = new DefaultTreeModel(selectionRoot);
         JTree tree = new JTree(model);
         tree.setRootVisible(false);
@@ -1607,15 +1611,18 @@ public class ImporterPanel {
                     return;
                 }
                 CollectionTreeNode ctn = (CollectionTreeNode) node;
-                ctn.propagateCheck(!ctn.isChecked());
-                TreeNode parent = ctn.getParent();
-                if (parent instanceof CollectionTreeNode) {
-                    ((CollectionTreeNode) parent).updateParentCheckState();
+                if (singleRequestMode) {
+                    toggleSingleRequestPopupSelection((DefaultMutableTreeNode) tree.getModel().getRoot(), ctn);
+                } else {
+                    ctn.propagateCheck(!ctn.isChecked());
+                    TreeNode parent = ctn.getParent();
+                    if (parent instanceof CollectionTreeNode) {
+                        ((CollectionTreeNode) parent).updateParentCheckState();
+                    }
                 }
+                refreshPopupSelectionParentState((DefaultMutableTreeNode) tree.getModel().getRoot());
                 tree.repaint();
-                if (selectedCountLabel != null) {
-                    selectedCountLabel.setText(collectCheckedRequests((DefaultMutableTreeNode) tree.getModel().getRoot()).size() + " requests selected");
-                }
+                updatePopupSelectionCountLabel((DefaultMutableTreeNode) tree.getModel().getRoot(), selectedCountLabel);
             }
         });
         expandAllTreeRows(tree);
@@ -1626,11 +1633,138 @@ public class ImporterPanel {
             }
             expandAllTreeRows(tree);
             refreshTreePresentation(tree);
+            updatePopupSelectionCountLabel((DefaultMutableTreeNode) tree.getModel().getRoot(), selectedCountLabel);
         });
-        if (selectedCountLabel != null) {
-            selectedCountLabel.setText("0 requests selected");
-        }
+        updatePopupSelectionCountLabel((DefaultMutableTreeNode) tree.getModel().getRoot(), selectedCountLabel);
         return tree;
+    }
+
+    private void toggleSingleRequestPopupSelection(DefaultMutableTreeNode root, CollectionTreeNode clickedNode) {
+        if (root == null || clickedNode == null) {
+            return;
+        }
+
+        CollectionTreeNode currentCheckedRequest = findCheckedRequestNode(root);
+        CollectionTreeNode targetRequest = null;
+
+        if (clickedNode.getNodeType() == CollectionTreeNode.Type.REQUEST) {
+            if (clickedNode.request != null && currentCheckedRequest != null && currentCheckedRequest.request == clickedNode.request) {
+                targetRequest = currentCheckedRequest;
+            } else {
+                targetRequest = clickedNode;
+            }
+        } else {
+            if (currentCheckedRequest != null && isDescendant(clickedNode, currentCheckedRequest)) {
+                targetRequest = currentCheckedRequest;
+            } else {
+                targetRequest = findFirstRequestNode(clickedNode);
+            }
+        }
+
+        if (targetRequest == null) {
+            targetRequest = currentCheckedRequest;
+        }
+        if (targetRequest == null) {
+            clearCheckedState(root);
+            return;
+        }
+
+        clearCheckedState(root);
+        markCheckedPath(targetRequest);
+    }
+
+    private void clearCheckedState(DefaultMutableTreeNode node) {
+        if (node == null) {
+            return;
+        }
+        if (node instanceof CollectionTreeNode) {
+            ((CollectionTreeNode) node).setChecked(false);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            clearCheckedState((DefaultMutableTreeNode) node.getChildAt(i));
+        }
+    }
+
+    private void markCheckedPath(CollectionTreeNode node) {
+        if (node == null) {
+            return;
+        }
+        node.setChecked(true);
+        TreeNode parent = node.getParent();
+        while (parent instanceof CollectionTreeNode) {
+            ((CollectionTreeNode) parent).setChecked(true);
+            parent = parent.getParent();
+        }
+    }
+
+    private CollectionTreeNode findCheckedRequestNode(DefaultMutableTreeNode node) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.isChecked()) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = findCheckedRequestNode((DefaultMutableTreeNode) node.getChildAt(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private CollectionTreeNode findFirstRequestNode(DefaultMutableTreeNode node) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = findFirstRequestNode((DefaultMutableTreeNode) node.getChildAt(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private boolean isDescendant(DefaultMutableTreeNode ancestor, DefaultMutableTreeNode node) {
+        if (ancestor == null || node == null) {
+            return false;
+        }
+        TreeNode current = node;
+        while (current != null) {
+            if (current == ancestor) {
+                return true;
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    private void refreshPopupSelectionParentState(DefaultMutableTreeNode node) {
+        if (node == null) {
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            refreshPopupSelectionParentState((DefaultMutableTreeNode) node.getChildAt(i));
+        }
+        if (node instanceof CollectionTreeNode) {
+            ((CollectionTreeNode) node).updateParentCheckState();
+        }
+    }
+
+    private void updatePopupSelectionCountLabel(DefaultMutableTreeNode root, JLabel selectedCountLabel) {
+        if (selectedCountLabel != null) {
+            selectedCountLabel.setText(collectCheckedRequests(root).size() + " requests selected");
+        }
     }
 
     private void expandAllTreeRows(JTree tree) {
@@ -4362,7 +4496,7 @@ public class ImporterPanel {
         dialog.setLayout(new BorderLayout(8, 8));
         JLabel selectedCountLabel = new JLabel("0 requests selected");
         DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
-        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel);
+        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel, true);
         JScrollPane treeScroll = new JScrollPane(selectionTree);
         treeScroll.setBorder(BorderFactory.createTitledBorder("Select exactly one request"));
         dialog.add(treeScroll, BorderLayout.CENTER);
@@ -4372,7 +4506,7 @@ public class ImporterPanel {
         JButton populate = new JButton("Populate");
         cancel.addActionListener(e -> dialog.dispose());
         populate.addActionListener(e -> {
-            List<ApiRequest> selected = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
+            List<ApiRequest> selected = collectOAuth2PopulateRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
             if (selected.size() != 1) {
                 JOptionPane.showMessageDialog(dialog, "Select exactly one request.", "Selection Required", JOptionPane.WARNING_MESSAGE);
                 return;
@@ -4436,6 +4570,11 @@ public class ImporterPanel {
             }
         }
         return false;
+    }
+
+    private List<ApiRequest> collectOAuth2PopulateRequests(DefaultMutableTreeNode root) {
+        List<ApiRequest> selected = collectCheckedRequests(root);
+        return selected.size() == 1 ? selected : Collections.emptyList();
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
