@@ -39,6 +39,7 @@ public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
     private static final String DEFERRED_TREE_REFRESH_LISTENER_KEY = "apiWorkbench.deferredTreeRefreshListener";
+    private static final String DEFERRED_TREE_REFRESH_PENDING_KEY = "apiWorkbench.deferredTreeRefreshPending";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
 
@@ -1610,15 +1611,26 @@ public class ImporterPanel {
         if (tree == null) {
             return;
         }
+        refreshTreePresentationNow(tree);
+        scheduleDeferredTreePresentationRefresh(tree);
+    }
+
+    private void refreshTreePresentationNow(JTree tree) {
+        if (tree == null) {
+            return;
+        }
         tree.treeDidChange();
         tree.revalidate();
         tree.repaint();
-        refreshTreePresentationWhenShowing(tree);
     }
 
-    private void refreshTreePresentationWhenShowing(JTree tree) {
-        if (tree == null || tree.isShowing()) {
+    private void scheduleDeferredTreePresentationRefresh(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        if (tree.isShowing()) {
             clearDeferredTreeRefreshListener(tree);
+            scheduleDeferredTreePresentationRefreshOnEdt(tree);
             return;
         }
         if (tree.getClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY) instanceof HierarchyListener) {
@@ -1631,11 +1643,22 @@ public class ImporterPanel {
                     return;
                 }
                 clearDeferredTreeRefreshListener(tree);
-                refreshTreePresentation(tree);
+                scheduleDeferredTreePresentationRefreshOnEdt(tree);
             }
         };
         tree.putClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY, listener);
         tree.addHierarchyListener(listener);
+    }
+
+    private void scheduleDeferredTreePresentationRefreshOnEdt(JTree tree) {
+        if (tree == null || Boolean.TRUE.equals(tree.getClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY))) {
+            return;
+        }
+        tree.putClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY, Boolean.TRUE);
+        SwingUtilities.invokeLater(() -> {
+            tree.putClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY, null);
+            refreshTreePresentationNow(tree);
+        });
     }
 
     private void clearDeferredTreeRefreshListener(JTree tree) {
