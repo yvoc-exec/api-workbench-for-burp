@@ -42,6 +42,8 @@ public class ImporterPanel {
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
     private static final String TREE_SHOW_INITIALIZER_KEY = "apiWorkbench.treeShowInitializer";
     private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
+    private static final String MAIN_TREE_RESTORE_INITIALIZER_KEY = "apiWorkbench.mainTreeRestoreInitializer";
+    private static final String MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY = "apiWorkbench.mainTreeRestoreInitializerListener";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
     private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
@@ -260,8 +262,8 @@ public class ImporterPanel {
 
         // Tree
         treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Collections"));
-        requestTree = buildMainRequestTree();
-        requestTreeScrollPane = new JScrollPane(requestTree);
+        requestTreeScrollPane = new JScrollPane();
+        mountMainRequestTree(buildMainRequestTree());
         requestTreeScrollPane.setBorder(BorderFactory.createTitledBorder("Request Tree"));
         panel.add(requestTreeScrollPane, BorderLayout.CENTER);
 
@@ -272,6 +274,18 @@ public class ImporterPanel {
         panel.add(lowerControls, BorderLayout.SOUTH);
 
         return panel;
+    }
+
+    private void mountMainRequestTree(JTree tree) {
+        if (requestTree != null) {
+            clearTreeShowInitializer(requestTree);
+        }
+        requestTree = tree;
+        if (requestTreeScrollPane != null) {
+            requestTreeScrollPane.setViewportView(tree);
+            requestTreeScrollPane.revalidate();
+            requestTreeScrollPane.repaint();
+        }
     }
 
     private JTree buildMainRequestTree() {
@@ -2397,10 +2411,9 @@ public class ImporterPanel {
         if (state == null || state.collections == null || state.collections.isEmpty()) {
             return;
         }
+        PendingMainRequestTreeRestore pendingRestore = new PendingMainRequestTreeRestore(state);
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
-                    ? normalizeWorkspaceRequestTreePaths(state.requestTreePaths)
-                    : Collections.emptyMap();
+            pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
             try {
                 restoreWorkspaceCollections(state.collections);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
@@ -2413,11 +2426,105 @@ public class ImporterPanel {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
-                scheduleTreeInitializationAfterShowing(requestTree, () -> stabilizeRestoredRequestTreePresentation(state));
+                scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> remountRestoredMainRequestTree(pendingRestore));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
             }
         });
+    }
+
+    private static final class PendingMainRequestTreeRestore {
+        final Map<String, String> requestTreePaths;
+        final List<String> expandedTreePathKeys;
+        final List<String> checkedRequestIdentityKeys;
+        final List<String> checkedRequestKeys;
+        final String selectedRequestCollectionName;
+        final String selectedRequestIdentityKey;
+        final String selectedRequestPath;
+        final String selectedRequestName;
+
+        private PendingMainRequestTreeRestore(WorkspaceState state) {
+            this.requestTreePaths = state.requestTreePaths != null
+                    ? normalizeWorkspaceRequestTreePaths(state.requestTreePaths)
+                    : Collections.emptyMap();
+            this.expandedTreePathKeys = state.expandedTreePathKeys != null
+                    ? new ArrayList<>(state.expandedTreePathKeys)
+                    : Collections.emptyList();
+            this.checkedRequestIdentityKeys = state.checkedRequestIdentityKeys != null
+                    ? new ArrayList<>(state.checkedRequestIdentityKeys)
+                    : Collections.emptyList();
+            this.checkedRequestKeys = state.checkedRequestKeys != null
+                    ? new ArrayList<>(state.checkedRequestKeys)
+                    : Collections.emptyList();
+            this.selectedRequestCollectionName = state.selectedRequestCollectionName;
+            this.selectedRequestIdentityKey = state.selectedRequestIdentityKey;
+            this.selectedRequestPath = state.selectedRequestPath;
+            this.selectedRequestName = state.selectedRequestName;
+        }
+    }
+
+    private void scheduleMainRequestTreeRestoreAfterWorkbenchVisible(Runnable initializer) {
+        if (requestTreeScrollPane == null) {
+            return;
+        }
+        if (initializer == null) {
+            return;
+        }
+        if (requestTreeScrollPane.isShowing()) {
+            SwingUtilities.invokeLater(initializer);
+            return;
+        }
+        Runnable pendingInitializer = initializer;
+        Object existingInitializer = requestTreeScrollPane.getClientProperty(MAIN_TREE_RESTORE_INITIALIZER_KEY);
+        if (existingInitializer instanceof Runnable) {
+            Runnable priorInitializer = (Runnable) existingInitializer;
+            pendingInitializer = () -> {
+                priorInitializer.run();
+                initializer.run();
+            };
+        }
+        requestTreeScrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_KEY, pendingInitializer);
+
+        Object listener = requestTreeScrollPane.getClientProperty(MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY);
+        if (listener instanceof HierarchyListener) {
+            return;
+        }
+        JScrollPane scrollPane = requestTreeScrollPane;
+        HierarchyListener hierarchyListener = new HierarchyListener() {
+            @Override
+            public void hierarchyChanged(HierarchyEvent e) {
+                if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) == 0 || !scrollPane.isShowing()) {
+                    return;
+                }
+                scrollPane.removeHierarchyListener(this);
+                Object shownInitializer = scrollPane.getClientProperty(MAIN_TREE_RESTORE_INITIALIZER_KEY);
+                scrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_KEY, null);
+                scrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY, null);
+                if (shownInitializer instanceof Runnable) {
+                    SwingUtilities.invokeLater((Runnable) shownInitializer);
+                }
+            }
+        };
+        requestTreeScrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY, hierarchyListener);
+        requestTreeScrollPane.addHierarchyListener(hierarchyListener);
+    }
+
+    private void remountRestoredMainRequestTree(PendingMainRequestTreeRestore pendingRestore) {
+        JTree liveTree = buildMainRequestTree();
+        mountMainRequestTree(liveTree);
+        rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+        if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
+            restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
+        } else {
+            restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
+        }
+        restoreSelectedRequest(
+                pendingRestore.selectedRequestCollectionName,
+                pendingRestore.selectedRequestIdentityKey,
+                pendingRestore.selectedRequestPath,
+                pendingRestore.selectedRequestName
+        );
+        resetRequestTreeHorizontalViewport();
     }
 
     static void applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
