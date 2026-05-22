@@ -9,7 +9,10 @@ import org.mockito.Mockito;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableModel;
 import java.awt.*;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
@@ -72,6 +75,38 @@ class ImporterPanelVariablesTabTest {
         assertThat(area.getCaretPosition()).isEqualTo(Math.min(caretBefore, area.getText().length()));
         assertThat(viewport.getViewPosition()).isEqualTo(viewBefore);
         assertThat(area.getText()).contains("changed-token");
+    }
+
+    @Test
+    void rawVariablesEditorUsesLongIdleWindowBeforeReconciling() throws Exception {
+        ImporterPanel panel = newPanel();
+        installSpyEnvVarsArea(panel);
+
+        javax.swing.Timer timer = (javax.swing.Timer) privateField(panel, "variablesRawEditIdleTimer");
+        assertThat(timer.getDelay()).isEqualTo(2000);
+        assertThat(timer.isRepeats()).isFalse();
+
+        invokePrivateMethod(panel, "markVariablesRawEditingActive");
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(true);
+
+        invokePrivateMethod(panel, "expireVariablesRawEditingForTests");
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(false);
+    }
+
+    @Test
+    void autosaveSkipsReplaceRuntimeVarsWhenParsedVarsAreUnchanged() throws Exception {
+        ImporterPanel panel = newPanel();
+        installSpyEnvVarsArea(panel);
+        CountingCollection collection = new CountingCollection("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        invokePrivateMethod(panel, "renderEffectiveVariablesForSelectedCollection");
+
+        invokePrivateMethod(panel, "autosaveVariablesToSelectedCollection");
+
+        assertThat(collection.replaceCount).isZero();
+        assertThat(collection.runtimeVars).containsEntry("token", "abc");
     }
 
     @Test
@@ -166,7 +201,7 @@ class ImporterPanelVariablesTabTest {
     }
 
     @Test
-    void switchingCollectionsClearsPendingRawRefreshAndStillRefreshesVariablesTab() throws Exception {
+    void switchingCollectionsClearsRawEditingSessionAndStillRefreshesVariablesTab() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTextArea area = installSpyEnvVarsArea(panel);
         ApiCollection collectionA = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
@@ -178,6 +213,7 @@ class ImporterPanelVariablesTabTest {
 
         runOnEdt(() -> area.setText(area.getText() + "\nlong_variable_name=" + "x".repeat(80)));
         invokePrivateMethod(panel, "markVariablesRawEditingActive");
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(true);
 
         collectionA.runtimeVars.put("token", "updated-alpha");
         invokePrivateMethod(panel, "refreshRuntimeViewsForCollection", new Class<?>[]{ApiCollection.class}, collectionA);
@@ -185,11 +221,134 @@ class ImporterPanelVariablesTabTest {
         selectCollection(panel, "varsCollectionCombo", 1);
 
         assertThat(area.getText()).contains("beta-token");
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(false);
 
         expireVariablesRawEditingForTest(panel);
 
         assertThat(area.getText()).contains("beta-token");
         assertThat(area.getText()).doesNotContain("updated-alpha");
+    }
+
+    @Test
+    void variablesTableMatchesRequestEditorTablePatternAndStarterRowBehavior() throws Exception {
+        ImporterPanel panel = newPanel();
+        installSpyEnvVarsArea(panel);
+        ApiCollection collection = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        setButtonSelected(panel, "varsTableViewBtn", true);
+        setButtonSelected(panel, "varsRawViewBtn", false);
+
+        JTable table = (JTable) privateField(panel, "varsTable");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "varsTableModel");
+
+        assertThat(table.getSelectionModel().getSelectionMode()).isEqualTo(ListSelectionModel.SINGLE_SELECTION);
+        assertThat(table.getClientProperty("terminateEditOnFocusLost")).isEqualTo(Boolean.TRUE);
+        assertThat(model.getRowCount()).isEqualTo(1);
+        assertThat(model.getValueAt(0, 0)).isEqualTo("");
+        assertThat(model.getValueAt(0, 1)).isEqualTo("");
+    }
+
+    @Test
+    void variablesTableAddAndDeleteLeaveAUsableStarterRow() throws Exception {
+        ImporterPanel panel = newPanel();
+        installSpyEnvVarsArea(panel);
+        ApiCollection collection = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        setButtonSelected(panel, "varsTableViewBtn", true);
+        setButtonSelected(panel, "varsRawViewBtn", false);
+
+        JTable table = (JTable) privateField(panel, "varsTable");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "varsTableModel");
+        JButton addButton = findButtonWithText((Container) privateField(panel, "varsEditorCardPanel"), "+");
+        JButton deleteButton = findButtonWithText((Container) privateField(panel, "varsEditorCardPanel"), "-");
+
+        runOnEdt(addButton::doClick);
+        assertThat(model.getRowCount()).isEqualTo(2);
+
+        runOnEdt(() -> table.getSelectionModel().setSelectionInterval(1, 1));
+        runOnEdt(deleteButton::doClick);
+
+        assertThat(model.getRowCount()).isEqualTo(1);
+        assertThat(model.getValueAt(0, 0)).isEqualTo("");
+        assertThat(model.getValueAt(0, 1)).isEqualTo("");
+    }
+
+    @Test
+    void autosaveDoesNotRewriteTableDuringActiveCellEditAndCommitsAfterIdle() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTextArea area = installSpyEnvVarsArea(panel);
+        CountingCollection collection = new CountingCollection("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        setButtonSelected(panel, "varsTableViewBtn", true);
+        setButtonSelected(panel, "varsRawViewBtn", false);
+
+        JTable table = (JTable) privateField(panel, "varsTable");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "varsTableModel");
+        JButton addButton = findButtonWithText((Container) privateField(panel, "varsEditorCardPanel"), "+");
+
+        runOnEdt(addButton::doClick);
+        runOnEdt(() -> {
+            table.editCellAt(1, 0);
+            Component editor = table.getEditorComponent();
+            if (editor instanceof JTextField) {
+                ((JTextField) editor).setText("draft_key");
+            }
+        });
+        invokePrivateMethod(panel, "markVariablesTableEditingActive");
+
+        int rawSetTextBefore = area.setTextCount;
+        int replaceCountBefore = collection.replaceCount;
+
+        invokePrivateMethod(panel, "autosaveVariablesToSelectedCollection");
+
+        assertThat(area.setTextCount).isEqualTo(rawSetTextBefore);
+        assertThat(collection.replaceCount).isEqualTo(replaceCountBefore);
+        assertThat(model.getRowCount()).isEqualTo(2);
+
+        expireVariablesTableEditingForTest(panel);
+
+        assertThat(collection.replaceCount).isEqualTo(replaceCountBefore + 1);
+        assertThat(collection.runtimeVars).containsEntry("draft_key", "");
+    }
+
+    @Test
+    void tableRefreshIsDeferredWhileEditingAndAppliedAfterIdle() throws Exception {
+        ImporterPanel panel = newPanel();
+        installSpyEnvVarsArea(panel);
+        ApiCollection collection = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        setButtonSelected(panel, "varsTableViewBtn", true);
+        setButtonSelected(panel, "varsRawViewBtn", false);
+
+        JTable table = (JTable) privateField(panel, "varsTable");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "varsTableModel");
+        runOnEdt(() -> {
+            table.editCellAt(0, 0);
+            Component editor = table.getEditorComponent();
+            if (editor instanceof JTextField) {
+                ((JTextField) editor).setText("draft_key");
+            }
+        });
+        invokePrivateMethod(panel, "markVariablesTableEditingActive");
+
+        collection.runtimeVars.put("token", "updated-token");
+        invokePrivateMethod(panel, "refreshRuntimeViewsForCollection", new Class<?>[]{ApiCollection.class}, collection);
+
+        assertThat(model.getRowCount()).isEqualTo(1);
+        assertThat(privateField(panel, "variablesTableEditingActive")).isEqualTo(true);
+
+        expireVariablesTableEditingForTest(panel);
+
+        assertThat(privateField(panel, "variablesTableEditingActive")).isEqualTo(false);
+        assertThat(model.getRowCount()).isEqualTo(2);
     }
 
     @Test
@@ -209,6 +368,7 @@ class ImporterPanelVariablesTabTest {
         model.addRow(new Object[]{"scope", "read"});
 
         invokePrivateMethod(panel, "autosaveVariablesToSelectedCollection");
+        expireVariablesTableEditingForTest(panel);
 
         assertThat(collection.runtimeVars)
                 .containsEntry("token", "from-table")
@@ -261,6 +421,10 @@ class ImporterPanelVariablesTabTest {
         invokePrivateMethod(panel, "expireVariablesRawEditingForTests");
     }
 
+    private static void expireVariablesTableEditingForTest(ImporterPanel panel) throws Exception {
+        invokePrivateMethod(panel, "expireVariablesTableEditingForTests");
+    }
+
     private static void invokePrivateMethod(Object target, String methodName) throws Exception {
         Method method = target.getClass().getDeclaredMethod(methodName);
         method.setAccessible(true);
@@ -289,6 +453,23 @@ class ImporterPanelVariablesTabTest {
         SwingUtilities.invokeAndWait(action::run);
     }
 
+    private static JButton findButtonWithText(Container container, String text) {
+        Deque<Container> stack = new ArrayDeque<>();
+        stack.push(container);
+        while (!stack.isEmpty()) {
+            Container current = stack.pop();
+            for (Component child : current.getComponents()) {
+                if (child instanceof JButton button && text.equals(button.getText())) {
+                    return button;
+                }
+                if (child instanceof Container childContainer) {
+                    stack.push(childContainer);
+                }
+            }
+        }
+        throw new IllegalStateException("Button not found: " + text);
+    }
+
     private static final class SpyTextArea extends JTextArea {
         private int setTextCount;
 
@@ -296,6 +477,21 @@ class ImporterPanelVariablesTabTest {
         public void setText(String t) {
             setTextCount++;
             super.setText(t);
+        }
+    }
+
+    private static final class CountingCollection extends ApiCollection {
+        private int replaceCount;
+
+        private CountingCollection(String name, Map<String, String> runtimeVars) {
+            this.name = name;
+            this.runtimeVars.putAll(runtimeVars);
+        }
+
+        @Override
+        public void replaceRuntimeVars(Map<String, String> vars) {
+            replaceCount++;
+            super.replaceRuntimeVars(vars);
         }
     }
 }
