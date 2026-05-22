@@ -38,8 +38,8 @@ import java.util.logging.Logger;
 public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
-    private static final String DEFERRED_TREE_REFRESH_LISTENER_KEY = "apiWorkbench.deferredTreeRefreshListener";
-    private static final String DEFERRED_TREE_REFRESH_PENDING_KEY = "apiWorkbench.deferredTreeRefreshPending";
+    private static final String TREE_SHOW_INITIALIZER_KEY = "apiWorkbench.treeShowInitializer";
+    private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
 
@@ -1592,6 +1592,13 @@ public class ImporterPanel {
         });
         expandAllTreeRows(tree);
         refreshTreePresentation(tree);
+        scheduleTreeInitializationAfterShowing(tree, () -> {
+            if (tree.getModel() instanceof DefaultTreeModel) {
+                ((DefaultTreeModel) tree.getModel()).reload();
+            }
+            expandAllTreeRows(tree);
+            refreshTreePresentation(tree);
+        });
         if (selectedCountLabel != null) {
             selectedCountLabel.setText("0 requests selected");
         }
@@ -1611,64 +1618,63 @@ public class ImporterPanel {
         if (tree == null) {
             return;
         }
-        refreshTreePresentationNow(tree);
-        scheduleDeferredTreePresentationRefresh(tree);
-    }
-
-    private void refreshTreePresentationNow(JTree tree) {
-        if (tree == null) {
-            return;
-        }
         tree.treeDidChange();
         tree.revalidate();
         tree.repaint();
     }
 
-    private void scheduleDeferredTreePresentationRefresh(JTree tree) {
+    private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
         if (tree == null) {
             return;
         }
+        if (initializer == null) {
+            return;
+        }
         if (tree.isShowing()) {
-            clearDeferredTreeRefreshListener(tree);
-            scheduleDeferredTreePresentationRefreshOnEdt(tree);
+            SwingUtilities.invokeLater(initializer);
             return;
         }
-        if (tree.getClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY) instanceof HierarchyListener) {
+        Runnable pendingInitializer = initializer;
+        Object existingInitializer = tree.getClientProperty(TREE_SHOW_INITIALIZER_KEY);
+        if (existingInitializer instanceof Runnable) {
+            Runnable priorInitializer = (Runnable) existingInitializer;
+            pendingInitializer = () -> {
+                priorInitializer.run();
+                initializer.run();
+            };
+        }
+        tree.putClientProperty(TREE_SHOW_INITIALIZER_KEY, pendingInitializer);
+
+        Object listener = tree.getClientProperty(TREE_SHOW_INITIALIZER_LISTENER_KEY);
+        if (listener instanceof HierarchyListener) {
             return;
         }
-        HierarchyListener listener = new HierarchyListener() {
+        HierarchyListener hierarchyListener = new HierarchyListener() {
             @Override
             public void hierarchyChanged(HierarchyEvent e) {
                 if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) == 0 || !tree.isShowing()) {
                     return;
                 }
-                clearDeferredTreeRefreshListener(tree);
-                scheduleDeferredTreePresentationRefreshOnEdt(tree);
+                clearTreeShowInitializer(tree);
+                Runnable shownInitializer = (Runnable) tree.getClientProperty(TREE_SHOW_INITIALIZER_KEY);
+                tree.putClientProperty(TREE_SHOW_INITIALIZER_KEY, null);
+                if (shownInitializer != null) {
+                    SwingUtilities.invokeLater(shownInitializer);
+                }
             }
         };
-        tree.putClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY, listener);
-        tree.addHierarchyListener(listener);
+        tree.putClientProperty(TREE_SHOW_INITIALIZER_LISTENER_KEY, hierarchyListener);
+        tree.addHierarchyListener(hierarchyListener);
     }
 
-    private void scheduleDeferredTreePresentationRefreshOnEdt(JTree tree) {
-        if (tree == null || Boolean.TRUE.equals(tree.getClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY))) {
-            return;
-        }
-        tree.putClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY, Boolean.TRUE);
-        SwingUtilities.invokeLater(() -> {
-            tree.putClientProperty(DEFERRED_TREE_REFRESH_PENDING_KEY, null);
-            refreshTreePresentationNow(tree);
-        });
-    }
-
-    private void clearDeferredTreeRefreshListener(JTree tree) {
+    private void clearTreeShowInitializer(JTree tree) {
         if (tree == null) {
             return;
         }
-        Object listener = tree.getClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY);
+        Object listener = tree.getClientProperty(TREE_SHOW_INITIALIZER_LISTENER_KEY);
         if (listener instanceof HierarchyListener) {
             tree.removeHierarchyListener((HierarchyListener) listener);
-            tree.putClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY, null);
+            tree.putClientProperty(TREE_SHOW_INITIALIZER_LISTENER_KEY, null);
         }
     }
 
@@ -2350,6 +2356,7 @@ public class ImporterPanel {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
+                scheduleTreeInitializationAfterShowing(requestTree, () -> stabilizeRestoredRequestTreePresentation(state));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
                 pendingWorkspaceExpandedTreePathKeys = Collections.emptyList();
@@ -2432,6 +2439,27 @@ public class ImporterPanel {
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
         refreshSessionActionControls();
+    }
+
+    private void stabilizeRestoredRequestTreePresentation(WorkspaceState state) {
+        if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
+            return;
+        }
+        treeModel.reload();
+        List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
+                ? state.expandedTreePathKeys
+                : Collections.emptyList();
+        if (expandedTreePathKeys.isEmpty()) {
+            for (int i = 0; i < requestTree.getRowCount(); i++) {
+                requestTree.expandRow(i);
+            }
+        } else {
+            restoreExpandedTreePathKeys(expandedTreePathKeys);
+        }
+        if (state != null) {
+            restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
+        }
+        refreshTreePresentation(requestTree);
     }
 
     /**
