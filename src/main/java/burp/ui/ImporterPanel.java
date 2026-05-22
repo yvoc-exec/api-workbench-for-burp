@@ -58,6 +58,7 @@ public class ImporterPanel {
 
     // Workbench tab
     private JTree requestTree;
+    private JScrollPane requestTreeScrollPane;
     private DefaultTreeModel treeModel;
     private JProgressBar importProgress;
     private JCheckBox repeaterBtn, sitemapBtn, intruderBtn;
@@ -257,14 +258,29 @@ public class ImporterPanel {
 
         // Tree
         treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Collections"));
-        requestTree = new JTree(treeModel);
-        requestTree.setRootVisible(false);
-        requestTree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
-        requestTree.setRowHeight(20);
-        requestTree.setShowsRootHandles(true);
-        requestTree.addMouseListener(new TreeMouseListener());
-        requestTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
-        requestTree.addTreeSelectionListener(e -> {
+        requestTree = buildMainRequestTree();
+        requestTreeScrollPane = new JScrollPane(requestTree);
+        requestTreeScrollPane.setBorder(BorderFactory.createTitledBorder("Request Tree"));
+        panel.add(requestTreeScrollPane, BorderLayout.CENTER);
+
+        JPanel lowerControls = new JPanel();
+        lowerControls.setLayout(new BoxLayout(lowerControls, BoxLayout.Y_AXIS));
+        lowerControls.add(createEnvBindingRow());
+        lowerControls.add(createActionsRow());
+        panel.add(lowerControls, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    private JTree buildMainRequestTree() {
+        JTree tree = new JTree(treeModel);
+        tree.setRootVisible(false);
+        tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
+        tree.setRowHeight(20);
+        tree.setShowsRootHandles(true);
+        tree.addMouseListener(new TreeMouseListener());
+        tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
+        tree.addTreeSelectionListener(e -> {
             persistCurrentRequestEditorState();
             TreePath path = requestTree.getSelectionPath();
             if (path != null) {
@@ -281,17 +297,7 @@ public class ImporterPanel {
             }
             updateScopeControlState();
         });
-        JScrollPane treeScroll = new JScrollPane(requestTree);
-        treeScroll.setBorder(BorderFactory.createTitledBorder("Request Tree"));
-        panel.add(treeScroll, BorderLayout.CENTER);
-
-        JPanel lowerControls = new JPanel();
-        lowerControls.setLayout(new BoxLayout(lowerControls, BoxLayout.Y_AXIS));
-        lowerControls.add(createEnvBindingRow());
-        lowerControls.add(createActionsRow());
-        panel.add(lowerControls, BorderLayout.SOUTH);
-
-        return panel;
+        return tree;
     }
 
     private JComponent createRightWorkbenchPanel() {
@@ -1642,6 +1648,67 @@ public class ImporterPanel {
         tree.setRowHeight(rowHeight);
     }
 
+    private void recreateMainRequestTree() {
+        if (treeModel == null || requestTreeScrollPane == null) {
+            return;
+        }
+        clearTreeShowInitializer(requestTree);
+        requestTree = buildMainRequestTree();
+        requestTreeScrollPane.setViewportView(requestTree);
+        requestTreeScrollPane.revalidate();
+        requestTreeScrollPane.repaint();
+    }
+
+    private boolean treeHasFlatHierarchyGeometry(JTree tree) {
+        if (tree == null || tree.getModel() == null || !(tree.getModel().getRoot() instanceof DefaultMutableTreeNode)) {
+            return false;
+        }
+        return treeHasFlatHierarchyGeometry(tree, (DefaultMutableTreeNode) tree.getModel().getRoot());
+    }
+
+    private boolean treeHasFlatHierarchyGeometry(JTree tree, DefaultMutableTreeNode node) {
+        if (tree == null || node == null) {
+            return false;
+        }
+        TreePath parentPath = node.getParent() != null ? new TreePath(node.getPath()) : null;
+        Rectangle parentBounds = parentPath != null ? tree.getPathBounds(parentPath) : null;
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            Object child = node.getChildAt(i);
+            if (!(child instanceof DefaultMutableTreeNode)) {
+                continue;
+            }
+            DefaultMutableTreeNode childNode = (DefaultMutableTreeNode) child;
+            if (parentBounds != null) {
+                Rectangle childBounds = tree.getPathBounds(new TreePath(childNode.getPath()));
+                if (childBounds != null && childBounds.x <= parentBounds.x) {
+                    return true;
+                }
+            }
+            if (treeHasFlatHierarchyGeometry(tree, childNode)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void restoreRequestTreeVisualState(WorkspaceState state) {
+        List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
+                ? state.expandedTreePathKeys
+                : Collections.emptyList();
+        if (expandedTreePathKeys.isEmpty()) {
+            for (int i = 0; i < requestTree.getRowCount(); i++) {
+                requestTree.expandRow(i);
+            }
+        } else {
+            restoreExpandedTreePathKeys(expandedTreePathKeys);
+        }
+        if (state != null) {
+            restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
+        }
+        refreshTreePresentation(requestTree);
+    }
+
     private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
         if (tree == null) {
             return;
@@ -2466,20 +2533,12 @@ public class ImporterPanel {
         }
         reinstallTreeUi(requestTree);
         treeModel.reload();
-        List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
-                ? state.expandedTreePathKeys
-                : Collections.emptyList();
-        if (expandedTreePathKeys.isEmpty()) {
-            for (int i = 0; i < requestTree.getRowCount(); i++) {
-                requestTree.expandRow(i);
-            }
-        } else {
-            restoreExpandedTreePathKeys(expandedTreePathKeys);
+        restoreRequestTreeVisualState(state);
+        if (treeHasFlatHierarchyGeometry(requestTree)) {
+            recreateMainRequestTree();
+            treeModel.reload();
+            restoreRequestTreeVisualState(state);
         }
-        if (state != null) {
-            restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
-        }
-        refreshTreePresentation(requestTree);
     }
 
     /**

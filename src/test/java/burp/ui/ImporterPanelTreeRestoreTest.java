@@ -1285,6 +1285,57 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void restoreStabilizationRecreatesMainTreeWhenGeometryRemainsFlat() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-recreate-flat", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
+
+        panel.restoreWorkspaceState(state);
+
+        JTree existingTree = requestTree(panel);
+        FlatGeometryTree flatTree = new FlatGeometryTree(existingTree.getModel());
+        flatTree.setRootVisible(existingTree.isRootVisible());
+        flatTree.setShowsRootHandles(existingTree.getShowsRootHandles());
+        flatTree.setCellRenderer(existingTree.getCellRenderer());
+        flatTree.setRowHeight(existingTree.getRowHeight());
+
+        JScrollPane scrollPane = (JScrollPane) privateField(panel, "requestTreeScrollPane");
+        scrollPane.setViewportView(flatTree);
+        setPrivateField(panel, "requestTree", flatTree);
+
+        Method stabilizeRestoredRequestTreePresentation = ImporterPanel.class.getDeclaredMethod(
+                "stabilizeRestoredRequestTreePresentation",
+                WorkspaceState.class
+        );
+        stabilizeRestoredRequestTreePresentation.setAccessible(true);
+        stabilizeRestoredRequestTreePresentation.invoke(panel, state);
+
+        JTree recreatedTree = requestTree(panel);
+
+        assertThat(recreatedTree).isNotSameAs(flatTree);
+
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) recreatedTree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+        CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+        CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
+
+        assertThat(rowXOf(recreatedTree, apimNode)).isLessThan(rowXOf(recreatedTree, authNode));
+        assertThat(rowXOf(recreatedTree, authNode)).isLessThan(rowXOf(recreatedTree, oauthNode));
+        assertThat(rowXOf(recreatedTree, oauthNode)).isLessThan(rowXOf(recreatedTree, requestNode));
+    }
+
+    @Test
     void rebuildTreeRefreshesMainRequestTreePresentation() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
@@ -1543,6 +1594,20 @@ class ImporterPanelTreeRestoreTest {
             revalidateCount = 0;
             treeDidChangeCount = 0;
             expandRowCount = 0;
+        }
+    }
+
+    private static final class FlatGeometryTree extends JTree {
+        private FlatGeometryTree(javax.swing.tree.TreeModel model) {
+            super(model);
+        }
+
+        @Override
+        public Rectangle getPathBounds(TreePath path) {
+            if (path == null) {
+                return null;
+            }
+            return new Rectangle(0, 0, 120, 20);
         }
     }
 }
