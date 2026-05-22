@@ -123,8 +123,15 @@ public class ImporterPanel {
     private boolean variablesRawEditingActive = false;
     private boolean variablesRawRefreshPending = false;
     private ApiCollection variablesRawRefreshPendingCollection = null;
+    private boolean variablesTableEditingActive = false;
+    private boolean variablesTableRefreshPending = false;
+    private ApiCollection variablesTableRefreshPendingCollection = null;
+    private boolean variablesTableAutosavePending = false;
+    private ApiCollection variablesTableAutosavePendingCollection = null;
     private long variablesRawLastEditAt = 0L;
+    private long variablesTableLastEditAt = 0L;
     private javax.swing.Timer variablesRawEditIdleTimer;
+    private javax.swing.Timer variablesTableEditIdleTimer;
     private String varsBaseLayerText = "";
 
     // OAuth2 tab
@@ -682,45 +689,33 @@ public class ImporterPanel {
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
         variablesAutosave = new burp.utils.DebouncedSwingAction(500, this::autosaveVariablesToSelectedCollection);
-        variablesRawEditIdleTimer = new javax.swing.Timer(650, e -> expireVariablesRawEditingSession());
+        variablesRawEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesRawEditingSession());
         variablesRawEditIdleTimer.setRepeats(false);
+        variablesTableEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesTableEditingSession());
+        variablesTableEditIdleTimer.setRepeats(false);
         envVarsArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
         });
 
-        varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
-        varsTable = new JTable(varsTableModel);
-        varsTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
-        varsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        varsTableModel.addTableModelListener(e -> scheduleVariablesAutosave());
+        suppressVariablesAutosave = true;
+        try {
+            varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+            varsTable = RequestEditorTableSupport.createEditableTable(varsTableModel);
+            varsTableModel.addTableModelListener(e -> handleVariablesTableModelEdit());
+        } finally {
+            suppressVariablesAutosave = false;
+        }
 
         varsEditorCardPanel = new JPanel(new CardLayout());
         varsEditorCardPanel.add(new JScrollPane(envVarsArea), "raw");
 
         JPanel tablePanel = new JPanel(new BorderLayout(5, 5));
         tablePanel.add(new JScrollPane(varsTable), BorderLayout.CENTER);
-        JPanel tableBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton addVarBtn = new JButton("+");
-        addVarBtn.addActionListener(e -> {
-            commitTableEdit(varsTable);
-            varsTableModel.addRow(new Object[]{"", ""});
-            syncRawFromVarsTable();
-            scheduleVariablesAutosave();
-        });
-        JButton delVarBtn = new JButton("-");
-        delVarBtn.addActionListener(e -> {
-            commitTableEdit(varsTable);
-            int row = resolveTargetRow(varsTable);
-            if (row >= 0) varsTableModel.removeRow(row);
-            syncRawFromVarsTable();
-            scheduleVariablesAutosave();
-        });
-        tableBtnPanel.add(addVarBtn);
-        tableBtnPanel.add(delVarBtn);
-        tablePanel.add(tableBtnPanel, BorderLayout.SOUTH);
+        tablePanel.add(RequestEditorTableSupport.createAddRemovePanel(varsTable, varsTableModel, () -> new Object[]{"", ""}), BorderLayout.SOUTH);
         varsEditorCardPanel.add(tablePanel, "table");
+        RequestEditorStateMapper.ensureStarterRow(varsTableModel);
 
         JPanel varsTopBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         varsRawViewBtn = new JRadioButton("Raw", true);
@@ -755,6 +750,8 @@ public class ImporterPanel {
         varsCollectionCombo = new JComboBox<>();
         varsCollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
         varsCollectionCombo.addActionListener(e -> {
+            resetVariablesRawEditingSession();
+            resetVariablesTableEditingSession();
             if (variablesAutosave != null) {
                 variablesAutosave.stop();
             }
@@ -2070,6 +2067,7 @@ public class ImporterPanel {
 
     private void clearVariablesEditorOnly() {
         resetVariablesRawEditingSession();
+        resetVariablesTableEditingSession();
         clearVariablesEditorOnly(
                 envVarsArea,
                 varsTableModel,
@@ -2272,6 +2270,9 @@ public class ImporterPanel {
             if (variablesRawEditingActive) {
                 variablesRawRefreshPending = true;
                 variablesRawRefreshPendingCollection = col;
+            } else if (variablesTableEditingActive) {
+                variablesTableRefreshPending = true;
+                variablesTableRefreshPendingCollection = col;
             } else {
                 renderEffectiveVariablesForSelectedCollection();
             }
@@ -3874,6 +3875,7 @@ public class ImporterPanel {
             resetVariablesRawEditingSession();
             renderVarsTableFromRaw();
         } else {
+            resetVariablesTableEditingSession();
             syncRawFromVarsTable();
             scheduleVariablesAutosave();
         }
@@ -3896,6 +3898,7 @@ public class ImporterPanel {
             for (String key : keys) {
                 varsTableModel.addRow(new Object[]{key, vars.get(key)});
             }
+            RequestEditorStateMapper.ensureStarterRow(varsTableModel);
         } finally {
             suppressVariablesAutosave = false;
         }
@@ -3944,11 +3947,27 @@ public class ImporterPanel {
         scheduleVariablesAutosave();
     }
 
+    private void handleVariablesTableModelEdit() {
+        if (suppressVariablesAutosave) {
+            return;
+        }
+        markVariablesTableEditingActive();
+        scheduleVariablesAutosave();
+    }
+
     private void markVariablesRawEditingActive() {
         variablesRawEditingActive = true;
         variablesRawLastEditAt = System.currentTimeMillis();
         if (variablesRawEditIdleTimer != null) {
             variablesRawEditIdleTimer.restart();
+        }
+    }
+
+    private void markVariablesTableEditingActive() {
+        variablesTableEditingActive = true;
+        variablesTableLastEditAt = System.currentTimeMillis();
+        if (variablesTableEditIdleTimer != null) {
+            variablesTableEditIdleTimer.restart();
         }
     }
 
@@ -3959,6 +3978,18 @@ public class ImporterPanel {
         variablesRawLastEditAt = 0L;
         if (variablesRawEditIdleTimer != null) {
             variablesRawEditIdleTimer.stop();
+        }
+    }
+
+    private void resetVariablesTableEditingSession() {
+        variablesTableEditingActive = false;
+        variablesTableRefreshPending = false;
+        variablesTableRefreshPendingCollection = null;
+        variablesTableAutosavePending = false;
+        variablesTableAutosavePendingCollection = null;
+        variablesTableLastEditAt = 0L;
+        if (variablesTableEditIdleTimer != null) {
+            variablesTableEditIdleTimer.stop();
         }
     }
 
@@ -3973,6 +4004,30 @@ public class ImporterPanel {
         variablesRawRefreshPending = false;
         variablesRawRefreshPendingCollection = null;
         if (shouldRenderPendingRefresh) {
+            renderEffectiveVariablesForSelectedCollection();
+        }
+    }
+
+    private void expireVariablesTableEditingSession() {
+        if (!variablesTableEditingActive) {
+            return;
+        }
+        variablesTableEditingActive = false;
+        boolean shouldRenderPendingRefresh = variablesTableRefreshPending
+                && variablesTableRefreshPendingCollection != null
+                && variablesTableRefreshPendingCollection == getSelectedVariablesCollection();
+        boolean shouldAutosavePending = variablesTableAutosavePending
+                && variablesTableAutosavePendingCollection != null
+                && variablesTableAutosavePendingCollection == getSelectedVariablesCollection();
+        variablesTableRefreshPending = false;
+        variablesTableRefreshPendingCollection = null;
+        variablesTableAutosavePending = false;
+        variablesTableAutosavePendingCollection = null;
+        if (shouldAutosavePending) {
+            autosaveVariablesToSelectedCollection();
+            return;
+        }
+        if (shouldRenderPendingRefresh && isVarsTableViewActive()) {
             renderEffectiveVariablesForSelectedCollection();
         }
     }
@@ -4040,6 +4095,10 @@ public class ImporterPanel {
         expireVariablesRawEditingSession();
     }
 
+    void expireVariablesTableEditingForTests() {
+        expireVariablesTableEditingSession();
+    }
+
     private void autosaveVariablesToSelectedCollection() {
         if (suppressVariablesAutosave || shuttingDown || varsCollectionCombo == null) {
             return;
@@ -4051,9 +4110,19 @@ public class ImporterPanel {
         }
         try {
             if (isVarsTableViewActive()) {
+                if (variablesTableEditingActive) {
+                    variablesTableAutosavePending = true;
+                    variablesTableAutosavePendingCollection = ref.collection;
+                    setVarsAutosaveStatus("Editing table...", Color.GRAY);
+                    return;
+                }
                 syncRawFromVarsTable();
             }
             Map<String, String> vars = parseRuntimeOverrideSection();
+            if (Objects.equals(ref.collection.runtimeVars, vars)) {
+                setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
+                return;
+            }
             ref.collection.replaceRuntimeVars(vars);
             setVarsAutosaveStatus("Autosaved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
         } catch (Exception ex) {
