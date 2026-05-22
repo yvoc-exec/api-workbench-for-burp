@@ -1623,6 +1623,25 @@ public class ImporterPanel {
         tree.repaint();
     }
 
+    private void reinstallTreeUi(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        TreeCellRenderer renderer = tree.getCellRenderer();
+        boolean rootVisible = tree.isRootVisible();
+        boolean showsRootHandles = tree.getShowsRootHandles();
+        int rowHeight = tree.getRowHeight();
+
+        tree.updateUI();
+
+        if (renderer != null) {
+            tree.setCellRenderer(renderer);
+        }
+        tree.setRootVisible(rootVisible);
+        tree.setShowsRootHandles(showsRootHandles);
+        tree.setRowHeight(rowHeight);
+    }
+
     private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
         if (tree == null) {
             return;
@@ -2445,6 +2464,7 @@ public class ImporterPanel {
         if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
             return;
         }
+        reinstallTreeUi(requestTree);
         treeModel.reload();
         List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
                 ? state.expandedTreePathKeys

@@ -1231,6 +1231,60 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void restoreStabilizationReinstallsTreeUiWhenMainTreeWasCreatedWithFlatIndents() throws Exception {
+        Object originalLeftIndent = UIManager.get("Tree.leftChildIndent");
+        Object originalRightIndent = UIManager.get("Tree.rightChildIndent");
+        try {
+            UIManager.put("Tree.leftChildIndent", 0);
+            UIManager.put("Tree.rightChildIndent", 0);
+
+            ImporterPanel panel = newPanel();
+
+            ApiCollection collection = new ApiCollection();
+            collection.name = "APIM";
+            ApiRequest request = request("req-flat-ui", "Get Token", "POST", "https://auth.example.test/token", 0);
+            request.path = "Auth/OAuth/Get Token";
+            collection.requests.add(request);
+
+            WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+            state.requestTreePaths = new LinkedHashMap<>();
+            state.requestTreePaths.put(
+                    ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                    "Auth/OAuth"
+            );
+
+            panel.restoreWorkspaceState(state);
+            JTree tree = requestTree(panel);
+
+            CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+            CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+            CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
+            CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
+
+            assertThat(rowXOf(tree, apimNode)).isEqualTo(rowXOf(tree, authNode));
+            assertThat(rowXOf(tree, authNode)).isEqualTo(rowXOf(tree, oauthNode));
+            assertThat(rowXOf(tree, oauthNode)).isEqualTo(rowXOf(tree, requestNode));
+
+            UIManager.put("Tree.leftChildIndent", 7);
+            UIManager.put("Tree.rightChildIndent", 13);
+
+            Method stabilizeRestoredRequestTreePresentation = ImporterPanel.class.getDeclaredMethod(
+                    "stabilizeRestoredRequestTreePresentation",
+                    WorkspaceState.class
+            );
+            stabilizeRestoredRequestTreePresentation.setAccessible(true);
+            stabilizeRestoredRequestTreePresentation.invoke(panel, state);
+
+            assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
+            assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
+            assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
+        } finally {
+            restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
+            restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
+        }
+    }
+
+    @Test
     void rebuildTreeRefreshesMainRequestTreePresentation() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
@@ -1393,6 +1447,14 @@ class ImporterPanelTreeRestoreTest {
         Rectangle bounds = tree.getPathBounds(path);
         assertThat(bounds).as("row bounds for %s", node).isNotNull();
         return bounds.x;
+    }
+
+    private static void restoreUiManagerValue(String key, Object value) {
+        if (value == null) {
+            UIManager.getDefaults().remove(key);
+            return;
+        }
+        UIManager.put(key, value);
     }
 
     private static void drainEdt() throws Exception {
