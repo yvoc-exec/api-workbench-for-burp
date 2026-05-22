@@ -38,6 +38,7 @@ import java.util.logging.Logger;
 public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
+    private static final String DEFERRED_TREE_REFRESH_LISTENER_KEY = "apiWorkbench.deferredTreeRefreshListener";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
 
@@ -1612,6 +1613,40 @@ public class ImporterPanel {
         tree.treeDidChange();
         tree.revalidate();
         tree.repaint();
+        refreshTreePresentationWhenShowing(tree);
+    }
+
+    private void refreshTreePresentationWhenShowing(JTree tree) {
+        if (tree == null || tree.isShowing()) {
+            clearDeferredTreeRefreshListener(tree);
+            return;
+        }
+        if (tree.getClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY) instanceof HierarchyListener) {
+            return;
+        }
+        HierarchyListener listener = new HierarchyListener() {
+            @Override
+            public void hierarchyChanged(HierarchyEvent e) {
+                if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) == 0 || !tree.isShowing()) {
+                    return;
+                }
+                clearDeferredTreeRefreshListener(tree);
+                refreshTreePresentation(tree);
+            }
+        };
+        tree.putClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY, listener);
+        tree.addHierarchyListener(listener);
+    }
+
+    private void clearDeferredTreeRefreshListener(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        Object listener = tree.getClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY);
+        if (listener instanceof HierarchyListener) {
+            tree.removeHierarchyListener((HierarchyListener) listener);
+            tree.putClientProperty(DEFERRED_TREE_REFRESH_LISTENER_KEY, null);
+        }
     }
 
     private ApiCollection findCollectionForNode(CollectionTreeNode node) {
