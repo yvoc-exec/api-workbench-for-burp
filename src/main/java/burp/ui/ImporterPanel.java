@@ -35,10 +35,14 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
+    private static final boolean MAIN_TREE_DIAGNOSTICS_ENABLED = true;
+    private static final int MAIN_TREE_DIAGNOSTIC_ROW_LIMIT = 4;
+    private boolean mainTreeDiagnosticsActive = false;
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
     private static final String TREE_SHOW_INITIALIZER_KEY = "apiWorkbench.treeShowInitializer";
     private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
@@ -292,6 +296,7 @@ public class ImporterPanel {
     }
 
     private void mountMainRequestTree(JTree tree) {
+        logMainRequestTreeDiagnostics("mountMainRequestTree:before");
         if (requestTree != null) {
             clearTreeShowInitializer(requestTree);
         }
@@ -301,6 +306,7 @@ public class ImporterPanel {
             requestTreeScrollPane.revalidate();
             requestTreeScrollPane.repaint();
         }
+        logMainRequestTreeDiagnostics("mountMainRequestTree:after");
     }
 
     private JTree buildMainRequestTree() {
@@ -1223,15 +1229,20 @@ public class ImporterPanel {
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths, List<String> expandedTreePathKeys) {
+        logMainRequestTreeDiagnostics("rebuildTree:before");
         loadRequestTreeModel(requestTreePaths);
+        logMainRequestTreeDiagnostics("rebuildTree:after-load");
         if (expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
             for (int i = 0; i < requestTree.getRowCount(); i++) {
                 requestTree.expandRow(i);
             }
+            logMainRequestTreeDiagnostics("rebuildTree:after-expandRow-pass");
         } else {
             restoreExpandedTreePathKeys(expandedTreePathKeys);
+            logMainRequestTreeDiagnostics("rebuildTree:after-restore-expanded-paths");
         }
         refreshTreePresentation(requestTree);
+        logMainRequestTreeDiagnostics("rebuildTree:after-refresh");
     }
 
     private void loadRequestTreeModel(Map<String, String> requestTreePaths) {
@@ -1823,15 +1834,82 @@ public class ImporterPanel {
         if (viewport == null) {
             return;
         }
+        logMainRequestTreeDiagnostics("resetRequestTreeHorizontalViewport:before");
         Point viewPosition = viewport.getViewPosition();
         if (viewPosition == null || viewPosition.x == 0) {
+            logMainRequestTreeDiagnostics("resetRequestTreeHorizontalViewport:no-op");
             return;
         }
         viewport.setViewPosition(new Point(0, Math.max(0, viewPosition.y)));
+        logMainRequestTreeDiagnostics("resetRequestTreeHorizontalViewport:after");
     }
 
     private void scheduleRequestTreeHorizontalViewportReset() {
+        logMainRequestTreeDiagnostics("scheduleRequestTreeHorizontalViewportReset:entry");
         SwingUtilities.invokeLater(this::resetRequestTreeHorizontalViewport);
+    }
+
+    private void scheduleMainTreeRestorePostShowDiagnostics(String stagePrefix) {
+        if (!mainTreeDiagnosticsActive || !MAIN_TREE_DIAGNOSTICS_ENABLED) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            logMainRequestTreeDiagnostics(stagePrefix + ":post-show-edt");
+            SwingUtilities.invokeLater(() -> {
+                logMainRequestTreeDiagnostics(stagePrefix + ":post-show-next-edt");
+                mainTreeDiagnosticsActive = false;
+            });
+        });
+    }
+
+    private void logMainRequestTreeDiagnostics(String stage) {
+        if (!MAIN_TREE_DIAGNOSTICS_ENABLED || !mainTreeDiagnosticsActive) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder("MAIN_TREE_DIAG stage=").append(stage);
+
+        if (requestTree == null) {
+            sb.append(" tree=null");
+            LOGGER.log(Level.INFO, sb.toString());
+            return;
+        }
+
+        sb.append(" rowCount=").append(requestTree.getRowCount());
+        sb.append(" selectedRow=").append(requestTree.getLeadSelectionRow());
+        TreePath selectedPath = requestTree.getSelectionPath();
+        sb.append(" selectedPath=").append(selectedPath != null ? selectedPath : "null");
+        sb.append(" ui=").append(requestTree.getUI() != null ? requestTree.getUI().getClass().getName() : "null");
+        if (requestTree.getUI() instanceof BasicTreeUI) {
+            BasicTreeUI ui = (BasicTreeUI) requestTree.getUI();
+            sb.append(" leftChildIndent=").append(ui.getLeftChildIndent());
+            sb.append(" rightChildIndent=").append(ui.getRightChildIndent());
+        }
+
+        JViewport viewport = requestTreeScrollPane != null ? requestTreeScrollPane.getViewport() : null;
+        if (viewport != null) {
+            sb.append(" viewportPos=").append(viewport.getViewPosition());
+            sb.append(" viewportExtent=").append(viewport.getExtentSize());
+        } else {
+            sb.append(" viewportPos=null viewportExtent=null");
+        }
+
+        for (int row = 0; row < MAIN_TREE_DIAGNOSTIC_ROW_LIMIT; row++) {
+            Rectangle bounds = requestTree.getRowBounds(row);
+            if (bounds != null) {
+                sb.append(" rowBounds[").append(row).append("]=").append(bounds);
+            } else {
+                sb.append(" rowBounds[").append(row).append("]=absent");
+            }
+        }
+
+        if (stage.startsWith("restoreSelectedRequest")) {
+            sb.append(" scrollPathToVisibleInvoked=false");
+        }
+        if (stage.startsWith("expandTreePath")) {
+            sb.append(" expandPathInvoked=true");
+        }
+
+        LOGGER.log(Level.INFO, sb.toString());
     }
 
     private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
@@ -2546,14 +2624,21 @@ public class ImporterPanel {
     }
 
     public void restoreWorkspaceState(WorkspaceState state) {
+        mainTreeDiagnosticsActive = MAIN_TREE_DIAGNOSTICS_ENABLED;
+        logMainRequestTreeDiagnostics("restoreWorkspaceState:before");
         if (state == null || state.collections == null || state.collections.isEmpty()) {
+            logMainRequestTreeDiagnostics("restoreWorkspaceState:no-state");
+            mainTreeDiagnosticsActive = false;
             return;
         }
         PendingMainRequestTreeRestore pendingRestore = new PendingMainRequestTreeRestore(state);
+        logMainRequestTreeDiagnostics("restoreWorkspaceState:after-pending-restore");
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
             try {
+                logMainRequestTreeDiagnostics("restoreWorkspaceState:before-restoreWorkspaceCollections");
                 restoreWorkspaceCollections(state.collections);
+                logMainRequestTreeDiagnostics("restoreWorkspaceState:after-restoreWorkspaceCollections");
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
                 restoreWorkbenchSettings(state);
@@ -2564,6 +2649,7 @@ public class ImporterPanel {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
+                logMainRequestTreeDiagnostics("restoreWorkspaceState:before-schedule-main-tree-restore");
                 scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> remountRestoredMainRequestTree(pendingRestore));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
@@ -2608,8 +2694,11 @@ public class ImporterPanel {
         if (initializer == null) {
             return;
         }
+        logMainRequestTreeDiagnostics("scheduleMainRequestTreeRestoreAfterWorkbenchVisible:entry");
         if (requestTreeScrollPane.isShowing()) {
+            logMainRequestTreeDiagnostics("scheduleMainRequestTreeRestoreAfterWorkbenchVisible:showing-immediate");
             SwingUtilities.invokeLater(initializer);
+            scheduleMainTreeRestorePostShowDiagnostics("scheduleMainRequestTreeRestoreAfterWorkbenchVisible:showing-immediate");
             return;
         }
         Runnable pendingInitializer = initializer;
@@ -2639,7 +2728,9 @@ public class ImporterPanel {
                 scrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_KEY, null);
                 scrollPane.putClientProperty(MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY, null);
                 if (shownInitializer instanceof Runnable) {
+                    logMainRequestTreeDiagnostics("scheduleMainRequestTreeRestoreAfterWorkbenchVisible:showing-callback");
                     SwingUtilities.invokeLater((Runnable) shownInitializer);
+                    scheduleMainTreeRestorePostShowDiagnostics("scheduleMainRequestTreeRestoreAfterWorkbenchVisible:showing-callback");
                 }
             }
         };
@@ -2648,23 +2739,33 @@ public class ImporterPanel {
     }
 
     private void remountRestoredMainRequestTree(PendingMainRequestTreeRestore pendingRestore) {
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:before-build");
         JTree liveTree = buildMainRequestTree();
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-build");
         mountMainRequestTree(liveTree);
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-mount");
         rebuildTree(pendingRestore.requestTreePaths, Collections.emptyList());
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-rebuild");
         expandMainRequestTreeRows();
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-expandRow-pass");
         applySavedMainTreeExpansionShape(pendingRestore.expandedTreePathKeys);
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-restore-expansion-shape");
         if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
             restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
         } else {
             restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
         }
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-restore-checks");
         restoreSelectedRequest(
                 pendingRestore.selectedRequestCollectionName,
                 pendingRestore.selectedRequestIdentityKey,
                 pendingRestore.selectedRequestPath,
                 pendingRestore.selectedRequestName
         );
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-restore-selection");
         resetRequestTreeHorizontalViewport();
+        logMainRequestTreeDiagnostics("remountRestoredMainRequestTree:after-viewport-reset");
+        scheduleMainTreeRestorePostShowDiagnostics("remountRestoredMainRequestTree:post-remount");
     }
 
     private void expandMainRequestTreeRows() {
@@ -3184,7 +3285,9 @@ public class ImporterPanel {
     }
 
     private void restoreSelectedRequest(String collectionName, String requestIdentityKey, String requestPath, String requestName) {
+        logMainRequestTreeDiagnostics("restoreSelectedRequest:before");
         if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
+            logMainRequestTreeDiagnostics("restoreSelectedRequest:no-tree");
             return;
         }
         TreePath path = null;
@@ -3198,6 +3301,7 @@ public class ImporterPanel {
             expandTreePath(path);
             requestTree.setSelectionPath(path);
         }
+        logMainRequestTreeDiagnostics("restoreSelectedRequest:after");
     }
 
     private TreePath findRequestTreePathByIdentity(DefaultMutableTreeNode node,
@@ -3309,11 +3413,13 @@ public class ImporterPanel {
         if (requestTree == null || path == null) {
             return;
         }
+        logMainRequestTreeDiagnostics("expandTreePath:before");
         TreePath current = path.getParentPath();
         if (current != null) {
             expandTreePath(current);
         }
         requestTree.expandPath(path);
+        logMainRequestTreeDiagnostics("expandTreePath:after");
     }
 
     static String workspaceTreePathKey(String collectionName, String folderPath) {
