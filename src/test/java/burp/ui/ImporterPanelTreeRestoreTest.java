@@ -24,7 +24,9 @@ import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreePath;
+import javax.swing.tree.TreeSelectionModel;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Graphics;
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -978,6 +980,13 @@ class ImporterPanelTreeRestoreTest {
         field.set(target, value);
     }
 
+    private static SpyScrollPane installSpyRequestTreeScrollPane(ImporterPanel panel, JTree tree) throws Exception {
+        SpyScrollPane scrollPane = new SpyScrollPane(tree);
+        scrollPane.setBorder(((JScrollPane) privateField(panel, "requestTreeScrollPane")).getBorder());
+        setPrivateField(panel, "requestTreeScrollPane", scrollPane);
+        return scrollPane;
+    }
+
     private static void invokePrivateMethod(Object target, String methodName) throws Exception {
         Method method = target.getClass().getDeclaredMethod(methodName);
         method.setAccessible(true);
@@ -995,6 +1004,49 @@ class ImporterPanelTreeRestoreTest {
 
     private static String envVarsText(ImporterPanel panel) throws Exception {
         return ((JTextArea) privateField(panel, "envVarsArea")).getText();
+    }
+
+    private static WorkspaceState nestedRestoreState() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest checked = request("req-showing-checked", "Check Me", "GET", "https://api.example.test/check", 0);
+        checked.path = "Check Me";
+        ApiRequest selected = request("req-showing-selected", "Select Me", "POST", "https://api.example.test/select", 1);
+        selected.path = "Select Me";
+        ApiRequest sibling = request("req-showing-sibling", "Sibling", "GET", "https://api.example.test/sibling", 2);
+        sibling.path = "Sibling";
+        collection.requests.add(checked);
+        collection.requests.add(selected);
+        collection.requests.add(sibling);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(1), 1),
+                "Auth/OAuth"
+        );
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(2), 2),
+                "Users"
+        );
+        state.expandedTreePathKeys = new ArrayList<>(List.of(
+                ImporterPanel.workspaceTreePathKey("APIM", ""),
+                ImporterPanel.workspaceTreePathKey("APIM", "Auth"),
+                ImporterPanel.workspaceTreePathKey("APIM", "Auth/OAuth")
+        ));
+        state.checkedRequestIdentityKeys = new ArrayList<>(List.of(
+                ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0)
+        ));
+        state.selectedRequestCollectionName = "APIM";
+        state.selectedRequestIdentityKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(1), 1);
+        state.selectedRequestPath = selected.path;
+        state.selectedRequestName = selected.name;
+        return state;
     }
 
     private static JTree requestTree(ImporterPanel panel) throws Exception {
@@ -1534,81 +1586,82 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoreWorkspaceStateDefersMainTreeStateReplayUntilTreeBecomesShowing() throws Exception {
+    void restoreWorkspaceStateRemountsFreshMainRequestTreeWhenWorkbenchHostBecomesShowing() throws Exception {
         ImporterPanel panel = newPanel();
-        SpyTree spyTree = installSpyRequestTree(panel);
+        SpyTree startupTree = installSpyRequestTree(panel);
+        SpyScrollPane host = installSpyRequestTreeScrollPane(panel, startupTree);
 
-        ApiCollection collection = new ApiCollection();
-        collection.name = "APIM";
-        ApiRequest checked = request("req-showing-checked", "Check Me", "GET", "https://api.example.test/check", 0);
-        checked.path = "Check Me";
-        ApiRequest selected = request("req-showing-selected", "Select Me", "POST", "https://api.example.test/select", 1);
-        selected.path = "Select Me";
-        ApiRequest sibling = request("req-showing-sibling", "Sibling", "GET", "https://api.example.test/sibling", 2);
-        sibling.path = "Sibling";
-        collection.requests.add(checked);
-        collection.requests.add(selected);
-        collection.requests.add(sibling);
-
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
-        state.requestTreePaths = new LinkedHashMap<>();
-        state.requestTreePaths.put(
-                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
-                "Auth/OAuth"
-        );
-        state.requestTreePaths.put(
-                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(1), 1),
-                "Auth/OAuth"
-        );
-        state.requestTreePaths.put(
-                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(2), 2),
-                "Users"
-        );
-        state.expandedTreePathKeys = new ArrayList<>(List.of(
-                ImporterPanel.workspaceTreePathKey("APIM", ""),
-                ImporterPanel.workspaceTreePathKey("APIM", "Auth"),
-                ImporterPanel.workspaceTreePathKey("APIM", "Auth/OAuth")
-        ));
-        state.checkedRequestIdentityKeys = new ArrayList<>(List.of(
-                ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0)
-        ));
-        state.selectedRequestCollectionName = "APIM";
-        state.selectedRequestIdentityKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(1), 1);
-        state.selectedRequestPath = selected.path;
-        state.selectedRequestName = selected.name;
-
+        WorkspaceState state = nestedRestoreState();
         panel.restoreWorkspaceState(state);
 
-        CollectionTreeNode preShowCheckedNode = findRequestNode(spyTree, "req-showing-checked");
-        TreePath preShowApimPath = findPathByFolder(spyTree, "APIM", null);
-        TreePath preShowAuthPath = findPathByFolder(spyTree, "APIM", "Auth");
-        TreePath preShowOauthPath = findPathByFolder(spyTree, "APIM", "OAuth");
-        TreePath preShowUsersPath = findPathByFolder(spyTree, "APIM", "Users");
+        assertThat(requestTree(panel)).isSameAs(startupTree);
 
-        assertThat(preShowCheckedNode.isChecked()).isFalse();
-        assertThat(spyTree.getSelectionPath()).isNull();
-        assertThat(spyTree.isExpanded(preShowApimPath)).isFalse();
-        assertThat(spyTree.isExpanded(preShowAuthPath)).isFalse();
-        assertThat(spyTree.isExpanded(preShowOauthPath)).isFalse();
-        assertThat(spyTree.isExpanded(preShowUsersPath)).isFalse();
+        host.setShowingForTest(true);
+        host.fireShowingChanged();
+        drainEdt();
 
-        showRequestTree(spyTree);
+        JTree liveTree = requestTree(panel);
+        assertThat(liveTree).isNotSameAs(startupTree);
+        assertThat(liveTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) liveTree.getCellRenderer()).isCheckboxMode()).isFalse();
+        assertThat(findRequestNode(liveTree, "req-showing-checked").isChecked()).isTrue();
+        assertThat(((CollectionTreeNode) liveTree.getSelectionPath().getLastPathComponent()).request.id)
+                .isEqualTo("req-showing-selected");
+    }
 
-        JTree rebuiltTree = requestTree(panel);
-        CollectionTreeNode postShowCheckedNode = findRequestNode(rebuiltTree, "req-showing-checked");
-        TreePath postShowApimPath = findPathByFolder(rebuiltTree, "APIM", null);
-        TreePath postShowAuthPath = findPathByFolder(rebuiltTree, "APIM", "Auth");
-        TreePath postShowOauthPath = findPathByFolder(rebuiltTree, "APIM", "OAuth");
-        TreePath postShowUsersPath = findPathByFolder(rebuiltTree, "APIM", "Users");
+    @Test
+    void restoreWorkspaceStateDoesNotReplayStateOntoStartupMainRequestTreeBeforeHostRemount() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTree startupTree = installSpyRequestTree(panel);
+        SpyScrollPane host = installSpyRequestTreeScrollPane(panel, startupTree);
 
-        assertThat(rebuiltTree).isSameAs(spyTree);
-        assertThat(postShowCheckedNode.isChecked()).isTrue();
-        assertThat(rebuiltTree.getSelectionPath()).isNotNull();
-        assertThat(((CollectionTreeNode) rebuiltTree.getSelectionPath().getLastPathComponent()).request.id).isEqualTo("req-showing-selected");
-        assertThat(rebuiltTree.isExpanded(postShowApimPath)).isTrue();
-        assertThat(rebuiltTree.isExpanded(postShowAuthPath)).isTrue();
-        assertThat(rebuiltTree.isExpanded(postShowOauthPath)).isTrue();
-        assertThat(rebuiltTree.isExpanded(postShowUsersPath)).isFalse();
+        WorkspaceState state = nestedRestoreState();
+        panel.restoreWorkspaceState(state);
+
+        assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
+        assertThat(startupTree.getSelectionPath()).isNull();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isFalse();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "Auth"))).isFalse();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "OAuth"))).isFalse();
+
+        host.setShowingForTest(true);
+        host.fireShowingChanged();
+        drainEdt();
+
+        assertThat(findRequestNode(requestTree(panel), "req-showing-checked").isChecked()).isTrue();
+    }
+
+    @Test
+    void remountedMainRequestTreeRetainsWorkbenchConfiguration() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTree startupTree = installSpyRequestTree(panel);
+        SpyScrollPane host = installSpyRequestTreeScrollPane(panel, startupTree);
+
+        panel.restoreWorkspaceState(nestedRestoreState());
+        host.setShowingForTest(true);
+        host.fireShowingChanged();
+        drainEdt();
+
+        JTree liveTree = requestTree(panel);
+        assertThat(liveTree).isNotSameAs(startupTree);
+        assertThat(liveTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) liveTree.getCellRenderer()).isCheckboxMode()).isFalse();
+        assertThat(liveTree.getRowHeight()).isEqualTo(20);
+        assertThat(liveTree.getShowsRootHandles()).isTrue();
+        assertThat(liveTree.getSelectionModel().getSelectionMode()).isEqualTo(TreeSelectionModel.SINGLE_TREE_SELECTION);
+    }
+
+    @Test
+    void restoreWorkspaceCollectionsLoadsModelButLeavesStartupMainTreeUiNeutral() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTree startupTree = installSpyRequestTree(panel);
+
+        panel.restoreWorkspaceState(nestedRestoreState());
+
+        assertThat(findRequestNode(startupTree, "req-showing-checked")).isNotNull();
+        assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
+        assertThat(startupTree.getSelectionPath()).isNull();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isFalse();
     }
 
     @Test
@@ -1722,13 +1775,25 @@ class ImporterPanelTreeRestoreTest {
         spyTree.setCellRenderer(existing.getCellRenderer());
         spyTree.setRowHeight(existing.getRowHeight());
         spyTree.setSelectionModel(existing.getSelectionModel());
-        attachRequestTree(panel, spyTree);
+        SpyScrollPane scrollPane = new SpyScrollPane(spyTree);
+        scrollPane.setBorder(((JScrollPane) privateField(panel, "requestTreeScrollPane")).getBorder());
+        setPrivateField(panel, "requestTreeScrollPane", scrollPane);
+        setPrivateField(panel, "requestTree", spyTree);
         return spyTree;
     }
 
     private static void showRequestTree(SpyTree spyTree) throws Exception {
         spyTree.setShowingForTest(true);
         spyTree.fireShowingChanged();
+        Container parent = spyTree.getParent();
+        while (parent != null && !(parent instanceof JScrollPane)) {
+            parent = parent.getParent();
+        }
+        if (parent instanceof SpyScrollPane) {
+            SpyScrollPane scrollPane = (SpyScrollPane) parent;
+            scrollPane.setShowingForTest(true);
+            scrollPane.fireShowingChanged();
+        }
         drainEdt();
     }
 
@@ -1805,6 +1870,30 @@ class ImporterPanelTreeRestoreTest {
             revalidateCount = 0;
             treeDidChangeCount = 0;
             expandRowCount = 0;
+        }
+    }
+
+    private static final class SpyScrollPane extends JScrollPane {
+        private boolean showingForTest;
+
+        private SpyScrollPane(Component view) {
+            super(view);
+        }
+
+        @Override
+        public boolean isShowing() {
+            return showingForTest || super.isShowing();
+        }
+
+        private void setShowingForTest(boolean showingForTest) {
+            this.showingForTest = showingForTest;
+        }
+
+        private void fireShowingChanged() {
+            HierarchyEvent event = new HierarchyEvent(this, HierarchyEvent.HIERARCHY_CHANGED, this, this, HierarchyEvent.SHOWING_CHANGED);
+            for (HierarchyListener listener : getHierarchyListeners()) {
+                listener.hierarchyChanged(event);
+            }
         }
     }
 
