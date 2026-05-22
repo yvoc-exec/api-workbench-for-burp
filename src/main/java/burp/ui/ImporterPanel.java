@@ -1707,6 +1707,22 @@ public class ImporterPanel {
             restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
         }
         refreshTreePresentation(requestTree);
+        resetRequestTreeHorizontalViewport();
+    }
+
+    private void resetRequestTreeHorizontalViewport() {
+        if (requestTreeScrollPane == null) {
+            return;
+        }
+        JViewport viewport = requestTreeScrollPane.getViewport();
+        if (viewport == null) {
+            return;
+        }
+        Point viewPosition = viewport.getViewPosition();
+        if (viewPosition == null || viewPosition.x == 0) {
+            return;
+        }
+        viewport.setViewPosition(new Point(0, Math.max(0, viewPosition.y)));
     }
 
     private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
@@ -2895,6 +2911,7 @@ public class ImporterPanel {
             expandTreePath(path);
             requestTree.setSelectionPath(path);
             requestTree.scrollPathToVisible(path);
+            resetRequestTreeHorizontalViewport();
         }
     }
 

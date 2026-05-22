@@ -25,6 +25,7 @@ import javax.swing.tree.TreeCellRenderer;
 import javax.swing.tree.TreePath;
 import java.awt.Component;
 import java.awt.Graphics;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.HierarchyEvent;
 import java.awt.event.HierarchyListener;
@@ -1336,6 +1337,43 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void restoreWorkspaceStateResetsMainTreeHorizontalViewportAfterSelectionRestore() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-scroll-reset", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Deep/Nested/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth/Deep/Nested"
+        );
+        state.selectedRequestCollectionName = "APIM";
+        state.selectedRequestIdentityKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0);
+        state.selectedRequestPath = request.path;
+        state.selectedRequestName = request.name;
+
+        JTree existingTree = requestTree(panel);
+        HorizontalShiftOnScrollTree shiftedTree = new HorizontalShiftOnScrollTree(existingTree.getModel());
+        shiftedTree.setRootVisible(existingTree.isRootVisible());
+        shiftedTree.setShowsRootHandles(existingTree.getShowsRootHandles());
+        shiftedTree.setCellRenderer(existingTree.getCellRenderer());
+        shiftedTree.setRowHeight(existingTree.getRowHeight());
+
+        JScrollPane scrollPane = (JScrollPane) privateField(panel, "requestTreeScrollPane");
+        scrollPane.setViewportView(shiftedTree);
+        setPrivateField(panel, "requestTree", shiftedTree);
+
+        panel.restoreWorkspaceState(state);
+
+        assertThat(scrollPane.getViewport().getViewPosition().x).isZero();
+    }
+
+    @Test
     void rebuildTreeRefreshesMainRequestTreePresentation() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
@@ -1608,6 +1646,19 @@ class ImporterPanelTreeRestoreTest {
                 return null;
             }
             return new Rectangle(0, 0, 120, 20);
+        }
+    }
+
+    private static final class HorizontalShiftOnScrollTree extends JTree {
+        private HorizontalShiftOnScrollTree(javax.swing.tree.TreeModel model) {
+            super(model);
+        }
+
+        @Override
+        public void scrollPathToVisible(TreePath path) {
+            if (getParent() instanceof JViewport) {
+                ((JViewport) getParent()).setViewPosition(new Point(72, 18));
+            }
         }
     }
 }
