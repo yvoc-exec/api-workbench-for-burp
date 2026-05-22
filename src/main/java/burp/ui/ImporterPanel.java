@@ -140,8 +140,6 @@ public class ImporterPanel {
     private Runnable workspaceChangeListener;
     private boolean suppressWorkspaceChangeNotifications = false;
     private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
-    private List<String> pendingWorkspaceExpandedTreePathKeys = Collections.emptyList();
-
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
     private final List<ApiRequest> runnerQueuedRequests = new ArrayList<>();
@@ -1215,9 +1213,7 @@ public class ImporterPanel {
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths, List<String> expandedTreePathKeys) {
-        requestToCollectionMap.clear();
-        DefaultMutableTreeNode root = buildRequestTreeRoot(loadedCollections, requestTreePaths, requestToCollectionMap);
-        treeModel.setRoot(root);
+        loadRequestTreeModel(requestTreePaths);
         if (expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
             for (int i = 0; i < requestTree.getRowCount(); i++) {
                 requestTree.expandRow(i);
@@ -1226,6 +1222,12 @@ public class ImporterPanel {
             restoreExpandedTreePathKeys(expandedTreePathKeys);
         }
         refreshTreePresentation(requestTree);
+    }
+
+    private void loadRequestTreeModel(Map<String, String> requestTreePaths) {
+        requestToCollectionMap.clear();
+        DefaultMutableTreeNode root = buildRequestTreeRoot(loadedCollections, requestTreePaths, requestToCollectionMap);
+        treeModel.setRoot(root);
     }
 
     static DefaultMutableTreeNode buildRequestTreeRoot(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
@@ -1635,26 +1637,6 @@ public class ImporterPanel {
         tree.repaint();
     }
 
-    private void reinstallTreeUi(JTree tree) {
-        if (tree == null) {
-            return;
-        }
-        TreeCellRenderer renderer = tree.getCellRenderer();
-        boolean rootVisible = tree.isRootVisible();
-        boolean showsRootHandles = tree.getShowsRootHandles();
-        int rowHeight = tree.getRowHeight();
-
-        tree.updateUI();
-
-        if (renderer != null) {
-            tree.setCellRenderer(renderer);
-        }
-        tree.setRootVisible(rootVisible);
-        tree.setShowsRootHandles(showsRootHandles);
-        tree.setRowHeight(rowHeight);
-        configureMainTreeUi(tree);
-    }
-
     private void configureMainTreeUi(JTree tree) {
         if (tree == null) {
             return;
@@ -1687,68 +1669,6 @@ public class ImporterPanel {
             super.updateUI();
             configureMainTreeUi(this);
         }
-    }
-
-    private void recreateMainRequestTree() {
-        if (treeModel == null || requestTreeScrollPane == null) {
-            return;
-        }
-        clearTreeShowInitializer(requestTree);
-        requestTree = buildMainRequestTree();
-        requestTreeScrollPane.setViewportView(requestTree);
-        requestTreeScrollPane.revalidate();
-        requestTreeScrollPane.repaint();
-    }
-
-    private boolean treeHasFlatHierarchyGeometry(JTree tree) {
-        if (tree == null || tree.getModel() == null || !(tree.getModel().getRoot() instanceof DefaultMutableTreeNode)) {
-            return false;
-        }
-        return treeHasFlatHierarchyGeometry(tree, (DefaultMutableTreeNode) tree.getModel().getRoot());
-    }
-
-    private boolean treeHasFlatHierarchyGeometry(JTree tree, DefaultMutableTreeNode node) {
-        if (tree == null || node == null) {
-            return false;
-        }
-        TreePath parentPath = node.getParent() != null ? new TreePath(node.getPath()) : null;
-        Rectangle parentBounds = parentPath != null ? tree.getPathBounds(parentPath) : null;
-
-        for (int i = 0; i < node.getChildCount(); i++) {
-            Object child = node.getChildAt(i);
-            if (!(child instanceof DefaultMutableTreeNode)) {
-                continue;
-            }
-            DefaultMutableTreeNode childNode = (DefaultMutableTreeNode) child;
-            if (parentBounds != null) {
-                Rectangle childBounds = tree.getPathBounds(new TreePath(childNode.getPath()));
-                if (childBounds != null && childBounds.x <= parentBounds.x) {
-                    return true;
-                }
-            }
-            if (treeHasFlatHierarchyGeometry(tree, childNode)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void restoreRequestTreeVisualState(WorkspaceState state) {
-        List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
-                ? state.expandedTreePathKeys
-                : Collections.emptyList();
-        if (expandedTreePathKeys.isEmpty()) {
-            for (int i = 0; i < requestTree.getRowCount(); i++) {
-                requestTree.expandRow(i);
-            }
-        } else {
-            restoreExpandedTreePathKeys(expandedTreePathKeys);
-        }
-        if (state != null) {
-            restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
-        }
-        refreshTreePresentation(requestTree);
-        resetRequestTreeHorizontalViewport();
     }
 
     private void resetRequestTreeHorizontalViewport() {
@@ -2481,18 +2401,8 @@ public class ImporterPanel {
             pendingWorkspaceRequestTreePaths = state.requestTreePaths != null
                     ? normalizeWorkspaceRequestTreePaths(state.requestTreePaths)
                     : Collections.emptyMap();
-            pendingWorkspaceExpandedTreePathKeys = state.expandedTreePathKeys != null
-                    ? new ArrayList<>(state.expandedTreePathKeys)
-                    : Collections.emptyList();
             try {
                 restoreWorkspaceCollections(state.collections);
-                restoreExpandedTreePathKeys(pendingWorkspaceExpandedTreePathKeys);
-                if (state.checkedRequestIdentityKeys != null && !state.checkedRequestIdentityKeys.isEmpty()) {
-                    restoreCheckedRequestIdentityKeys(state.checkedRequestIdentityKeys);
-                } else {
-                    restoreCheckedRequestKeys(state.checkedRequestKeys);
-                }
-                restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
                 restoreWorkbenchSettings(state);
@@ -2506,7 +2416,6 @@ public class ImporterPanel {
                 scheduleTreeInitializationAfterShowing(requestTree, () -> stabilizeRestoredRequestTreePresentation(state));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
-                pendingWorkspaceExpandedTreePathKeys = Collections.emptyList();
             }
         });
     }
@@ -2581,7 +2490,10 @@ public class ImporterPanel {
                 }
             }
         }
-        rebuildTree(pendingWorkspaceRequestTreePaths, pendingWorkspaceExpandedTreePathKeys);
+        loadRequestTreeModel(pendingWorkspaceRequestTreePaths);
+        if (requestTree != null) {
+            requestTree.clearSelection();
+        }
         refreshCollectionCombos();
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
@@ -2592,10 +2504,25 @@ public class ImporterPanel {
         if (requestTree == null || treeModel == null || treeModel.getRoot() == null) {
             return;
         }
-        recreateMainRequestTree();
-        reinstallTreeUi(requestTree);
-        treeModel.reload();
-        restoreRequestTreeVisualState(state);
+        Map<String, String> requestTreePaths = state != null && state.requestTreePaths != null
+                ? normalizeWorkspaceRequestTreePaths(state.requestTreePaths)
+                : Collections.emptyMap();
+        List<String> expandedTreePathKeys = state != null && state.expandedTreePathKeys != null
+                ? new ArrayList<>(state.expandedTreePathKeys)
+                : Collections.emptyList();
+
+        rebuildTree(requestTreePaths, expandedTreePathKeys);
+
+        if (state != null) {
+            if (state.checkedRequestIdentityKeys != null && !state.checkedRequestIdentityKeys.isEmpty()) {
+                restoreCheckedRequestIdentityKeys(state.checkedRequestIdentityKeys);
+            } else {
+                restoreCheckedRequestKeys(state.checkedRequestKeys);
+            }
+            restoreSelectedRequest(state.selectedRequestCollectionName, state.selectedRequestIdentityKey, state.selectedRequestPath, state.selectedRequestName);
+        }
+        resetRequestTreeHorizontalViewport();
+        scheduleRequestTreeHorizontalViewportReset();
     }
 
     /**
