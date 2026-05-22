@@ -120,6 +120,9 @@ public class ImporterPanel {
     private JLabel varsAutosaveStatusLabel;
     private burp.utils.DebouncedSwingAction variablesAutosave;
     private boolean suppressVariablesAutosave = false;
+    private boolean variablesDirty = false;
+    private boolean suppressVariablesCollectionSelectionPrompt = false;
+    private CollectionRef activeVariablesCollectionRef = null;
     private boolean variablesRawEditingActive = false;
     private boolean variablesRawRefreshPending = false;
     private ApiCollection variablesRawRefreshPendingCollection = null;
@@ -739,7 +742,7 @@ public class ImporterPanel {
         // Hint label
         varsHintLabel = new JLabel("Select a collection to edit scoped variables.");
         varsHintLabel.setForeground(Color.GRAY);
-        varsAutosaveStatusLabel = new JLabel("Autosave idle.");
+        varsAutosaveStatusLabel = new JLabel("Saved.");
         varsAutosaveStatusLabel.setForeground(Color.GRAY);
         JPanel varsStatusPanel = new JPanel(new GridLayout(2, 1));
         varsStatusPanel.add(varsHintLabel);
@@ -749,20 +752,7 @@ public class ImporterPanel {
         JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         varsCollectionCombo = new JComboBox<>();
         varsCollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
-        varsCollectionCombo.addActionListener(e -> {
-            resetVariablesRawEditingSession();
-            resetVariablesTableEditingSession();
-            if (variablesAutosave != null) {
-                variablesAutosave.stop();
-            }
-            renderEffectiveVariablesForSelectedCollection();
-            updateScopeControlState();
-            if (varsCollectionCombo.getSelectedItem() != null) {
-                setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
-            } else {
-                setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
-            }
-        });
+        varsCollectionCombo.addActionListener(e -> handleVariablesCollectionSelectionChange());
         bindVarsBtn = new JButton("Save Now");
         bindVarsBtn.addActionListener(e -> bindVarsToSelectedCollection());
         JButton bindAllBtn = new JButton("Bind to All Collections");
@@ -783,6 +773,8 @@ public class ImporterPanel {
         bottomPanel.add(bindPanel, BorderLayout.NORTH);
 
         panel.add(bottomPanel, BorderLayout.SOUTH);
+        installVariablesSaveShortcut(panel);
+        installVariablesSaveShortcut(varsEditorCardPanel);
         updateScopeControlState();
         return panel;
     }
@@ -2077,6 +2069,7 @@ public class ImporterPanel {
                 () -> varsBaseLayerText = "",
                 msg -> setVarsAutosaveStatus(msg, Color.GRAY)
         );
+        markVariablesDirty();
     }
 
     private void exportSelectedCollectionRuntimeJson() {
@@ -2267,13 +2260,7 @@ public class ImporterPanel {
         CollectionRef varsRef = varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null
                 ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
         if (varsRef != null && varsRef.collection == col) {
-            if (variablesRawEditingActive) {
-                variablesRawRefreshPending = true;
-                variablesRawRefreshPendingCollection = col;
-            } else if (variablesTableEditingActive) {
-                variablesTableRefreshPending = true;
-                variablesTableRefreshPendingCollection = col;
-            } else {
+            if (!variablesDirty) {
                 renderEffectiveVariablesForSelectedCollection();
             }
         }
@@ -2346,10 +2333,14 @@ public class ImporterPanel {
                 if (isVarsTableViewActive()) {
                     renderVarsTableFromRaw();
                 }
+                activeVariablesCollectionRef = ref;
+                clearVariablesDirty();
             } else {
                 setVariablesEditorTextPreservingView("");
                 varsBaseLayerText = "";
                 if (varsTableModel != null) varsTableModel.setRowCount(0);
+                activeVariablesCollectionRef = null;
+                clearVariablesDirty();
             }
         } finally {
             suppressVariablesAutosave = false;
@@ -2525,7 +2516,6 @@ public class ImporterPanel {
     }
 
     public WorkspaceState getWorkspaceStateSnapshot() {
-        runWithWorkspaceChangeNotificationsSuppressed(this::persistVariablesEditorStateSilently);
         runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
@@ -3535,20 +3525,26 @@ public class ImporterPanel {
     }
 
     private void refreshCollectionCombos() {
-        CollectionRef prevVars = varsCollectionCombo.getSelectedItem() != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
-        varsCollectionCombo.removeAllItems();
-        List<CollectionRef> varRefs = buildCollectionRefs();
-        for (CollectionRef ref : varRefs) {
-            varsCollectionCombo.addItem(ref);
-        }
-        if (prevVars != null) {
-            for (int i = 0; i < varsCollectionCombo.getItemCount(); i++) {
-                if (prevVars.collection == varsCollectionCombo.getItemAt(i).collection) {
-                    varsCollectionCombo.setSelectedIndex(i);
-                    break;
+        CollectionRef prevVars = getSelectedCollectionRef(varsCollectionCombo);
+        suppressVariablesCollectionSelectionPrompt = true;
+        try {
+            varsCollectionCombo.removeAllItems();
+            List<CollectionRef> varRefs = buildCollectionRefs();
+            for (CollectionRef ref : varRefs) {
+                varsCollectionCombo.addItem(ref);
+            }
+            if (prevVars != null) {
+                for (int i = 0; i < varsCollectionCombo.getItemCount(); i++) {
+                    if (prevVars.collection == varsCollectionCombo.getItemAt(i).collection) {
+                        varsCollectionCombo.setSelectedIndex(i);
+                        break;
+                    }
                 }
             }
+        } finally {
+            suppressVariablesCollectionSelectionPrompt = false;
         }
+        activeVariablesCollectionRef = getSelectedCollectionRef(varsCollectionCombo);
 
         CollectionRef prevOAuth2 = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
         oauth2CollectionCombo.removeAllItems();
@@ -3565,13 +3561,17 @@ public class ImporterPanel {
             }
         }
         updateScopeControlState();
-        renderEffectiveVariablesForSelectedCollection();
+        if (!variablesDirty) {
+            renderEffectiveVariablesForSelectedCollection();
+        } else {
+            updateVariablesSaveStatusForSelection();
+        }
         applyAutoRefreshUiForSelectedCollection();
         if (requestEditor != null && requestEditor.getCurrentCollection() != null) {
             syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
         }
         if (varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null) {
-            setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
+            updateVariablesSaveStatusForSelection();
         }
         if (oauth2CollectionCombo != null && oauth2CollectionCombo.getSelectedItem() != null) {
             setOAuth2AutosaveStatus("Autosave idle.", Color.GRAY);
@@ -3599,7 +3599,9 @@ public class ImporterPanel {
                 }
             }
             if (!varsHasTarget) {
-                setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+                setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
+            } else {
+                updateVariablesSaveStatusForSelection();
             }
         }
 
@@ -3877,7 +3879,6 @@ public class ImporterPanel {
         } else {
             resetVariablesTableEditingSession();
             syncRawFromVarsTable();
-            scheduleVariablesAutosave();
         }
         CardLayout cl = (CardLayout) varsEditorCardPanel.getLayout();
         cl.show(varsEditorCardPanel, tableView ? "table" : "raw");
@@ -3944,7 +3945,7 @@ public class ImporterPanel {
             return;
         }
         markVariablesRawEditingActive();
-        scheduleVariablesAutosave();
+        markVariablesDirty();
     }
 
     private void handleVariablesTableModelEdit() {
@@ -3952,7 +3953,159 @@ public class ImporterPanel {
             return;
         }
         markVariablesTableEditingActive();
-        scheduleVariablesAutosave();
+        markVariablesDirty();
+    }
+
+    private void markVariablesDirty() {
+        variablesDirty = true;
+        if (varsCollectionCombo != null && varsCollectionCombo.getSelectedItem() != null) {
+            setVarsAutosaveStatus("Unsaved changes.", new Color(184, 134, 11));
+        }
+    }
+
+    private void clearVariablesDirty() {
+        variablesDirty = false;
+        updateVariablesSaveStatusForSelection();
+    }
+
+    private void updateVariablesSaveStatusForSelection() {
+        if (varsCollectionCombo == null) {
+            return;
+        }
+        CollectionRef ref = getSelectedCollectionRef(varsCollectionCombo);
+        if (ref == null) {
+            setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
+        } else if (variablesDirty) {
+            setVarsAutosaveStatus("Unsaved changes.", new Color(184, 134, 11));
+        } else {
+            setVarsAutosaveStatus("Saved.", Color.GRAY);
+        }
+    }
+
+    private void handleVariablesCollectionSelectionChange() {
+        if (suppressVariablesCollectionSelectionPrompt) {
+            return;
+        }
+        CollectionRef selected = getSelectedCollectionRef(varsCollectionCombo);
+        if (Objects.equals(selected != null ? selected.collection : null, activeVariablesCollectionRef != null ? activeVariablesCollectionRef.collection : null)) {
+            updateScopeControlState();
+            return;
+        }
+        CollectionRef previous = activeVariablesCollectionRef;
+        if (variablesDirty && previous != null) {
+            int choice = promptVariablesCollectionSwitch(previous, selected);
+            applyVariablesCollectionSwitchDecision(previous, selected, choice);
+            return;
+        }
+        acceptVariablesCollectionSelection(selected, true);
+    }
+
+    private void acceptVariablesCollectionSelection(CollectionRef selected, boolean render) {
+        activeVariablesCollectionRef = selected;
+        resetVariablesRawEditingSession();
+        resetVariablesTableEditingSession();
+        if (render) {
+            renderEffectiveVariablesForSelectedCollection();
+        } else {
+            updateScopeControlState();
+            updateVariablesSaveStatusForSelection();
+        }
+    }
+
+    private void revertVariablesCollectionSelection(CollectionRef previous) {
+        suppressVariablesCollectionSelectionPrompt = true;
+        try {
+            if (previous == null) {
+                varsCollectionCombo.setSelectedIndex(-1);
+            } else {
+                for (int i = 0; i < varsCollectionCombo.getItemCount(); i++) {
+                    if (varsCollectionCombo.getItemAt(i).collection == previous.collection) {
+                        varsCollectionCombo.setSelectedIndex(i);
+                        break;
+                    }
+                }
+            }
+        } finally {
+            suppressVariablesCollectionSelectionPrompt = false;
+        }
+        activeVariablesCollectionRef = previous;
+        updateScopeControlState();
+        updateVariablesSaveStatusForSelection();
+    }
+
+    private int promptVariablesCollectionSwitch(CollectionRef previous, CollectionRef next) {
+        String nextLabel = next != null ? next.label : "no collection";
+        String previousLabel = previous != null ? previous.label : "the current collection";
+        return JOptionPane.showOptionDialog(
+                mainPanel,
+                "You have unsaved changes in " + previousLabel + ".\nDo you want to save them before switching to " + nextLabel + "?",
+                "Unsaved Variables",
+                JOptionPane.DEFAULT_OPTION,
+                JOptionPane.WARNING_MESSAGE,
+                null,
+                new Object[]{"Save", "Discard", "Cancel"},
+                "Save");
+    }
+
+    void applyVariablesCollectionSwitchDecision(CollectionRef previous, CollectionRef next, int choice) {
+        if (choice == 2 || choice < 0) {
+            revertVariablesCollectionSelection(previous);
+            return;
+        }
+        if (choice == 0 && previous != null && previous.collection != null) {
+            commitVariablesDraftToCollection(previous.collection, previous.label);
+        } else if (choice == 1) {
+            variablesDirty = false;
+        }
+        acceptVariablesCollectionSelection(next, true);
+    }
+
+    private void installVariablesSaveShortcut(JComponent component) {
+        if (component == null) {
+            return;
+        }
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx());
+        component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(saveKey, "saveVariablesDraft");
+        component.getActionMap().put("saveVariablesDraft", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                bindVarsToSelectedCollection();
+            }
+        });
+    }
+
+    private CollectionRef getSelectedCollectionRef(JComboBox<CollectionRef> combo) {
+        return combo != null && combo.getSelectedItem() != null ? (CollectionRef) combo.getSelectedItem() : null;
+    }
+
+    private boolean commitVariablesDraftToCollection(ApiCollection col, String label) {
+        if (col == null) {
+            setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
+            return false;
+        }
+        try {
+            if (isVarsTableViewActive()) {
+                syncRawFromVarsTable();
+            }
+            Map<String, String> vars = parseRuntimeOverrideSection();
+            if (Objects.equals(col.runtimeVars, vars)) {
+                clearVariablesDirty();
+                setVarsAutosaveStatus("No changes to save.", Color.GRAY);
+                syncRequestEditorRuntimeContext(requestEditor != null ? requestEditor.getCurrentRequest() : null,
+                        requestEditor != null ? requestEditor.getCurrentCollection() : null);
+                return false;
+            }
+            col.replaceRuntimeVars(vars);
+            clearVariablesDirty();
+            appendImportLog("Variables saved to \"" + label + "\": " + vars.size() + " var(s).");
+            setVarsAutosaveStatus("Saved to " + label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
+            syncRequestEditorRuntimeContext(requestEditor != null ? requestEditor.getCurrentRequest() : null,
+                    requestEditor != null ? requestEditor.getCurrentCollection() : null);
+            return true;
+        } catch (Exception ex) {
+            setVarsAutosaveStatus("Save failed: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()), Color.RED);
+            return false;
+        }
     }
 
     private void markVariablesRawEditingActive() {
@@ -3998,14 +4151,8 @@ public class ImporterPanel {
             return;
         }
         variablesRawEditingActive = false;
-        boolean shouldRenderPendingRefresh = variablesRawRefreshPending
-                && variablesRawRefreshPendingCollection != null
-                && variablesRawRefreshPendingCollection == getSelectedVariablesCollection();
         variablesRawRefreshPending = false;
         variablesRawRefreshPendingCollection = null;
-        if (shouldRenderPendingRefresh) {
-            renderEffectiveVariablesForSelectedCollection();
-        }
     }
 
     private void expireVariablesTableEditingSession() {
@@ -4013,23 +4160,10 @@ public class ImporterPanel {
             return;
         }
         variablesTableEditingActive = false;
-        boolean shouldRenderPendingRefresh = variablesTableRefreshPending
-                && variablesTableRefreshPendingCollection != null
-                && variablesTableRefreshPendingCollection == getSelectedVariablesCollection();
-        boolean shouldAutosavePending = variablesTableAutosavePending
-                && variablesTableAutosavePendingCollection != null
-                && variablesTableAutosavePendingCollection == getSelectedVariablesCollection();
         variablesTableRefreshPending = false;
         variablesTableRefreshPendingCollection = null;
         variablesTableAutosavePending = false;
         variablesTableAutosavePendingCollection = null;
-        if (shouldAutosavePending) {
-            autosaveVariablesToSelectedCollection();
-            return;
-        }
-        if (shouldRenderPendingRefresh && isVarsTableViewActive()) {
-            renderEffectiveVariablesForSelectedCollection();
-        }
     }
 
     private boolean setVariablesEditorTextPreservingView(String text) {
@@ -4083,12 +4217,7 @@ public class ImporterPanel {
     // Variables Tab Binding
     // ========================================================================
     private void scheduleVariablesAutosave() {
-        if (suppressVariablesAutosave || shuttingDown) {
-            return;
-        }
-        if (variablesAutosave != null) {
-            variablesAutosave.restart();
-        }
+        // Variables tab now saves explicitly via Save Now / Ctrl+S.
     }
 
     void expireVariablesRawEditingForTests() {
@@ -4105,29 +4234,10 @@ public class ImporterPanel {
         }
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
         if (ref == null || ref.collection == null) {
-            setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+            setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
             return;
         }
-        try {
-            if (isVarsTableViewActive()) {
-                if (variablesTableEditingActive) {
-                    variablesTableAutosavePending = true;
-                    variablesTableAutosavePendingCollection = ref.collection;
-                    setVarsAutosaveStatus("Editing table...", Color.GRAY);
-                    return;
-                }
-                syncRawFromVarsTable();
-            }
-            Map<String, String> vars = parseRuntimeOverrideSection();
-            if (Objects.equals(ref.collection.runtimeVars, vars)) {
-                setVarsAutosaveStatus("Autosave idle.", Color.GRAY);
-                return;
-            }
-            ref.collection.replaceRuntimeVars(vars);
-            setVarsAutosaveStatus("Autosaved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
-        } catch (Exception ex) {
-            setVarsAutosaveStatus("Autosave failed: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()), Color.RED);
-        }
+        commitVariablesDraftToCollection(ref.collection, ref.label);
     }
 
     private void setVarsAutosaveStatus(String text, Color color) {
@@ -4148,28 +4258,16 @@ public class ImporterPanel {
         CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
         if (ref == null) {
             appendImportLog("Variables: No collection selected for binding.");
-            setVarsAutosaveStatus("Select a collection to autosave variables.", Color.GRAY);
+            setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
             return;
         }
-        ApiCollection col = ref.collection;
-        if (variablesAutosave != null) {
-            variablesAutosave.stop();
-        }
-        Map<String, String> vars = parseRuntimeOverrideSection();
-        col.replaceRuntimeVars(vars);
-        appendImportLog("Variables bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
-        setVarsAutosaveStatus("Saved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
-        renderEffectiveVariablesForSelectedCollection();
-        syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
+        commitVariablesDraftToCollection(ref.collection, ref.label);
     }
 
     private void bindVarsToAllCollections() {
         if (loadedCollections.isEmpty()) {
             appendImportLog("Variables: No collections loaded.");
             return;
-        }
-        if (variablesAutosave != null) {
-            variablesAutosave.stop();
         }
         int confirm = JOptionPane.showConfirmDialog(mainPanel,
             "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
@@ -4180,8 +4278,9 @@ public class ImporterPanel {
             col.replaceRuntimeVars(vars);
         }
         appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
-        renderEffectiveVariablesForSelectedCollection();
-        syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
+        clearVariablesDirty();
+        syncRequestEditorRuntimeContext(requestEditor != null ? requestEditor.getCurrentRequest() : null,
+                requestEditor != null ? requestEditor.getCurrentCollection() : null);
         setVarsAutosaveStatus("Saved to all " + loadedCollections.size() + " collection(s).", new Color(0, 128, 0));
     }
 
@@ -4960,15 +5059,8 @@ public class ImporterPanel {
     }
 
     private void persistVariablesEditorStateSilently() {
-        if (varsCollectionCombo == null) {
-            return;
-        }
-        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
-        if (ref == null || ref.collection == null) {
-            return;
-        }
-        Map<String, String> vars = parseRuntimeOverrideSection();
-        silentlyReplaceRuntimeVars(ref.collection, vars);
+        // Variables tab now uses explicit save only; workspace snapshots should
+        // reflect committed runtime vars without mutating the live draft.
     }
 
     private void persistCurrentRequestEditorState() {
