@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import javax.swing.plaf.basic.BasicTreeUI;
 import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.MatteBorder;
@@ -1232,7 +1233,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoreStabilizationReinstallsTreeUiWhenMainTreeWasCreatedWithFlatIndents() throws Exception {
+    void restoreStabilizationKeepsHierarchyGeometryWhenUiDefaultsChange() throws Exception {
         Object originalLeftIndent = UIManager.get("Tree.leftChildIndent");
         Object originalRightIndent = UIManager.get("Tree.rightChildIndent");
         try {
@@ -1262,9 +1263,9 @@ class ImporterPanelTreeRestoreTest {
             CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
             CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
 
-            assertThat(rowXOf(tree, apimNode)).isEqualTo(rowXOf(tree, authNode));
-            assertThat(rowXOf(tree, authNode)).isEqualTo(rowXOf(tree, oauthNode));
-            assertThat(rowXOf(tree, oauthNode)).isEqualTo(rowXOf(tree, requestNode));
+            assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
+            assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
+            assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
 
             UIManager.put("Tree.leftChildIndent", 7);
             UIManager.put("Tree.rightChildIndent", 13);
@@ -1279,6 +1280,41 @@ class ImporterPanelTreeRestoreTest {
             assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
             assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
             assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
+        } finally {
+            restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
+            restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
+        }
+    }
+
+    @Test
+    void restoreStabilizationForcesMainTreeChildIndentWhenUiDefaultsRemainFlat() throws Exception {
+        Object originalLeftIndent = UIManager.get("Tree.leftChildIndent");
+        Object originalRightIndent = UIManager.get("Tree.rightChildIndent");
+        try {
+            UIManager.put("Tree.leftChildIndent", 0);
+            UIManager.put("Tree.rightChildIndent", 0);
+
+            ImporterPanel panel = newPanel();
+
+            ApiCollection collection = new ApiCollection();
+            collection.name = "APIM";
+            ApiRequest request = request("req-force-indent", "Get Token", "POST", "https://auth.example.test/token", 0);
+            request.path = "Auth/OAuth/Get Token";
+            collection.requests.add(request);
+
+            WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+            state.requestTreePaths = new LinkedHashMap<>();
+            state.requestTreePaths.put(
+                    ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                    "Auth/OAuth"
+            );
+
+            panel.restoreWorkspaceState(state);
+            JTree tree = requestTree(panel);
+            assertThat(tree.getUI()).isInstanceOf(BasicTreeUI.class);
+            BasicTreeUI treeUi = (BasicTreeUI) tree.getUI();
+            assertThat(treeUi.getLeftChildIndent()).isGreaterThan(0);
+            assertThat(treeUi.getRightChildIndent()).isGreaterThan(0);
         } finally {
             restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
             restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
