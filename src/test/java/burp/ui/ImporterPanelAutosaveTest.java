@@ -3,14 +3,12 @@ package burp.ui;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
-import burp.utils.DebouncedSwingAction;
 import burp.utils.WorkspaceStateJson;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
-import javax.swing.event.DocumentEvent;
-import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,6 +19,19 @@ import java.util.LinkedHashMap;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ImporterPanelAutosaveTest {
+
+    @Test
+    void importerPanelNoLongerKeepsVariablesAutosaveTimerField() {
+        boolean hasAutosaveField = false;
+        for (Field field : ImporterPanel.class.getDeclaredFields()) {
+            if ("variablesAutosave".equals(field.getName())) {
+                hasAutosaveField = true;
+                break;
+            }
+        }
+
+        assertThat(hasAutosaveField).isFalse();
+    }
 
     @Test
     void workspaceStatePreservesCollectionRequestMappingData() {
@@ -74,64 +85,24 @@ class ImporterPanelAutosaveTest {
     }
 
     @Test
-    void clearVariablesEditorOnlyStopsPendingAutosaveAndDoesNotReschedule() {
+    void clearVariablesEditorOnlyClearsEditorStateWithoutAutosaveDependency() {
         JTextArea area = new JTextArea("token=abc");
         DefaultTableModel model = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
         model.addRow(new Object[]{"token", "abc"});
 
         AtomicBoolean suppress = new AtomicBoolean(false);
-        AtomicInteger restartCount = new AtomicInteger(0);
-        AtomicInteger stopCount = new AtomicInteger(0);
         AtomicReference<String> status = new AtomicReference<>("");
         AtomicReference<String> baseLayer = new AtomicReference<>("base layer");
-
-        DebouncedSwingAction autosave = new DebouncedSwingAction(50, null) {
-            @Override
-            public void restart() {
-                restartCount.incrementAndGet();
-            }
-
-            @Override
-            public void stop() {
-                stopCount.incrementAndGet();
-            }
-        };
-
-        area.getDocument().addDocumentListener(new DocumentListener() {
-            @Override
-            public void insertUpdate(DocumentEvent e) {
-                if (!suppress.get()) {
-                    autosave.restart();
-                }
-            }
-
-            @Override
-            public void removeUpdate(DocumentEvent e) {
-                if (!suppress.get()) {
-                    autosave.restart();
-                }
-            }
-
-            @Override
-            public void changedUpdate(DocumentEvent e) {
-                if (!suppress.get()) {
-                    autosave.restart();
-                }
-            }
-        });
 
         ImporterPanel.clearVariablesEditorOnly(
                 area,
                 model,
-                autosave,
                 () -> suppress.set(true),
                 () -> suppress.set(false),
                 () -> baseLayer.set(""),
                 status::set
         );
 
-        assertThat(stopCount.get()).isEqualTo(1);
-        assertThat(restartCount.get()).isZero();
         assertThat(area.getText()).isEmpty();
         assertThat(model.getRowCount()).isZero();
         assertThat(baseLayer.get()).isEmpty();
