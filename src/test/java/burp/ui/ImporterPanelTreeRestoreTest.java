@@ -1374,6 +1374,45 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void restoreWorkspaceStateResetsMainTreeHorizontalViewportAfterDeferredSelectionScroll() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-scroll-deferred", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Deep/Nested/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth/Deep/Nested"
+        );
+        state.selectedRequestCollectionName = "APIM";
+        state.selectedRequestIdentityKey = ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0);
+        state.selectedRequestPath = request.path;
+        state.selectedRequestName = request.name;
+
+        JTree existingTree = requestTree(panel);
+        DeferredHorizontalShiftOnScrollTree shiftedTree = new DeferredHorizontalShiftOnScrollTree(existingTree.getModel());
+        shiftedTree.setRootVisible(existingTree.isRootVisible());
+        shiftedTree.setShowsRootHandles(existingTree.getShowsRootHandles());
+        shiftedTree.setCellRenderer(existingTree.getCellRenderer());
+        shiftedTree.setRowHeight(existingTree.getRowHeight());
+
+        JScrollPane scrollPane = (JScrollPane) privateField(panel, "requestTreeScrollPane");
+        scrollPane.setViewportView(shiftedTree);
+        setPrivateField(panel, "requestTree", shiftedTree);
+
+        panel.restoreWorkspaceState(state);
+        drainEdt();
+        drainEdt();
+
+        assertThat(scrollPane.getViewport().getViewPosition().x).isZero();
+    }
+
+    @Test
     void rebuildTreeRefreshesMainRequestTreePresentation() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
@@ -1658,6 +1697,20 @@ class ImporterPanelTreeRestoreTest {
         public void scrollPathToVisible(TreePath path) {
             if (getParent() instanceof JViewport) {
                 ((JViewport) getParent()).setViewPosition(new Point(72, 18));
+            }
+        }
+    }
+
+    private static final class DeferredHorizontalShiftOnScrollTree extends JTree {
+        private DeferredHorizontalShiftOnScrollTree(javax.swing.tree.TreeModel model) {
+            super(model);
+        }
+
+        @Override
+        public void scrollPathToVisible(TreePath path) {
+            if (getParent() instanceof JViewport) {
+                JViewport viewport = (JViewport) getParent();
+                SwingUtilities.invokeLater(() -> viewport.setViewPosition(new Point(72, 18)));
             }
         }
     }
