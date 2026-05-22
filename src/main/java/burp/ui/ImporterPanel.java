@@ -281,6 +281,7 @@ public class ImporterPanel {
         tree.setRootVisible(false);
         tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
         tree.setRowHeight(20);
+        tree.setScrollsOnExpand(false);
         tree.setShowsRootHandles(true);
         configureMainTreeUi(tree);
         tree.addMouseListener(new TreeMouseListener());
@@ -2950,9 +2951,6 @@ public class ImporterPanel {
         if (path != null) {
             expandTreePath(path);
             requestTree.setSelectionPath(path);
-            requestTree.scrollPathToVisible(path);
-            resetRequestTreeHorizontalViewport();
-            scheduleRequestTreeHorizontalViewportReset();
         }
     }
 
