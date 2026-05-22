@@ -124,7 +124,6 @@ public class ImporterPanel {
     private JButton bindVarsBtn;
     private JLabel varsHintLabel;
     private JLabel varsAutosaveStatusLabel;
-    private burp.utils.DebouncedSwingAction variablesAutosave;
     private boolean suppressVariablesAutosave = false;
     private boolean variablesDirty = false;
     private boolean suppressVariablesCollectionSelectionPrompt = false;
@@ -698,7 +697,6 @@ public class ImporterPanel {
         envVarsArea = new JTextArea(20, 60);
         envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
-        variablesAutosave = new burp.utils.DebouncedSwingAction(500, this::autosaveVariablesToSelectedCollection);
         variablesRawEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesRawEditingSession());
         variablesRawEditIdleTimer.setRepeats(false);
         variablesTableEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesTableEditingSession());
@@ -2033,14 +2031,10 @@ public class ImporterPanel {
 
     static void clearVariablesEditorOnly(JTextArea envVarsArea,
                                          DefaultTableModel varsTableModel,
-                                         burp.utils.DebouncedSwingAction variablesAutosave,
                                          Runnable beginSuppress,
                                          Runnable endSuppress,
                                          Runnable clearBaseLayerText,
                                          Consumer<String> statusUpdater) {
-        if (variablesAutosave != null) {
-            variablesAutosave.stop();
-        }
         if (beginSuppress != null) {
             beginSuppress.run();
         }
@@ -2070,7 +2064,6 @@ public class ImporterPanel {
         clearVariablesEditorOnly(
                 envVarsArea,
                 varsTableModel,
-                variablesAutosave,
                 () -> suppressVariablesAutosave = true,
                 () -> suppressVariablesAutosave = false,
                 () -> varsBaseLayerText = "",
@@ -4239,18 +4232,6 @@ public class ImporterPanel {
         expireVariablesTableEditingSession();
     }
 
-    private void autosaveVariablesToSelectedCollection() {
-        if (suppressVariablesAutosave || shuttingDown || varsCollectionCombo == null) {
-            return;
-        }
-        CollectionRef ref = (CollectionRef) varsCollectionCombo.getSelectedItem();
-        if (ref == null || ref.collection == null) {
-            setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
-            return;
-        }
-        commitVariablesDraftToCollection(ref.collection, ref.label);
-    }
-
     private void setVarsAutosaveStatus(String text, Color color) {
         if (varsAutosaveStatusLabel != null) {
             varsAutosaveStatusLabel.setText(text);
@@ -5323,9 +5304,6 @@ public class ImporterPanel {
 
     public void cleanup() {
         shuttingDown = true;
-        if (variablesAutosave != null) {
-            variablesAutosave.stop();
-        }
         suppressVariablesAutosave = true;
         try {
             persistVariablesEditorStateSilently();
