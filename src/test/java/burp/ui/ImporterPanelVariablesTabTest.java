@@ -116,6 +116,83 @@ class ImporterPanelVariablesTabTest {
     }
 
     @Test
+    void refreshRuntimeViewsForCollectionDoesNotRewriteRawEditorWhileRawTypingIsActive() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTextArea area = installSpyEnvVarsArea(panel);
+        ApiCollection collection = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        invokePrivateMethod(panel, "renderEffectiveVariablesForSelectedCollection");
+
+        String draft = area.getText() + "\nlong_variable_name=" + "x".repeat(120);
+        runOnEdt(() -> area.setText(draft));
+        invokePrivateMethod(panel, "markVariablesRawEditingActive");
+
+        assertThat(area.setTextCount).isEqualTo(2);
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(true);
+
+        collection.runtimeVars.put("token", "updated-token");
+        invokePrivateMethod(panel, "refreshRuntimeViewsForCollection", new Class<?>[]{ApiCollection.class}, collection);
+
+        assertThat(area.setTextCount).isEqualTo(2);
+        assertThat(area.getText()).isEqualTo(draft);
+    }
+
+    @Test
+    void deferredVariablesRefreshIsAppliedAfterRawEditingExpires() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTextArea area = installSpyEnvVarsArea(panel);
+        ApiCollection collection = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        invokePrivateMethod(panel, "renderEffectiveVariablesForSelectedCollection");
+
+        String draft = area.getText() + "\nlong_variable_name=" + "x".repeat(120);
+        runOnEdt(() -> area.setText(draft));
+        invokePrivateMethod(panel, "markVariablesRawEditingActive");
+
+        collection.runtimeVars.put("token", "updated-token");
+        invokePrivateMethod(panel, "refreshRuntimeViewsForCollection", new Class<?>[]{ApiCollection.class}, collection);
+
+        assertThat(area.getText()).isEqualTo(draft);
+
+        expireVariablesRawEditingForTest(panel);
+
+        assertThat(area.getText()).contains("updated-token");
+        assertThat(area.setTextCount).isGreaterThan(2);
+        assertThat(privateField(panel, "variablesRawEditingActive")).isEqualTo(false);
+    }
+
+    @Test
+    void switchingCollectionsClearsPendingRawRefreshAndStillRefreshesVariablesTab() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTextArea area = installSpyEnvVarsArea(panel);
+        ApiCollection collectionA = collectionWithRuntimeVars("Alpha", Map.of("token", "abc"));
+        ApiCollection collectionB = collectionWithRuntimeVars("Beta", Map.of("token", "beta-token"));
+
+        panel.restoreWorkspaceCollections(List.of(collectionA, collectionB));
+        selectCollection(panel, "varsCollectionCombo", 0);
+        invokePrivateMethod(panel, "renderEffectiveVariablesForSelectedCollection");
+
+        runOnEdt(() -> area.setText(area.getText() + "\nlong_variable_name=" + "x".repeat(80)));
+        invokePrivateMethod(panel, "markVariablesRawEditingActive");
+
+        collectionA.runtimeVars.put("token", "updated-alpha");
+        invokePrivateMethod(panel, "refreshRuntimeViewsForCollection", new Class<?>[]{ApiCollection.class}, collectionA);
+
+        selectCollection(panel, "varsCollectionCombo", 1);
+
+        assertThat(area.getText()).contains("beta-token");
+
+        expireVariablesRawEditingForTest(panel);
+
+        assertThat(area.getText()).contains("beta-token");
+        assertThat(area.getText()).doesNotContain("updated-alpha");
+    }
+
+    @Test
     void autosaveVariablesToSelectedCollectionStillPersistsTableEdits() throws Exception {
         ImporterPanel panel = newPanel();
         installSpyEnvVarsArea(panel);
@@ -180,6 +257,10 @@ class ImporterPanelVariablesTabTest {
         ((JRadioButton) privateField(panel, fieldName)).setSelected(value);
     }
 
+    private static void expireVariablesRawEditingForTest(ImporterPanel panel) throws Exception {
+        invokePrivateMethod(panel, "expireVariablesRawEditingForTests");
+    }
+
     private static void invokePrivateMethod(Object target, String methodName) throws Exception {
         Method method = target.getClass().getDeclaredMethod(methodName);
         method.setAccessible(true);
@@ -202,6 +283,10 @@ class ImporterPanelVariablesTabTest {
         Field field = target.getClass().getDeclaredField(fieldName);
         field.setAccessible(true);
         return field.get(target);
+    }
+
+    private static void runOnEdt(Runnable action) throws Exception {
+        SwingUtilities.invokeAndWait(action::run);
     }
 
     private static final class SpyTextArea extends JTextArea {
