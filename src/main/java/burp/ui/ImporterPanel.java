@@ -1909,7 +1909,7 @@ public class ImporterPanel {
         }
         try {
             if (envVarsArea != null) {
-                envVarsArea.setText("");
+                setTextPreservingView(envVarsArea, "");
             }
             if (clearBaseLayerText != null) {
                 clearBaseLayerText.run();
@@ -2194,12 +2194,12 @@ public class ImporterPanel {
                 } else if (hasAny) {
                     sb.append("# Runtime overrides (edits apply here)\n");
                 }
-                envVarsArea.setText(hasAny ? sb.toString() : "");
+                setVariablesEditorTextPreservingView(hasAny ? sb.toString() : "");
                 if (isVarsTableViewActive()) {
                     renderVarsTableFromRaw();
                 }
             } else {
-                envVarsArea.setText("");
+                setVariablesEditorTextPreservingView("");
                 varsBaseLayerText = "";
                 if (varsTableModel != null) varsTableModel.setRowCount(0);
             }
@@ -3782,10 +3782,38 @@ public class ImporterPanel {
             for (Map.Entry<String, String> e : new TreeMap<>(vars).entrySet()) {
                 sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
             }
-            envVarsArea.setText(sb.toString());
+            setVariablesEditorTextPreservingView(sb.toString());
         } finally {
             suppressVariablesAutosave = false;
         }
+    }
+
+    private boolean setVariablesEditorTextPreservingView(String text) {
+        return setTextPreservingView(envVarsArea, text);
+    }
+
+    private static boolean setTextPreservingView(JTextArea area, String text) {
+        if (area == null) {
+            return false;
+        }
+
+        String nextText = text != null ? text : "";
+        String currentText = area.getText();
+        if (Objects.equals(currentText, nextText)) {
+            return false;
+        }
+
+        int caret = Math.max(0, Math.min(area.getCaretPosition(), nextText.length()));
+        JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, area);
+        Point viewPosition = viewport != null ? viewport.getViewPosition() : null;
+
+        area.setText(nextText);
+        area.setCaretPosition(caret);
+
+        if (viewport != null && viewPosition != null) {
+            viewport.setViewPosition(new Point(Math.max(0, viewPosition.x), Math.max(0, viewPosition.y)));
+        }
+        return true;
     }
 
     private int resolveTargetRow(JTable table) {
