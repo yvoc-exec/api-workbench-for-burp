@@ -48,6 +48,7 @@ public class BurpExtender implements BurpExtension {
             burp.utils.WorkspaceStateService workspaceStateService = new burp.utils.WorkspaceStateService(api);
             importer = new UniversalImporter(api, scriptResult.mode, workspaceStateService);
             api.userInterface().registerSuiteTab("API Workbench", importer.getMainPanel());
+            importer.restoreWorkspaceStateAfterUiRegistration();
         });
 
         api.extension().registerUnloadingHandler(() -> {

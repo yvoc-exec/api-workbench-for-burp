@@ -50,7 +50,6 @@ public class UniversalImporter {
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
         this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::saveWorkspaceState);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
-        restoreWorkspaceState();
     }
 
     public JPanel getMainPanel() {
@@ -543,6 +542,10 @@ public class UniversalImporter {
         } catch (Exception e) {
             logWorkspaceStateError("load", e);
         }
+    }
+
+    void restoreWorkspaceStateAfterUiRegistration() {
+        restoreWorkspaceState();
     }
 
     void requestWorkspaceStateSave() {

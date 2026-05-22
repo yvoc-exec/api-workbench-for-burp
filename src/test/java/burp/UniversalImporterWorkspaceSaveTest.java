@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import java.lang.reflect.Method;
 import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -96,6 +97,29 @@ class UniversalImporterWorkspaceSaveTest {
         // Timer should no longer fire
         Thread.sleep(100);
         assertThat(writeCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void workspaceRestoreWaitsUntilUiRegistrationHook() throws Exception {
+        AtomicInteger readCount = new AtomicInteger(0);
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doAnswer(inv -> {
+            readCount.incrementAndGet();
+            return null;
+        }).when(persistedObject).getString(Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+
+        assertThat(readCount.get()).isZero();
+
+        Method restoreWorkspaceStateAfterUiRegistration = UniversalImporter.class.getDeclaredMethod("restoreWorkspaceStateAfterUiRegistration");
+        restoreWorkspaceStateAfterUiRegistration.setAccessible(true);
+        restoreWorkspaceStateAfterUiRegistration.invoke(importer);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        assertThat(readCount.get()).isEqualTo(1);
     }
 
     private static MontoyaApi mockApi() {

@@ -1274,63 +1274,80 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void refreshTreePresentationRefreshesAgainWhenTreeBecomesShowing() throws Exception {
+    void restoreWorkspaceStateReinitializesRequestTreeWhenTreeBecomesShowing() throws Exception {
         ImporterPanel panel = newPanel();
+        SpyTree spyTree = installSpyRequestTree(panel);
 
-        Method refreshTreePresentation = ImporterPanel.class.getDeclaredMethod("refreshTreePresentation", JTree.class);
-        refreshTreePresentation.setAccessible(true);
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("req-showing-refresh", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
 
-        SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
-        spyTree.resetRefreshCounters();
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
 
-        refreshTreePresentation.invoke(panel, spyTree);
+        panel.restoreWorkspaceState(state);
 
+        int initialExpandRowCount = spyTree.expandRowCount;
         int initialTreeDidChangeCount = spyTree.treeDidChangeCount;
-        int initialRevalidateCount = spyTree.revalidateCount;
-        int initialRepaintCount = spyTree.repaintCount;
 
         spyTree.setShowingForTest(true);
         spyTree.fireShowingChanged();
         drainEdt();
 
+        assertThat(spyTree.expandRowCount).isGreaterThan(initialExpandRowCount);
         assertThat(spyTree.treeDidChangeCount).isGreaterThan(initialTreeDidChangeCount);
-        assertThat(spyTree.revalidateCount).isGreaterThan(initialRevalidateCount);
-        assertThat(spyTree.repaintCount).isGreaterThan(initialRepaintCount);
-
-        int afterFirstShowTreeDidChangeCount = spyTree.treeDidChangeCount;
-        int afterFirstShowRevalidateCount = spyTree.revalidateCount;
-        int afterFirstShowRepaintCount = spyTree.repaintCount;
-
-        spyTree.fireShowingChanged();
-        drainEdt();
-
-        assertThat(spyTree.treeDidChangeCount).isEqualTo(afterFirstShowTreeDidChangeCount);
-        assertThat(spyTree.revalidateCount).isEqualTo(afterFirstShowRevalidateCount);
-        assertThat(spyTree.repaintCount).isEqualTo(afterFirstShowRepaintCount);
     }
 
     @Test
-    void refreshTreePresentationRefreshesAgainOnNextEventCycleWhenTreeAlreadyShowing() throws Exception {
+    void scheduleTreeInitializationAfterShowingRunsInitializerOnceForHiddenTree() throws Exception {
         ImporterPanel panel = newPanel();
 
-        Method refreshTreePresentation = ImporterPanel.class.getDeclaredMethod("refreshTreePresentation", JTree.class);
-        refreshTreePresentation.setAccessible(true);
+        Method scheduleTreeInitializationAfterShowing = ImporterPanel.class.getDeclaredMethod("scheduleTreeInitializationAfterShowing", JTree.class, Runnable.class);
+        scheduleTreeInitializationAfterShowing.setAccessible(true);
+
+        SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
+        AtomicInteger initializerCount = new AtomicInteger();
+
+        scheduleTreeInitializationAfterShowing.invoke(panel, spyTree, (Runnable) initializerCount::incrementAndGet);
+
+        assertThat(initializerCount.get()).isZero();
+
+        spyTree.setShowingForTest(true);
+        spyTree.fireShowingChanged();
+        drainEdt();
+
+        assertThat(initializerCount.get()).isEqualTo(1);
+
+        spyTree.fireShowingChanged();
+        drainEdt();
+
+        assertThat(initializerCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void scheduleTreeInitializationAfterShowingRunsInitializerOnNextEventCycleForShowingTree() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        Method scheduleTreeInitializationAfterShowing = ImporterPanel.class.getDeclaredMethod("scheduleTreeInitializationAfterShowing", JTree.class, Runnable.class);
+        scheduleTreeInitializationAfterShowing.setAccessible(true);
 
         SpyTree spyTree = new SpyTree(new DefaultTreeModel(new DefaultMutableTreeNode("root")));
         spyTree.setShowingForTest(true);
-        spyTree.resetRefreshCounters();
+        AtomicInteger initializerCount = new AtomicInteger();
 
-        refreshTreePresentation.invoke(panel, spyTree);
+        scheduleTreeInitializationAfterShowing.invoke(panel, spyTree, (Runnable) initializerCount::incrementAndGet);
 
-        int immediateTreeDidChangeCount = spyTree.treeDidChangeCount;
-        int immediateRevalidateCount = spyTree.revalidateCount;
-        int immediateRepaintCount = spyTree.repaintCount;
+        assertThat(initializerCount.get()).isZero();
 
         drainEdt();
 
-        assertThat(spyTree.treeDidChangeCount).isGreaterThan(immediateTreeDidChangeCount);
-        assertThat(spyTree.revalidateCount).isGreaterThan(immediateRevalidateCount);
-        assertThat(spyTree.repaintCount).isGreaterThan(immediateRepaintCount);
+        assertThat(initializerCount.get()).isEqualTo(1);
     }
 
     private static int leftInsetOf(Component c) {
@@ -1396,6 +1413,7 @@ class ImporterPanelTreeRestoreTest {
         private int repaintCount;
         private int revalidateCount;
         private int treeDidChangeCount;
+        private int expandRowCount;
         private boolean showingForTest;
 
         private SpyTree(javax.swing.tree.TreeModel model) {
@@ -1427,6 +1445,12 @@ class ImporterPanelTreeRestoreTest {
         }
 
         @Override
+        public void expandRow(int row) {
+            expandRowCount++;
+            super.expandRow(row);
+        }
+
+        @Override
         public Graphics getGraphics() {
             return null;
         }
@@ -1451,6 +1475,7 @@ class ImporterPanelTreeRestoreTest {
             repaintCount = 0;
             revalidateCount = 0;
             treeDidChangeCount = 0;
+            expandRowCount = 0;
         }
     }
 }
