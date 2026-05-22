@@ -1725,6 +1725,10 @@ public class ImporterPanel {
         viewport.setViewPosition(new Point(0, Math.max(0, viewPosition.y)));
     }
 
+    private void scheduleRequestTreeHorizontalViewportReset() {
+        SwingUtilities.invokeLater(this::resetRequestTreeHorizontalViewport);
+    }
+
     private void scheduleTreeInitializationAfterShowing(JTree tree, Runnable initializer) {
         if (tree == null) {
             return;
@@ -2912,6 +2916,7 @@ public class ImporterPanel {
             requestTree.setSelectionPath(path);
             requestTree.scrollPathToVisible(path);
             resetRequestTreeHorizontalViewport();
+            scheduleRequestTreeHorizontalViewportReset();
         }
     }
 
