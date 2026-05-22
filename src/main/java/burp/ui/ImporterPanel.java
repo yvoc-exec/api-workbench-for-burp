@@ -19,6 +19,7 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 
 import javax.swing.*;
+import javax.swing.plaf.basic.BasicTreeUI;
 import javax.swing.border.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
@@ -42,6 +43,8 @@ public class ImporterPanel {
     private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
+    private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
+    private static final int MAIN_TREE_MIN_RIGHT_CHILD_INDENT = 13;
 
     private final UniversalImporter importer;
     private final CollectionRunner runner;
@@ -278,6 +281,7 @@ public class ImporterPanel {
         tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
         tree.setRowHeight(20);
         tree.setShowsRootHandles(true);
+        configureMainTreeUi(tree);
         tree.addMouseListener(new TreeMouseListener());
         tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         tree.addTreeSelectionListener(e -> {
@@ -1646,6 +1650,23 @@ public class ImporterPanel {
         tree.setRootVisible(rootVisible);
         tree.setShowsRootHandles(showsRootHandles);
         tree.setRowHeight(rowHeight);
+        configureMainTreeUi(tree);
+    }
+
+    private void configureMainTreeUi(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        if (!(tree.getUI() instanceof BasicTreeUI)) {
+            return;
+        }
+        BasicTreeUI treeUi = (BasicTreeUI) tree.getUI();
+        if (treeUi.getLeftChildIndent() < MAIN_TREE_MIN_LEFT_CHILD_INDENT) {
+            treeUi.setLeftChildIndent(MAIN_TREE_MIN_LEFT_CHILD_INDENT);
+        }
+        if (treeUi.getRightChildIndent() < MAIN_TREE_MIN_RIGHT_CHILD_INDENT) {
+            treeUi.setRightChildIndent(MAIN_TREE_MIN_RIGHT_CHILD_INDENT);
+        }
     }
 
     private void recreateMainRequestTree() {
