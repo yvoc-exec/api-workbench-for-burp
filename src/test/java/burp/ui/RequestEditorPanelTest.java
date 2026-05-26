@@ -66,10 +66,54 @@ class RequestEditorPanelTest {
         panel.loadRequest(req);
 
         assertThat(headerValues(headersModel(panel)))
-                .containsEntry("Authorization", "Bearer abc123")
+                .containsEntry("Authorization", "Bearer {{token}}")
                 .containsEntry("Content-Type", "application/json")
                 .doesNotContainKey("Host")
                 .doesNotContainKey("Content-Length");
+        assertThat(resolvedView(panel)).contains("Authorization: Bearer abc123");
+    }
+
+    @Test
+    void oauth2BackedAuthorizationShowsVariableReferenceInEditorAndResolvedTokenInMirror() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeOAuth2.put("oauth2_access_token", "live-oauth-token");
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "oauth2";
+        req.auth.properties.put("accessToken", "{{oauth2_access_token}}");
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Authorization", "Bearer {{oauth2_access_token}}");
+        assertThat(resolvedView(panel)).contains("Authorization: Bearer live-oauth-token");
+    }
+
+    @Test
+    void runtimeVariableChangesKeepDerivedAuthorizationHeaderOnVariableReference() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeVars.put("token", "first-secret");
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "{{token}}");
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+        panel.setRuntimeVariables(Map.of("token", "second-secret"));
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Authorization", "Bearer {{token}}");
+        assertThat(resolvedView(panel)).contains("Authorization: Bearer second-secret");
     }
 
     @Test
@@ -105,6 +149,32 @@ class RequestEditorPanelTest {
         byte[] raw = new RequestBuilder(null).buildRequest(built, new VariableResolver());
         String text = new String(raw, StandardCharsets.UTF_8);
         assertThat(text).doesNotContain("Authorization: Bearer tok123");
+    }
+
+    @Test
+    void buildRequestFromUiStillResolvesBearerVariableBackedAuthorizationAtExecutionTime() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeVars.put("token", "live-secret");
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "{{token}}");
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+
+        ApiRequest built = panel.buildRequestFromUI();
+        VariableResolver resolver = new VariableResolver();
+        resolver.addAll(Map.of("token", "live-secret"));
+        byte[] raw = new RequestBuilder(null).buildRequest(built, resolver);
+        String text = new String(raw, StandardCharsets.UTF_8);
+
+        assertThat(text).contains("Authorization: Bearer live-secret");
+        assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer {{token}}");
     }
 
     @Test

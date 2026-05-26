@@ -773,17 +773,17 @@ class ImporterPanelTreeRestoreTest {
         headersModelField.setAccessible(true);
         javax.swing.table.DefaultTableModel model = (javax.swing.table.DefaultTableModel) headersModelField.get(editor);
 
-        boolean foundResolvedAuth = false;
+        boolean foundAuthReference = false;
         for (int i = 0; i < model.getRowCount(); i++) {
             String key = (String) model.getValueAt(i, 0);
             String value = (String) model.getValueAt(i, 1);
-            if ("Authorization".equalsIgnoreCase(key) && "Bearer resolved123".equals(value)) {
-                foundResolvedAuth = true;
+            if ("Authorization".equalsIgnoreCase(key) && "Bearer {{token}}".equals(value)) {
+                foundAuthReference = true;
                 break;
             }
         }
-        assertThat(foundResolvedAuth)
-                .as("Authorization header should be resolved using collection environment on first selection")
+        assertThat(foundAuthReference)
+                .as("Authorization header should remain variable-aware on first selection")
                 .isTrue();
     }
 
