@@ -450,6 +450,7 @@ public class ImporterPanel {
             return;
         }
         applyEditedRequestToLiveRequest(col, liveRequest, edited);
+        applyActiveVariablesDraftToCollection(col);
         syncRequestEditorRuntimeContext(liveRequest, col);
         notifyWorkspaceChanged();
 
@@ -5375,7 +5376,8 @@ public class ImporterPanel {
         vr.addCollectionVariables(col);
         vr.addFolderVariables(col, req);
         if (col.runtimeOAuth2 != null) vr.addAll(col.runtimeOAuth2);
-        if (col.runtimeVars != null) vr.addAll(col.runtimeVars);
+        Map<String, String> effectiveRuntimeVars = getEffectiveRuntimeVarsForRequestContext(col);
+        if (!effectiveRuntimeVars.isEmpty()) vr.addAll(effectiveRuntimeVars);
         vr.addRequestVariables(req);
         if (req.hasAuth()) {
             Map<String, String> authMapped = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, vr.getVariables(), true);
@@ -5384,6 +5386,30 @@ public class ImporterPanel {
             }
         }
         requestEditor.setRuntimeVariables(vr.getVariables());
+    }
+
+    private Map<String, String> getEffectiveRuntimeVarsForRequestContext(ApiCollection col) {
+        if (col == null) {
+            return Collections.emptyMap();
+        }
+        CollectionRef varsRef = getSelectedCollectionRef(varsCollectionCombo);
+        if (varsRef != null && varsRef.collection == col && envVarsArea != null) {
+            Map<String, String> draftVars = parseRuntimeOverrideSection();
+            return draftVars != null ? draftVars : Collections.emptyMap();
+        }
+        return col.runtimeVars != null ? col.runtimeVars : Collections.emptyMap();
+    }
+
+    private void applyActiveVariablesDraftToCollection(ApiCollection col) {
+        if (col == null) {
+            return;
+        }
+        CollectionRef varsRef = getSelectedCollectionRef(varsCollectionCombo);
+        if (varsRef == null || varsRef.collection != col || envVarsArea == null) {
+            return;
+        }
+        Map<String, String> draftVars = parseRuntimeOverrideSection();
+        silentlyReplaceRuntimeVars(col, draftVars);
     }
 
     private Map<String, String> parseEnvVarsMap() {
