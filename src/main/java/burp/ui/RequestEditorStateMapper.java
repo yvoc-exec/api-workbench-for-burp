@@ -251,45 +251,36 @@ final class RequestEditorStateMapper {
         if (req == null) {
             return;
         }
-        RequestBuilder builder = ctx.requestBuilder != null ? ctx.requestBuilder : new RequestBuilder(null, null);
-        VariableResolver resolver = new VariableResolver();
-        ApiCollection collection = ctx.currentCollectionSupplier.get();
-        if (collection != null) {
-            resolver.addEnvironmentVariables(collection);
-            resolver.addCollectionVariables(collection);
-            resolver.addFolderVariables(collection, req);
-            if (collection.runtimeOAuth2 != null) {
-                resolver.addAll(collection.runtimeOAuth2);
-            }
-            if (collection.runtimeVars != null) {
-                resolver.addAll(collection.runtimeVars);
-            }
-        }
-        resolver.addRequestVariables(req);
-
-        try {
-            List<Map.Entry<String, String>> effective = builder.buildEffectiveHeaders(req, resolver);
-            for (Map.Entry<String, String> entry : effective) {
-                String key = entry.getKey();
-                String lowerKey = key.toLowerCase(Locale.ROOT);
+        if (req.headers != null) {
+            for (ApiRequest.Header header : req.headers) {
+                if (header == null || header.disabled || header.key == null) {
+                    continue;
+                }
+                String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
                 if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
-                    ctx.headersModel.addRow(new Object[]{key, entry.getValue()});
-                }
-            }
-        } catch (Exception e) {
-            // Effective headers are best-effort; fall back to explicit-only view.
-            if (req.headers != null) {
-                for (ApiRequest.Header header : req.headers) {
-                    if (header == null || header.disabled || header.key == null) {
-                        continue;
-                    }
-                    String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
-                    if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
-                        ctx.headersModel.addRow(new Object[]{header.key, header.value});
-                    }
+                    ctx.headersModel.addRow(new Object[]{header.key, header.value != null ? header.value : ""});
                 }
             }
         }
+
+        if (!req.editorMaterialized) {
+            ensureDefaultHeader(ctx.headersModel, "Accept", "application/json, text/plain, */*");
+            ensureDefaultHeader(ctx.headersModel, "User-Agent", "BurpExtensionRuntime");
+            ensureDefaultHeader(ctx.headersModel, "Cache-Control", "no-cache");
+        }
+    }
+
+    private static void ensureDefaultHeader(DefaultTableModel model, String key, String value) {
+        if (model == null || key == null) {
+            return;
+        }
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String existingKey = (String) model.getValueAt(i, 0);
+            if (existingKey != null && existingKey.trim().equalsIgnoreCase(key)) {
+                return;
+            }
+        }
+        model.addRow(new Object[]{key, value});
     }
 
     static void ensureStarterRow(DefaultTableModel model) {
