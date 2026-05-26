@@ -53,6 +53,8 @@ public class RequestEditorPanel extends JPanel {
     private burp.utils.RequestBuilder requestBuilder;
     private boolean loadingRequest = false;
     private boolean syncingDerivedHeaders = false;
+    private boolean authorizationHeaderMaterialized = false;
+    private boolean contentTypeHeaderMaterialized = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -276,6 +278,7 @@ public class RequestEditorPanel extends JPanel {
 
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
+        resetDerivedHeaderMaterializationState();
         loadingRequest = true;
         try {
             RequestEditorStateMapper.Context ctx = createStateMapperContext();
@@ -306,6 +309,8 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void refreshAll() {
+        syncAuthorizationHeaderFromCurrentAuth();
+        syncContentTypeHeaderFromCurrentBody();
         refreshResolvedMirror();
     }
 
@@ -440,15 +445,45 @@ public class RequestEditorPanel extends JPanel {
         ApiRequest.Auth auth = "inherit".equals(selectedType)
                 ? (currentRequest != null ? currentRequest.auth : null)
                 : buildAuthFromFields(selectedType);
+        String existingAuthorization = findHeaderValue("Authorization");
+
+        if (auth == null || auth.type == null || "none".equalsIgnoreCase(auth.type)) {
+            if (authorizationHeaderMaterialized) {
+                syncingDerivedHeaders = true;
+                try {
+                    removeHeaderRow("Authorization");
+                    authorizationHeaderMaterialized = false;
+                    RequestEditorStateMapper.ensureStarterRow(headersModel);
+                } finally {
+                    syncingDerivedHeaders = false;
+                }
+            }
+            return;
+        }
+
+        if (!authorizationHeaderMaterialized && existingAuthorization != null) {
+            return;
+        }
 
         String authorization = buildAuthorizationHeaderValue(auth);
+        if (authorization == null || authorization.isBlank()) {
+            if (authorizationHeaderMaterialized) {
+                syncingDerivedHeaders = true;
+                try {
+                    removeHeaderRow("Authorization");
+                    authorizationHeaderMaterialized = false;
+                    RequestEditorStateMapper.ensureStarterRow(headersModel);
+                } finally {
+                    syncingDerivedHeaders = false;
+                }
+            }
+            return;
+        }
+
         syncingDerivedHeaders = true;
         try {
-            if (authorization == null) {
-                removeHeaderRow("Authorization");
-            } else {
-                upsertHeaderRow("Authorization", authorization);
-            }
+            upsertHeaderRow("Authorization", authorization);
+            authorizationHeaderMaterialized = true;
             RequestEditorStateMapper.ensureStarterRow(headersModel);
         } finally {
             syncingDerivedHeaders = false;
@@ -516,17 +551,33 @@ public class RequestEditorPanel extends JPanel {
             }
         }
 
+        if (contentType == null || contentType.isBlank()) {
+            if (contentTypeHeaderMaterialized) {
+                syncingDerivedHeaders = true;
+                try {
+                    removeHeaderRow("Content-Type");
+                    contentTypeHeaderMaterialized = false;
+                    RequestEditorStateMapper.ensureStarterRow(headersModel);
+                } finally {
+                    syncingDerivedHeaders = false;
+                }
+            }
+            return;
+        }
+
         syncingDerivedHeaders = true;
         try {
-            if (contentType == null) {
-                removeHeaderRow("Content-Type");
-            } else {
-                upsertHeaderRow("Content-Type", contentType);
-            }
+            upsertHeaderRow("Content-Type", contentType);
+            contentTypeHeaderMaterialized = true;
             RequestEditorStateMapper.ensureStarterRow(headersModel);
         } finally {
             syncingDerivedHeaders = false;
         }
+    }
+
+    private void resetDerivedHeaderMaterializationState() {
+        authorizationHeaderMaterialized = false;
+        contentTypeHeaderMaterialized = false;
     }
 
     private void upsertHeaderRow(String key, String value) {
@@ -662,6 +713,7 @@ public class RequestEditorPanel extends JPanel {
     public JComboBox<String> getMethodBox() { return methodBox; }
 
     private void clearAll() {
+        resetDerivedHeaderMaterializationState();
         RequestEditorStateMapper.clearEditor(createStateMapperContext());
     }
 
