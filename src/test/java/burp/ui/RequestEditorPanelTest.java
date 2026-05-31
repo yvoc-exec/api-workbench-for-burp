@@ -137,6 +137,66 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void resolvedMirrorShowsAutoCompatibleBuildMode() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+
+        panel.loadRequest(req);
+
+        assertThat(resolvedView(panel))
+                .contains("Request Build Policy")
+                .contains("mode=AUTO_COMPATIBLE")
+                .contains("suppressedAutoHeaders=(none)")
+                .contains("Auto-compatible mode may synthesize defaults/auth/body Content-Type.");
+    }
+
+    @Test
+    void resolvedMirrorShowsManualPreserveBuildModeAndSuppressedHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.editorMaterialized = true;
+        req.suppressedAutoHeaders.add("content-type");
+        req.suppressedAutoHeaders.add("authorization");
+
+        panel.loadRequest(req);
+
+        assertThat(resolvedView(panel))
+                .contains("Request Build Policy")
+                .contains("mode=MANUAL_PRESERVE")
+                .contains("suppressedAutoHeaders=authorization, content-type")
+                .contains("Manual preserve mode keeps tester-deleted auto headers deleted.");
+    }
+
+    @Test
+    void resolvedMirrorDoesNotLeakHeaderValuesInSuppressedHeaderDiagnostics() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.editorMaterialized = true;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "secret-token");
+        req.suppressedAutoHeaders.add("authorization");
+
+        panel.loadRequest(req);
+
+        String resolved = resolvedView(panel);
+        int start = resolved.indexOf("Request Build Policy");
+        int end = resolved.indexOf("Resolved Auth");
+        String policySection = start >= 0 && end > start ? resolved.substring(start, end) : resolved;
+        assertThat(policySection).contains("suppressedAutoHeaders=authorization");
+        assertThat(policySection).doesNotContain("secret-token");
+    }
+
+    @Test
     void buildRequestFromUiPersistsMaterializedHeadersAndMarksRequestEditorOwned() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
