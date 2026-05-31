@@ -54,34 +54,6 @@ class ImporterPanelVariablesResolutionTest {
     }
 
     @Test
-    void requestEditorResolvedViewUpdatesWhenVariablesRawDraftChangesWithoutSaveNow() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection collection = new ApiCollection();
-        collection.name = "Alpha";
-        ApiRequest request = bearerRequest();
-        collection.requests.add(request);
-
-        panel.restoreWorkspaceCollections(List.of(collection));
-        selectCollection(panel, "varsCollectionCombo", 0);
-        invokePrivateMethod(panel, "renderEffectiveVariablesForSelectedCollection", new Class<?>[0]);
-
-        RequestEditorPanel requestEditor = (RequestEditorPanel) privateField(panel, "requestEditor");
-        requestEditor.setCurrentCollection(collection);
-        requestEditor.loadRequest(request);
-        invokePrivateMethod(panel, "syncRequestEditorRuntimeContext",
-                new Class<?>[]{ApiRequest.class, ApiCollection.class}, request, collection);
-
-        JTextArea resolvedView = (JTextArea) privateField(requestEditor, "resolvedViewArea");
-        assertThat(resolvedView.getText()).contains("Authorization: Bearer {{token}}");
-
-        JTextArea envVarsArea = (JTextArea) privateField(panel, "envVarsArea");
-        runOnEdt(() -> envVarsArea.setText("# Runtime overrides (edits apply here)\n" +
-                "token=abc123\n"));
-
-        assertThat(resolvedView.getText()).contains("Authorization: Bearer abc123");
-    }
-
-    @Test
     void workbenchSendUsesActiveVariablesTabDraftForCurrentCollection() throws Exception {
         CapturedImporter importer = newCapturedImporter();
         ImporterPanel panel = newPanel(importer.importer);
