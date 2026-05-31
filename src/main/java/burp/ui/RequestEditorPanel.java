@@ -1,8 +1,8 @@
 package burp.ui;
 
 import burp.models.ApiRequest;
-import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
+import burp.utils.RuntimeResolverFactory;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -629,22 +629,11 @@ public class RequestEditorPanel extends JPanel {
             resolvedViewArea.setText("");
             return;
         }
-        VariableResolver vr = new VariableResolver();
-        if (currentCollection != null) {
-            vr.addEnvironmentVariables(currentCollection);
-            vr.addCollectionVariables(currentCollection);
-            vr.addFolderVariables(currentCollection, currentRequest);
-            if (currentCollection.runtimeOAuth2 != null && !currentCollection.runtimeOAuth2.isEmpty()) {
-                vr.addAll(currentCollection.runtimeOAuth2);
-            }
-            if (currentCollection.runtimeVars != null && !currentCollection.runtimeVars.isEmpty()) {
-                vr.addAll(currentCollection.runtimeVars);
-            }
-        }
-        if (runtimeVariables != null && !runtimeVariables.isEmpty()) {
-            vr.addAll(runtimeVariables);
-        }
-        vr.addRequestVariables(currentRequest);
+        var vr = RuntimeResolverFactory.build(
+                currentCollection,
+                currentRequest,
+                RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeVariables)
+        );
 
         StringBuilder out = new StringBuilder();
         out.append("Resolved URL\n");

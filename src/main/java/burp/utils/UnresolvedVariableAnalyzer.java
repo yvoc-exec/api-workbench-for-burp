@@ -82,20 +82,7 @@ public class UnresolvedVariableAnalyzer {
     }
 
     private VariableResolver seedResolver(ApiCollection collection, ApiRequest request) {
-        VariableResolver resolver = new VariableResolver();
-        if (collection != null) {
-            resolver.addEnvironmentVariables(collection);
-            resolver.addCollectionVariables(collection);
-            resolver.addFolderVariables(collection, request);
-            if (collection.runtimeOAuth2 != null) {
-                resolver.addAll(collection.runtimeOAuth2);
-            }
-            if (collection.runtimeVars != null) {
-                resolver.addAll(collection.runtimeVars);
-            }
-        }
-        resolver.addRequestVariables(request);
-        return resolver;
+        return RuntimeResolverFactory.build(collection, request);
     }
 
     private void scanValue(List<UnresolvedVariableIssue> issues,

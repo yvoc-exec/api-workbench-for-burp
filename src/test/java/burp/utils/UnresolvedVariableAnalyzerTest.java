@@ -56,6 +56,25 @@ class UnresolvedVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeIgnoresAuthMappedOauth2RuntimeVariables() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Profile";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Refresh Profile";
+        request.url = "https://api.example.com/{{oauth2_access_token}}";
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("accessToken", "token-123");
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+
+        List<UnresolvedVariableIssue> issues = analyzer.analyze(collection, request);
+
+        assertThat(issues).isEmpty();
+    }
+
+    @Test
     void analyzeDetectsVariablesAcrossHeaderBodyAndAuthLocations() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Orders";
