@@ -112,6 +112,40 @@ class SharedRequestPipelineTest {
     }
 
     @Test
+    void preRequestScriptUsesMutableRuntimeContextWithoutPromotingAllResolverVars() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+        col.environment.put("envOnly", "from-env");
+        col.runtimeVars.put("runtimeOnly", "from-runtime");
+
+        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
+            @Override
+            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
+                assertThat(resolver.resolve("{{envOnly}}")).isEqualTo("from-env");
+                assertThat(context).doesNotContainKey("envOnly");
+                assertThat(context).containsEntry("runtimeOnly", "from-runtime");
+                context.put("contextOnly", "set-by-script");
+            }
+        };
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{envOnly}}/{{runtimeOnly}}";
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.resolvedUrl).isEqualTo("http://example.com/from-env/from-runtime");
+        assertThat(col.runtimeVars)
+                .containsEntry("runtimeOnly", "from-runtime")
+                .containsEntry("contextOnly", "set-by-script")
+                .doesNotContainKey("envOnly");
+    }
+
+    @Test
     void sharedPipelineInjectsOauth2TokenBeforeRequestBuilderBuildsAuthorization() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         burp.auth.OAuth2Manager manager = org.mockito.Mockito.mock(burp.auth.OAuth2Manager.class);

@@ -155,6 +155,28 @@ class RequestBuilderPolicyTest {
         assertThat(parsed.hasHeader("X-Disabled")).isFalse();
     }
 
+    @Test
+    void manualPreserveFormDataCompletesMissingBoundaryForNow() throws Exception {
+        ApiRequest req = baseRequest();
+        req.method = "POST";
+        req.editorMaterialized = true;
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.headers.add(new ApiRequest.Header("Content-Type", "multipart/form-data", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata.add(new ApiRequest.Body.FormField("field", "value"));
+
+        RawRequestParser parsed = parse(req);
+
+        String contentType = parsed.headerValue("Content-Type");
+        assertThat(contentType).contains("multipart/form-data");
+        assertThat(contentType).contains("boundary=");
+        String bodyText = new String(parsed.body, StandardCharsets.UTF_8);
+        String boundary = contentType.substring(contentType.indexOf("boundary=") + "boundary=".length());
+        assertThat(bodyText).contains(boundary);
+        assertThat(parsed.contentLength()).isEqualTo(parsed.body.length);
+    }
+
     private ApiRequest baseRequest() {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

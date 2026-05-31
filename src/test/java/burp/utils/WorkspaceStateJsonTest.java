@@ -158,6 +158,45 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void workspaceStateMigratorPreservesCurrentVersionState() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 1;
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = new ApiRequest();
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.suppressedAutoHeaders.add("authorization");
+        collection.requests.add(request);
+        state.collections.add(collection);
+
+        WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
+
+        assertThat(migrated.version).isEqualTo(1);
+        assertThat(migrated.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(migrated.collections.get(0).requests.get(0).suppressedAutoHeaders).containsExactly("authorization");
+    }
+
+    @Test
+    void workspaceStateMigratorDefaultsMissingOrZeroVersionToOne() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 0;
+
+        WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
+
+        assertThat(migrated.version).isEqualTo(1);
+    }
+
+    @Test
+    void workspaceStateMigratorAllowsFutureVersionBestEffort() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 999;
+
+        WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
+
+        assertThat(migrated.version).isEqualTo(999);
+    }
+
+    @Test
     void roundTripsRequestPathHierarchyAndCoreFields() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

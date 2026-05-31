@@ -676,6 +676,8 @@ public class RequestEditorPanel extends JPanel {
         out.append("------------\n");
         out.append(vr.resolve(RequestEditorStateMapper.rebuildUrlWithParams(urlField.getText(), paramsModel))).append("\n\n");
 
+        appendBuildPolicyDiagnostics(out, currentRequest);
+
         out.append("Resolved Auth\n");
         out.append("-------------\n");
         String authType = (String) authTypeBox.getSelectedItem();
@@ -732,6 +734,36 @@ public class RequestEditorPanel extends JPanel {
 
         resolvedViewArea.setText(out.toString());
         resolvedViewArea.setCaretPosition(0);
+    }
+
+    private void appendBuildPolicyDiagnostics(StringBuilder out, ApiRequest req) {
+        if (req == null) {
+            return;
+        }
+
+        List<String> suppressed = new ArrayList<>();
+        if (req.suppressedAutoHeaders != null) {
+            for (String headerName : req.suppressedAutoHeaders) {
+                String normalized = normalizeTrackedHeaderName(headerName);
+                if (normalized != null) {
+                    suppressed.add(normalized);
+                }
+            }
+        }
+        Collections.sort(suppressed);
+
+        out.append("Request Build Policy\n");
+        out.append("--------------------\n");
+        out.append("mode=").append(req.resolveBuildMode()).append("\n");
+        out.append("suppressedAutoHeaders=")
+                .append(suppressed.isEmpty() ? "(none)" : String.join(", ", suppressed))
+                .append("\n");
+        if (req.isManualPreserveMode()) {
+            out.append("note=Manual preserve mode keeps tester-deleted auto headers deleted.\n");
+        } else {
+            out.append("note=Auto-compatible mode may synthesize defaults/auth/body Content-Type.\n");
+        }
+        out.append("\n");
     }
 
     public JTextField getUrlField() { return urlField; }

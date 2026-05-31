@@ -5,6 +5,11 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -113,5 +118,59 @@ class ApiCollectionTest {
 
         col.putRuntimeVar("k", "v");
         assertThat(count.get()).isEqualTo(0);
+    }
+
+    @Test
+    void fireChangedContinuesAfterListenerException() {
+        ApiCollection col = new ApiCollection();
+        AtomicInteger count = new AtomicInteger(0);
+        col.addChangeListener(() -> { throw new RuntimeException("boom"); });
+        col.addChangeListener(count::incrementAndGet);
+
+        assertThatCode(col::fireChanged).doesNotThrowAnyException();
+        assertThat(count.get()).isEqualTo(1);
+    }
+
+    @Test
+    void fireChangedLogsListenerException() {
+        ApiCollection col = new ApiCollection();
+        col.addChangeListener(() -> { throw new RuntimeException("boom"); });
+
+        Logger logger = Logger.getLogger(ApiCollection.class.getName());
+        Level originalLevel = logger.getLevel();
+        boolean originalUseParentHandlers = logger.getUseParentHandlers();
+        AtomicReference<LogRecord> recordRef = new AtomicReference<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record != null && record.getLevel().intValue() >= Level.WARNING.intValue()) {
+                    recordRef.compareAndSet(null, record);
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+
+        logger.addHandler(handler);
+        logger.setLevel(Level.ALL);
+        logger.setUseParentHandlers(false);
+        try {
+            col.fireChanged();
+        } finally {
+            logger.removeHandler(handler);
+            logger.setLevel(originalLevel);
+            logger.setUseParentHandlers(originalUseParentHandlers);
+        }
+
+        assertThat(recordRef.get()).isNotNull();
+        assertThat(recordRef.get().getLevel()).isEqualTo(Level.WARNING);
+        assertThat(recordRef.get().getMessage()).contains("change listener failed");
+        assertThat(recordRef.get().getThrown()).isInstanceOf(RuntimeException.class);
     }
 }
