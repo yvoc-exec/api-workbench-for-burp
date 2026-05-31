@@ -147,6 +147,80 @@ class SharedRequestPipelineTest {
     }
 
     @Test
+    void sharedPipelineHonorsAutoCompatibleBuildMode() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "pipeline-token");
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
+    }
+
+    @Test
+    void sharedPipelineHonorsManualPreserveBuildMode() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.editorMaterialized = true;
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "pipeline-token");
+        req.suppressedAutoHeaders.add("authorization");
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).doesNotContain("Authorization: Bearer pipeline-token");
+    }
+
+    @Test
+    void sharedPipelineDoesNotChangeTransportSemantics() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers.add(new ApiRequest.Header("Content-Length", "9999", false));
+        req.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+
+        ExecutionResult exec = pipeline.build(req, col);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).doesNotContain("Transfer-Encoding: chunked");
+        assertThat(exec.requestHeaders).contains("Content-Length: 5");
+    }
+
+    @Test
     void buildPreservesMultipartFileBytes() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);

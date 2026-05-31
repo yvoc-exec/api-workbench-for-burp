@@ -7,6 +7,11 @@ import java.util.*;
  * All parsers (Postman, Bruno, OpenAPI, Insomnia, HAR) convert to this model.
  */
 public class ApiRequest {
+    public enum BuildMode {
+        AUTO_COMPATIBLE,
+        MANUAL_PRESERVE
+    }
+
     public String id;
     public String name;
     public String path;           // folder/path hierarchy
@@ -19,6 +24,10 @@ public class ApiRequest {
     public Auth auth;
     /** True when the editor has materialized request-owned headers/body after load/import. */
     public boolean editorMaterialized = false;
+    /** Explicit request-build intent used by the runtime builder and editor persistence. */
+    public BuildMode buildMode = BuildMode.AUTO_COMPATIBLE;
+    /** Lowercase derived headers the tester intentionally removed from a manual request. */
+    public Set<String> suppressedAutoHeaders = new LinkedHashSet<>();
     public List<Variable> variables = new ArrayList<>();  // collection-level vars
     public List<Script> preRequestScripts = new ArrayList<>();
     public List<Script> postResponseScripts = new ArrayList<>();
@@ -91,5 +100,75 @@ public class ApiRequest {
 
     public boolean hasAuth() {
         return auth != null && auth.type != null && !"none".equals(auth.type);
+    }
+
+    public boolean isAutoCompatibleMode() {
+        return resolveBuildMode() == BuildMode.AUTO_COMPATIBLE && !editorMaterialized;
+    }
+
+    public boolean isManualPreserveMode() {
+        return resolveBuildMode() == BuildMode.MANUAL_PRESERVE || editorMaterialized;
+    }
+
+    public BuildMode resolveBuildMode() {
+        if (buildMode != null) {
+            return buildMode;
+        }
+        return editorMaterialized ? BuildMode.MANUAL_PRESERVE : BuildMode.AUTO_COMPATIBLE;
+    }
+
+    public boolean isAutoHeaderSuppressed(String headerName) {
+        String normalized = normalizeHeaderName(headerName);
+        if (normalized == null || suppressedAutoHeaders == null || suppressedAutoHeaders.isEmpty()) {
+            return false;
+        }
+        for (String suppressed : suppressedAutoHeaders) {
+            if (normalized.equals(normalizeHeaderName(suppressed))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void suppressAutoHeader(String headerName) {
+        String normalized = normalizeHeaderName(headerName);
+        if (normalized == null) {
+            return;
+        }
+        if (suppressedAutoHeaders == null) {
+            suppressedAutoHeaders = new LinkedHashSet<>();
+        }
+        suppressedAutoHeaders.add(normalized);
+    }
+
+    public void clearSuppressedAutoHeader(String headerName) {
+        String normalized = normalizeHeaderName(headerName);
+        if (normalized == null || suppressedAutoHeaders == null || suppressedAutoHeaders.isEmpty()) {
+            return;
+        }
+        suppressedAutoHeaders.removeIf(value -> normalized.equals(normalizeHeaderName(value)));
+    }
+
+    public void normalizeSuppressedAutoHeaders() {
+        if (suppressedAutoHeaders == null) {
+            suppressedAutoHeaders = new LinkedHashSet<>();
+            return;
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String headerName : suppressedAutoHeaders) {
+            String value = normalizeHeaderName(headerName);
+            if (value != null) {
+                normalized.add(value);
+            }
+        }
+        suppressedAutoHeaders = normalized;
+    }
+
+    private static String normalizeHeaderName(String headerName) {
+        if (headerName == null) {
+            return null;
+        }
+        String normalized = headerName.trim().toLowerCase(Locale.ROOT);
+        return normalized.isEmpty() ? null : normalized;
     }
 }
