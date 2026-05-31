@@ -2,11 +2,15 @@ package burp.models;
 
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Unified API Collection model.
  */
 public class ApiCollection {
+    private static final Logger LOGGER = Logger.getLogger(ApiCollection.class.getName());
+
     public String name;
     public String description;
     public String format;         // postman, bruno, openapi, insomnia, har
@@ -48,7 +52,11 @@ public class ApiCollection {
 
     public void fireChanged() {
         for (Runnable r : changeListeners) {
-            try { r.run(); } catch (Exception ignored) {}
+            try {
+                r.run();
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "ApiCollection change listener failed", e);
+            }
         }
     }
 
