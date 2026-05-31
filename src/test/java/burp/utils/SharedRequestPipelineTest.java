@@ -142,6 +142,7 @@ class SharedRequestPipelineTest {
 
         assertThat(exec.success).isTrue();
         assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
+        assertThat(exec.resolvedVariables).containsEntry("oauth2_access_token", "pipeline-token");
         assertThat(col.runtimeOAuth2).containsEntry("oauth2_access_token", "pipeline-token");
     }
 

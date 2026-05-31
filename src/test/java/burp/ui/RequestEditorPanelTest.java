@@ -117,6 +117,26 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void requestEditorResolvedMirrorUsesRuntimeResolverFactoryOverlay() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeVars.put("token", "saved-secret");
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "{{token}}");
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+        panel.setRuntimeVariables(Map.of("token", "draft-secret"));
+
+        assertThat(resolvedView(panel)).contains("Authorization: Bearer draft-secret");
+    }
+
+    @Test
     void buildRequestFromUiPersistsMaterializedHeadersAndMarksRequestEditorOwned() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));

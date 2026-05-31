@@ -587,16 +587,7 @@ public class CollectionRunner {
     }
 
     private VariableResolver buildPreviewResolver(ApiRequest req, ApiCollection col) {
-        VariableResolver resolver = new VariableResolver();
-        if (col != null) {
-            resolver.addEnvironmentVariables(col);
-            resolver.addCollectionVariables(col);
-            resolver.addFolderVariables(col, req);
-            if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
-            if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
-        }
-        resolver.addRequestVariables(req);
-        return resolver;
+        return burp.utils.RuntimeResolverFactory.build(col, req);
     }
 
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {

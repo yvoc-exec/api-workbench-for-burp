@@ -1,6 +1,7 @@
 package burp.runner;
 
 import burp.models.RunnerResult;
+import burp.models.RunnerPreviewRow;
 import burp.models.RunnerTimelineRow;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.MontoyaApi;
@@ -91,6 +92,31 @@ class CollectionRunnerTest {
         drainEdt();
 
         assertThat(pipeline.contexts.get("Request B")).doesNotContainKey("shared_token");
+    }
+
+    @Test
+    void runnerPreviewResolverMatchesPipelineForAuthMappedRuntimeVars() {
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, new burp.utils.ScriptEngine(null, burp.utils.ScriptMode.DISABLED), null), null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        collection.runtimeOAuth2.put("oauth2_access_token", "stale-token");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "OAuth Request";
+        request.method = "GET";
+        request.url = "http://example.com/{{oauth2_access_token}}";
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("accessToken", "preview-token");
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).urlPreview).isEqualTo("http://example.com/preview-token");
+        assertThat(rows.get(0).unresolvedVariables).isEmpty();
     }
 
     @Test

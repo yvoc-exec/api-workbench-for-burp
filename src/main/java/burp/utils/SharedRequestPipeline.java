@@ -53,34 +53,18 @@ public class SharedRequestPipeline {
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
                                             ExecutionResult result, boolean sendRequest) {
-        VariableResolver resolver = new VariableResolver();
+        VariableResolver resolver = RuntimeResolverFactory.build(col, req);
         Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
         Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
 
         try {
-            // 1. Seed resolver in unified precedence order
-            if (col != null) {
-                resolver.addEnvironmentVariables(col);
-                resolver.addCollectionVariables(col);
-                resolver.addFolderVariables(col, req);
-                if (col.runtimeOAuth2 != null) resolver.addAll(col.runtimeOAuth2);
-                if (col.runtimeVars != null) resolver.addAll(col.runtimeVars);
-            }
-            resolver.addRequestVariables(req);
-
-            // Auth mapping: normalize request-level auth metadata into canonical oauth2_* vars
-            if (req.hasAuth()) {
-                Map<String, String> authVars = OAuth2RuntimeMapper.mapAuthToVars(req.auth, resolver.getVariables(), true);
-                if (!authVars.isEmpty()) resolver.addAll(authVars);
-            }
-
-            // 2. Pre-request scripts (use isolated copy to track mutations)
+            // 1. Pre-request scripts (use isolated copy to track mutations)
             if (col != null) {
                 scriptEngine.executePreRequest(req, resolver, scriptContext);
             }
 
-            // 3. OAuth2 token refresh if needed
+            // 2. OAuth2 token refresh if needed
             if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
                 try {
                     OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
@@ -99,7 +83,7 @@ public class SharedRequestPipeline {
                 }
             }
 
-            // 4. Build request
+            // 3. Build request
             byte[] rawRequest = requestBuilder.buildRequest(req, resolver);
             result.rawRequestBytes = rawRequest;
             result.resolvedVariables = new HashMap<>(resolver.getVariables());
@@ -124,7 +108,7 @@ public class SharedRequestPipeline {
                             service, burp.api.montoya.core.ByteArray.byteArray(rawRequest));
             result.builtRequest = httpRequest;
 
-            // 5. Send HTTP
+            // 4. Send HTTP
             long startTime = System.currentTimeMillis();
             RequestOptions options = RequestOptions.requestOptions()
                     .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
@@ -136,7 +120,7 @@ public class SharedRequestPipeline {
             if (response != null && response.response() != null) {
                 result.success = true;
 
-                // 6. Post-response scripts
+                // 5. Post-response scripts
                 if (col != null) {
                     String body = response.response().bodyToString();
                     int statusCode = response.response().statusCode();

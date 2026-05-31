@@ -5390,21 +5390,8 @@ public class ImporterPanel {
             }
             return;
         }
-        VariableResolver vr = new VariableResolver();
-        vr.addEnvironmentVariables(col);
-        vr.addCollectionVariables(col);
-        vr.addFolderVariables(col, req);
-        if (col.runtimeOAuth2 != null) vr.addAll(col.runtimeOAuth2);
         Map<String, String> effectiveRuntimeVars = getEffectiveRuntimeVarsForRequestContext(col);
-        if (!effectiveRuntimeVars.isEmpty()) vr.addAll(effectiveRuntimeVars);
-        vr.addRequestVariables(req);
-        if (req.hasAuth()) {
-            Map<String, String> authMapped = burp.utils.OAuth2RuntimeMapper.mapAuthToVars(req.auth, vr.getVariables(), true);
-            if (!authMapped.isEmpty()) {
-                vr.addAll(authMapped);
-            }
-        }
-        requestEditor.setRuntimeVariables(vr.getVariables());
+        requestEditor.setRuntimeVariables(effectiveRuntimeVars);
     }
 
     private Map<String, String> getEffectiveRuntimeVarsForRequestContext(ApiCollection col) {
