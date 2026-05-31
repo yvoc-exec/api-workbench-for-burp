@@ -386,7 +386,7 @@ class ImporterPanelTreeRestoreTest {
         CollectionTreeNode folderNode = childFolder(apimNode, "FolderA");
 
         assertThat(checkedNode.isChecked()).isTrue();
-        assertThat(selectedNode.request.path).isEqualTo("Select Me");
+        assertThat(selectedNode.request.path).isEqualTo("FolderA/Select Me");
         assertThat(requestNames(folderNode)).containsExactlyInAnyOrder("Check Me", "Select Me");
         assertThat(tree.getSelectionPath()).isNotNull();
         assertThat(((CollectionTreeNode) tree.getSelectionPath().getLastPathComponent()).request.id).isEqualTo("req-selected");
@@ -495,7 +495,7 @@ class ImporterPanelTreeRestoreTest {
         CollectionTreeNode billingNode = childFolder(apimNode, "Billing");
 
         assertThat(state.collections.get(0).requests).extracting(req -> req.path)
-                .containsExactly("Get Token", "Get Token");
+                .containsExactly("Auth/OAuth/Get Token", "Billing/Soap/Get Token");
         assertThat(directRequestNames(apimNode)).isEmpty();
         assertThat(requestNames(childFolder(authNode, "OAuth"))).containsExactly("Get Token");
         assertThat(requestNames(childFolder(billingNode, "Soap"))).containsExactly("Get Token");
@@ -512,7 +512,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoreWorkspaceStateRoundTripKeepsNestedTreeWithoutMutatingRequestPath() throws Exception {
+    void restoreWorkspaceStateRoundTripRepairsRequestPathSoLaterRebuildsStayNested() throws Exception {
         ImporterPanel panel = newPanel();
 
         ApiCollection collection = new ApiCollection();
@@ -530,7 +530,7 @@ class ImporterPanelTreeRestoreTest {
 
         panel.restoreWorkspaceState(state);
 
-        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Get Token");
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
 
         JTree tree = requestTree(panel);
         CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
@@ -541,11 +541,16 @@ class ImporterPanelTreeRestoreTest {
         assertThat(requestNames(oauthNode)).containsExactly("Get Token");
 
         WorkspaceState reopened = panel.getWorkspaceStateSnapshot();
-        assertThat(reopened.collections.get(0).requests.get(0).path).isEqualTo("Get Token");
+        assertThat(reopened.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
         assertThat(reopened.requestTreePaths).containsEntry(
                 ImporterPanel.workspaceRequestTreePathKey("APIM", 0, reopened.collections.get(0).requests.get(0), 0),
                 "Auth/OAuth"
         );
+
+        DefaultMutableTreeNode rebuiltWithoutOverlay = ImporterPanel.buildRequestTreeRoot(reopened.collections, Collections.emptyMap());
+        CollectionTreeNode rebuiltApimNode = (CollectionTreeNode) rebuiltWithoutOverlay.getChildAt(0);
+        assertThat(requestNames(childFolder(childFolder(rebuiltApimNode, "Auth"), "OAuth"))).containsExactly("Get Token");
+        assertThat(directRequestNames(rebuiltApimNode)).isEmpty();
 
         ImporterPanel reopenedPanel = newPanel();
         reopenedPanel.restoreWorkspaceState(reopened);

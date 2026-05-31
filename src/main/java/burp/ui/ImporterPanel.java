@@ -2554,6 +2554,7 @@ public class ImporterPanel {
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
             try {
+                applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
                 restoreWorkspaceCollections(state.collections);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
@@ -3947,6 +3948,7 @@ public class ImporterPanel {
         }
         markVariablesRawEditingActive();
         markVariablesDirty();
+        refreshActiveRequestEditorRuntimeContextFromVariablesDraft();
     }
 
     private void handleVariablesTableModelEdit() {
@@ -3955,6 +3957,23 @@ public class ImporterPanel {
         }
         markVariablesTableEditingActive();
         markVariablesDirty();
+        refreshActiveRequestEditorRuntimeContextFromVariablesDraft();
+    }
+
+    private void refreshActiveRequestEditorRuntimeContextFromVariablesDraft() {
+        if (requestEditor == null) {
+            return;
+        }
+        ApiRequest req = requestEditor.getCurrentRequest();
+        ApiCollection col = requestEditor.getCurrentCollection();
+        if (req == null || col == null) {
+            return;
+        }
+        CollectionRef varsRef = getSelectedCollectionRef(varsCollectionCombo);
+        if (varsRef == null || varsRef.collection != col) {
+            return;
+        }
+        syncRequestEditorRuntimeContext(req, col);
     }
 
     private void markVariablesDirty() {
