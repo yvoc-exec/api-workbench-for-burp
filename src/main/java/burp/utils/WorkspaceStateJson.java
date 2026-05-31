@@ -25,6 +25,7 @@ public final class WorkspaceStateJson {
         }
         JsonElement raw = JsonParser.parseString(json);
         WorkspaceState state = GSON.fromJson(raw, WorkspaceState.class);
+        state = WorkspaceStateMigrator.migrate(state);
         return normalize(state, raw);
     }
 
