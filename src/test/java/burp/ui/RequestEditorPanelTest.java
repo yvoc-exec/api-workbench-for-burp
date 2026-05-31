@@ -145,9 +145,11 @@ class RequestEditorPanelTest {
         ApiRequest built = panel.buildRequestFromUI();
 
         assertThat(built.editorMaterialized).isTrue();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
         assertThat(built.headers)
                 .extracting(h -> h.key)
                 .containsExactly("Accept", "User-Agent", "Cache-Control");
+        assertThat(built.suppressedAutoHeaders).isEmpty();
     }
 
     @Test
@@ -165,10 +167,68 @@ class RequestEditorPanelTest {
 
         ApiRequest built = panel.buildRequestFromUI();
         assertThat(built.headers).extracting(h -> h.key).doesNotContain("Authorization");
+        assertThat(built.suppressedAutoHeaders).contains("authorization");
 
         byte[] raw = new RequestBuilder(null).buildRequest(built, new VariableResolver());
         String text = new String(raw, StandardCharsets.UTF_8);
         assertThat(text).doesNotContain("Authorization: Bearer tok123");
+    }
+
+    @Test
+    void deletingMaterializedContentTypeAddsSuppressedAutoHeader() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.method = "POST";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"a\":1}";
+        panel.loadRequest(req);
+
+        removeHeaderRow(panel, "Content-Type");
+
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.headers).extracting(h -> h.key).doesNotContain("Content-Type");
+        assertThat(built.suppressedAutoHeaders).contains("content-type");
+    }
+
+    @Test
+    void reAddingAuthorizationClearsSuppressedAutoHeader() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+        req.suppressedAutoHeaders.add("authorization");
+        panel.loadRequest(req);
+
+        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Authorization");
+        headersModel(panel).addRow(new Object[]{"Authorization", "Bearer tok123"});
+
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.headers)
+                .anySatisfy(header -> {
+                    assertThat(header.key).isEqualTo("Authorization");
+                    assertThat(header.value).isEqualTo("Bearer tok123");
+                });
+        assertThat(built.suppressedAutoHeaders).doesNotContain("authorization");
+    }
+
+    @Test
+    void buildRequestFromUiSetsManualPreserveBuildMode() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.editorMaterialized).isTrue();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
     }
 
     @Test

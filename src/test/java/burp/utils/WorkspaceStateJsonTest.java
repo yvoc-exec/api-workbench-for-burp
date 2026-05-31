@@ -79,6 +79,85 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void workspaceRoundTripPreservesRequestBuildModeAndSuppressedAutoHeaders() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Build Demo";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Edited";
+        request.path = "Edited";
+        request.sourceCollection = "Build Demo";
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.suppressedAutoHeaders.add("authorization");
+        request.suppressedAutoHeaders.add("content-type");
+        collection.requests.add(request);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection)))
+        );
+
+        ApiRequest restored = parsed.collections.get(0).requests.get(0);
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(restored.suppressedAutoHeaders).containsExactly("authorization", "content-type");
+    }
+
+    @Test
+    void legacyWorkspaceDefaultsBuildModeAndSuppressedAutoHeadersSafely() {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "Legacy",
+                    "requests": [{
+                      "name": "Imported",
+                      "editorMaterialized": false,
+                      "method": "GET",
+                      "url": "https://api.example.test"
+                    }, {
+                      "name": "Edited",
+                      "editorMaterialized": true,
+                      "method": "GET",
+                      "url": "https://api.example.test"
+                    }]
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.collections.get(0).requests).hasSize(2);
+        assertThat(parsed.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(parsed.collections.get(0).requests.get(1).buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(parsed.collections.get(0).requests.get(0).suppressedAutoHeaders).isEmpty();
+        assertThat(parsed.collections.get(0).requests.get(1).suppressedAutoHeaders).isEmpty();
+    }
+
+    @Test
+    void workspaceNormalizeLowercasesSuppressedAutoHeaders() {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "Legacy",
+                    "requests": [{
+                      "name": "Imported",
+                      "editorMaterialized": true,
+                      "method": "POST",
+                      "url": "https://api.example.test",
+                      "suppressedAutoHeaders": [" Authorization ", "CONTENT-TYPE", ""]
+                    }]
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(parsed.collections.get(0).requests.get(0).suppressedAutoHeaders)
+                .containsExactly("authorization", "content-type");
+    }
+
+    @Test
     void roundTripsRequestPathHierarchyAndCoreFields() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

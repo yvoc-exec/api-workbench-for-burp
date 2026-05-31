@@ -164,6 +164,10 @@ final class RequestEditorStateMapper {
         req.method = (String) ctx.methodBox.getSelectedItem();
         req.url = rebuildUrlWithParams(ctx.urlField.getText(), ctx.paramsModel);
         req.editorMaterialized = true;
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.suppressedAutoHeaders = currentRequest.suppressedAutoHeaders != null
+                ? new LinkedHashSet<>(currentRequest.suppressedAutoHeaders)
+                : new LinkedHashSet<>();
 
         String authMode = (String) ctx.authTypeBox.getSelectedItem();
         req.authOverrideMode = RequestEditorPanel.selectionToOverrideMode(authMode);
@@ -263,10 +267,16 @@ final class RequestEditorStateMapper {
             }
         }
 
-        if (!req.editorMaterialized) {
-            ensureDefaultHeader(ctx.headersModel, "Accept", "application/json, text/plain, */*");
-            ensureDefaultHeader(ctx.headersModel, "User-Agent", "BurpExtensionRuntime");
-            ensureDefaultHeader(ctx.headersModel, "Cache-Control", "no-cache");
+        if (req.isAutoCompatibleMode()) {
+            if (!req.isAutoHeaderSuppressed("accept")) {
+                ensureDefaultHeader(ctx.headersModel, "Accept", "application/json, text/plain, */*");
+            }
+            if (!req.isAutoHeaderSuppressed("user-agent")) {
+                ensureDefaultHeader(ctx.headersModel, "User-Agent", "BurpExtensionRuntime");
+            }
+            if (!req.isAutoHeaderSuppressed("cache-control")) {
+                ensureDefaultHeader(ctx.headersModel, "Cache-Control", "no-cache");
+            }
         }
     }
 

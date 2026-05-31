@@ -100,31 +100,37 @@ public class RequestBuilder {
 
         String requestTarget = parsed.pathWithQuery;
         HeaderStore headers = new HeaderStore();
-        boolean editorMaterialized = request.editorMaterialized;
+        RequestBuildPolicy policy = RequestBuildPolicy.forRequest(request);
 
-        if (!editorMaterialized) {
-            headers.putDefault("Accept", "application/json, text/plain, */*");
-            headers.putDefault("User-Agent", "BurpExtensionRuntime");
-            headers.putDefault("Cache-Control", "no-cache");
+        if (policy.shouldApplyDefaultHeaders(request)) {
+            if (!policy.isSuppressed(request, "accept")) {
+                headers.putDefault("Accept", "application/json, text/plain, */*");
+            }
+            if (!policy.isSuppressed(request, "user-agent")) {
+                headers.putDefault("User-Agent", "BurpExtensionRuntime");
+            }
+            if (!policy.isSuppressed(request, "cache-control")) {
+                headers.putDefault("Cache-Control", "no-cache");
+            }
         }
 
         applyExplicitHeaders(request, headers, resolver);
 
-        if (!editorMaterialized) {
-            requestTarget = applyAuthentication(headers, request.auth, requestTarget, resolver);
+        if (policy.shouldApplyAuthentication(request)) {
+            requestTarget = applyAuthentication(request, headers, requestTarget, resolver, policy);
         }
 
         String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
         headers.putComputed("Host", hostValue);
 
         byte[] body;
-        if (!editorMaterialized) {
-            body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver);
+        if (policy.shouldSynthesizeBodyContentType(request)) {
+            body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver, policy);
             if (body == null) {
-                body = buildBody(request.body, headers, request.name, resolver, true);
+                body = buildBody(request.body, headers, request.name, resolver, true, !policy.isSuppressed(request, "content-type"));
             }
         } else {
-            body = buildBody(request.body, headers, request.name, resolver, false);
+            body = buildBody(request.body, headers, request.name, resolver, false, false);
         }
 
         // Insert request line at index 0
@@ -250,12 +256,13 @@ public class RequestBuilder {
      *
      * Uses putDefault() for Authorization/Cookie so explicit request-level headers win.
      */
-    private String applyAuthentication(HeaderStore headers, ApiRequest.Auth auth, String requestTarget, VariableResolver resolver) {
+    private String applyAuthentication(ApiRequest request, HeaderStore headers, String requestTarget, VariableResolver resolver, RequestBuildPolicy policy) {
+        ApiRequest.Auth auth = request != null ? request.auth : null;
         if (auth == null || auth.type == null) return requestTarget;
 
         switch (auth.type.toLowerCase()) {
             case "bearer":
-                if (!headers.has("Authorization")) {
+                if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                     String token = auth.properties.getOrDefault("token", auth.properties.get("value"));
                     if (token != null) {
                         String prefix = auth.properties.getOrDefault("prefix", "Bearer");
@@ -264,7 +271,7 @@ public class RequestBuilder {
                 }
                 break;
             case "basic":
-                if (!headers.has("Authorization")) {
+                if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                     String username = auth.properties.getOrDefault("username", auth.properties.get("user"));
                     String password = auth.properties.getOrDefault("password", auth.properties.get("pass"));
                     if (username != null || password != null) {
@@ -292,7 +299,7 @@ public class RequestBuilder {
                     } else {
                         String resolvedKeyName = resolve(resolver, keyName);
                         String resolvedKeyValue = resolve(resolver, keyValue);
-                        if (!headers.has(resolvedKeyName)) {
+                        if (!headers.has(resolvedKeyName) && !policy.isSuppressed(request, resolvedKeyName)) {
                             headers.putDefault(resolvedKeyName, resolvedKeyValue);
                         }
                     }
@@ -306,7 +313,7 @@ public class RequestBuilder {
                 }
                 break;
             case "oauth2":
-                if (!headers.has("Authorization")) {
+                if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                     String accessToken = auth.properties.get("accessToken");
                     if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{"))
                             && resolver != null && resolver.getVariables() != null) {
@@ -321,7 +328,7 @@ public class RequestBuilder {
         return requestTarget;
     }
 
-    private byte[] buildBody(ApiRequest.Body body, HeaderStore hs, String requestName, VariableResolver resolver, boolean synthesizeHeaders) throws Exception {
+    private byte[] buildBody(ApiRequest.Body body, HeaderStore hs, String requestName, VariableResolver resolver, boolean synthesizeHeaders, boolean allowContentTypeHeader) throws Exception {
         if (body == null || body.mode == null || "none".equals(body.mode)) {
             return new byte[0];
         }
@@ -331,7 +338,7 @@ public class RequestBuilder {
             case "raw":
                 if (body.raw != null) {
                     String resolved = resolver != null ? resolver.resolve(body.raw) : body.raw;
-                    if (synthesizeHeaders) {
+                    if (synthesizeHeaders && allowContentTypeHeader) {
                         String ct = body.contentType;
                         if (ct == null || ct.isBlank()) {
                             String trimmed = resolved.trim();
@@ -347,8 +354,8 @@ public class RequestBuilder {
 
             case "graphql":
                 if (body.graphql != null) {
-                    result = buildGraphQLBody(body.graphql, hs, resolver, synthesizeHeaders);
-                    if (synthesizeHeaders) {
+                    result = buildGraphQLBody(body.graphql, hs, resolver, synthesizeHeaders && allowContentTypeHeader);
+                    if (synthesizeHeaders && allowContentTypeHeader) {
                         enforceContentType(hs, "application/json", requestName);
                     }
                 } else {
@@ -368,7 +375,7 @@ public class RequestBuilder {
                                 URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
                         params.add(key + "=" + value);
                     }
-                    if (synthesizeHeaders) {
+                    if (synthesizeHeaders && allowContentTypeHeader) {
                         enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
                     }
                     result = String.join("&", params).getBytes(StandardCharsets.UTF_8);
@@ -384,7 +391,7 @@ public class RequestBuilder {
                     if (boundary == null || boundary.isBlank()) {
                         boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
                     }
-                    if (synthesizeHeaders) {
+                    if (synthesizeHeaders && allowContentTypeHeader) {
                         String expected = "multipart/form-data; boundary=" + boundary;
                         if (hs.has("Content-Type")) {
                             String existing = hs.get("Content-Type");
@@ -523,7 +530,7 @@ public class RequestBuilder {
      * Supports client_credentials, password, refresh_token, and authorization_code grants.
      * Returns null when no auto-build is needed.
      */
-    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, HeaderStore headers, VariableResolver resolver) {
+    private byte[] maybeBuildOAuth2TokenBody(ApiRequest request, String method, String resolvedUrl, HeaderStore headers, VariableResolver resolver, RequestBuildPolicy policy) {
         Map<String, String> vars = resolver != null ? resolver.mutableVariables() : Collections.emptyMap();
         if (vars == null) return null;
 
@@ -597,7 +604,7 @@ public class RequestBuilder {
 
         // If using basic auth for client credentials, set Authorization header
         if (useBasicAuth && clientSecret != null && !clientSecret.isBlank()) {
-            if (!headers.has("Authorization")) {
+            if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                 String credentials = clientId + ":" + clientSecret;
                 String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
                 headers.put("Authorization", "Basic " + encoded);
@@ -642,7 +649,9 @@ public class RequestBuilder {
         }
 
         // Ensure correct Content-Type for the auto-built body
-        headers.put("Content-Type", "application/x-www-form-urlencoded");
+        if (!policy.isSuppressed(request, "content-type")) {
+            headers.put("Content-Type", "application/x-www-form-urlencoded");
+        }
 
         return String.join("&", params).getBytes(StandardCharsets.UTF_8);
     }

@@ -152,6 +152,10 @@ public class WorkspaceState {
         copy.url = src.url;
         copy.description = src.description;
         copy.editorMaterialized = src.editorMaterialized;
+        copy.buildMode = src.buildMode;
+        copy.suppressedAutoHeaders = src.suppressedAutoHeaders != null
+                ? new java.util.LinkedHashSet<>(src.suppressedAutoHeaders)
+                : new java.util.LinkedHashSet<>();
         copy.disabled = src.disabled;
         copy.sequenceOrder = src.sequenceOrder;
         copy.authInherited = src.authInherited;

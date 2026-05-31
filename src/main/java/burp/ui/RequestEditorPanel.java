@@ -47,6 +47,7 @@ public class RequestEditorPanel extends JPanel {
     // Resolved mirror
     private JTextArea resolvedViewArea;
     private Map<String, String> runtimeVariables = new HashMap<>();
+    private final Set<String> materializedAutoHeaders = new LinkedHashSet<>();
 
     private ApiRequest currentRequest;
     private burp.models.ApiCollection currentCollection;
@@ -279,6 +280,7 @@ public class RequestEditorPanel extends JPanel {
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
         resetDerivedHeaderMaterializationState();
+        materializedAutoHeaders.clear();
         loadingRequest = true;
         try {
             RequestEditorStateMapper.Context ctx = createStateMapperContext();
@@ -286,6 +288,7 @@ public class RequestEditorPanel extends JPanel {
         } finally {
             loadingRequest = false;
         }
+        captureMaterializedDefaultHeaders(req);
         refreshAll();
     }
 
@@ -319,7 +322,21 @@ public class RequestEditorPanel extends JPanel {
     }
 
     public ApiRequest buildRequestFromUI() {
-        return RequestEditorStateMapper.buildRequest(createStateMapperContext());
+        ApiRequest built = RequestEditorStateMapper.buildRequest(createStateMapperContext());
+        if (built != null) {
+            built.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+            built.editorMaterialized = true;
+            if (built.suppressedAutoHeaders == null) {
+                built.suppressedAutoHeaders = new LinkedHashSet<>();
+            }
+            built.normalizeSuppressedAutoHeaders();
+            if (currentRequest != null && currentRequest.suppressedAutoHeaders != null) {
+                built.suppressedAutoHeaders.addAll(currentRequest.suppressedAutoHeaders);
+            }
+            syncSuppressedAutoHeadersWithCurrentEditorHeaders(built);
+            built.normalizeSuppressedAutoHeaders();
+        }
+        return built;
     }
 
     static void applyAuthMetadata(ApiRequest target, ApiRequest source, String authType) {
@@ -447,6 +464,13 @@ public class RequestEditorPanel extends JPanel {
                 : buildAuthFromFields(selectedType);
         String existingAuthorization = findHeaderValue("Authorization");
 
+        if (currentRequest != null && currentRequest.isAutoHeaderSuppressed("authorization") && existingAuthorization == null) {
+            return;
+        }
+        if (existingAuthorization == null && materializedAutoHeaders.contains("authorization")) {
+            return;
+        }
+
         if (auth == null || auth.type == null || "none".equalsIgnoreCase(auth.type)) {
             if (authorizationHeaderMaterialized) {
                 syncingDerivedHeaders = true;
@@ -484,6 +508,7 @@ public class RequestEditorPanel extends JPanel {
         try {
             upsertHeaderRow("Authorization", authorization);
             authorizationHeaderMaterialized = true;
+            markMaterializedAutoHeader("authorization");
             RequestEditorStateMapper.ensureStarterRow(headersModel);
         } finally {
             syncingDerivedHeaders = false;
@@ -525,6 +550,16 @@ public class RequestEditorPanel extends JPanel {
         if (syncingDerivedHeaders) {
             return;
         }
+        String existingContentType = findHeaderValue("Content-Type");
+        if (currentRequest != null && currentRequest.isAutoHeaderSuppressed("content-type") && existingContentType == null) {
+            return;
+        }
+        if (!contentTypeHeaderMaterialized && existingContentType != null) {
+            return;
+        }
+        if (existingContentType == null && materializedAutoHeaders.contains("content-type")) {
+            return;
+        }
         String bodyMode = getBodyModeInternal();
         String contentType = null;
         if ("raw".equals(bodyMode)) {
@@ -540,9 +575,8 @@ public class RequestEditorPanel extends JPanel {
         } else if ("urlencoded".equals(bodyMode)) {
             contentType = "application/x-www-form-urlencoded";
         } else if ("formdata".equals(bodyMode)) {
-            String existing = findHeaderValue("Content-Type");
-            contentType = (existing != null && existing.toLowerCase(Locale.ROOT).startsWith("multipart/form-data"))
-                    ? existing
+            contentType = (existingContentType != null && existingContentType.toLowerCase(Locale.ROOT).startsWith("multipart/form-data"))
+                    ? existingContentType
                     : "multipart/form-data";
         } else if ("file".equals(bodyMode)) {
             String configured = currentRequest != null && currentRequest.body != null ? currentRequest.body.contentType : null;
@@ -569,6 +603,7 @@ public class RequestEditorPanel extends JPanel {
         try {
             upsertHeaderRow("Content-Type", contentType);
             contentTypeHeaderMaterialized = true;
+            markMaterializedAutoHeader("content-type");
             RequestEditorStateMapper.ensureStarterRow(headersModel);
         } finally {
             syncingDerivedHeaders = false;
@@ -578,6 +613,7 @@ public class RequestEditorPanel extends JPanel {
     private void resetDerivedHeaderMaterializationState() {
         authorizationHeaderMaterialized = false;
         contentTypeHeaderMaterialized = false;
+        materializedAutoHeaders.clear();
     }
 
     private void upsertHeaderRow(String key, String value) {
@@ -728,5 +764,111 @@ public class RequestEditorPanel extends JPanel {
                 requestBuilder
         );
         return ctx;
+    }
+
+    private void captureMaterializedDefaultHeaders(ApiRequest req) {
+        if (req == null || req.headers == null || headersModel == null) {
+            return;
+        }
+        if (!req.isAutoCompatibleMode()) {
+            return;
+        }
+        Set<String> requestHeaderNames = new LinkedHashSet<>();
+        for (ApiRequest.Header header : req.headers) {
+            if (header == null || header.disabled || header.key == null) {
+                continue;
+            }
+            String normalized = normalizeTrackedHeaderName(header.key);
+            if (normalized != null) {
+                requestHeaderNames.add(normalized);
+            }
+        }
+        for (String headerName : List.of("accept", "user-agent", "cache-control")) {
+            if (!req.isAutoHeaderSuppressed(headerName) && hasHeaderRow(headerName) && !requestHeaderNames.contains(headerName)) {
+                markMaterializedAutoHeader(headerName);
+            }
+        }
+    }
+
+    private void syncSuppressedAutoHeadersWithCurrentEditorHeaders(ApiRequest built) {
+        if (built == null) {
+            return;
+        }
+        Set<String> currentHeaders = new LinkedHashSet<>();
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            if (key == null || key.trim().isEmpty()) {
+                continue;
+            }
+            String normalized = normalizeTrackedHeaderName(key);
+            if (normalized != null && isTrackedAutoHeader(normalized)) {
+                currentHeaders.add(normalized);
+            }
+        }
+
+        for (String tracked : TRACKED_AUTO_HEADER_NAMES) {
+            if (currentHeaders.contains(tracked)) {
+                built.clearSuppressedAutoHeader(tracked);
+            }
+        }
+
+        for (String tracked : materializedAutoHeaders) {
+            if (!currentHeaders.contains(tracked)) {
+                built.suppressAutoHeader(tracked);
+            }
+        }
+
+        if (currentRequest != null && currentRequest.suppressedAutoHeaders != null) {
+            for (String suppressed : currentRequest.suppressedAutoHeaders) {
+                String normalized = normalizeTrackedHeaderName(suppressed);
+                if (normalized != null) {
+                    built.suppressAutoHeader(normalized);
+                }
+            }
+            for (String tracked : currentHeaders) {
+                built.clearSuppressedAutoHeader(tracked);
+            }
+        }
+    }
+
+    private static final List<String> TRACKED_AUTO_HEADER_NAMES = List.of(
+            "authorization",
+            "content-type",
+            "accept",
+            "user-agent",
+            "cache-control"
+    );
+
+    private boolean isTrackedAutoHeader(String headerName) {
+        return TRACKED_AUTO_HEADER_NAMES.contains(headerName);
+    }
+
+    private static String normalizeTrackedHeaderName(String headerName) {
+        if (headerName == null) {
+            return null;
+        }
+        String normalized = headerName.trim().toLowerCase(Locale.ROOT);
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private void markMaterializedAutoHeader(String headerName) {
+        String normalized = normalizeTrackedHeaderName(headerName);
+        if (normalized != null) {
+            materializedAutoHeaders.add(normalized);
+        }
+    }
+
+    private boolean hasHeaderRow(String headerName) {
+        String normalized = normalizeTrackedHeaderName(headerName);
+        if (normalized == null || headersModel == null) {
+            return false;
+        }
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            if (key != null && normalized.equals(normalizeTrackedHeaderName(key))) {
+                return true;
+            }
+        }
+        return false;
     }
 }
