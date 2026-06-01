@@ -56,6 +56,7 @@ public class RequestEditorPanel extends JPanel {
     private boolean syncingDerivedHeaders = false;
     private boolean authorizationHeaderMaterialized = false;
     private boolean contentTypeHeaderMaterialized = false;
+    private Runnable trackedHeaderStateChangeListener;
 
     // Send action callback
     public interface SendActionListener {
@@ -118,6 +119,10 @@ public class RequestEditorPanel extends JPanel {
 
     public void setRequestBuilder(burp.utils.RequestBuilder requestBuilder) {
         this.requestBuilder = requestBuilder;
+    }
+
+    public void setTrackedHeaderStateChangeListener(Runnable listener) {
+        this.trackedHeaderStateChangeListener = listener;
     }
 
     public void setSendEnabled(boolean enabled) {
@@ -235,7 +240,13 @@ public class RequestEditorPanel extends JPanel {
     private void attachLiveRefreshListeners() {
         methodBox.addActionListener(e -> refreshAllIfReady());
         urlField.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshAllIfReady));
-        headersModel.addTableModelListener(e -> refreshResolvedMirrorIfReady());
+        headersModel.addTableModelListener(e -> {
+            try {
+                refreshResolvedMirrorIfReady();
+            } finally {
+                notifyTrackedHeaderStateChangedIfReady();
+            }
+        });
         paramsModel.addTableModelListener(e -> refreshAllIfReady());
         bodyFormModel.addTableModelListener(e -> handleBodyUiChangedIfReady());
         bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::handleBodyUiChangedIfReady));
@@ -252,6 +263,15 @@ public class RequestEditorPanel extends JPanel {
     private void refreshResolvedMirrorIfReady() {
         if (!loadingRequest) {
             refreshResolvedMirror();
+        }
+    }
+
+    private void notifyTrackedHeaderStateChangedIfReady() {
+        if (loadingRequest || syncingDerivedHeaders) {
+            return;
+        }
+        if (trackedHeaderStateChangeListener != null) {
+            trackedHeaderStateChangeListener.run();
         }
     }
 

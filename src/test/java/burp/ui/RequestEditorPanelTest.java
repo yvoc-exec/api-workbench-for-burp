@@ -16,6 +16,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -254,6 +255,25 @@ class RequestEditorPanelTest {
 
         assertThat(built.headers).extracting(h -> h.key).doesNotContain("Content-Type");
         assertThat(built.suppressedAutoHeaders).contains("content-type");
+    }
+
+    @Test
+    void deletingAuthorizationNotifiesTrackedHeaderStateListener() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+        panel.loadRequest(req);
+
+        AtomicInteger notifications = new AtomicInteger();
+        panel.setTrackedHeaderStateChangeListener(notifications::incrementAndGet);
+
+        removeHeaderRow(panel, "Authorization");
+
+        assertThat(notifications.get()).isGreaterThan(0);
     }
 
     @Test

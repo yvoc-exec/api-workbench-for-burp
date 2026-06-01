@@ -554,6 +554,10 @@ public class UniversalImporter {
         }
     }
 
+    public void requestWorkspaceStateSaveNow() {
+        flushWorkspaceStateSave();
+    }
+
     void flushWorkspaceStateSave() {
         if (debouncedWorkspaceSave != null) {
             debouncedWorkspaceSave.stop();
