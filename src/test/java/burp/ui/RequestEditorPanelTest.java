@@ -2,8 +2,10 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.WorkspaceState;
 import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
+import burp.utils.WorkspaceStateJson;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
@@ -255,6 +257,30 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void loadRequestDoesNotShowSuppressedAuthorizationHeader() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.editorMaterialized = true;
+        req.suppressedAutoHeaders.add("authorization");
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer stale-token"));
+        req.headers.add(new ApiRequest.Header("X-Custom", "keep-me"));
+
+        panel.loadRequest(req);
+
+        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Authorization");
+        assertThat(headerValues(headersModel(panel))).containsEntry("X-Custom", "keep-me");
+        assertThat(resolvedView(panel))
+                .contains("mode=MANUAL_PRESERVE")
+                .contains("suppressedAutoHeaders=authorization");
+    }
+
+    @Test
     void reAddingAuthorizationClearsSuppressedAutoHeader() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -277,6 +303,35 @@ class RequestEditorPanelTest {
                     assertThat(header.value).isEqualTo("Bearer tok123");
                 });
         assertThat(built.suppressedAutoHeaders).doesNotContain("authorization");
+    }
+
+    @Test
+    void workspaceRoundTripDeletedAuthorizationDoesNotRestoreHeader() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "AuthTest";
+
+        ApiRequest req = minimalRequest();
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "tok123");
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.editorMaterialized = true;
+        req.suppressedAutoHeaders.add("authorization");
+        collection.requests.add(req);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState restored = WorkspaceStateJson.fromJson(json);
+        ApiRequest roundTripped = restored.collections.get(0).requests.get(0);
+
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(roundTripped);
+
+        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Authorization");
+        assertThat(resolvedView(panel))
+                .contains("mode=MANUAL_PRESERVE")
+                .contains("suppressedAutoHeaders=authorization");
     }
 
     @Test

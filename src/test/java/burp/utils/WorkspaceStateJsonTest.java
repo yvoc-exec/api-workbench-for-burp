@@ -158,6 +158,68 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void normalizeRemovesSuppressedAuthorizationHeader() {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "AuthTest",
+                    "requests": [{
+                      "name": "Secure",
+                      "editorMaterialized": true,
+                      "buildMode": "MANUAL_PRESERVE",
+                      "method": "GET",
+                      "url": "https://api.example.test",
+                      "suppressedAutoHeaders": ["authorization"],
+                      "headers": [
+                        {"key": "Authorization", "value": "Bearer stale-token"},
+                        {"key": "X-Custom", "value": "keep-me"}
+                      ]
+                    }]
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+        ApiRequest restored = parsed.collections.get(0).requests.get(0);
+
+        assertThat(restored.suppressedAutoHeaders).containsExactly("authorization");
+        assertThat(restored.headers).extracting(h -> h.key).doesNotContain("Authorization");
+        assertThat(restored.headers).extracting(h -> h.key).contains("X-Custom");
+    }
+
+    @Test
+    void normalizeRemovesSuppressedContentTypeHeader() {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "ContentTypeTest",
+                    "requests": [{
+                      "name": "PostIt",
+                      "editorMaterialized": true,
+                      "buildMode": "MANUAL_PRESERVE",
+                      "method": "POST",
+                      "url": "https://api.example.test",
+                      "suppressedAutoHeaders": ["content-type"],
+                      "headers": [
+                        {"key": "Content-Type", "value": "application/json"},
+                        {"key": "X-Custom", "value": "keep-me"}
+                      ]
+                    }]
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+        ApiRequest restored = parsed.collections.get(0).requests.get(0);
+
+        assertThat(restored.suppressedAutoHeaders).containsExactly("content-type");
+        assertThat(restored.headers).extracting(h -> h.key).doesNotContain("Content-Type");
+        assertThat(restored.headers).extracting(h -> h.key).contains("X-Custom");
+    }
+
+    @Test
     void workspaceStateMigratorPreservesCurrentVersionState() {
         WorkspaceState state = new WorkspaceState();
         state.version = 1;

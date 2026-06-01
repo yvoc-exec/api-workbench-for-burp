@@ -261,6 +261,9 @@ final class RequestEditorStateMapper {
                     continue;
                 }
                 String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
+                if (req.isAutoHeaderSuppressed(lowerKey)) {
+                    continue;
+                }
                 if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
                     ctx.headersModel.addRow(new Object[]{header.key, header.value != null ? header.value : ""});
                 }
