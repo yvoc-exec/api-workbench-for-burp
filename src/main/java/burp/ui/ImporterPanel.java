@@ -2570,7 +2570,7 @@ public class ImporterPanel {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
-                scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> remountRestoredMainRequestTree(pendingRestore));
+                scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> finalizeRestoredMainRequestTree(pendingRestore));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
             }
@@ -2671,6 +2671,46 @@ public class ImporterPanel {
                 pendingRestore.selectedRequestName
         );
         resetRequestTreeHorizontalViewport();
+    }
+
+    private void finalizeRestoredMainRequestTree(PendingMainRequestTreeRestore pendingRestore) {
+        if (pendingRestore == null) {
+            return;
+        }
+        remountRestoredMainRequestTree(pendingRestore);
+        refreshRestoredMainRequestTreePresentation();
+
+        SwingUtilities.invokeLater(() -> {
+            if (requestTree == null || treeModel == null) {
+                return;
+            }
+            rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+            if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
+                restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
+            } else {
+                restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
+            }
+            restoreSelectedRequest(
+                    pendingRestore.selectedRequestCollectionName,
+                    pendingRestore.selectedRequestIdentityKey,
+                    pendingRestore.selectedRequestPath,
+                    pendingRestore.selectedRequestName
+            );
+            refreshRestoredMainRequestTreePresentation();
+        });
+    }
+
+    private void refreshRestoredMainRequestTreePresentation() {
+        if (requestTree != null) {
+            requestTree.revalidate();
+            requestTree.repaint();
+        }
+        if (requestTreeScrollPane != null) {
+            requestTreeScrollPane.revalidate();
+            requestTreeScrollPane.repaint();
+        }
+        resetRequestTreeHorizontalViewport();
+        scheduleRequestTreeHorizontalViewportReset();
     }
 
     private void expandMainRequestTreeRows() {

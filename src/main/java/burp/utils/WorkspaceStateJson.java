@@ -1,11 +1,14 @@
 package burp.utils;
 
+import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+
+import java.util.Locale;
 
 public final class WorkspaceStateJson {
     private static final Gson GSON = new GsonBuilder()
@@ -111,6 +114,28 @@ public final class WorkspaceStateJson {
             request.suppressedAutoHeaders = new java.util.LinkedHashSet<>();
         }
         request.normalizeSuppressedAutoHeaders();
+        removeSuppressedAutoHeadersFromRequest(request);
+    }
+
+    private static void removeSuppressedAutoHeadersFromRequest(ApiRequest request) {
+        if (request == null || request.headers == null || request.suppressedAutoHeaders == null || request.suppressedAutoHeaders.isEmpty()) {
+            return;
+        }
+        request.headers.removeIf(header -> {
+            if (header == null || header.key == null) {
+                return false;
+            }
+            String normalized = header.key.trim().toLowerCase(Locale.ROOT);
+            return isTrackedAutoHeader(normalized) && request.suppressedAutoHeaders.contains(normalized);
+        });
+    }
+
+    private static boolean isTrackedAutoHeader(String headerName) {
+        return "authorization".equals(headerName)
+                || "content-type".equals(headerName)
+                || "accept".equals(headerName)
+                || "user-agent".equals(headerName)
+                || "cache-control".equals(headerName);
     }
 
     private static JsonObject getArrayObject(JsonElement arrayElement, int index) {
