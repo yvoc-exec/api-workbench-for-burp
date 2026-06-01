@@ -202,6 +202,16 @@ public class ImporterPanel {
         }
     }
 
+    private void notifyWorkspaceChangedImmediately() {
+        notifyWorkspaceChanged();
+        if (shuttingDown || suppressWorkspaceChangeNotifications) {
+            return;
+        }
+        if (importer != null) {
+            importer.requestWorkspaceStateSaveNow();
+        }
+    }
+
     private void runWithWorkspaceChangeNotificationsSuppressed(Runnable action) {
         boolean previous = suppressWorkspaceChangeNotifications;
         suppressWorkspaceChangeNotifications = true;
@@ -342,6 +352,10 @@ public class ImporterPanel {
     private JComponent createRightWorkbenchPanel() {
         requestEditor = new RequestEditorPanel();
         requestEditor.setRequestBuilder(requestBuilder);
+        requestEditor.setTrackedHeaderStateChangeListener(() -> {
+            runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
+            notifyWorkspaceChangedImmediately();
+        });
 
         requestEditor.setSendActionListener(() -> executeWorkbenchSend());
 
@@ -2524,7 +2538,9 @@ public class ImporterPanel {
         runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
-        state.requestTreePaths = collectRequestTreePaths();
+        Map<String, String> uiTreePaths = collectRequestTreePaths();
+        Map<String, String> modelTreePaths = collectRequestTreePathsFromRequestModels();
+        state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
@@ -2986,6 +3002,92 @@ public class ImporterPanel {
         }
         collectRequestTreePaths((DefaultMutableTreeNode) treeModel.getRoot(), null, -1, "", out);
         return out;
+    }
+
+    private Map<String, String> collectRequestTreePathsFromRequestModels() {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int collectionIndex = 0; collectionIndex < loadedCollections.size(); collectionIndex++) {
+            ApiCollection collection = loadedCollections.get(collectionIndex);
+            if (collection == null || collection.requests == null || collection.requests.isEmpty()) {
+                continue;
+            }
+            for (int requestIndex = 0; requestIndex < collection.requests.size(); requestIndex++) {
+                ApiRequest request = collection.requests.get(requestIndex);
+                if (request == null) {
+                    continue;
+                }
+                String folderPath = folderPathFromRequestPath(request.path, request.name);
+                if (folderPath == null) {
+                    continue;
+                }
+                folderPath = folderPath.trim();
+                if (folderPath.isBlank()) {
+                    continue;
+                }
+                String collectionName = collection.name != null ? collection.name : request.sourceCollection;
+                int resolvedRequestIndex = requestIndex;
+                String key = workspaceRequestTreePathKey(collectionName, collectionIndex, request, resolvedRequestIndex);
+                putRequestTreePath(out, key, folderPath, collectionName, collectionIndex, request, resolvedRequestIndex);
+            }
+        }
+        return out;
+    }
+
+    private static String folderPathFromRequestPath(String requestPath, String requestName) {
+        if (requestPath == null) {
+            return "";
+        }
+        String normalizedPath = requestPath.replace('\\', '/').trim();
+        if (normalizedPath.isEmpty()) {
+            return "";
+        }
+        String normalizedName = requestName != null ? requestName.replace('\\', '/').trim() : "";
+        if (!normalizedName.isEmpty()) {
+            String suffix = "/" + normalizedName;
+            if (normalizedPath.equals(normalizedName)) {
+                return "";
+            }
+            if (normalizedPath.endsWith(suffix)) {
+                return normalizedPath.substring(0, normalizedPath.length() - suffix.length());
+            }
+        }
+        int lastSlash = normalizedPath.lastIndexOf('/');
+        if (lastSlash < 0) {
+            return "";
+        }
+        if (normalizedName.isEmpty()) {
+            return normalizedPath.substring(0, lastSlash);
+        }
+        return normalizedPath;
+    }
+
+    private static Map<String, String> mergeRequestTreePaths(Map<String, String> uiTreePaths, Map<String, String> modelTreePaths) {
+        LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+        if (modelTreePaths != null) {
+            for (Map.Entry<String, String> entry : modelTreePaths.entrySet()) {
+                String key = entry.getKey();
+                if (key == null || key.isBlank()) {
+                    continue;
+                }
+                merged.put(key, entry.getValue());
+            }
+        }
+        if (uiTreePaths == null || uiTreePaths.isEmpty()) {
+            return merged;
+        }
+        for (Map.Entry<String, String> entry : uiTreePaths.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String uiPath = entry.getValue();
+            if (uiPath != null && !uiPath.isBlank()) {
+                merged.put(key, uiPath);
+            } else if (!merged.containsKey(key)) {
+                merged.put(key, uiPath);
+            }
+        }
+        return merged;
     }
 
     private void collectRequestTreePaths(DefaultMutableTreeNode node,

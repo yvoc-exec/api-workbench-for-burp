@@ -3,6 +3,7 @@ package burp.ui;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
+import burp.UniversalImporter;
 import burp.runner.CollectionRunner;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.CollectionTreeNode;
@@ -560,6 +561,54 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void workspaceSnapshotUsesNestedModelPathWhenUiTreePathIsFlat() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-nested", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        forceFlatTree(panel, collection, request);
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+
+        assertThat(snapshot.collections).hasSize(1);
+        assertThat(snapshot.collections.get(0).requests).hasSize(1);
+        assertThat(snapshot.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+        assertThat(snapshot.requestTreePaths).containsValue("Auth/OAuth");
+        assertThat(snapshot.requestTreePaths.values()).doesNotContain("");
+    }
+
+    @Test
+    void workspaceSaveRestoreRoundTripKeepsNestedTreeWithoutAddRemove() throws Exception {
+        ImporterPanel panel = newPanel();
+        SpyTree spyTree = installSpyRequestTree(panel);
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-roundtrip", "Get Token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth/OAuth/Get Token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState restored = WorkspaceStateJson.fromJson(json);
+
+        panel.restoreWorkspaceState(restored);
+        showRequestTree(spyTree);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        JTree tree = requestTree(panel);
+        CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(requestNames(childFolder(childFolder(apimNode, "Auth"), "OAuth"))).containsExactly("Get Token");
+    }
+
+    @Test
     void restoreWorkspaceStateAppliesSavedExpandedTreePaths() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
@@ -1058,6 +1107,12 @@ class ImporterPanelTreeRestoreTest {
         Field field = ImporterPanel.class.getDeclaredField("requestTree");
         field.setAccessible(true);
         return (JTree) field.get(panel);
+    }
+
+    private static DefaultTreeModel treeModel(ImporterPanel panel) throws Exception {
+        Field field = ImporterPanel.class.getDeclaredField("treeModel");
+        field.setAccessible(true);
+        return (DefaultTreeModel) field.get(panel);
     }
 
     private static Object privateField(Object target, String fieldName) throws Exception {
@@ -1881,6 +1936,17 @@ class ImporterPanelTreeRestoreTest {
             scrollPane.fireShowingChanged();
         }
         drainEdt();
+    }
+
+    private static void forceFlatTree(ImporterPanel panel, ApiCollection collection, ApiRequest request) throws Exception {
+        DefaultMutableTreeNode root = new DefaultMutableTreeNode("Collections");
+        CollectionTreeNode collectionNode = new CollectionTreeNode(collection);
+        root.add(collectionNode);
+        collectionNode.add(new CollectionTreeNode(request));
+
+        DefaultTreeModel model = treeModel(panel);
+        model.setRoot(root);
+        requestTree(panel).setModel(model);
     }
 
     private static void attachRequestTree(ImporterPanel panel, JTree tree) throws Exception {
