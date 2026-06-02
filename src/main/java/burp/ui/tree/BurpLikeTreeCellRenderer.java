@@ -1,9 +1,6 @@
 package burp.ui.tree;
 
 import javax.swing.*;
-import javax.swing.border.Border;
-import javax.swing.border.CompoundBorder;
-import javax.swing.border.EmptyBorder;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.TreeCellRenderer;
 import java.awt.*;
@@ -22,12 +19,10 @@ import java.awt.*;
 public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
 
     private final boolean checkboxMode;
-    private final boolean manualDepthIndent;
     private final DefaultTreeCellRenderer fallback = new DefaultTreeCellRenderer();
     private final JPanel panel;
     private final JCheckBox checkBox;
     private final JLabel label;
-    private static final int MAIN_TREE_DEPTH_INDENT_PX = 16;
 
     // Shared icons built once; fall back to UIManager defaults if creation fails.
     private static final Icon COLLECTION_ICON = safeIcon(BurpLikeTreeCellRenderer::drawCollectionIcon,
@@ -44,12 +39,7 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
     }
 
     public BurpLikeTreeCellRenderer(boolean checkboxMode) {
-        this(checkboxMode, false);
-    }
-
-    public BurpLikeTreeCellRenderer(boolean checkboxMode, boolean manualDepthIndent) {
         this.checkboxMode = checkboxMode;
-        this.manualDepthIndent = manualDepthIndent;
         if (checkboxMode) {
             this.panel = new JPanel(new BorderLayout(2, 0));
             this.panel.setOpaque(false);
@@ -64,10 +54,6 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
             this.checkBox = null;
             this.label = null;
         }
-    }
-
-    boolean isManualDepthIndentEnabledForTesting() {
-        return manualDepthIndent;
     }
 
     @Override
@@ -98,22 +84,12 @@ public class BurpLikeTreeCellRenderer implements TreeCellRenderer {
 
         Component c = fallback.getTreeCellRendererComponent(tree, text, selected, expanded, leaf, row, hasFocus);
         if (c instanceof JLabel) {
-            JLabel renderedLabel = (JLabel) c;
-            renderedLabel.setIcon(icon);
-            Border baseBorder = renderedLabel.getBorder();
-            if (manualDepthIndent && !checkboxMode) {
-                int level = Math.max(0, node.getLevel());
-                int depthPadding = Math.max(0, level - 1) * MAIN_TREE_DEPTH_INDENT_PX;
-                Border depthBorder = new EmptyBorder(0, depthPadding, 0, 0);
-                renderedLabel.setBorder(baseBorder != null ? new CompoundBorder(depthBorder, baseBorder) : depthBorder);
-            } else {
-                renderedLabel.setBorder(baseBorder);
-            }
+            ((JLabel) c).setIcon(icon);
         }
         return c;
     }
 
-    private static Icon resolveIcon(CollectionTreeNode node, boolean expanded, boolean leaf) {
+    static Icon resolveIcon(CollectionTreeNode node, boolean expanded, boolean leaf) {
         switch (node.getNodeType()) {
             case COLLECTION:
                 return COLLECTION_ICON;
