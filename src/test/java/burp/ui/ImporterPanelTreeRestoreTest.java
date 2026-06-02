@@ -1659,7 +1659,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoreWorkspaceStateDoesNotReplayStateOntoStartupMainRequestTreeBeforeHostRemount() throws Exception {
+    void restoreDoesNotRequireAddOrRemoveToRebuildTree() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree startupTree = installSpyRequestTree(panel);
         SpyScrollPane host = installSpyRequestTreeScrollPane(panel, startupTree);
@@ -1719,7 +1719,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoreWorkspaceStateFinalizesNestedTreeAfterDeferredVisibility() throws Exception {
+    void restoreFinalizerRunsVisibleRebuildEquivalentToAddRemove() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
 
@@ -1741,6 +1741,13 @@ class ImporterPanelTreeRestoreTest {
 
         JTree tree = requestTree(panel);
         assertThat(tree).isNotSameAs(spyTree);
+        assertThat(tree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) tree.getCellRenderer()).isCheckboxMode()).isFalse();
+        assertThat(tree.isRootVisible()).isFalse();
+        assertThat(tree.getShowsRootHandles()).isTrue();
+        assertThat(tree.getRowHeight()).isEqualTo(20);
+        assertThat(tree.getModel()).isSameAs(treeModel(panel));
+        assertThat(((JScrollPane) privateField(panel, "requestTreeScrollPane")).getViewport().getView()).isSameAs(tree);
 
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) tree.getModel().getRoot();
         assertThat(root.getChildCount()).isEqualTo(1);

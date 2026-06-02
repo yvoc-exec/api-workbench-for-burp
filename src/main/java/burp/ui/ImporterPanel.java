@@ -2711,27 +2711,36 @@ public class ImporterPanel {
         });
 
         SwingUtilities.invokeLater(() -> {
-            if (requestTree == null || treeModel == null) {
-                return;
+            Runnable visibleRebuild = () -> rebuildVisibleMainTreeAfterRestore(pendingRestore);
+            if (requestTreeScrollPane != null && requestTreeScrollPane.isShowing()) {
+                visibleRebuild.run();
+            } else {
+                scheduleMainRequestTreeRestoreAfterWorkbenchVisible(visibleRebuild);
             }
-            runWithWorkspaceChangeNotificationsSuppressed(() -> {
-                rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
-                if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
-                    restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
-                } else {
-                    restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
-                }
-                restoreSelectedRequest(
-                        pendingRestore.selectedRequestCollectionName,
-                        pendingRestore.selectedRequestIdentityKey,
-                        pendingRestore.selectedRequestPath,
-                        pendingRestore.selectedRequestName
-                );
-                refreshRestoredMainRequestTreePresentation();
-            });
             if (pendingRestore.repairedRequestPathCount > 0) {
                 notifyWorkspaceChangedImmediately();
             }
+        });
+    }
+
+    private void rebuildVisibleMainTreeAfterRestore(PendingMainRequestTreeRestore pendingRestore) {
+        if (pendingRestore == null || requestTree == null || treeModel == null) {
+            return;
+        }
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+            if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
+                restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
+            } else {
+                restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
+            }
+            restoreSelectedRequest(
+                    pendingRestore.selectedRequestCollectionName,
+                    pendingRestore.selectedRequestIdentityKey,
+                    pendingRestore.selectedRequestPath,
+                    pendingRestore.selectedRequestName
+            );
+            refreshRestoredMainRequestTreePresentation();
         });
     }
 
