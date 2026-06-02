@@ -18,8 +18,14 @@ import org.mockito.Mockito;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.TreePath;
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -106,6 +112,127 @@ class UniversalImporterWorkspaceSaveTest {
         // Timer should no longer fire
         Thread.sleep(100);
         assertThat(writeCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void structuralCollectionChangesPersistImmediatelyIncludingExpandedTreeState() throws Exception {
+        AtomicInteger writeCount = new AtomicInteger(0);
+        AtomicReference<String> lastJson = new AtomicReference<>();
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doAnswer(inv -> {
+            writeCount.incrementAndGet();
+            lastJson.set(inv.getArgument(1));
+            return null;
+        }).when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+        setDebounceDelay(importer, 5000);
+        ImporterPanel ui = importer.getUI();
+
+        Path tempJson = Files.createTempFile(Path.of("target"), "nested-postman-", ".json").toAbsolutePath().normalize();
+        Files.writeString(tempJson, """
+                {
+                  "info": {
+                    "name": "Nested Demo",
+                    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+                  },
+                  "item": [
+                    {
+                      "name": "Auth",
+                      "item": [
+                        {
+                          "name": "OAuth",
+                          "item": [
+                            {
+                              "name": "Get Token",
+                              "request": {
+                                "method": "GET",
+                                "url": "https://auth.example.test/token"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """, StandardCharsets.UTF_8);
+        tempJson.toFile().deleteOnExit();
+
+        invokePrivateLoadCollection(ui, tempJson.toFile());
+        awaitWriteCount(writeCount, 1);
+
+        WorkspaceState imported = WorkspaceStateJson.fromJson(lastJson.get());
+        assertThat(imported.collections).hasSize(1);
+        assertThat(imported.collections.get(0).requests).hasSize(1);
+        assertThat(imported.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+        assertThat(imported.requestTreePaths).containsValue("Auth/OAuth");
+
+        JTree tree = requestTree(ui);
+        TreePath oauthPath = findFolderPath(tree, "Nested Demo", "Auth", "OAuth");
+        assertThat(oauthPath).isNotNull();
+
+        SwingUtilities.invokeAndWait(() -> tree.collapsePath(oauthPath));
+        awaitWriteCount(writeCount, 2);
+
+        SwingUtilities.invokeAndWait(() -> tree.expandPath(oauthPath));
+        awaitWriteCount(writeCount, 3);
+
+        WorkspaceState afterExpansion = WorkspaceStateJson.fromJson(lastJson.get());
+        assertThat(afterExpansion.expandedTreePathKeys).contains(
+                workspaceTreePathKey("Nested Demo", "Auth/OAuth")
+        );
+
+        @SuppressWarnings("unchecked")
+        List<ApiCollection> liveCollections = (List<ApiCollection>) privateField(ui, "loadedCollections");
+        invokePrivateRemoveCollections(ui, List.of(liveCollections.get(0)));
+        awaitWriteCount(writeCount, 4);
+
+        WorkspaceState afterRemoval = WorkspaceStateJson.fromJson(lastJson.get());
+        assertThat(afterRemoval.collections).isEmpty();
+    }
+
+    @Test
+    void restoredNormalizedTreePathsArePersistedOnceAfterFinalization() throws Exception {
+        AtomicInteger writeCount = new AtomicInteger(0);
+        AtomicReference<String> lastJson = new AtomicReference<>();
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doAnswer(inv -> {
+            writeCount.incrementAndGet();
+            lastJson.set(inv.getArgument(1));
+            return null;
+        }).when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+        setDebounceDelay(importer, 5000);
+        ImporterPanel ui = importer.getUI();
+
+        WorkspaceState state = nestedWorkspaceState();
+        applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+        ui.restoreWorkspaceCollections(state.collections);
+
+        Object pendingRestore = createPendingRestore(ui, state);
+        setField(pendingRestore, "repairedRequestPathCount", 1);
+
+        Method finalizeMethod = ImporterPanel.class.getDeclaredMethod("finalizeRestoredMainRequestTree",
+                pendingRestore.getClass());
+        finalizeMethod.setAccessible(true);
+        finalizeMethod.invoke(ui, pendingRestore);
+
+        awaitWriteCount(writeCount, 1);
+
+        WorkspaceState saved = WorkspaceStateJson.fromJson(lastJson.get());
+        assertThat(saved.collections).hasSize(1);
+        assertThat(saved.collections.get(0).requests).hasSize(1);
+        assertThat(saved.collections.get(0).requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+        assertThat(saved.requestTreePaths).containsEntry(
+                workspaceRequestTreePathKey("APIM", 0, saved.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
     }
 
     @Test
@@ -269,6 +396,135 @@ class UniversalImporterWorkspaceSaveTest {
             Thread.sleep(25);
         }
         assertThat(writeCount.get()).isEqualTo(expected);
+    }
+
+    private static void invokePrivateLoadCollection(ImporterPanel ui, File file) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("loadCollection", File.class);
+        method.setAccessible(true);
+        method.invoke(ui, file);
+    }
+
+    private static void invokePrivateRemoveCollections(ImporterPanel ui, List<ApiCollection> targets) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("removeCollections", List.class);
+        method.setAccessible(true);
+        method.invoke(ui, targets);
+    }
+
+    private static Object createPendingRestore(ImporterPanel ui, WorkspaceState state) throws Exception {
+        Class<?> pendingClass = Class.forName("burp.ui.ImporterPanel$PendingMainRequestTreeRestore");
+        java.lang.reflect.Constructor<?> ctor = pendingClass.getDeclaredConstructor(WorkspaceState.class);
+        ctor.setAccessible(true);
+        return ctor.newInstance(state);
+    }
+
+    private static void setField(Object target, String fieldName, Object value) throws Exception {
+        Field field = target.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
+    private static void applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections,
+                                                                 java.util.Map<String, String> requestTreePaths) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("applyWorkspaceRequestTreePathsToRequests", List.class, java.util.Map.class);
+        method.setAccessible(true);
+        method.invoke(null, collections, requestTreePaths);
+    }
+
+    private static String workspaceTreePathKey(String collectionName, String folderPath) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("workspaceTreePathKey", String.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(null, collectionName, folderPath);
+    }
+
+    private static String workspaceRequestTreePathKey(String collectionName, int collectionIndex, ApiRequest request, int requestIndex) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod("workspaceRequestTreePathKey", String.class, int.class, ApiRequest.class, int.class);
+        method.setAccessible(true);
+        return (String) method.invoke(null, collectionName, collectionIndex, request, requestIndex);
+    }
+
+    private static WorkspaceState nestedWorkspaceState() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-1";
+        request.name = "Get Token";
+        request.path = "Get Token";
+        request.sourceCollection = collection.name;
+        request.method = "GET";
+        request.url = "https://auth.example.test/token";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new java.util.LinkedHashMap<>();
+        state.requestTreePaths.put(
+                workspaceRequestTreePathKey("APIM", 0, state.collections.get(0).requests.get(0), 0),
+                "Auth/OAuth"
+        );
+        return state;
+    }
+
+    private static JTree requestTree(ImporterPanel ui) throws Exception {
+        Field field = ImporterPanel.class.getDeclaredField("requestTree");
+        field.setAccessible(true);
+        return (JTree) field.get(ui);
+    }
+
+    private static TreePath findFolderPath(JTree tree, String collectionName, String... folders) {
+        if (tree == null || tree.getModel() == null || tree.getModel().getRoot() == null) {
+            return null;
+        }
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) tree.getModel().getRoot();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            Object child = root.getChildAt(i);
+            if (!(child instanceof burp.ui.tree.CollectionTreeNode)) {
+                continue;
+            }
+            burp.ui.tree.CollectionTreeNode collectionNode = (burp.ui.tree.CollectionTreeNode) child;
+            if (!collectionName.equals(collectionNode.collection != null ? collectionNode.collection.name : null)) {
+                continue;
+            }
+            return findFolderPathRecursive(new TreePath(collectionNode.getPath()), collectionNode, folders, 0);
+        }
+        return null;
+    }
+
+    private static TreePath findFolderPathRecursive(TreePath currentPath,
+                                                    burp.ui.tree.CollectionTreeNode currentNode,
+                                                    String[] folders,
+                                                    int depth) {
+        if (depth >= folders.length) {
+            return currentPath;
+        }
+        String nextFolder = folders[depth];
+        for (int i = 0; i < currentNode.getChildCount(); i++) {
+            Object child = currentNode.getChildAt(i);
+            if (!(child instanceof burp.ui.tree.CollectionTreeNode)) {
+                continue;
+            }
+            burp.ui.tree.CollectionTreeNode folderNode = (burp.ui.tree.CollectionTreeNode) child;
+            if (folderNode.getNodeType() != burp.ui.tree.CollectionTreeNode.Type.FOLDER) {
+                continue;
+            }
+            String folderLeafName = folderNode.folderPath != null
+                    ? folderNode.folderPath.substring(folderNode.folderPath.lastIndexOf('/') + 1)
+                    : null;
+            if (!nextFolder.equals(folderLeafName)) {
+                continue;
+            }
+            TreePath childPath = currentPath.pathByAddingChild(folderNode);
+            TreePath match = findFolderPathRecursive(childPath, folderNode, folders, depth + 1);
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
+    }
+
+    private static Object privateField(Object target, String fieldName) throws Exception {
+        Field field = target.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     private record WorkspaceSaveFixture(UniversalImporter importer,

@@ -327,6 +327,17 @@ public class ImporterPanel {
         tree.setScrollsOnExpand(false);
         tree.setShowsRootHandles(true);
         configureMainTreeUi(tree);
+        tree.addTreeExpansionListener(new javax.swing.event.TreeExpansionListener() {
+            @Override
+            public void treeExpanded(javax.swing.event.TreeExpansionEvent event) {
+                notifyWorkspaceChangedImmediately();
+            }
+
+            @Override
+            public void treeCollapsed(javax.swing.event.TreeExpansionEvent event) {
+                notifyWorkspaceChangedImmediately();
+            }
+        });
         tree.addMouseListener(new TreeMouseListener());
         tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         tree.addTreeSelectionListener(e -> {
@@ -2425,7 +2436,7 @@ public class ImporterPanel {
                     }
                     registerCollectionRuntimeListener(collection);
                     loadedCollections.add(collection);
-                    rebuildTree();
+                    runWithWorkspaceChangeNotificationsSuppressed(ImporterPanel.this::rebuildTree);
                     refreshCollectionCombos();
                     appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
                     importBtn.setEnabled(true);
@@ -2435,7 +2446,7 @@ public class ImporterPanel {
                     if (envApplyAllBtn != null) {
                         envApplyAllBtn.setEnabled(selectedEnv != null);
                     }
-                    notifyWorkspaceChanged();
+                    notifyWorkspaceChangedImmediately();
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
                 }
@@ -2505,9 +2516,9 @@ public class ImporterPanel {
             loadedCollections.remove(target);
             appendImportLog("Removed collection: " + target.name);
         }
-        rebuildTree();
+        runWithWorkspaceChangeNotificationsSuppressed(this::rebuildTree);
         refreshCollectionCombos();
-        notifyWorkspaceChanged();
+        notifyWorkspaceChangedImmediately();
         if (loadedCollections.isEmpty()) {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
@@ -2574,7 +2585,7 @@ public class ImporterPanel {
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
             try {
-                applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
+                pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
                 restoreWorkspaceCollections(state.collections);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
@@ -2602,6 +2613,7 @@ public class ImporterPanel {
         final String selectedRequestIdentityKey;
         final String selectedRequestPath;
         final String selectedRequestName;
+        int repairedRequestPathCount;
 
         private PendingMainRequestTreeRestore(WorkspaceState state) {
             this.requestTreePaths = state.requestTreePaths != null
@@ -2693,26 +2705,33 @@ public class ImporterPanel {
         if (pendingRestore == null) {
             return;
         }
-        remountRestoredMainRequestTree(pendingRestore);
-        refreshRestoredMainRequestTreePresentation();
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            remountRestoredMainRequestTree(pendingRestore);
+            refreshRestoredMainRequestTreePresentation();
+        });
 
         SwingUtilities.invokeLater(() -> {
             if (requestTree == null || treeModel == null) {
                 return;
             }
-            rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
-            if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
-                restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
-            } else {
-                restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
+            runWithWorkspaceChangeNotificationsSuppressed(() -> {
+                rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+                if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
+                    restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
+                } else {
+                    restoreCheckedRequestKeys(pendingRestore.checkedRequestKeys);
+                }
+                restoreSelectedRequest(
+                        pendingRestore.selectedRequestCollectionName,
+                        pendingRestore.selectedRequestIdentityKey,
+                        pendingRestore.selectedRequestPath,
+                        pendingRestore.selectedRequestName
+                );
+                refreshRestoredMainRequestTreePresentation();
+            });
+            if (pendingRestore.repairedRequestPathCount > 0) {
+                notifyWorkspaceChangedImmediately();
             }
-            restoreSelectedRequest(
-                    pendingRestore.selectedRequestCollectionName,
-                    pendingRestore.selectedRequestIdentityKey,
-                    pendingRestore.selectedRequestPath,
-                    pendingRestore.selectedRequestName
-            );
-            refreshRestoredMainRequestTreePresentation();
         });
     }
 
@@ -2801,10 +2820,11 @@ public class ImporterPanel {
         return false;
     }
 
-    static void applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
+    static int applyWorkspaceRequestTreePathsToRequests(List<ApiCollection> collections, Map<String, String> requestTreePaths) {
         if (collections == null || collections.isEmpty()) {
-            return;
+            return 0;
         }
+        int repairedCount = 0;
         for (int collectionIndex = 0; collectionIndex < collections.size(); collectionIndex++) {
             ApiCollection collection = collections.get(collectionIndex);
             if (collection == null || collection.requests == null || collection.requests.isEmpty()) {
@@ -2815,6 +2835,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
+                String previousPath = request.path;
                 String folderPath = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collectionIndex, collection, request, requestIndex);
                 if (folderPath == null) {
                     continue;
@@ -2830,8 +2851,12 @@ public class ImporterPanel {
                 } else {
                     request.path = folderPath + "/" + requestName;
                 }
+                if (!Objects.equals(previousPath, request.path)) {
+                    repairedCount++;
+                }
             }
         }
+        return repairedCount;
     }
 
     static boolean isNestedRequestPath(String requestPath, String requestName) {
