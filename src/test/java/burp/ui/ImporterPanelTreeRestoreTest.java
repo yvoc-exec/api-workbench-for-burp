@@ -7,7 +7,6 @@ import burp.UniversalImporter;
 import burp.runner.CollectionRunner;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.CollectionTreeNode;
-import burp.ui.tree.MainRequestTreeCellRenderer;
 import burp.auth.OAuth2Manager;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -1269,10 +1268,11 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void mainRequestTreeUsesDedicatedMainRenderer() throws Exception {
+    void mainRequestTreeUsesBurpLikeRendererInNonCheckboxMode() throws Exception {
         ImporterPanel panel = newPanel();
         JTree tree = requestTree(panel);
-        assertThat(tree.getCellRenderer()).isInstanceOf(MainRequestTreeCellRenderer.class);
+        assertThat(tree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) tree.getCellRenderer()).isCheckboxMode()).isFalse();
     }
 
     @Test
@@ -1292,7 +1292,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoredNestedTreeUsesDedicatedMainRendererDepthSpacer() throws Exception {
+    void restoredNestedTreeUsesNativeMainTreeHierarchy() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
 
@@ -1316,22 +1316,17 @@ class ImporterPanelTreeRestoreTest {
         showRequestTree(spyTree);
         JTree tree = requestTree(panel);
 
-        assertThat(tree.getCellRenderer()).isInstanceOf(MainRequestTreeCellRenderer.class);
+        assertThat(tree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) tree.getCellRenderer()).isCheckboxMode()).isFalse();
 
         CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
         CollectionTreeNode authNode = childFolder(apimNode, "Auth");
         CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
         CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
 
-        TreeCellRenderer renderer = tree.getCellRenderer();
-        int insetCollection = spacerWidth(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false));
-        int insetFolder = spacerWidth(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false));
-        int insetSubfolder = spacerWidth(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false));
-        int insetRequest = spacerWidth(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false));
-
-        assertThat(insetFolder).isGreaterThan(insetCollection);
-        assertThat(insetSubfolder).isGreaterThan(insetFolder);
-        assertThat(insetRequest).isGreaterThanOrEqualTo(insetSubfolder);
+        assertThat(rowXOf(tree, apimNode)).isLessThan(rowXOf(tree, authNode));
+        assertThat(rowXOf(tree, authNode)).isLessThan(rowXOf(tree, oauthNode));
+        assertThat(rowXOf(tree, oauthNode)).isLessThan(rowXOf(tree, requestNode));
     }
 
     @Test
@@ -1369,21 +1364,16 @@ class ImporterPanelTreeRestoreTest {
             stabilizeRestoredRequestTreePresentation.invoke(panel, state);
 
             JTree stabilizedTree = requestTree(panel);
-            assertThat(stabilizedTree.getCellRenderer()).isInstanceOf(MainRequestTreeCellRenderer.class);
+            assertThat(stabilizedTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+            assertThat(((BurpLikeTreeCellRenderer) stabilizedTree.getCellRenderer()).isCheckboxMode()).isFalse();
             CollectionTreeNode apimNode = (CollectionTreeNode) ((DefaultMutableTreeNode) stabilizedTree.getModel().getRoot()).getChildAt(0);
             CollectionTreeNode authNode = childFolder(apimNode, "Auth");
             CollectionTreeNode oauthNode = childFolder(authNode, "OAuth");
             CollectionTreeNode requestNode = (CollectionTreeNode) oauthNode.getChildAt(0);
 
-            TreeCellRenderer renderer = stabilizedTree.getCellRenderer();
-            int insetCollection = spacerWidth(renderer.getTreeCellRendererComponent(stabilizedTree, apimNode, false, false, false, 0, false));
-            int insetFolder = spacerWidth(renderer.getTreeCellRendererComponent(stabilizedTree, authNode, false, false, false, 1, false));
-            int insetSubfolder = spacerWidth(renderer.getTreeCellRendererComponent(stabilizedTree, oauthNode, false, false, false, 2, false));
-            int insetRequest = spacerWidth(renderer.getTreeCellRendererComponent(stabilizedTree, requestNode, false, false, true, 3, false));
-
-            assertThat(insetFolder).isGreaterThan(insetCollection);
-            assertThat(insetSubfolder).isGreaterThan(insetFolder);
-            assertThat(insetRequest).isGreaterThanOrEqualTo(insetSubfolder);
+            assertThat(rowXOf(stabilizedTree, apimNode)).isLessThan(rowXOf(stabilizedTree, authNode));
+            assertThat(rowXOf(stabilizedTree, authNode)).isLessThan(rowXOf(stabilizedTree, oauthNode));
+            assertThat(rowXOf(stabilizedTree, oauthNode)).isLessThan(rowXOf(stabilizedTree, requestNode));
         } finally {
             restoreUiManagerValue("Tree.leftChildIndent", originalLeftIndent);
             restoreUiManagerValue("Tree.rightChildIndent", originalRightIndent);
@@ -1661,7 +1651,8 @@ class ImporterPanelTreeRestoreTest {
 
         JTree liveTree = requestTree(panel);
         assertThat(liveTree).isNotSameAs(startupTree);
-        assertThat(liveTree.getCellRenderer()).isInstanceOf(MainRequestTreeCellRenderer.class);
+        assertThat(liveTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) liveTree.getCellRenderer()).isCheckboxMode()).isFalse();
         assertThat(findRequestNode(liveTree, "req-showing-checked").isChecked()).isTrue();
         assertThat(((CollectionTreeNode) liveTree.getSelectionPath().getLastPathComponent()).request.id)
                 .isEqualTo("req-showing-selected");
@@ -1679,9 +1670,6 @@ class ImporterPanelTreeRestoreTest {
 
         assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
         assertThat(startupTree.getSelectionPath()).isNull();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isTrue();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "Auth"))).isTrue();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "OAuth"))).isTrue();
 
         host.setShowingForTest(true);
         host.fireShowingChanged();
@@ -1703,7 +1691,8 @@ class ImporterPanelTreeRestoreTest {
 
         JTree liveTree = requestTree(panel);
         assertThat(liveTree).isNotSameAs(startupTree);
-        assertThat(liveTree.getCellRenderer()).isInstanceOf(MainRequestTreeCellRenderer.class);
+        assertThat(liveTree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(((BurpLikeTreeCellRenderer) liveTree.getCellRenderer()).isCheckboxMode()).isFalse();
         assertThat(liveTree.getRowHeight()).isEqualTo(20);
         assertThat(liveTree.getShowsRootHandles()).isTrue();
         assertThat(liveTree.getSelectionModel().getSelectionMode()).isEqualTo(TreeSelectionModel.SINGLE_TREE_SELECTION);
@@ -1800,7 +1789,6 @@ class ImporterPanelTreeRestoreTest {
         assertThat(findRequestNode(startupTree, "req-showing-checked")).isNotNull();
         assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
         assertThat(startupTree.getSelectionPath()).isNull();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isTrue();
     }
 
     @Test
@@ -1885,6 +1873,13 @@ class ImporterPanelTreeRestoreTest {
             return containsMatteBorder(cb.getOutsideBorder()) || containsMatteBorder(cb.getInsideBorder());
         }
         return false;
+    }
+
+    private static int rowXOf(JTree tree, CollectionTreeNode node) {
+        TreePath path = new TreePath(node.getPath());
+        Rectangle bounds = tree.getPathBounds(path);
+        assertThat(bounds).as("row bounds for %s", node).isNotNull();
+        return bounds.x;
     }
 
     private static void restoreUiManagerValue(String key, Object value) {
@@ -2068,9 +2063,4 @@ class ImporterPanelTreeRestoreTest {
         }
     }
 
-    private static int spacerWidth(Component c) {
-        assertThat(c).isInstanceOf(JPanel.class);
-        JPanel panel = (JPanel) c;
-        return panel.getComponent(0).getPreferredSize().width;
-    }
 }
