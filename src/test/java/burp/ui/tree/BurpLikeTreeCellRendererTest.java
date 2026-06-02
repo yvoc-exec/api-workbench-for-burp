@@ -181,6 +181,58 @@ class BurpLikeTreeCellRendererTest {
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false))).isFalse();
     }
 
+    @Test
+    void mainTreeRendererAppliesDepthPaddingWhenManualIndentEnabled() throws Exception {
+        BurpLikeTreeCellRenderer renderer = createRenderer(false, true);
+        JTree tree = buildDeepTree();
+
+        CollectionTreeNode collection = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode folder = (CollectionTreeNode) collection.getChildAt(0);
+        CollectionTreeNode subfolder = (CollectionTreeNode) folder.getChildAt(0);
+        CollectionTreeNode request = (CollectionTreeNode) subfolder.getChildAt(0);
+
+        int insetCollection = leftInsetOf(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false));
+        int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
+        int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false));
+        int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false));
+
+        assertThat(insetFolder).isGreaterThanOrEqualTo(insetCollection);
+        assertThat(insetSubfolder).isGreaterThan(insetFolder);
+        assertThat(insetRequest).isGreaterThanOrEqualTo(insetSubfolder);
+    }
+
+    @Test
+    void mainTreeRendererDoesNotApplyDepthPaddingWhenManualIndentDisabled() throws Exception {
+        BurpLikeTreeCellRenderer renderer = createRenderer(false, false);
+        JTree tree = buildDeepTree();
+
+        CollectionTreeNode collection = (CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0);
+        CollectionTreeNode folder = (CollectionTreeNode) collection.getChildAt(0);
+        CollectionTreeNode subfolder = (CollectionTreeNode) folder.getChildAt(0);
+        CollectionTreeNode request = (CollectionTreeNode) subfolder.getChildAt(0);
+
+        int insetCollection = leftInsetOf(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false));
+        int insetFolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
+        int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false));
+        int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false));
+
+        assertThat(insetFolder).isEqualTo(insetCollection);
+        assertThat(insetSubfolder).isEqualTo(insetFolder);
+        assertThat(insetRequest).isEqualTo(insetSubfolder);
+    }
+
+    @Test
+    void popupRendererUnchangedByMainIndentFix() {
+        BurpLikeTreeCellRenderer renderer = new BurpLikeTreeCellRenderer(true);
+        JTree tree = buildDeepTree();
+
+        CollectionTreeNode folder = (CollectionTreeNode) ((CollectionTreeNode) ((DefaultMutableTreeNode) tree.getModel().getRoot()).getChildAt(0)).getChildAt(0);
+        Component c = renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false);
+
+        assertThat(c).isInstanceOf(JPanel.class);
+        assertThat(renderer.isCheckboxMode()).isTrue();
+    }
+
     // ------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------
@@ -269,5 +321,15 @@ class BurpLikeTreeCellRendererTest {
             return containsMatteBorder(cb.getOutsideBorder()) || containsMatteBorder(cb.getInsideBorder());
         }
         return false;
+    }
+
+    private static BurpLikeTreeCellRenderer createRenderer(boolean checkboxMode, boolean manualDepthIndent) throws Exception {
+        try {
+            return BurpLikeTreeCellRenderer.class
+                    .getConstructor(boolean.class, boolean.class)
+                    .newInstance(checkboxMode, manualDepthIndent);
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError("Expected BurpLikeTreeCellRenderer(boolean, boolean) constructor", e);
+        }
     }
 }

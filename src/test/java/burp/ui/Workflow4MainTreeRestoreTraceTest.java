@@ -6,14 +6,21 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.ui.tree.BurpLikeTreeCellRenderer;
+import burp.ui.tree.CollectionTreeNode;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import javax.swing.border.Border;
+import javax.swing.border.CompoundBorder;
+import javax.swing.border.EmptyBorder;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreePath;
+import java.awt.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -74,6 +81,42 @@ class Workflow4MainTreeRestoreTraceTest {
         assertThat(countFolderNodes(mainRoot)).isGreaterThan(0);
         assertThat(countNestedRequestNodes(mainRoot)).isGreaterThan(0);
         assertThat(countRootRequestNodes(mainRoot)).isZero();
+    }
+
+    @Test
+    void workflow4MainTreeUsesManualIndentRenderer() throws Exception {
+        ImporterPanel panel = newPanel();
+        panel.restoreWorkspaceState(nestedWorkspaceState());
+        drainEdt();
+
+        JTree tree = requestTree(panel);
+        assertThat(tree.getCellRenderer()).isInstanceOf(BurpLikeTreeCellRenderer.class);
+        assertThat(manualIndentEnabled(tree.getCellRenderer())).isTrue();
+    }
+
+    @Test
+    void workflow4MainTreeVisuallyNestedByRendererPaddingAfterRestore() throws Exception {
+        ImporterPanel panel = newPanel();
+        panel.restoreWorkspaceState(nestedWorkspaceState());
+        drainEdt();
+
+        JTree tree = requestTree(panel);
+        DefaultMutableTreeNode root = treeRoot(panel);
+        CollectionTreeNode collection = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode folder = (CollectionTreeNode) collection.getChildAt(0);
+        CollectionTreeNode subfolder = (CollectionTreeNode) folder.getChildAt(0);
+        CollectionTreeNode request = (CollectionTreeNode) subfolder.getChildAt(0);
+
+        BurpLikeTreeCellRenderer renderer = (BurpLikeTreeCellRenderer) tree.getCellRenderer();
+
+        int collectionInset = leftInset(renderer.getTreeCellRendererComponent(tree, collection, false, false, false, 0, false));
+        int folderInset = leftInset(renderer.getTreeCellRendererComponent(tree, folder, false, false, false, 1, false));
+        int subfolderInset = leftInset(renderer.getTreeCellRendererComponent(tree, subfolder, false, false, false, 2, false));
+        int requestInset = leftInset(renderer.getTreeCellRendererComponent(tree, request, false, false, true, 3, false));
+
+        assertThat(folderInset).isGreaterThan(collectionInset);
+        assertThat(subfolderInset).isGreaterThan(folderInset);
+        assertThat(requestInset).isGreaterThanOrEqualTo(subfolderInset);
     }
 
     private static WorkspaceState nestedWorkspaceState() {
@@ -143,6 +186,38 @@ class Workflow4MainTreeRestoreTraceTest {
         Method method = ImporterPanel.class.getDeclaredMethod("cloneRequestTreeRootForSelection");
         method.setAccessible(true);
         return (DefaultMutableTreeNode) method.invoke(panel);
+    }
+
+    private static boolean manualIndentEnabled(Object renderer) throws Exception {
+        Method method = renderer.getClass().getDeclaredMethod("isManualDepthIndentEnabledForTesting");
+        method.setAccessible(true);
+        return (Boolean) method.invoke(renderer);
+    }
+
+    private static int leftInset(Component c) {
+        Border border = extractBorder(c);
+        return border != null ? border.getBorderInsets(c).left : 0;
+    }
+
+    private static Border extractBorder(Component c) {
+        if (!(c instanceof JComponent)) {
+            return null;
+        }
+        Border border = ((JComponent) c).getBorder();
+        if (border != null) {
+            return border;
+        }
+        if (c instanceof JPanel) {
+            for (Component child : ((JPanel) c).getComponents()) {
+                if (child instanceof JComponent) {
+                    Border childBorder = ((JComponent) child).getBorder();
+                    if (childBorder != null) {
+                        return childBorder;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static int countFolderNodes(DefaultMutableTreeNode root) {

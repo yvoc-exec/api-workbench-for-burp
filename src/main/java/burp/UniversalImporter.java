@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Core importer logic. Handles parsing, variable resolution, and sending to Burp tools.
  */
 public class UniversalImporter {
+    private static final boolean WF4_TRACE_ENABLED = false;
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final RequestBuilder requestBuilder;
@@ -603,6 +604,9 @@ public class UniversalImporter {
     }
 
     private void traceWorkflow4(String message) {
+        if (!WF4_TRACE_ENABLED) {
+            return;
+        }
         String line = "[API-WB-WF4] " + message;
         if (api != null && api.logging() != null) {
             api.logging().logToOutput(line);

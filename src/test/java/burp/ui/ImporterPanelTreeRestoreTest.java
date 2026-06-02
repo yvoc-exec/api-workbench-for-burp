@@ -1292,7 +1292,7 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
-    void restoredNestedTreeUsesNativeTreeGeometryWithoutRendererOwnedIndentation() throws Exception {
+    void restoredNestedTreeUsesRendererOwnedIndentationFallback() throws Exception {
         ImporterPanel panel = newPanel();
         SpyTree spyTree = installSpyRequestTree(panel);
 
@@ -1332,9 +1332,9 @@ class ImporterPanelTreeRestoreTest {
         int insetSubfolder = leftInsetOf(renderer.getTreeCellRendererComponent(tree, oauthNode, false, false, false, 2, false));
         int insetRequest = leftInsetOf(renderer.getTreeCellRendererComponent(tree, requestNode, false, false, true, 3, false));
 
-        assertThat(insetFolder).isEqualTo(insetCollection);
-        assertThat(insetSubfolder).isEqualTo(insetFolder);
-        assertThat(insetRequest).isEqualTo(insetSubfolder);
+        assertThat(insetFolder).isGreaterThan(insetCollection);
+        assertThat(insetSubfolder).isGreaterThan(insetFolder);
+        assertThat(insetRequest).isGreaterThanOrEqualTo(insetSubfolder);
 
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, apimNode, false, false, false, 0, false))).isFalse();
         assertThat(hasGuideCue(renderer.getTreeCellRendererComponent(tree, authNode, false, false, false, 1, false))).isFalse();

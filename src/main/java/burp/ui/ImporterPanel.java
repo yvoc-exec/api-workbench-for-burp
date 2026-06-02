@@ -49,6 +49,7 @@ public class ImporterPanel {
     private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
     private static final String MAIN_TREE_RESTORE_INITIALIZER_KEY = "apiWorkbench.mainTreeRestoreInitializer";
     private static final String MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY = "apiWorkbench.mainTreeRestoreInitializerListener";
+    private static final boolean WF4_TRACE_ENABLED = false;
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
     private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
@@ -322,7 +323,7 @@ public class ImporterPanel {
     private JTree buildMainRequestTree() {
         JTree tree = new MainRequestTree(treeModel);
         tree.setRootVisible(false);
-        tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
+        tree.setCellRenderer(new BurpLikeTreeCellRenderer(false, true));
         tree.setRowHeight(20);
         tree.setScrollsOnExpand(false);
         tree.setShowsRootHandles(true);
@@ -5038,6 +5039,9 @@ public class ImporterPanel {
     }
 
     private void traceWorkflow4(String message) {
+        if (!WF4_TRACE_ENABLED) {
+            return;
+        }
         String line = "[API-WB-WF4] " + message;
         if (importer != null && importer.getApi() != null && importer.getApi().logging() != null) {
             importer.getApi().logging().logToOutput(line);
