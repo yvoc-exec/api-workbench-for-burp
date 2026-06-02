@@ -12,6 +12,7 @@ import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
+import burp.ui.tree.MainRequestTreeCellRenderer;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -323,7 +324,7 @@ public class ImporterPanel {
     private JTree buildMainRequestTree() {
         JTree tree = new MainRequestTree(treeModel);
         tree.setRootVisible(false);
-        tree.setCellRenderer(new BurpLikeTreeCellRenderer(false, true));
+        tree.setCellRenderer(new MainRequestTreeCellRenderer());
         tree.setRowHeight(20);
         tree.setScrollsOnExpand(false);
         tree.setShowsRootHandles(true);
