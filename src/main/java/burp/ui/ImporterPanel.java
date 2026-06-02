@@ -12,7 +12,6 @@ import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
-import burp.ui.tree.MainRequestTreeCellRenderer;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -50,7 +49,6 @@ public class ImporterPanel {
     private static final String TREE_SHOW_INITIALIZER_LISTENER_KEY = "apiWorkbench.treeShowInitializerListener";
     private static final String MAIN_TREE_RESTORE_INITIALIZER_KEY = "apiWorkbench.mainTreeRestoreInitializer";
     private static final String MAIN_TREE_RESTORE_INITIALIZER_LISTENER_KEY = "apiWorkbench.mainTreeRestoreInitializerListener";
-    private static final boolean WF4_TRACE_ENABLED = false;
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_UPPER = "\\u001F";
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
     private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
@@ -324,7 +322,7 @@ public class ImporterPanel {
     private JTree buildMainRequestTree() {
         JTree tree = new MainRequestTree(treeModel);
         tree.setRootVisible(false);
-        tree.setCellRenderer(new MainRequestTreeCellRenderer());
+        tree.setCellRenderer(new BurpLikeTreeCellRenderer(false));
         tree.setRowHeight(20);
         tree.setScrollsOnExpand(false);
         tree.setShowsRootHandles(true);
@@ -1590,23 +1588,9 @@ public class ImporterPanel {
 
     private DefaultMutableTreeNode cloneRequestTreeRootForSelection() {
         if (treeModel == null || treeModel.getRoot() == null) {
-            DefaultMutableTreeNode emptyRoot = new DefaultMutableTreeNode("Collections");
-            traceWorkflow4("reason=popup-clone sourceTreeModelFolderCount=0"
-                    + " sourceTreeModelRootRequestCount=0"
-                    + " clonedRootFolderCount=0"
-                    + " clonedRootRequestCount=0"
-                    + " clonedNestedRequestCount=0");
-            return emptyRoot;
+            return new DefaultMutableTreeNode("Collections");
         }
-        DefaultMutableTreeNode clonedRoot = cloneTreeNodeForSelection((DefaultMutableTreeNode) treeModel.getRoot());
-        traceWorkflow4("reason=popup-clone"
-                + " sourceTreeModelFolderCount=" + countFolderNodes((DefaultMutableTreeNode) treeModel.getRoot())
-                + " sourceTreeModelRootRequestCount=" + countRootRequestNodes((DefaultMutableTreeNode) treeModel.getRoot())
-                + " clonedRootFolderCount=" + countFolderNodes(clonedRoot)
-                + " clonedRootRequestCount=" + countRootRequestNodes(clonedRoot)
-                + " clonedNestedRequestCount=" + countNestedRequestNodes(clonedRoot));
-        traceMainVsPopupTreeShape("popup-clone");
-        return clonedRoot;
+        return cloneTreeNodeForSelection((DefaultMutableTreeNode) treeModel.getRoot());
     }
 
     private DefaultMutableTreeNode cloneTreeNodeForSelection(DefaultMutableTreeNode node) {
@@ -2434,11 +2418,6 @@ public class ImporterPanel {
             protected void done() {
                 try {
                     ApiCollection collection = get();
-                    traceWorkflow4("reason=import-parsed collectionName=" + safeCollectionName(collection)
-                            + " requestCount=" + safeRequestCount(List.of(collection))
-                            + " nestedModelPathCount=" + countNestedModelPaths(List.of(collection))
-                            + " flatModelPathCount=" + countFlatModelPaths(List.of(collection))
-                            + " requestPathSamples=" + sampleRequestPaths(List.of(collection), 10));
                     String normName = collection.name != null ? collection.name.trim() : "";
                     boolean duplicate = false;
                     for (ApiCollection existing : loadedCollections) {
@@ -2458,19 +2437,6 @@ public class ImporterPanel {
                     registerCollectionRuntimeListener(collection);
                     loadedCollections.add(collection);
                     runWithWorkspaceChangeNotificationsSuppressed(ImporterPanel.this::rebuildTree);
-                    traceWorkflow4("reason=after-import-rebuild loadedCollectionCount=" + loadedCollections.size()
-                            + " treeModel=" + objectId(treeModel)
-                            + " requestTree=" + objectId(requestTree)
-                            + " requestTreeModel=" + objectId(requestTree != null ? requestTree.getModel() : null)
-                            + " requestTreeModelMatchesTreeModel=" + (requestTree != null && requestTree.getModel() == treeModel)
-                            + " viewportView=" + objectId(requestTreeScrollPane != null && requestTreeScrollPane.getViewport() != null ? requestTreeScrollPane.getViewport().getView() : null)
-                            + " viewportMatchesRequestTree=" + (requestTreeScrollPane != null && requestTreeScrollPane.getViewport() != null && requestTreeScrollPane.getViewport().getView() == requestTree)
-                            + " treeModelFolderCount=" + countFolderNodes(treeModel != null ? (DefaultMutableTreeNode) treeModel.getRoot() : null)
-                            + " treeModelRequestCount=" + countRequestNodes(treeModel != null ? (DefaultMutableTreeNode) treeModel.getRoot() : null)
-                            + " mainVisibleFolderCount=" + countFolderNodes(requestTree != null && requestTree.getModel() != null ? (DefaultMutableTreeNode) requestTree.getModel().getRoot() : null)
-                            + " mainVisibleRootRequestCount=" + countRootRequestNodes(requestTree != null && requestTree.getModel() != null ? (DefaultMutableTreeNode) requestTree.getModel().getRoot() : null)
-                            + " collectRequestTreePathsCount=" + countRequestTreePaths(collectRequestTreePaths())
-                            + " collectRequestTreePathsFromRequestModelsCount=" + countRequestTreePaths(collectRequestTreePathsFromRequestModels()));
                     refreshCollectionCombos();
                     appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
                     importBtn.setEnabled(true);
@@ -2608,17 +2574,6 @@ public class ImporterPanel {
         captureRunnerSettings(state);
         captureRunnerDetailState(state);
         captureOAuthAutoRefreshState(state);
-        traceWorkflow4("reason=snapshot"
-                + " collectionCount=" + safeCollectionCount(state.collections)
-                + " requestCount=" + safeRequestCount(state.collections)
-                + " nestedModelPathCount=" + countNestedModelPaths(state.collections)
-                + " flatModelPathCount=" + countFlatModelPaths(state.collections)
-                + " requestTreePathsCount=" + countRequestTreePaths(state.requestTreePaths)
-                + " expandedTreePathKeysCount=" + countExpandedTreePathKeys(state.expandedTreePathKeys)
-                + " checkedRequestIdentityKeysCount=" + countStringList(state.checkedRequestIdentityKeys)
-                + " selectedRequestIdentityKeyExists=" + (state.selectedRequestIdentityKey != null)
-                + " requestPathSamples=" + sampleRequestPaths(state.collections, 10)
-                + " requestTreePathSamples=" + sampleRequestTreePathEntries(state.requestTreePaths, 10));
         return state;
     }
 
@@ -2627,25 +2582,10 @@ public class ImporterPanel {
             return;
         }
         PendingMainRequestTreeRestore pendingRestore = new PendingMainRequestTreeRestore(state);
-        traceWorkflow4("reason=restore-start"
-                + " collectionCount=" + safeCollectionCount(state.collections)
-                + " requestCount=" + safeRequestCount(state.collections)
-                + " requestTreePathsCount=" + countRequestTreePaths(pendingRestore.requestTreePaths)
-                + " expandedTreePathKeysCount=" + countExpandedTreePathKeys(pendingRestore.expandedTreePathKeys)
-                + " nestedModelPathCount=" + countNestedModelPaths(state.collections)
-                + " flatModelPathCount=" + countFlatModelPaths(state.collections)
-                + " requestTree=" + objectId(requestTree)
-                + " treeModel=" + objectId(treeModel)
-                + " viewportView=" + objectId(requestTreeScrollPane != null && requestTreeScrollPane.getViewport() != null ? requestTreeScrollPane.getViewport().getView() : null)
-                + " viewportMatchesRequestTree=" + (requestTreeScrollPane != null && requestTreeScrollPane.getViewport() != null && requestTreeScrollPane.getViewport().getView() == requestTree));
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
             try {
-                Map<ApiRequest, String> originalPaths = new IdentityHashMap<>();
-                traceWorkflow4RequestPathRepair("before", state.collections, pendingRestore.requestTreePaths, originalPaths);
                 pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
-                traceWorkflow4RequestPathRepair("after", state.collections, pendingRestore.requestTreePaths, originalPaths);
-                traceWorkflow4("reason=apply-paths-total repairedRequestPathCount=" + pendingRestore.repairedRequestPathCount);
                 restoreWorkspaceCollections(state.collections);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
@@ -2657,17 +2597,11 @@ public class ImporterPanel {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
-                traceWorkflow4("reason=before-finalizer-schedule"
-                        + " requestTreeShowing=" + (requestTree != null && requestTree.isShowing())
-                        + " requestTreeDisplayable=" + (requestTree != null && requestTree.isDisplayable())
-                        + " mainPanelShowing=" + (mainPanel != null && mainPanel.isShowing())
-                        + " selectedTab=" + safeSelectedTabTitle());
                 scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> finalizeRestoredMainRequestTree(pendingRestore));
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
             }
         });
-        SwingUtilities.invokeLater(() -> forceMainRequestTreeToCurrentModel("post-restore-unconditional", pendingRestore.expandedTreePathKeys));
     }
 
     private static final class PendingMainRequestTreeRestore {
@@ -2771,18 +2705,9 @@ public class ImporterPanel {
         if (pendingRestore == null) {
             return;
         }
-        traceWorkflow4("reason=finalizer-entry"
-                + " pendingRestoreNull=false"
-                + " requestTree=" + objectId(requestTree)
-                + " treeModel=" + objectId(treeModel)
-                + " requestTreeModelMatchesTreeModel=" + (requestTree != null && requestTree.getModel() == treeModel)
-                + " viewportMatchesRequestTree=" + (requestTreeScrollPane != null && requestTreeScrollPane.getViewport() != null && requestTreeScrollPane.getViewport().getView() == requestTree)
-                + " folderCountBefore=" + countFolderNodes(requestTree != null ? (DefaultMutableTreeNode) requestTree.getModel().getRoot() : null)
-                + " rootRequestCountBefore=" + countRootRequestNodes(requestTree != null ? (DefaultMutableTreeNode) requestTree.getModel().getRoot() : null));
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             remountRestoredMainRequestTree(pendingRestore);
             refreshRestoredMainRequestTreePresentation();
-            forceMainRequestTreeToCurrentModel("finalizer", pendingRestore.expandedTreePathKeys);
         });
 
         SwingUtilities.invokeLater(() -> {
@@ -2803,7 +2728,6 @@ public class ImporterPanel {
                         pendingRestore.selectedRequestName
                 );
                 refreshRestoredMainRequestTreePresentation();
-                forceMainRequestTreeToCurrentModel("deferred-finalizer", pendingRestore.expandedTreePathKeys);
             });
             if (pendingRestore.repairedRequestPathCount > 0) {
                 notifyWorkspaceChangedImmediately();
@@ -2822,41 +2746,6 @@ public class ImporterPanel {
         }
         resetRequestTreeHorizontalViewport();
         scheduleRequestTreeHorizontalViewportReset();
-    }
-
-    private void forceMainRequestTreeToCurrentModel(String reason) {
-        forceMainRequestTreeToCurrentModel(reason, Collections.emptyList());
-    }
-
-    private void forceMainRequestTreeToCurrentModel(String reason, List<String> expandedTreePathKeys) {
-        if (requestTree == null || treeModel == null) {
-            return;
-        }
-        if (requestTree.getModel() != treeModel) {
-            requestTree.setModel(treeModel);
-        }
-        if (requestTreeScrollPane != null) {
-            JViewport viewport = requestTreeScrollPane.getViewport();
-            if (viewport == null || viewport.getView() != requestTree) {
-                requestTreeScrollPane.setViewportView(requestTree);
-            }
-        }
-        if (expandedTreePathKeys != null && !expandedTreePathKeys.isEmpty()) {
-            try {
-                restoreExpandedTreePathKeys(expandedTreePathKeys);
-            } catch (RuntimeException e) {
-                traceWorkflow4("reason=after-force-main-tree-" + reason
-                        + " expandedTreePathRestoreSkipped=true"
-                        + " error=" + e.getClass().getSimpleName());
-            }
-        }
-        requestTree.revalidate();
-        requestTree.repaint();
-        if (requestTreeScrollPane != null) {
-            requestTreeScrollPane.revalidate();
-            requestTreeScrollPane.repaint();
-        }
-        traceMainVsPopupTreeShape("after-force-main-tree-" + reason);
     }
 
     private void expandMainRequestTreeRows() {
@@ -3015,7 +2904,6 @@ public class ImporterPanel {
         renderEffectiveVariablesForSelectedCollection();
         updateScopeControlState();
         refreshSessionActionControls();
-        traceMainVsPopupTreeShape("after-restoreWorkspaceCollections");
     }
 
     private void stabilizeRestoredRequestTreePresentation(WorkspaceState state) {
@@ -4849,308 +4737,6 @@ public class ImporterPanel {
         return count;
     }
 
-    private int countRequestTreePaths(Map<String, String> requestTreePaths) {
-        return requestTreePaths != null ? requestTreePaths.size() : 0;
-    }
-
-    private int countExpandedTreePathKeys(List<String> expandedTreePathKeys) {
-        return expandedTreePathKeys != null ? expandedTreePathKeys.size() : 0;
-    }
-
-    private int countStringList(List<String> values) {
-        return values != null ? values.size() : 0;
-    }
-
-    private int countFolderNodes(DefaultMutableTreeNode root) {
-        if (root == null) {
-            return 0;
-        }
-        int count = root instanceof CollectionTreeNode
-                && ((CollectionTreeNode) root).getNodeType() == CollectionTreeNode.Type.FOLDER ? 1 : 0;
-        for (int i = 0; i < root.getChildCount(); i++) {
-            count += countFolderNodes((DefaultMutableTreeNode) root.getChildAt(i));
-        }
-        return count;
-    }
-
-    private int countRequestNodes(DefaultMutableTreeNode root) {
-        if (root == null) {
-            return 0;
-        }
-        int count = root instanceof CollectionTreeNode
-                && ((CollectionTreeNode) root).getNodeType() == CollectionTreeNode.Type.REQUEST ? 1 : 0;
-        for (int i = 0; i < root.getChildCount(); i++) {
-            count += countRequestNodes((DefaultMutableTreeNode) root.getChildAt(i));
-        }
-        return count;
-    }
-
-    private int countRootRequestNodes(DefaultMutableTreeNode root) {
-        return countRootRequestNodes(root, 0);
-    }
-
-    private int countRootRequestNodes(DefaultMutableTreeNode node, int folderDepth) {
-        if (node == null) {
-            return 0;
-        }
-        int nextDepth = folderDepth;
-        if (node instanceof CollectionTreeNode && ((CollectionTreeNode) node).getNodeType() == CollectionTreeNode.Type.FOLDER) {
-            nextDepth = folderDepth + 1;
-        }
-        int count = node instanceof CollectionTreeNode
-                && ((CollectionTreeNode) node).getNodeType() == CollectionTreeNode.Type.REQUEST
-                && folderDepth == 0 ? 1 : 0;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            count += countRootRequestNodes((DefaultMutableTreeNode) node.getChildAt(i), nextDepth);
-        }
-        return count;
-    }
-
-    private int countNestedRequestNodes(DefaultMutableTreeNode root) {
-        return countNestedRequestNodes(root, 0);
-    }
-
-    private int countNestedRequestNodes(DefaultMutableTreeNode node, int folderDepth) {
-        if (node == null) {
-            return 0;
-        }
-        int nextDepth = folderDepth;
-        if (node instanceof CollectionTreeNode && ((CollectionTreeNode) node).getNodeType() == CollectionTreeNode.Type.FOLDER) {
-            nextDepth = folderDepth + 1;
-        }
-        int count = node instanceof CollectionTreeNode
-                && ((CollectionTreeNode) node).getNodeType() == CollectionTreeNode.Type.REQUEST
-                && folderDepth > 0 ? 1 : 0;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            count += countNestedRequestNodes((DefaultMutableTreeNode) node.getChildAt(i), nextDepth);
-        }
-        return count;
-    }
-
-    private int countNestedModelPaths(List<ApiCollection> collections) {
-        if (collections == null) {
-            return 0;
-        }
-        int count = 0;
-        for (ApiCollection collection : collections) {
-            if (collection == null || collection.requests == null) {
-                continue;
-            }
-            for (ApiRequest request : collection.requests) {
-                if (request == null) {
-                    continue;
-                }
-                String folderPath = folderPathFromRequestPath(request.path, request.name);
-                if (folderPath != null && !folderPath.isBlank()) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    private int countFlatModelPaths(List<ApiCollection> collections) {
-        if (collections == null) {
-            return 0;
-        }
-        int count = 0;
-        for (ApiCollection collection : collections) {
-            if (collection == null || collection.requests == null) {
-                continue;
-            }
-            for (ApiRequest request : collection.requests) {
-                if (request == null) {
-                    continue;
-                }
-                String folderPath = folderPathFromRequestPath(request.path, request.name);
-                if (folderPath == null || folderPath.isBlank()) {
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
-    private List<String> sampleRequestPaths(List<ApiCollection> collections, int limit) {
-        List<String> samples = new ArrayList<>();
-        if (collections == null || limit <= 0) {
-            return samples;
-        }
-        for (int collectionIndex = 0; collectionIndex < collections.size() && samples.size() < limit; collectionIndex++) {
-            ApiCollection collection = collections.get(collectionIndex);
-            if (collection == null || collection.requests == null) {
-                continue;
-            }
-            for (int requestIndex = 0; requestIndex < collection.requests.size() && samples.size() < limit; requestIndex++) {
-                ApiRequest request = collection.requests.get(requestIndex);
-                if (request == null) {
-                    continue;
-                }
-                samples.add((safeCollectionName(collection))
-                        + "#" + requestIndex
-                        + ":" + safeRequestName(request)
-                        + "->" + safeRequestPath(request));
-            }
-        }
-        return samples;
-    }
-
-    private List<String> sampleRequestTreePathEntries(Map<String, String> requestTreePaths, int limit) {
-        List<String> samples = new ArrayList<>();
-        if (requestTreePaths == null || requestTreePaths.isEmpty() || limit <= 0) {
-            return samples;
-        }
-        for (Map.Entry<String, String> entry : requestTreePaths.entrySet()) {
-            if (samples.size() >= limit) {
-                break;
-            }
-            String key = entry.getKey();
-            String value = entry.getValue();
-            samples.add(shortenSample(key, 48) + "->" + (value != null ? value : "null"));
-        }
-        return samples;
-    }
-
-    private String shortenSample(String value, int maxLength) {
-        if (value == null) {
-            return "null";
-        }
-        if (maxLength <= 0 || value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, Math.max(0, maxLength - 1)) + "…";
-    }
-
-    private String safeRequestPath(ApiRequest request) {
-        if (request == null || request.path == null || request.path.isBlank()) {
-            return "none";
-        }
-        return request.path;
-    }
-
-    private String objectId(Object value) {
-        if (value == null) {
-            return "null";
-        }
-        String simpleName = value.getClass().getSimpleName();
-        if (simpleName == null || simpleName.isBlank()) {
-            simpleName = value.getClass().getName();
-        }
-        return simpleName + "@" + Integer.toHexString(System.identityHashCode(value));
-    }
-
-    private void traceWorkflow4(String message) {
-        if (!WF4_TRACE_ENABLED) {
-            return;
-        }
-        String line = "[API-WB-WF4] " + message;
-        if (importer != null && importer.getApi() != null && importer.getApi().logging() != null) {
-            importer.getApi().logging().logToOutput(line);
-        } else {
-            System.out.println(line);
-        }
-    }
-
-    private void traceMainVsPopupTreeShape(String reason) {
-        DefaultMutableTreeNode mainRoot = requestTree != null && requestTree.getModel() != null && requestTree.getModel().getRoot() instanceof DefaultMutableTreeNode
-                ? (DefaultMutableTreeNode) requestTree.getModel().getRoot()
-                : null;
-        DefaultMutableTreeNode modelRoot = treeModel != null && treeModel.getRoot() instanceof DefaultMutableTreeNode
-                ? (DefaultMutableTreeNode) treeModel.getRoot()
-                : null;
-        DefaultMutableTreeNode popupCloneRoot = modelRoot != null ? cloneTreeNodeForSelection(modelRoot) : null;
-        JViewport viewport = requestTreeScrollPane != null ? requestTreeScrollPane.getViewport() : null;
-        Component viewportView = viewport != null ? viewport.getView() : null;
-
-        traceWorkflow4("reason=" + reason
-                + " mainTree=" + objectId(requestTree)
-                + " mainTreeModel=" + objectId(requestTree != null ? requestTree.getModel() : null)
-                + " viewportView=" + objectId(viewportView)
-                + " viewportMatchesRequestTree=" + (viewportView == requestTree)
-                + " treeModel=" + objectId(treeModel)
-                + " mainFolderCount=" + countFolderNodes(mainRoot)
-                + " mainRequestCount=" + countRequestNodes(mainRoot)
-                + " mainRootRequestCount=" + countRootRequestNodes(mainRoot)
-                + " mainNestedRequestCount=" + countNestedRequestNodes(mainRoot)
-                + " mainRowCount=" + (requestTree != null ? requestTree.getRowCount() : -1)
-                + " mainRowOffsets=" + sampleRowOffsets(requestTree, 10));
-        traceWorkflow4("reason=" + reason
-                + " treeModelFolderCount=" + countFolderNodes(modelRoot)
-                + " treeModelRequestCount=" + countRequestNodes(modelRoot)
-                + " treeModelRootRequestCount=" + countRootRequestNodes(modelRoot)
-                + " treeModelNestedRequestCount=" + countNestedRequestNodes(modelRoot));
-        traceWorkflow4("reason=" + reason
-                + " popupCloneFolderCount=" + countFolderNodes(popupCloneRoot)
-                + " popupCloneRequestCount=" + countRequestNodes(popupCloneRoot)
-                + " popupCloneRootRequestCount=" + countRootRequestNodes(popupCloneRoot)
-                + " popupCloneNestedRequestCount=" + countNestedRequestNodes(popupCloneRoot));
-    }
-
-    private void traceWorkflow4RequestPathRepair(String phase,
-                                                 List<ApiCollection> collections,
-                                                 Map<String, String> requestTreePaths,
-                                                 Map<ApiRequest, String> originalPaths) {
-        if (collections == null) {
-            return;
-        }
-        int logged = 0;
-        for (int collectionIndex = 0; collectionIndex < collections.size() && logged < 10; collectionIndex++) {
-            ApiCollection collection = collections.get(collectionIndex);
-            if (collection == null || collection.requests == null) {
-                continue;
-            }
-            for (int requestIndex = 0; requestIndex < collection.requests.size() && logged < 10; requestIndex++) {
-                ApiRequest request = collection.requests.get(requestIndex);
-                if (request == null) {
-                    continue;
-                }
-                String matchedFolderPath = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collectionIndex, collection, request, requestIndex);
-                String oldPath = originalPaths != null ? originalPaths.get(request) : request.path;
-                String requestName = request.name != null ? request.name : "";
-                String newPath = request.path;
-                boolean repaired;
-                if ("before".equals(phase)) {
-                    newPath = previewRepairedRequestPath(oldPath, matchedFolderPath, requestName);
-                    repaired = !Objects.equals(oldPath, newPath);
-                    if (originalPaths != null) {
-                        originalPaths.put(request, oldPath);
-                    }
-                } else {
-                    repaired = !Objects.equals(oldPath, newPath);
-                }
-                traceWorkflow4("reason=apply-paths-" + phase
-                        + " collectionIndex=" + collectionIndex
-                        + " requestIndex=" + requestIndex
-                        + " requestIdExists=" + (request.id != null && !request.id.isBlank())
-                        + " requestName=" + safeRequestName(request)
-                        + " oldPath=" + safeSampleValue(oldPath)
-                        + " matchedFolderPath=" + safeSampleValue(matchedFolderPath)
-                        + " newPath=" + safeSampleValue(newPath)
-                        + " repaired=" + repaired);
-                logged++;
-            }
-        }
-    }
-
-    private String previewRepairedRequestPath(String currentPath, String folderPath, String requestName) {
-        if (folderPath == null) {
-            return currentPath;
-        }
-        if (folderPath.isBlank()) {
-            if (isNestedRequestPath(currentPath, requestName)) {
-                return currentPath;
-            }
-            return requestName != null ? requestName : "";
-        }
-        if (requestName == null || requestName.isBlank()) {
-            return folderPath;
-        }
-        return folderPath + "/" + requestName;
-    }
-
-    private String safeSampleValue(String value) {
-        return value != null ? shortenSample(value, 120) : "null";
-    }
 
     private String sampleRowOffsets(JTree tree, int limit) {
         if (tree == null || limit <= 0) {
@@ -6166,3 +5752,7 @@ public class ImporterPanel {
     public JPanel getPanel() { return mainPanel; }
     public JTabbedPane getTabbedPane() { return tabbedPane; }
 }
+
+
+
+
