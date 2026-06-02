@@ -1677,12 +1677,13 @@ class ImporterPanelTreeRestoreTest {
 
         WorkspaceState state = nestedRestoreState();
         panel.restoreWorkspaceState(state);
+        drainEdt();
 
         assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
         assertThat(startupTree.getSelectionPath()).isNull();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isFalse();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "Auth"))).isFalse();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "OAuth"))).isFalse();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isTrue();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "Auth"))).isTrue();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", "OAuth"))).isTrue();
 
         host.setShowingForTest(true);
         host.fireShowingChanged();
@@ -1797,11 +1798,12 @@ class ImporterPanelTreeRestoreTest {
         SpyTree startupTree = installSpyRequestTree(panel);
 
         panel.restoreWorkspaceState(nestedRestoreState());
+        drainEdt();
 
         assertThat(findRequestNode(startupTree, "req-showing-checked")).isNotNull();
         assertThat(findRequestNode(startupTree, "req-showing-checked").isChecked()).isFalse();
         assertThat(startupTree.getSelectionPath()).isNull();
-        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isFalse();
+        assertThat(startupTree.isExpanded(findPathByFolder(startupTree, "APIM", null))).isTrue();
     }
 
     @Test

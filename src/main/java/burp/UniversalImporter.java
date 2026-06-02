@@ -528,6 +528,14 @@ public class UniversalImporter {
         }
         try {
             WorkspaceState state = workspaceStateService.load();
+            traceWorkflow4("reason=load-after stateNull=" + (state == null)
+                    + " collectionCount=" + countCollections(state != null ? state.collections : null)
+                    + " requestCount=" + countRequests(state != null ? state.collections : null)
+                    + " requestTreePathsCount=" + countRequestTreePaths(state != null ? state.requestTreePaths : null)
+                    + " expandedTreePathKeysCount=" + countExpandedTreePathKeys(state != null ? state.expandedTreePathKeys : null)
+                    + " nestedModelPathCount=" + countNestedModelPaths(state != null ? state.collections : null)
+                    + " flatModelPathCount=" + countFlatModelPaths(state != null ? state.collections : null)
+                    + " requestPathSamples=" + sampleRequestPaths(state != null ? state.collections : null, 10));
             if (state == null || state.collections == null || state.collections.isEmpty()) {
                 return;
             }
@@ -572,14 +580,189 @@ public class UniversalImporter {
         try {
             WorkspaceState state = SwingEdt.call(ui::getWorkspaceStateSnapshot);
             String json = WorkspaceStateJson.toJson(state);
-            if (json.equals(lastSavedWorkspaceJson)) {
+            traceWorkflow4("reason=save-before jsonLength=" + safeLength(json)
+                    + " jsonHash=" + hashString(json)
+                    + " skippedBecauseIdentical=" + Objects.equals(json, lastSavedWorkspaceJson)
+                    + " collectionCount=" + countCollections(state != null ? state.collections : null)
+                    + " requestCount=" + countRequests(state != null ? state.collections : null)
+                    + " nestedPathCount=" + countNestedModelPaths(state != null ? state.collections : null)
+                    + " flatPathCount=" + countFlatModelPaths(state != null ? state.collections : null)
+                    + " requestTreePathsCount=" + countRequestTreePaths(state != null ? state.requestTreePaths : null));
+            if (Objects.equals(json, lastSavedWorkspaceJson)) {
                 return;
             }
             workspaceStateService.saveJson(json);
             lastSavedWorkspaceJson = json;
+            String readbackJson = workspaceStateService.readJson();
+            traceWorkflow4("reason=save-after readbackAvailable=" + (readbackJson != null)
+                    + " readbackHash=" + hashString(readbackJson)
+                    + " matchesSavedHash=" + Objects.equals(hashString(json), hashString(readbackJson)));
         } catch (Exception e) {
             logWorkspaceStateError("save", e);
         }
+    }
+
+    private void traceWorkflow4(String message) {
+        String line = "[API-WB-WF4] " + message;
+        if (api != null && api.logging() != null) {
+            api.logging().logToOutput(line);
+        } else {
+            System.out.println(line);
+        }
+    }
+
+    private int countCollections(List<ApiCollection> collections) {
+        return collections != null ? collections.size() : 0;
+    }
+
+    private int countRequests(List<ApiCollection> collections) {
+        if (collections == null) {
+            return 0;
+        }
+        int count = 0;
+        for (ApiCollection collection : collections) {
+            if (collection != null && collection.requests != null) {
+                count += collection.requests.size();
+            }
+        }
+        return count;
+    }
+
+    private int countRequestTreePaths(Map<String, String> requestTreePaths) {
+        return requestTreePaths != null ? requestTreePaths.size() : 0;
+    }
+
+    private int countExpandedTreePathKeys(List<String> expandedTreePathKeys) {
+        return expandedTreePathKeys != null ? expandedTreePathKeys.size() : 0;
+    }
+
+    private int countNestedModelPaths(List<ApiCollection> collections) {
+        if (collections == null) {
+            return 0;
+        }
+        int count = 0;
+        for (ApiCollection collection : collections) {
+            if (collection == null || collection.requests == null) {
+                continue;
+            }
+            for (ApiRequest request : collection.requests) {
+                if (request == null) {
+                    continue;
+                }
+                String folderPath = folderPathFromRequestPath(request.path, request.name);
+                if (folderPath != null && !folderPath.isBlank()) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private int countFlatModelPaths(List<ApiCollection> collections) {
+        if (collections == null) {
+            return 0;
+        }
+        int count = 0;
+        for (ApiCollection collection : collections) {
+            if (collection == null || collection.requests == null) {
+                continue;
+            }
+            for (ApiRequest request : collection.requests) {
+                if (request == null) {
+                    continue;
+                }
+                String folderPath = folderPathFromRequestPath(request.path, request.name);
+                if (folderPath == null || folderPath.isBlank()) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private String folderPathFromRequestPath(String requestPath, String requestName) {
+        if (requestPath == null) {
+            return "";
+        }
+        String normalizedPath = requestPath.replace('\\', '/').trim();
+        if (normalizedPath.isEmpty()) {
+            return "";
+        }
+        String normalizedName = requestName != null ? requestName.replace('\\', '/').trim() : "";
+        if (!normalizedName.isEmpty()) {
+            String suffix = "/" + normalizedName;
+            if (normalizedPath.equals(normalizedName)) {
+                return "";
+            }
+            if (normalizedPath.endsWith(suffix)) {
+                return normalizedPath.substring(0, normalizedPath.length() - suffix.length());
+            }
+        }
+        int lastSlash = normalizedPath.lastIndexOf('/');
+        if (lastSlash < 0) {
+            return "";
+        }
+        if (normalizedName.isEmpty()) {
+            return normalizedPath.substring(0, lastSlash);
+        }
+        return normalizedPath;
+    }
+
+    private List<String> sampleRequestPaths(List<ApiCollection> collections, int limit) {
+        List<String> samples = new ArrayList<>();
+        if (collections == null || limit <= 0) {
+            return samples;
+        }
+        for (int collectionIndex = 0; collectionIndex < collections.size() && samples.size() < limit; collectionIndex++) {
+            ApiCollection collection = collections.get(collectionIndex);
+            if (collection == null || collection.requests == null) {
+                continue;
+            }
+            for (int requestIndex = 0; requestIndex < collection.requests.size() && samples.size() < limit; requestIndex++) {
+                ApiRequest request = collection.requests.get(requestIndex);
+                if (request == null) {
+                    continue;
+                }
+                samples.add((collection.name != null ? collection.name : "none")
+                        + "#" + requestIndex
+                        + ":" + safeRequestName(request)
+                        + "->" + safeRequestPath(request));
+            }
+        }
+        return samples;
+    }
+
+    private String safeRequestName(ApiRequest request) {
+        if (request == null || request.name == null || request.name.isBlank()) {
+            return "none";
+        }
+        return request.name;
+    }
+
+    private String safeRequestPath(ApiRequest request) {
+        if (request == null || request.path == null || request.path.isBlank()) {
+            return "none";
+        }
+        return request.path;
+    }
+
+    private int safeLength(String value) {
+        return value != null ? value.length() : 0;
+    }
+
+    private String hashString(String value) {
+        return value != null ? Integer.toHexString(value.hashCode()) : "null";
+    }
+
+    private String objectId(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        String simpleName = value.getClass().getSimpleName();
+        if (simpleName == null || simpleName.isBlank()) {
+            simpleName = value.getClass().getName();
+        }
+        return simpleName + "@" + Integer.toHexString(System.identityHashCode(value));
     }
 
     private void logWorkspaceStateError(String action, Exception e) {
