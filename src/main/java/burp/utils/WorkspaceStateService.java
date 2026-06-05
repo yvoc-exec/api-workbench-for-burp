@@ -47,10 +47,6 @@ public class WorkspaceStateService {
         store.set(KEY, json != null ? json : "");
     }
 
-    public String readJson() {
-        return store != null ? store.get(KEY) : null;
-    }
-
     private static class MontoyaStringStore implements StringStore {
         private final PersistedObject object;
 

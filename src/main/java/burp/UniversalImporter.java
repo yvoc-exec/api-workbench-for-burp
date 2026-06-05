@@ -515,10 +515,10 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
-        flushWorkspaceStateSave();
         if (ui != null) {
             ui.cleanup();
         }
+        flushWorkspaceStateSave();
         clearVariables();
     }
 
