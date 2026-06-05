@@ -3,6 +3,8 @@ package burp.utils;
 import burp.models.ApiCollection;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RuntimeVariablesJsonTest {
@@ -78,5 +80,58 @@ class RuntimeVariablesJsonTest {
         assertThat(collection.runtimeOAuth2)
                 .doesNotContainKeys("oauth2_existing", "oauth2_stale")
                 .containsEntry("oauth2_client_id", "client-id");
+    }
+
+    @Test
+    void applyToCollectionMergeFiresChangeListenerForRuntimeVars() {
+        ApiCollection collection = new ApiCollection();
+        AtomicInteger changeCount = new AtomicInteger(0);
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        RuntimeVariablesJson.RuntimeVariableBundle bundle = new RuntimeVariablesJson.RuntimeVariableBundle();
+        bundle.runtimeVars.put("baseUrl", "https://api.example.com");
+
+        RuntimeVariablesJson.applyToCollection(collection, bundle, false);
+
+        assertThat(collection.runtimeVars).containsEntry("baseUrl", "https://api.example.com");
+        assertThat(changeCount.get()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void applyToCollectionMergeFiresChangeListenerForRuntimeOAuth2() {
+        ApiCollection collection = new ApiCollection();
+        AtomicInteger changeCount = new AtomicInteger(0);
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        RuntimeVariablesJson.RuntimeVariableBundle bundle = new RuntimeVariablesJson.RuntimeVariableBundle();
+        bundle.runtimeOAuth2.put("oauth2_client_id", "client-id");
+
+        RuntimeVariablesJson.applyToCollection(collection, bundle, false);
+
+        assertThat(collection.runtimeOAuth2).containsEntry("oauth2_client_id", "client-id");
+        assertThat(changeCount.get()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void applyToCollectionReplaceFiresChangeListenerForRuntimeVarsAndOAuth2() {
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeVars.put("stale", "remove");
+        collection.runtimeOAuth2.put("oauth2_stale", "remove");
+        AtomicInteger changeCount = new AtomicInteger(0);
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        RuntimeVariablesJson.RuntimeVariableBundle bundle = new RuntimeVariablesJson.RuntimeVariableBundle();
+        bundle.runtimeVars.put("baseUrl", "https://api.example.com");
+        bundle.runtimeOAuth2.put("oauth2_client_id", "client-id");
+
+        RuntimeVariablesJson.applyToCollection(collection, bundle, true);
+
+        assertThat(collection.runtimeVars)
+                .doesNotContainKey("stale")
+                .containsEntry("baseUrl", "https://api.example.com");
+        assertThat(collection.runtimeOAuth2)
+                .doesNotContainKey("oauth2_stale")
+                .containsEntry("oauth2_client_id", "client-id");
+        assertThat(changeCount.get()).isGreaterThanOrEqualTo(1);
     }
 }

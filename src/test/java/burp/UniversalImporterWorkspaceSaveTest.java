@@ -115,6 +115,26 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void cleanupPersistsRequestEditorStateBeforeFinalWorkspaceSave() throws Exception {
+        WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
+        fixture.writeCount.set(0);
+        fixture.lastJson.set(null);
+
+        AtomicReference<Boolean> shutdownSeenDuringSave = new AtomicReference<>(Boolean.FALSE);
+        Mockito.reset(fixture.persistedObject);
+        Mockito.doAnswer(inv -> {
+            fixture.writeCount.incrementAndGet();
+            fixture.lastJson.set(inv.getArgument(1));
+            shutdownSeenDuringSave.set((Boolean) privateField(fixture.ui, "shuttingDown"));
+            return null;
+        }).when(fixture.persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+
+        fixture.importer.cleanup();
+        awaitWriteCount(fixture.writeCount, 1);
+        assertThat(shutdownSeenDuringSave.get()).isTrue();
+    }
+
+    @Test
     void structuralCollectionChangesPersistImmediatelyIncludingExpandedTreeState() throws Exception {
         AtomicInteger writeCount = new AtomicInteger(0);
         AtomicReference<String> lastJson = new AtomicReference<>();
@@ -336,7 +356,7 @@ class UniversalImporterWorkspaceSaveTest {
         requestEditor.loadRequest(liveRequest);
         SwingUtilities.invokeAndWait(() -> { });
 
-        return new WorkspaceSaveFixture(importer, ui, requestEditor, writeCount, lastJson);
+        return new WorkspaceSaveFixture(importer, ui, requestEditor, persistedObject, writeCount, lastJson);
     }
 
     private static ApiCollection bearerCollection() {
@@ -530,6 +550,7 @@ class UniversalImporterWorkspaceSaveTest {
     private record WorkspaceSaveFixture(UniversalImporter importer,
                                         ImporterPanel ui,
                                         RequestEditorPanel requestEditor,
+                                        PersistedObject persistedObject,
                                         AtomicInteger writeCount,
                                         AtomicReference<String> lastJson) {
     }
