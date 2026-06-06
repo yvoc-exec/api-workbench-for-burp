@@ -1,10 +1,20 @@
 package burp.ui;
 
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
+import burp.auth.OAuth2Manager;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.runner.CollectionRunner;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
+import javax.swing.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,52 +24,221 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ImporterPanelOAuth2PopulateTest {
 
     @Test
-    void buildOAuth2PopulateResolverUsesCollectionAndRequestScope() {
+    void oauth2PopulateResolverUsesActiveEnvironmentOverlay() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
         collection.environment.put("base_url", "https://env.example.test");
         collection.variables.add(variable("collection_only", "from-collection"));
-        collection.runtimeOAuth2.put("oauth2_access_token", "existing-token");
-        collection.runtimeVars.put("client_id", "runtime-client");
+        collection.runtimeOAuth2.put("oauth2_access_token", "legacy-token");
+        collection.runtimeVars.put("client_id", "legacy-client");
 
         ApiRequest request = new ApiRequest();
         request.variables.add(variable("request_only", "from-request"));
 
-        VariableResolver resolver = ImporterPanel.buildOAuth2PopulateResolver(collection, request);
+        VariableResolver resolver = ImporterPanel.buildOAuth2PopulateResolver(
+                collection,
+                request,
+                Map.of(
+                        "client_id", "active-client",
+                        "token_url", "https://active.example.test/token"
+                ));
 
         assertThat(resolver.resolve("{{base_url}}")).isEqualTo("https://env.example.test");
         assertThat(resolver.resolve("{{collection_only}}")).isEqualTo("from-collection");
-        assertThat(resolver.resolve("{{oauth2_access_token}}")).isEqualTo("existing-token");
-        assertThat(resolver.resolve("{{client_id}}")).isEqualTo("runtime-client");
+        assertThat(resolver.resolve("{{client_id}}")).isEqualTo("active-client");
+        assertThat(resolver.resolve("{{token_url}}")).isEqualTo("https://active.example.test/token");
         assertThat(resolver.resolve("{{request_only}}")).isEqualTo("from-request");
+        assertThat(resolver.resolve("{{oauth2_access_token}}")).isEqualTo("{{oauth2_access_token}}");
     }
 
     @Test
-    void collectUnresolvedOAuth2PopulateVariablesReturnsVariableNamesFromResolvedFields() {
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("oauth2_client_id", "client-123");
-        fields.put("oauth2_client_secret", "{{missing_secret}}");
-        fields.put("oauth2_token_url", "{{auth_base_url}}/oauth2/token");
+    void oauth2PopulateExistingValuesPreferActiveEnvironmentConfig() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.config.put("oauth2_client_id", "active-client");
+        active.oauth2.config.put("oauth2_token_url", "https://active.example.test/token");
+        active.variables.put("scope", "active-scope");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
 
-        List<String> unresolved = ImporterPanel.collectUnresolvedOAuth2PopulateVariables(fields);
-
-        assertThat(unresolved).containsExactly("auth_base_url", "missing_secret");
-    }
-
-    @Test
-    void buildOAuth2PopulateExistingVarsUsesCollectionRuntimeValuesLast() {
         ApiCollection collection = new ApiCollection();
-        collection.environment.put("client_id", "env-client");
-        collection.variables.add(variable("scope", "read"));
-        collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
-        collection.runtimeVars.put("client_id", "runtime-client");
+        collection.name = "APIM";
+        collection.environment.put("oauth2_client_id", "collection-client");
+        collection.variables.add(variable("scope", "collection-scope"));
+        collection.runtimeOAuth2.put("oauth2_token_url", "https://legacy.example.test/token");
 
-        Map<String, String> existing = ImporterPanel.buildOAuth2PopulateExistingVars(collection);
+        ApiRequest request = new ApiRequest();
+        request.sourceCollection = collection.name;
+        request.variables.add(variable("request_only", "request-value"));
+
+        Map<String, String> existing = invokePopulateExistingVars(panel, collection, request, active);
 
         assertThat(existing)
-                .containsEntry("client_id", "runtime-client")
-                .containsEntry("scope", "read")
-                .containsEntry("oauth2_token_url", "https://auth.example.test/token");
+                .containsEntry("oauth2_client_id", "active-client")
+                .containsEntry("oauth2_token_url", "https://active.example.test/token")
+                .containsEntry("scope", "active-scope")
+                .containsEntry("request_only", "request-value")
+                .doesNotContainEntry("oauth2_token_url", "https://legacy.example.test/token");
+    }
+
+    @Test
+    void oauth2PopulateRequiresActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest req = request("Populate");
+
+        invokePrivate(panel, "populateOAuth2FromRequest", new Class<?>[]{ApiRequest.class}, req);
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        assertThat(oauth2Panel.getVariables()).isEmpty();
+    }
+
+    @Test
+    void oauth2PopulateUsesActiveEnvironmentOverlay() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.config.put("oauth2_client_id", "active-client");
+        active.oauth2.config.put("oauth2_client_secret", "active-secret");
+        active.oauth2.config.put("oauth2_token_url", "https://active.example.test/token");
+        active.variables.put("scope", "active-scope");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.runtimeOAuth2.put("oauth2_client_id", "legacy-client");
+        collection.runtimeVars.put("oauth2_client_secret", "legacy-secret");
+
+        ApiRequest request = request("Token Request");
+        request.sourceCollection = collection.name;
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("grantType", "client_credentials");
+        request.auth.properties.put("clientId", "{{oauth2_client_id}}");
+        request.auth.properties.put("clientSecret", "{{oauth2_client_secret}}");
+        request.auth.properties.put("accessTokenUrl", "{{oauth2_token_url}}");
+        request.auth.properties.put("scope", "{{scope}}");
+        collection.requests.add(request);
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        invokePrivate(panel, "populateOAuth2FromRequest", new Class<?>[]{ApiRequest.class}, request);
+        drainEdt();
+
+        Map<String, String> vars = oauth2Panel(panel).getVariables();
+        assertThat(vars)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "active-client")
+                .containsEntry("oauth2_client_secret", "active-secret")
+                .containsEntry("oauth2_token_url", "https://active.example.test/token")
+                .containsEntry("oauth2_scope", "active-scope")
+                .doesNotContainEntry("oauth2_client_id", "legacy-client")
+                .doesNotContainEntry("oauth2_client_secret", "legacy-secret");
+    }
+
+    @Test
+    void oauth2PopulateDoesNotMutateEnvironmentUntilTokenFetch() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.config.put("oauth2_client_id", "active-client");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = request("Token Request");
+        request.sourceCollection = collection.name;
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("clientId", "{{oauth2_client_id}}");
+        collection.requests.add(request);
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        invokePrivate(panel, "populateOAuth2FromRequest", new Class<?>[]{ApiRequest.class}, request);
+        drainEdt();
+
+        assertThat(active.variables).doesNotContainKey("oauth2_client_id");
+        assertThat(active.variables).doesNotContainKey("oauth2_access_token");
+    }
+
+    @Test
+    void clearTokensRemovesAccessTokenBindingFromActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.outputBindings.put("accessToken", "token");
+        active.variables.put("token", "stale-token");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        clearTokens(panel);
+
+        assertThat(active.variables).doesNotContainKey("token");
+    }
+
+    @Test
+    void clearTokensRemovesRefreshTokenBindingFromActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.outputBindings.put("refreshToken", "refresh_token");
+        active.variables.put("refresh_token", "stale-refresh");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        clearTokens(panel);
+
+        assertThat(active.variables).doesNotContainKey("refresh_token");
+    }
+
+    @Test
+    void clearTokensDoesNotWriteCollectionRuntimeOAuth2() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.outputBindings.put("accessToken", "token");
+        active.variables.put("token", "stale-token");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.runtimeOAuth2.put("oauth2_access_token", "legacy");
+        panel.restoreWorkspaceCollections(List.of(collection));
+
+        clearTokens(panel);
+
+        assertThat(collection.runtimeOAuth2).containsEntry("oauth2_access_token", "legacy");
+    }
+
+    @Test
+    void clearTokensWithoutActiveEnvironmentIsSafe() throws Exception {
+        ImporterPanel panel = newPanel();
+        clearTokens(panel);
+        assertThat(oauth2Panel(panel).getVariables()).isEmpty();
+    }
+
+    private ImporterPanel newPanel() throws Exception {
+        burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
+        HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
+        Mockito.when(requestEditor.uiComponent()).thenReturn(new JPanel());
+        Mockito.when(importer.getApi().userInterface().createHttpRequestEditor(Mockito.any(EditorOptions.class))).thenReturn(requestEditor);
+        HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
+        Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
+        Mockito.when(importer.getApi().userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
+        OAuth2Manager oauth2Manager = Mockito.mock(OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS);
+        CollectionRunner runner = new CollectionRunner(null);
+        return new ImporterPanel(importer, runner, oauth2Manager, burp.utils.ScriptMode.DISABLED);
+    }
+
+    private static EnvironmentProfile environment(String name) {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = name;
+        profile.ensureId();
+        profile.ensureDefaults();
+        return profile;
+    }
+
+    private static ApiRequest request(String name) {
+        ApiRequest request = new ApiRequest();
+        request.name = name;
+        request.method = "POST";
+        request.url = "https://example.test/token";
+        return request;
     }
 
     private static ApiRequest.Variable variable(String key, String value) {
@@ -67,5 +246,47 @@ class ImporterPanelOAuth2PopulateTest {
         variable.key = key;
         variable.value = value;
         return variable;
+    }
+
+    private static Map<String, String> invokePopulateExistingVars(ImporterPanel panel,
+                                                                  ApiCollection collection,
+                                                                  ApiRequest request,
+                                                                  EnvironmentProfile active) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(
+                "buildOAuth2PopulateExistingVars",
+                ApiCollection.class,
+                ApiRequest.class,
+                EnvironmentProfile.class);
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, String> existing = (Map<String, String>) method.invoke(panel, collection, request, active);
+        return existing;
+    }
+
+    private static void invokePrivate(ImporterPanel panel, String methodName, Class<?>[] parameterTypes, Object arg) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, arg);
+    }
+
+    private static void clearTokens(ImporterPanel panel) throws Exception {
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        JButton clearBtn = (JButton) privateField(oauth2Panel, "clearBtn");
+        SwingUtilities.invokeAndWait(clearBtn::doClick);
+        drainEdt();
+    }
+
+    private static OAuth2Panel oauth2Panel(ImporterPanel panel) throws Exception {
+        return (OAuth2Panel) privateField(panel, "oauth2Panel");
+    }
+
+    private static Object privateField(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    private static void drainEdt() throws Exception {
+        SwingUtilities.invokeAndWait(() -> { });
     }
 }

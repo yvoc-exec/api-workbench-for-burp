@@ -317,7 +317,7 @@ src/main/java/burp/
     |-- RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
     |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
     |-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
-    |-- RuntimeVariablesJson.java  # Runtime vars/OAuth2 JSON import/export
+    |-- RuntimeVariablesJson.java  # Legacy runtime vars/OAuth2 JSON utility
     |-- SharedRequestPipeline.java # Shared build/send/script/OAuth pipeline
     `-- UnresolvedVariableAnalyzer.java # Preflight unresolved-variable scanner
 ```

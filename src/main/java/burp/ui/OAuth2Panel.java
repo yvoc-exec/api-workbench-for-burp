@@ -20,6 +20,9 @@ public class OAuth2Panel extends JPanel {
     public interface TokenAcquiredListener {
         void onTokenAcquired(TokenStore.TokenEntry entry, ApiCollection collection, Map<String, String> oauth2Vars);
     }
+    public interface ClearTokensListener {
+        void onClearTokensRequested();
+    }
 
     private final OAuth2Manager manager;
     private JComboBox<String> grantTypeBox;
@@ -41,6 +44,7 @@ public class OAuth2Panel extends JPanel {
     private boolean suppressChangeNotifications = false;
     private VariablesChangeListener variablesChangeListener;
     private TokenAcquiredListener tokenAcquiredListener;
+    private ClearTokensListener clearTokensListener;
     private Supplier<ApiCollection> tokenAcquiredCollectionSupplier;
 
     public OAuth2Panel(OAuth2Manager manager) {
@@ -134,6 +138,9 @@ public class OAuth2Panel extends JPanel {
             manager.clearTokens();
             updateStatus("Tokens cleared");
             tokenPreviewField.setText("");
+            if (clearTokensListener != null) {
+                clearTokensListener.onClearTokensRequested();
+            }
             notifyVariablesChanged(true);
         });
         btnPanel.add(acquireBtn);
@@ -279,6 +286,10 @@ public class OAuth2Panel extends JPanel {
         this.tokenAcquiredCollectionSupplier = supplier;
     }
 
+    public void setClearTokensListener(ClearTokensListener listener) {
+        this.clearTokensListener = listener;
+    }
+
     private OAuth2Config buildConfig() {
         OAuth2Config config = new OAuth2Config();
         String grant = (String) grantTypeBox.getSelectedItem();
@@ -306,9 +317,24 @@ public class OAuth2Panel extends JPanel {
 
     public void populateFromOAuth2Map(Map<String, String> vars) {
         SwingUtilities.invokeLater(() -> {
-            if (vars == null) return;
             suppressChangeNotifications = true;
             try {
+                grantTypeBox.setSelectedItem("Client Credentials");
+                tokenUrlField.setText("");
+                authUrlField.setText("");
+                redirectUriField.setText("");
+                clientIdField.setText("");
+                clientSecretField.setText("");
+                usernameField.setText("");
+                passwordField.setText("");
+                scopeField.setText("");
+                pkceBox.setSelected(true);
+                tokenPreviewField.setText("");
+
+                if (vars == null) {
+                    updateFieldVisibility();
+                    return;
+                }
                 String grant = vars.get("oauth2_grant");
                 if (grant != null) {
                     switch (grant.toLowerCase()) {
@@ -342,8 +368,6 @@ public class OAuth2Panel extends JPanel {
                     if (t != null && !t.isEmpty()) {
                         tokenPreviewField.setText("Access Token: " + t.substring(0, Math.min(20, t.length())) + "...");
                     }
-                } else {
-                    tokenPreviewField.setText("");
                 }
                 updateFieldVisibility();
             } finally {
