@@ -2537,21 +2537,41 @@ public class ImporterPanel {
         return action;
     }
 
-    UnresolvedVariablesDialog createUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
-                                                              List<ApiCollection> targetCollections) {
+    static final class UnresolvedDialogConfig {
+        final boolean canApply;
+        final String applyButtonText;
+        final String hintText;
+
+        UnresolvedDialogConfig(boolean canApply, String applyButtonText, String hintText) {
+            this.canApply = canApply;
+            this.applyButtonText = applyButtonText;
+            this.hintText = hintText;
+        }
+    }
+
+    UnresolvedDialogConfig buildUnresolvedDialogConfig() {
         EnvironmentProfile active = getActiveEnvironment();
         boolean canApply = active != null;
         String hintText = canApply
                 ? "Values will be saved to Active Environment: " + active.displayName()
                 : "No Active Environment selected. You may continue without applying, or cancel and create/import an environment.";
+        return new UnresolvedDialogConfig(
+                canApply,
+                "Apply to Active Environment",
+                hintText);
+    }
+
+    UnresolvedVariablesDialog createUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
+                                                              List<ApiCollection> targetCollections) {
+        UnresolvedDialogConfig config = buildUnresolvedDialogConfig();
         Window owner = SwingUtilities.getWindowAncestor(mainPanel);
         return new UnresolvedVariablesDialog(
                 owner,
                 issues,
                 targetCollections,
-                canApply,
-                "Apply to Active Environment",
-                hintText);
+                config.canApply,
+                config.applyButtonText,
+                config.hintText);
     }
 
     private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
