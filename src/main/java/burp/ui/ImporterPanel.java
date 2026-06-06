@@ -4393,6 +4393,7 @@ public class ImporterPanel {
         try {
             EnvironmentProfile active = getActiveEnvironment();
             String selectedIdBefore = active != null ? active.id : null;
+            Map<String, String> labelsById = buildEnvironmentDisplayLabelsById();
             workbenchEnvironmentCombo.removeAllItems();
             workbenchEnvironmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
             for (EnvironmentProfile profile : environmentProfiles) {
@@ -4401,7 +4402,8 @@ public class ImporterPanel {
                 }
                 profile.ensureDefaults();
                 profile.ensureId();
-                workbenchEnvironmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+                workbenchEnvironmentCombo.addItem(new EnvironmentRef(profile,
+                        labelsById.getOrDefault(profile.id, profile.displayName())));
             }
             if (selectedIdBefore != null && selectWorkbenchEnvironmentById(selectedIdBefore)) {
                 // selected active env
@@ -4529,13 +4531,15 @@ public class ImporterPanel {
         String selectedId = getSelectedEnvironmentProfile() != null ? getSelectedEnvironmentProfile().id : null;
         suppressEnvironmentEditorEvents = true;
         try {
+            Map<String, String> labelsById = buildEnvironmentDisplayLabelsById();
             environmentCombo.removeAllItems();
             environmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
             for (EnvironmentProfile profile : environmentProfiles) {
                 if (profile != null) {
                     profile.ensureDefaults();
                     profile.ensureId();
-                    environmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+                    environmentCombo.addItem(new EnvironmentRef(profile,
+                            labelsById.getOrDefault(profile.id, profile.displayName())));
                 }
             }
             String idToSelect = activeEnvironmentId != null ? activeEnvironmentId : selectedId;
@@ -4549,6 +4553,35 @@ public class ImporterPanel {
         } finally {
             suppressEnvironmentEditorEvents = false;
         }
+    }
+
+    private Map<String, String> buildEnvironmentDisplayLabelsById() {
+        Map<String, Integer> totals = new LinkedHashMap<>();
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            String base = profile.displayName();
+            totals.put(base, totals.getOrDefault(base, 0) + 1);
+        }
+
+        Map<String, Integer> seen = new LinkedHashMap<>();
+        Map<String, String> labelsById = new LinkedHashMap<>();
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureId();
+            String base = profile.displayName();
+            int ordinal = seen.getOrDefault(base, 0) + 1;
+            seen.put(base, ordinal);
+
+            String label = totals.getOrDefault(base, 0) > 1 && ordinal > 1
+                    ? base + " (#" + ordinal + ")"
+                    : base;
+            labelsById.put(profile.id, label);
+        }
+        return labelsById;
     }
 
     private void handleEnvironmentImport() {
