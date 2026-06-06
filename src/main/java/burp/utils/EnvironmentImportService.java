@@ -330,10 +330,16 @@ public final class EnvironmentImportService {
 
     private static Map<String, String> parseEnvFile(String raw) {
         Map<String, String> values = new LinkedHashMap<>();
+        if (raw == null || raw.isBlank()) {
+            return values;
+        }
         for (String line : raw.split("\\R")) {
             String trimmed = line.trim();
             if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                 continue;
+            }
+            if (trimmed.startsWith("export ")) {
+                trimmed = trimmed.substring("export ".length()).trim();
             }
             int eq = trimmed.indexOf('=');
             if (eq <= 0) {
@@ -343,9 +349,30 @@ public final class EnvironmentImportService {
             if (key.isEmpty()) {
                 continue;
             }
-            values.put(key, trimmed.substring(eq + 1).trim());
+            String value = trimmed.substring(eq + 1).trim();
+            values.put(key, unquoteDotEnvValue(value));
         }
         return values;
+    }
+
+    private static String unquoteDotEnvValue(String value) {
+        if (value == null || value.length() < 2) {
+            return value != null ? value : "";
+        }
+
+        char first = value.charAt(0);
+        char last = value.charAt(value.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            String inner = value.substring(1, value.length() - 1);
+            if (first == '"') {
+                return inner
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\");
+            }
+            return inner;
+        }
+
+        return value;
     }
 
     private static Map<String, String> parseBrunoVarsBlock(String raw) {
