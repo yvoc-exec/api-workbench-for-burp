@@ -12,8 +12,23 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public final class EnvironmentImportService {
+    private static final Set<String> GENERIC_JSON_METADATA_KEYS = Set.of(
+            "id",
+            "uid",
+            "name",
+            "_postman_variable_scope",
+            "_postman_exported_at",
+            "_postman_exported_using",
+            "environment",
+            "values",
+            "variable",
+            "variables",
+            "oauth2"
+    );
+
     private EnvironmentImportService() {
     }
 
@@ -127,63 +142,138 @@ public final class EnvironmentImportService {
             return List.of(profile);
         }
 
-        if (root.has("values") && root.get("values").isJsonArray()) {
-            Map<String, String> values = new LinkedHashMap<>();
-            for (JsonElement valueElem : root.getAsJsonArray("values")) {
-                if (valueElem == null || !valueElem.isJsonObject()) {
-                    continue;
-                }
-                JsonObject value = valueElem.getAsJsonObject();
-                boolean enabled = !value.has("enabled") || value.get("enabled").isJsonNull() || value.get("enabled").getAsBoolean();
-                String key = getString(value, "key");
-                if (!enabled || key == null || key.isBlank()) {
-                    continue;
-                }
-                values.put(key, stringifyJsonValue(value.has("value") ? value.get("value") : JsonNull.INSTANCE));
+        if (root.has("environment") && root.get("environment").isJsonObject()) {
+            List<EnvironmentProfile> wrapped = importPostmanLikeEnvironment(fileName, root.getAsJsonObject("environment"), getString(root, "name"));
+            if (wrapped != null) {
+                return wrapped;
             }
-            if (values.isEmpty()) {
-                throw new IOException("No enabled Postman environment values found in " + fileName);
-            }
-            return List.of(fromKeyValueMap(firstNonBlank(getString(root, "name"), stripExtension(fileName), "Environment"), "postman", fileName, values));
         }
 
-        if (root.has("variables") && root.get("variables").isJsonArray()) {
-            Map<String, String> values = new LinkedHashMap<>();
-            for (JsonElement valueElem : root.getAsJsonArray("variables")) {
-                if (valueElem == null || !valueElem.isJsonObject()) {
-                    continue;
-                }
-                JsonObject value = valueElem.getAsJsonObject();
-                boolean enabled = !value.has("enabled") || value.get("enabled").isJsonNull() || value.get("enabled").getAsBoolean();
-                String key = firstNonBlank(getString(value, "key"), getString(value, "name"));
-                if (!enabled || key == null || key.isBlank()) {
-                    continue;
-                }
-                values.put(key, value.has("value") && !value.get("value").isJsonNull() ? stringifyJsonValue(value.get("value")) : "");
-            }
-            if (values.isEmpty()) {
-                throw new IOException("No enabled environment variables found in " + fileName);
-            }
-            return List.of(fromKeyValueMap(firstNonBlank(getString(root, "name"), stripExtension(fileName), "Environment"), "json-variables", fileName, values));
+        List<EnvironmentProfile> postmanLike = importPostmanLikeEnvironment(fileName, root, null);
+        if (postmanLike != null) {
+            return postmanLike;
         }
 
         Map<String, String> primitiveValues = new LinkedHashMap<>();
         for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
-            if ("oauth2".equals(entry.getKey()) && entry.getValue() != null && entry.getValue().isJsonObject()) {
+            if (entry.getKey() == null || entry.getKey().isBlank()) {
                 continue;
             }
-            if ("variables".equals(entry.getKey()) && entry.getValue() != null && entry.getValue().isJsonObject()) {
+            if (GENERIC_JSON_METADATA_KEYS.contains(entry.getKey())) {
                 continue;
             }
-            if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isJsonNull()) {
+            if (entry.getValue() == null || entry.getValue().isJsonNull()) {
                 continue;
             }
             primitiveValues.put(entry.getKey(), stringifyJsonValue(entry.getValue()));
         }
         if (primitiveValues.isEmpty()) {
-            throw new IOException("Unsupported or empty JSON environment file: " + fileName);
+            throw new IOException("No environment variables found in " + fileName + ".");
         }
         return List.of(fromKeyValueMap(stripExtension(fileName), "json-object", fileName, primitiveValues));
+    }
+
+    private static List<EnvironmentProfile> importPostmanLikeEnvironment(String fileName, JsonObject object, String fallbackName) throws IOException {
+        if (object == null || !hasVariableArray(object)) {
+            return null;
+        }
+        JsonArray arr = null;
+        if (object.has("values") && object.get("values").isJsonArray()) {
+            arr = object.getAsJsonArray("values");
+        } else if (object.has("variable") && object.get("variable").isJsonArray()) {
+            arr = object.getAsJsonArray("variable");
+        } else if (object.has("variables") && object.get("variables").isJsonArray()) {
+            arr = object.getAsJsonArray("variables");
+        }
+        Map<String, String> values = parseVariableArray(arr);
+        if (values.isEmpty()) {
+            throw new IOException("No environment variables found in " + fileName + ".");
+        }
+        String name = firstNonBlank(getString(object, "name"), fallbackName, stripExtension(fileName), "Environment");
+        return List.of(fromKeyValueMap(name, "postman", fileName, values));
+    }
+
+    private static boolean hasVariableArray(JsonObject obj) {
+        return obj != null && (
+                (obj.has("values") && obj.get("values").isJsonArray()) ||
+                (obj.has("variable") && obj.get("variable").isJsonArray()) ||
+                (obj.has("variables") && obj.get("variables").isJsonArray())
+        );
+    }
+
+    private static Map<String, String> parseVariableArray(JsonArray arr) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (arr == null) {
+            return values;
+        }
+        for (JsonElement valueElem : arr) {
+            if (valueElem == null || !valueElem.isJsonObject()) {
+                continue;
+            }
+            JsonObject value = valueElem.getAsJsonObject();
+            if (!isEnabledVariable(value)) {
+                continue;
+            }
+            String key = firstNonBlank(getString(value, "key"), getString(value, "name"));
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            values.put(key, getVariableValue(value));
+        }
+        return values;
+    }
+
+    private static String getVariableValue(JsonObject value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.has("value") && !value.get("value").isJsonNull()) {
+            return stringifyJsonValue(value.get("value"));
+        }
+        if (value.has("currentValue") && !value.get("currentValue").isJsonNull()) {
+            return stringifyJsonValue(value.get("currentValue"));
+        }
+        if (value.has("initialValue") && !value.get("initialValue").isJsonNull()) {
+            return stringifyJsonValue(value.get("initialValue"));
+        }
+        return "";
+    }
+
+    private static boolean isEnabledVariable(JsonObject value) {
+        return value != null && !isDisabled(value);
+    }
+
+    private static boolean isDisabled(JsonObject value) {
+        if (value == null) {
+            return false;
+        }
+        if (isTruthyFlag(value.get("disabled"))) {
+            return true;
+        }
+        JsonElement enabled = value.get("enabled");
+        if (enabled == null || enabled.isJsonNull()) {
+            return false;
+        }
+        if (enabled.isJsonPrimitive() && enabled.getAsJsonPrimitive().isBoolean()) {
+            return !enabled.getAsBoolean();
+        }
+        if (enabled.isJsonPrimitive() && enabled.getAsJsonPrimitive().isString()) {
+            return "false".equalsIgnoreCase(enabled.getAsString().trim());
+        }
+        return false;
+    }
+
+    private static boolean isTruthyFlag(JsonElement value) {
+        if (value == null || value.isJsonNull()) {
+            return false;
+        }
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()) {
+            return value.getAsBoolean();
+        }
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+            return "true".equalsIgnoreCase(value.getAsString().trim());
+        }
+        return false;
     }
 
     private static EnvironmentProfile fromApiWorkbenchExport(String fileName, JsonObject root) {
