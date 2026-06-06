@@ -120,6 +120,28 @@ class CollectionRunnerTest {
     }
 
     @Test
+    void runnerPreviewUsesActiveEnvironmentOverlay() {
+        CollectionRunner runner = new CollectionRunner(null);
+        runner.setRuntimeOverlayProvider(collection -> Map.of("apiHost", "https://active.example.test"));
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Active Env Request";
+        request.method = "GET";
+        request.url = "{{apiHost}}/preview";
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).urlPreview).isEqualTo("https://active.example.test/preview");
+        assertThat(rows.get(0).unresolvedVariables).isEmpty();
+    }
+
+    @Test
     void retriesAreCountedAfterTheFirstAttempt() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CopyOnWriteArrayList<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();

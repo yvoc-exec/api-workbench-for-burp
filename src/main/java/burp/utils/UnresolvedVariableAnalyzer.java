@@ -16,12 +16,16 @@ public class UnresolvedVariableAnalyzer {
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
 
     public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request) {
+        return analyze(collection, request, java.util.Collections.emptyMap());
+    }
+
+    public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request, java.util.Map<String, String> runtimeOverlay) {
         List<UnresolvedVariableIssue> issues = new ArrayList<>();
         if (request == null) {
             return issues;
         }
 
-        VariableResolver resolver = seedResolver(collection, request);
+        VariableResolver resolver = seedResolver(collection, request, runtimeOverlay);
         Set<String> seen = new LinkedHashSet<>();
         String collectionName = collection != null ? collection.name : request.sourceCollection;
         String requestName = request.name;
@@ -81,8 +85,14 @@ public class UnresolvedVariableAnalyzer {
         return issues;
     }
 
-    private VariableResolver seedResolver(ApiCollection collection, ApiRequest request) {
-        return RuntimeResolverFactory.build(collection, request);
+    private VariableResolver seedResolver(ApiCollection collection, ApiRequest request, java.util.Map<String, String> runtimeOverlay) {
+        return RuntimeResolverFactory.build(
+                collection,
+                request,
+                runtimeOverlay != null && !runtimeOverlay.isEmpty()
+                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
+                        : RuntimeResolverFactory.Options.defaultOptions()
+        );
     }
 
     private void scanValue(List<UnresolvedVariableIssue> issues,

@@ -10,7 +10,7 @@ This guide is for operators using API Workbench during API testing, debugging, a
 2. [Mental Model](#mental-model)
 3. [Installation and Startup Checks](#installation-and-startup-checks)
 4. [Workbench Tab](#workbench-tab)
-5. [Variables Tab](#variables-tab)
+5. [Environment Tab](#environment-tab)
 6. [OAuth2 Tab](#oauth2-tab)
 7. [Collection Runner Tab](#collection-runner-tab)
 8. [Import Destinations](#import-destinations)
@@ -70,7 +70,7 @@ API Workbench has four operator surfaces:
 | Tab | Primary Job |
 |-----|-------------|
 | **Workbench** | Load collections, check requests, edit one request, send/import checked requests |
-| **Variables** | Manage collection-scoped runtime variables and runtime JSON files |
+| **Environment** | Manage active environment profiles and OAuth2-bound runtime values |
 | **OAuth2** | Configure/acquire OAuth2 tokens and bind bearer aliases |
 | **Collection Runner** | Execute checked requests sequentially with preview, retries, stop conditions, and timeline |
 
@@ -200,17 +200,20 @@ The **Resolved** tab in the request editor shows the final effective request sta
 - **Resolved Headers (Effective)** — the exact headers that will be sent, including synthesized defaults, auth headers, body Content-Type, and computed Host. Disabled headers are listed separately as suppressed.
 - **Resolved Body** — body mode and resolved content
 
-### Environment Binding
+### Environment Tab
 
 Controls:
 
 | Control | Behavior |
 |---------|----------|
-| **Browse...** | Selects a Postman environment JSON file |
-| **Apply to Checked Requests** | Loads environment values into the checked requests' local variables |
-| **Apply to All Collections** | Loads environment values into all loaded collections |
+| **Import** | Imports environment profiles from Postman, Bruno, Insomnia, `.env`, or generic JSON |
+| **New** | Creates a new environment profile |
+| **Duplicate** | Copies the selected environment profile |
+| **Delete** | Removes the selected environment profile |
+| **Set Active** | Marks the selected environment as the active runtime layer |
+| **Export** | Exports the selected environment profile |
 
-Environment binding mutates runtime variables. It can override keys already present in the target runtime layer.
+The active environment is the normal runtime layer. Request-level variables remain advanced overrides.
 
 ### Options Pane and Actions Button
 
@@ -237,9 +240,9 @@ Before Workbench send/import/run, unresolved variables trigger a modal. You can 
 
 ---
 
-## Variables Tab
+## Environment Tab
 
-The Variables tab manages collection-scoped runtime variables.
+The Environment tab manages active environment profiles and OAuth2-bound runtime values.
 
 ### Target Collection
 

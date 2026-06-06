@@ -64,6 +64,8 @@ public class ImporterPanel {
     // Multi-collection support
     private final List<ApiCollection> loadedCollections = new ArrayList<>();
     private final IdentityHashMap<ApiRequest, ApiCollection> requestToCollectionMap = new IdentityHashMap<>();
+    private final List<EnvironmentProfile> environmentProfiles = new ArrayList<>();
+    private String activeEnvironmentId;
     private OAuth2Panel oauth2Panel;
     private File selectedEnv;
 
@@ -182,6 +184,10 @@ public class ImporterPanel {
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
         this.importer = importer;
         this.runner = runner;
+        if (this.runner != null) {
+            this.runner.setRuntimeOverlayProvider(collection -> activeEnvironmentOverlay());
+            this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
+        }
         this.mainPanel = createUI();
         if (oauth2Panel.getPopulateButton() != null) {
             oauth2Panel.getPopulateButton().setText("Populate from Request");
@@ -230,7 +236,7 @@ public class ImporterPanel {
 
         tabbedPane = new JTabbedPane();
         tabbedPane.addTab("Workbench", createWorkbenchTab());
-        tabbedPane.addTab("Variables", createVariablesTab());
+        tabbedPane.addTab("Environment", createVariablesTab());
         tabbedPane.addTab("OAuth2", createOAuth2Tab());
         tabbedPane.addTab("Collection Runner", createRunnerTab());
         tabbedPane.addTab(DIAGNOSTICS_TAB_NAME, createDiagnosticsTab());
@@ -482,7 +488,10 @@ public class ImporterPanel {
         final ApiCollection resolvedCol = col;
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(List.of(resolvedCol), List.of(requestToSend));
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
+                List.of(resolvedCol),
+                List.of(requestToSend),
+                activeEnvironmentOverlay());
         if (!issues.isEmpty()) {
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
@@ -497,8 +506,15 @@ public class ImporterPanel {
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-
-                    var result = importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow);
+                    Map<String, String> activeOverlay = activeEnvironmentOverlay();
+                    var result = activeOverlay.isEmpty()
+                            ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
+                            : importer.sendSingleRequestWithBuiltRequest(
+                                    requestToSend,
+                                    resolvedCol,
+                                    follow,
+                                    activeOverlay,
+                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
                     var rr = result.response;
 
                     if (rr != null && rr.response() != null) {
@@ -1593,6 +1609,112 @@ public class ImporterPanel {
         return cloneTreeNodeForSelection((DefaultMutableTreeNode) treeModel.getRoot());
     }
 
+    private EnvironmentProfile getActiveEnvironment() {
+        if (environmentProfiles.isEmpty()) {
+            return null;
+        }
+        if (activeEnvironmentId == null) {
+            return null;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null && Objects.equals(activeEnvironmentId, profile.id)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, String> activeEnvironmentOverlay() {
+        EnvironmentProfile active = getActiveEnvironment();
+        return active != null ? active.toRuntimeOverlay() : Collections.emptyMap();
+    }
+
+    public List<EnvironmentProfile> getEnvironmentProfilesSnapshot() {
+        List<EnvironmentProfile> copy = new ArrayList<>();
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null) {
+                copy.add(profile.copy());
+            }
+        }
+        return copy;
+    }
+
+    public void replaceEnvironmentProfiles(List<EnvironmentProfile> profiles) {
+        environmentProfiles.clear();
+        if (profiles != null) {
+            for (EnvironmentProfile profile : profiles) {
+                if (profile == null) {
+                    continue;
+                }
+                profile.ensureDefaults();
+                profile.ensureId();
+                environmentProfiles.add(profile);
+            }
+        }
+        if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
+            activeEnvironmentId = null;
+        }
+        notifyWorkspaceChangedImmediately();
+    }
+
+    public String getActiveEnvironmentId() {
+        return activeEnvironmentId;
+    }
+
+    public void setActiveEnvironmentId(String environmentId) {
+        activeEnvironmentId = environmentId;
+        if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
+            activeEnvironmentId = null;
+        }
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+    }
+
+    private void syncActiveEnvironmentToEditors() {
+        if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
+            requestEditor.setRuntimeVariables(activeEnvironmentOverlay());
+        }
+    }
+
+    private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
+        EnvironmentProfile active = getActiveEnvironment();
+        Map<String, String> stored = new LinkedHashMap<>();
+        if (active == null || entry == null) {
+            return stored;
+        }
+        String accessBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("accessToken") : null;
+        String refreshBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("refreshToken") : null;
+        String tokenTypeBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("tokenType") : null;
+        String expiresInBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("expiresIn") : null;
+
+        if (entry.accessToken != null && !entry.accessToken.isBlank()) {
+            String key = accessBinding != null && !accessBinding.isBlank() ? accessBinding : "oauth2_access_token";
+            active.variables.put(key, entry.accessToken);
+            stored.put(key, entry.accessToken);
+        }
+        if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
+            String key = refreshBinding != null && !refreshBinding.isBlank() ? refreshBinding : "oauth2_refresh_token";
+            active.variables.put(key, entry.refreshToken);
+            stored.put(key, entry.refreshToken);
+        }
+        if (entry.tokenType != null && !entry.tokenType.isBlank()) {
+            String key = tokenTypeBinding != null && !tokenTypeBinding.isBlank() ? tokenTypeBinding : "oauth2_token_type";
+            active.variables.put(key, entry.tokenType);
+            stored.put(key, entry.tokenType);
+        }
+        if (entry.expiresAt > 0) {
+            long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+            String key = expiresInBinding != null && !expiresInBinding.isBlank() ? expiresInBinding : "oauth2_expires_in";
+            active.variables.put(key, String.valueOf(expiresInSeconds));
+            stored.put(key, String.valueOf(expiresInSeconds));
+        }
+        if (!stored.isEmpty()) {
+            active.ensureDefaults();
+            notifyWorkspaceChangedImmediately();
+        }
+        return stored;
+    }
+
     private DefaultMutableTreeNode cloneTreeNodeForSelection(DefaultMutableTreeNode node) {
         DefaultMutableTreeNode copy;
         if (node instanceof CollectionTreeNode) {
@@ -1988,6 +2110,18 @@ public class ImporterPanel {
             return;
         }
 
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        if (activeEnvironment != null) {
+            activeEnvironment.oauth2.config.clear();
+            activeEnvironment.oauth2.config.putAll(filterOAuth2ConfigVars(oauth2Vars));
+            activeEnvironment.oauth2.ensureDefaults();
+            storeOAuth2TokenInActiveEnvironment(collection, entry);
+            syncActiveEnvironmentToEditors();
+            setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
+            appendImportLog("OAuth2 token saved to active environment \"" + activeEnvironment.displayName() + "\".");
+            return;
+        }
+
         if (collection == null) {
             appendImportLog("OAuth2 acquire completed but no target collection was captured.");
             return;
@@ -2020,6 +2154,27 @@ public class ImporterPanel {
         refreshRuntimeViewsForCollection(collection);
         appendImportLog("OAuth2 bearer aliases bound to \"" + collection.name + "\": " + String.join(", ", selectedAliases));
         setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+    }
+
+    private Map<String, String> filterOAuth2ConfigVars(Map<String, String> oauth2Vars) {
+        Map<String, String> filtered = new LinkedHashMap<>();
+        if (oauth2Vars == null) {
+            return filtered;
+        }
+        for (Map.Entry<String, String> entry : oauth2Vars.entrySet()) {
+            if (entry == null || entry.getKey() == null) {
+                continue;
+            }
+            String key = entry.getKey();
+            if (key.startsWith("oauth2_access_token")
+                    || key.startsWith("oauth2_refresh_token")
+                    || key.startsWith("oauth2_token_type")
+                    || key.startsWith("oauth2_expires_in")) {
+                continue;
+            }
+            filtered.put(key, entry.getValue());
+        }
+        return filtered;
     }
 
     static Map<String, String> buildOAuth2RuntimeSnapshot(TokenStore.TokenEntry entry, Map<String, String> panelVars) {
@@ -2197,6 +2352,12 @@ public class ImporterPanel {
 
     static List<UnresolvedVariableIssue> collectUnresolvedVariableIssues(List<ApiCollection> sourceCollections,
                                                                          List<ApiRequest> selectedRequests) {
+        return collectUnresolvedVariableIssues(sourceCollections, selectedRequests, Collections.emptyMap());
+    }
+
+    static List<UnresolvedVariableIssue> collectUnresolvedVariableIssues(List<ApiCollection> sourceCollections,
+                                                                         List<ApiRequest> selectedRequests,
+                                                                         Map<String, String> runtimeOverlay) {
         List<UnresolvedVariableIssue> issues = new ArrayList<>();
         if (selectedRequests == null || selectedRequests.isEmpty()) {
             return issues;
@@ -2229,7 +2390,7 @@ public class ImporterPanel {
             if (collection == null && request.sourceCollection != null) {
                 collection = collectionsByName.get(request.sourceCollection);
             }
-            issues.addAll(analyzer.analyze(collection, request));
+            issues.addAll(analyzer.analyze(collection, request, runtimeOverlay));
         }
 
         return issues;
@@ -2549,6 +2710,8 @@ public class ImporterPanel {
         runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
+        state.environments = getEnvironmentProfilesSnapshot();
+        state.activeEnvironmentId = activeEnvironmentId;
         Map<String, String> uiTreePaths = collectRequestTreePaths();
         Map<String, String> modelTreePaths = collectRequestTreePathsFromRequestModels();
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
@@ -2583,13 +2746,16 @@ public class ImporterPanel {
         }
         PendingMainRequestTreeRestore pendingRestore = new PendingMainRequestTreeRestore(state);
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
-            try {
-                pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
-                restoreWorkspaceCollections(state.collections);
-                selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
-                selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
-                restoreWorkbenchSettings(state);
+                pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
+                try {
+                    pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
+                    restoreWorkspaceCollections(state.collections);
+                    replaceEnvironmentProfiles(state.environments);
+                    activeEnvironmentId = state.activeEnvironmentId;
+                    selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
+                    selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
+                    syncActiveEnvironmentToEditors();
+                    restoreWorkbenchSettings(state);
                 restoreRunnerSettings(state);
                 restoreRunnerDetailState(state);
                 restoreOAuthAutoRefreshState(state.oauthAutoRefreshByCollection);
@@ -4885,7 +5051,7 @@ public class ImporterPanel {
             appendImportLog("No destination selected.");
             return;
         }
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected);
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, activeEnvironmentOverlay());
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
@@ -4949,7 +5115,7 @@ public class ImporterPanel {
             return;
         }
 
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected);
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, activeEnvironmentOverlay());
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
@@ -5601,7 +5767,10 @@ public class ImporterPanel {
             }
             return;
         }
-        Map<String, String> effectiveRuntimeVars = getEffectiveRuntimeVarsForRequestContext(col);
+        Map<String, String> effectiveRuntimeVars = activeEnvironmentOverlay();
+        if (effectiveRuntimeVars.isEmpty()) {
+            effectiveRuntimeVars = getEffectiveRuntimeVarsForRequestContext(col);
+        }
         requestEditor.setRuntimeVariables(effectiveRuntimeVars);
     }
 

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -77,6 +78,27 @@ class SharedRequestPipelineTest {
                 .containsEntry("existing", "old")
                 .containsEntry("external", "keep")
                 .containsEntry("scripted", "value");
+    }
+
+    @Test
+    void buildAppliesRuntimeOverlayWithoutMutatingCollectionVariables() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+        col.runtimeVars.put("token", "collection-token");
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{token}}";
+
+        ExecutionResult exec = pipeline.build(req, col, Map.of("token", "active-env-token"), null);
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.resolvedUrl).isEqualTo("http://example.com/active-env-token");
+        assertThat(col.runtimeVars).containsEntry("token", "collection-token");
     }
 
     @Test
@@ -178,6 +200,49 @@ class SharedRequestPipelineTest {
         assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
         assertThat(exec.resolvedVariables).containsEntry("oauth2_access_token", "pipeline-token");
         assertThat(col.runtimeOAuth2).containsEntry("oauth2_access_token", "pipeline-token");
+    }
+
+    @Test
+    void sharedPipelineStoresOauth2TokenUsingCustomSinkBinding() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        burp.auth.OAuth2Manager manager = org.mockito.Mockito.mock(burp.auth.OAuth2Manager.class);
+        burp.auth.TokenStore.TokenEntry entry = new burp.auth.TokenStore.TokenEntry();
+        entry.accessToken = "fresh-token";
+        entry.refreshToken = "fresh-refresh";
+        entry.expiresAt = System.currentTimeMillis() + 60_000;
+        org.mockito.Mockito.when(manager.getValidToken(org.mockito.Mockito.any())).thenReturn(entry);
+
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), manager);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "OAuth Collection";
+        col.runtimeVars.put("token", "stale");
+        col.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
+        col.runtimeOAuth2.put("oauth2_client_id", "client");
+        col.runtimeOAuth2.put("oauth2_client_secret", "secret");
+        col.runtimeOAuth2.put("oauth2_grant", "client_credentials");
+
+        ApiRequest req = new ApiRequest();
+        req.name = "OAuth Request";
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "oauth2";
+        req.auth.properties.put("accessToken", "{{token}}");
+
+        ExecutionResult exec = pipeline.build(
+                req,
+                col,
+                Map.of("token", "active-env-token"),
+                (collection, tokenEntry) -> Map.of("oauth2_access_token", tokenEntry.accessToken, "token", tokenEntry.accessToken));
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.requestHeaders).contains("Authorization: Bearer fresh-token");
+        assertThat(exec.resolvedVariables)
+                .containsEntry("token", "fresh-token")
+                .containsEntry("oauth2_access_token", "fresh-token");
+        assertThat(col.runtimeOAuth2).doesNotContainKey("token");
     }
 
     @Test

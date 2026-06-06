@@ -7,6 +7,7 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.utils.DebouncedSwingAction;
 import burp.utils.WorkspaceStateJson;
@@ -310,6 +311,45 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void workspaceSnapshotIncludesEnvironmentProfilesAndActiveSelection() throws Exception {
+        ImporterPanel ui = newImporterUi();
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "UAT";
+        profile.variables.put("baseUrl", "https://uat.example.test");
+        profile.oauth2.config.put("oauth2_client_id", "client-id");
+        ui.replaceEnvironmentProfiles(List.of(profile));
+        ui.setActiveEnvironmentId(profile.id);
+
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.activeEnvironmentId).isEqualTo(profile.id);
+        assertThat(snapshot.environments.get(0).variables).containsEntry("baseUrl", "https://uat.example.test");
+        assertThat(snapshot.environments.get(0).oauth2.config).containsEntry("oauth2_client_id", "client-id");
+    }
+
+    @Test
+    void workspaceRestoreRestoresActiveEnvironmentSelection() throws Exception {
+        ImporterPanel ui = newImporterUi();
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "PRD";
+        profile.variables.put("baseUrl", "https://prd.example.test");
+        profile.ensureId();
+        WorkspaceState state = new WorkspaceState();
+        state.collections = List.of(new ApiCollection());
+        state.environments = List.of(profile);
+        state.activeEnvironmentId = profile.id;
+
+        ui.restoreWorkspaceState(state);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+        assertThat(snapshot.activeEnvironmentId).isEqualTo(profile.id);
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.environments.get(0).variables).containsEntry("baseUrl", "https://prd.example.test");
+    }
+
+    @Test
     void manualReaddedAuthorizationTriggersImmediateWorkspaceSaveAndClearsSuppression() throws Exception {
         WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
         fixture.writeCount.set(0);
@@ -575,5 +615,11 @@ class UniversalImporterWorkspaceSaveTest {
         Timer timer = (Timer) timerField.get(debounced);
         timer.setInitialDelay(delayMs);
         timer.setDelay(delayMs);
+    }
+
+    private static ImporterPanel newImporterUi() throws Exception {
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, new WorkspaceStateService(Mockito.mock(PersistedObject.class)));
+        return importer.getUI();
     }
 }

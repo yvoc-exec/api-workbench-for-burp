@@ -8,6 +8,8 @@ import java.util.Map;
 public class WorkspaceState {
     public int version = 1;
     public List<ApiCollection> collections = new ArrayList<>();
+    public List<EnvironmentProfile> environments = new ArrayList<>();
+    public String activeEnvironmentId;
     public int selectedTabIndex = 0;
     public String selectedVariablesCollectionName;
     public String selectedOAuth2CollectionName;
@@ -56,6 +58,8 @@ public class WorkspaceState {
         }
         copy.version = source.version > 0 ? source.version : 1;
         copy.collections = copyCollections(source.collections);
+        copy.environments = copyEnvironments(source.environments);
+        copy.activeEnvironmentId = source.activeEnvironmentId;
         copy.selectedTabIndex = source.selectedTabIndex;
         copy.selectedVariablesCollectionName = source.selectedVariablesCollectionName;
         copy.selectedOAuth2CollectionName = source.selectedOAuth2CollectionName;
@@ -85,6 +89,19 @@ public class WorkspaceState {
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
         copy.oauthAutoRefreshByCollection = copyOAuthAutoRefreshMap(source.oauthAutoRefreshByCollection);
         return copy;
+    }
+
+    private static List<EnvironmentProfile> copyEnvironments(List<EnvironmentProfile> source) {
+        List<EnvironmentProfile> out = new ArrayList<>();
+        if (source == null) {
+            return out;
+        }
+        for (EnvironmentProfile profile : source) {
+            if (profile != null) {
+                out.add(profile.copy());
+            }
+        }
+        return out;
     }
 
     private static List<ApiCollection> copyCollections(List<ApiCollection> source) {

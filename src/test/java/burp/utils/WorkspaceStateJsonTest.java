@@ -2,6 +2,7 @@ package burp.utils;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import org.junit.jupiter.api.Test;
 
@@ -10,6 +11,95 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class WorkspaceStateJsonTest {
+
+    @Test
+    void environmentProfilesPersistAndRestore() {
+        WorkspaceState state = new WorkspaceState();
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "UAT";
+        profile.sourceFormat = "postman";
+        profile.sourceFileName = "uat.postman_environment.json";
+        profile.variables.put("baseUrl", "https://uat.example.test");
+        profile.variables.put("token", "uat-token");
+        profile.oauth2.config.put("oauth2_client_id", "uat-client");
+        profile.oauth2.outputBindings.put("accessToken", "token");
+        state.environments.add(profile);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.environments).hasSize(1);
+        assertThat(parsed.environments.get(0).name).isEqualTo("UAT");
+        assertThat(parsed.environments.get(0).sourceFormat).isEqualTo("postman");
+        assertThat(parsed.environments.get(0).sourceFileName).isEqualTo("uat.postman_environment.json");
+        assertThat(parsed.environments.get(0).variables)
+                .containsEntry("baseUrl", "https://uat.example.test")
+                .containsEntry("token", "uat-token");
+        assertThat(parsed.environments.get(0).oauth2.config).containsEntry("oauth2_client_id", "uat-client");
+        assertThat(parsed.environments.get(0).oauth2.outputBindings).containsEntry("accessToken", "token");
+    }
+
+    @Test
+    void activeEnvironmentIdPersistsAndRestores() {
+        WorkspaceState state = new WorkspaceState();
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "PRD";
+        profile.ensureId();
+        state.environments.add(profile);
+        state.activeEnvironmentId = profile.id;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.activeEnvironmentId).isEqualTo(profile.id);
+        assertThat(parsed.environments).hasSize(1);
+    }
+
+    @Test
+    void missingEnvironmentFieldsDefaultSafely() {
+        WorkspaceState parsed = WorkspaceStateJson.fromJson("{}");
+
+        assertThat(parsed.environments).isNotNull().isEmpty();
+        assertThat(parsed.activeEnvironmentId).isNull();
+    }
+
+    @Test
+    void oauth2EnvironmentStateDefaultsSafely() {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.oauth2 = null;
+        profile.variables = null;
+
+        WorkspaceState state = new WorkspaceState();
+        state.environments.add(profile);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.environments.get(0).variables).isNotNull().isEmpty();
+        assertThat(parsed.environments.get(0).oauth2).isNotNull();
+        assertThat(parsed.environments.get(0).oauth2.config).isNotNull().isEmpty();
+        assertThat(parsed.environments.get(0).oauth2.outputBindings)
+                .containsEntry("accessToken", "oauth2_access_token")
+                .containsEntry("refreshToken", "oauth2_refresh_token")
+                .containsEntry("tokenType", "oauth2_token_type")
+                .containsEntry("expiresIn", "oauth2_expires_in");
+    }
+
+    @Test
+    void legacyWorkspaceWithoutEnvironmentsStillLoads() {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "Legacy",
+                    "requests": []
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.environments).isEmpty();
+        assertThat(parsed.activeEnvironmentId).isNull();
+    }
 
     @Test
     void roundTripsLoadedCollectionsAndRuntimeVars() {

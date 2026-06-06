@@ -170,8 +170,8 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 > // extract: auth_token = $.data.token
 > ```
 
-### Playbook 4: Variables Tab Usage
-Open the **Variables** tab, select a target collection from the dropdown, and enter variables in either format:
+### Playbook 4: Environment Tab Usage
+Open the **Environment** tab, create or import an environment, set it active, and enter variables in either format:
 
 **key=value lines:**
 ```
@@ -191,13 +191,12 @@ oauth2_client_id=my-client
 
 Precedence during runtime (highest to lowest):
 1. Request-level variables (`req.variables`)
-2. Extracted / runtime variables (Variables tab + script extraction + runner-extracted vars)
-3. Scoped OAuth2 runtime vars (`runtimeOAuth2`, incl. `oauth2_access_token`)
-4. Collection-level variables (`collection.variables`)
-5. Collection environment map (`collection.environment`)
-6. Default values in `{{var|default}}` syntax
+2. Active Environment variables
+3. Collection-level variables (`collection.variables`)
+4. Collection environment map (`collection.environment`)
+5. Default values in `{{var|default}}` syntax
 
-> **Note:** Because runtime vars (level 2) take precedence over OAuth2 vars (level 3), a script can intentionally override `oauth2_access_token` if needed.
+> **Note:** Request-level variables remain advanced overrides. Active Environment values are the normal runtime layer.
 
 **Collection-scoped isolation:**
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
@@ -205,8 +204,8 @@ Each collection resolves variables in its own context. Collection1 and Collectio
 **Unresolved-variable preflight:**
 Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. Entered values are applied into the selected collection runtime variables before continuing.
 
-**Runtime JSON portability:**
-Use **Export Runtime JSON** and **Import Runtime JSON** in the Variables tab to save and reload a collection's runtime variables and OAuth2 runtime values. Import supports merge or replace.
+**Environment portability:**
+Use **Export** and **Import** in the Environment tab to save and reload an environment profile. OAuth2 token outputs are written into the active environment using the selected output binding.
 
 **Autosave behavior:**
 - Typing in the Variables editor autosaves to the selected collection after a short debounce.
