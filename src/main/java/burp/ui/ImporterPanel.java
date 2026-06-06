@@ -6,7 +6,6 @@ import burp.runner.CollectionRunner;
 import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
-import burp.utils.RuntimeVariablesJson;
 import burp.UniversalImporter;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
@@ -197,6 +196,7 @@ public class ImporterPanel {
             oauth2Panel.getPopulateButton().setText("Populate from Request");
             oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromRequest());
         }
+        this.oauth2Panel.setClearTokensListener(this::clearActiveEnvironmentOAuth2TokenOutputs);
     }
 
     public void setWorkspaceChangeListener(Runnable listener) {
@@ -1665,6 +1665,45 @@ public class ImporterPanel {
         return stored;
     }
 
+    private void clearActiveEnvironmentOAuth2TokenOutputs() {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            setOAuth2AutosaveStatus("Tokens cleared. No Active Environment selected.", Color.GRAY);
+            syncActiveEnvironmentToEditors();
+            return;
+        }
+
+        active.ensureDefaults();
+        Map<String, String> bindings = active.oauth2 != null ? active.oauth2.outputBindings : Collections.emptyMap();
+        if (bindings == null || bindings.isEmpty()) {
+            bindings = readOAuth2OutputBindingsFromUi();
+        }
+
+        LinkedHashSet<String> keysToRemove = new LinkedHashSet<>();
+        addBindingTarget(keysToRemove, bindings.get("accessToken"));
+        addBindingTarget(keysToRemove, bindings.get("refreshToken"));
+        addBindingTarget(keysToRemove, bindings.get("tokenType"));
+        addBindingTarget(keysToRemove, bindings.get("expiresIn"));
+
+        for (String key : keysToRemove) {
+            active.variables.remove(key);
+        }
+
+        syncOAuth2PanelFromActiveEnvironment();
+        syncOAuth2BindingUiFromActiveEnvironment();
+        renderSelectedEnvironmentIntoEditor();
+        syncActiveEnvironmentToEditors();
+        updateEnvironmentUiState();
+        notifyWorkspaceChangedImmediately();
+        setOAuth2AutosaveStatus("Cleared OAuth2 token variables from Active Environment \"" + active.displayName() + "\".", Color.GRAY);
+    }
+
+    private void addBindingTarget(Set<String> keys, String value) {
+        if (keys != null && value != null && !value.isBlank()) {
+            keys.add(value);
+        }
+    }
+
     private DefaultMutableTreeNode cloneTreeNodeForSelection(DefaultMutableTreeNode node) {
         DefaultMutableTreeNode copy;
         if (node instanceof CollectionTreeNode) {
@@ -2592,99 +2631,6 @@ public class ImporterPanel {
         markVariablesDirty();
     }
 
-    private void exportSelectedCollectionRuntimeJson() {
-        ApiCollection collection = getSelectedVariablesCollection();
-        if (collection == null) {
-            appendImportLog("Runtime JSON export: no collection selected.");
-            return;
-        }
-
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Export Runtime Variables JSON");
-        chooser.setFileFilter(new FileNameExtensionFilter("JSON files", "json"));
-        String defaultName = (collection.name != null && !collection.name.isBlank()) ? collection.name : "runtime-variables";
-        chooser.setSelectedFile(new File(defaultName.replaceAll("[^a-zA-Z0-9._-]", "_") + ".json"));
-        if (chooser.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
-            return;
-        }
-
-        File target = chooser.getSelectedFile();
-        if (target.exists()) {
-            int confirm = JOptionPane.showConfirmDialog(mainPanel,
-                    "Overwrite existing file?\n" + target.getAbsolutePath(),
-                    "Confirm Export Overwrite",
-                    JOptionPane.YES_NO_OPTION);
-            if (confirm != JOptionPane.YES_OPTION) {
-                return;
-            }
-        }
-
-        try {
-            Files.writeString(target.toPath(), RuntimeVariablesJson.toJson(collection), StandardCharsets.UTF_8);
-            appendImportLog("Exported runtime variables for " + collection.name + ".");
-        } catch (IOException ex) {
-            appendImportLog("Runtime JSON export failed: " + ex.getMessage());
-            JOptionPane.showMessageDialog(mainPanel,
-                    "Failed to export runtime JSON:\n" + ex.getMessage(),
-                    "Export Failed",
-                    JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    private void importSelectedCollectionRuntimeJson() {
-        ApiCollection collection = getSelectedVariablesCollection();
-        if (collection == null) {
-            appendImportLog("Runtime JSON import: no collection selected.");
-            return;
-        }
-
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Import Runtime Variables JSON");
-        chooser.setFileFilter(new FileNameExtensionFilter("JSON files", "json"));
-        if (chooser.showOpenDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
-            return;
-        }
-
-        File source = chooser.getSelectedFile();
-        try {
-            String json = Files.readString(source.toPath(), StandardCharsets.UTF_8);
-            RuntimeVariablesJson.RuntimeVariableBundle bundle = RuntimeVariablesJson.fromJson(json);
-            Object[] options = {"Merge", "Replace", "Cancel"};
-            int choice = JOptionPane.showOptionDialog(
-                    mainPanel,
-                    "Import runtime variables into \"" + collection.name + "\"?\n" +
-                            "Merge keeps existing values. Replace overwrites runtime vars and OAuth2 runtime vars.",
-                    "Confirm Runtime JSON Import",
-                    JOptionPane.DEFAULT_OPTION,
-                    JOptionPane.QUESTION_MESSAGE,
-                    null,
-                    options,
-                    options[0]);
-            if (choice == 2 || choice == JOptionPane.CLOSED_OPTION) {
-                return;
-            }
-
-            RuntimeVariablesJson.applyToCollection(collection, bundle, choice == 1);
-            appendImportLog("Imported runtime variables for " + collection.name + " from " + source.getName() + ".");
-            renderEffectiveVariablesForSelectedCollection();
-            refreshOAuth2PanelForCollection(collection);
-            if (requestEditor != null && requestEditor.getCurrentCollection() == collection) {
-                syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), collection);
-            }
-        } catch (Exception ex) {
-            appendImportLog("Runtime JSON import failed: " + ex.getMessage());
-            JOptionPane.showMessageDialog(mainPanel,
-                    "Failed to import runtime JSON:\n" + ex.getMessage(),
-                    "Import Failed",
-                    JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    private ApiCollection getSelectedVariablesCollection() {
-        CollectionRef ref = varsCollectionCombo != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
-        return ref != null ? ref.collection : null;
-    }
-
     static List<UnresolvedVariableIssue> collectUnresolvedVariableIssues(List<ApiCollection> sourceCollections,
                                                                          List<ApiRequest> selectedRequests) {
         return collectUnresolvedVariableIssues(sourceCollections, selectedRequests, Collections.emptyMap());
@@ -2773,9 +2719,8 @@ public class ImporterPanel {
     }
 
     private void refreshOAuth2PanelForCollection(ApiCollection col) {
-        if (col != null && col.runtimeOAuth2 != null) {
-            oauth2Panel.populateFromOAuth2Map(col.runtimeOAuth2);
-        }
+        syncOAuth2PanelFromActiveEnvironment();
+        syncOAuth2BindingUiFromActiveEnvironment();
     }
 
     private void refreshRuntimeViewsForCollection(ApiCollection col) {
@@ -4275,8 +4220,25 @@ public class ImporterPanel {
         if (oauth2Panel != null) {
             oauth2Panel.setEditable(hasActive);
         }
+        syncOAuth2PanelFromActiveEnvironment();
         setBindingCombosEnabled(hasActive);
         refreshOAuth2BindingCandidates();
+    }
+
+    private void syncOAuth2PanelFromActiveEnvironment() {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (oauth2Panel == null) {
+            return;
+        }
+        if (active == null) {
+            oauth2Panel.populateFromOAuth2Map(Collections.emptyMap());
+            return;
+        }
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        if (active.oauth2 != null && active.oauth2.config != null) {
+            values.putAll(active.oauth2.config);
+        }
+        oauth2Panel.populateFromOAuth2Map(values);
     }
 
     private void handleEnvironmentSelectionChanged() {
@@ -5723,24 +5685,33 @@ public class ImporterPanel {
             appendImportLog("Populate OAuth2: Request selection is empty.");
             return;
         }
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        if (activeEnvironment == null) {
+            String message = "Create or select an Active Environment before populating OAuth2 settings.";
+            if (GraphicsEnvironment.isHeadless()) {
+                appendImportLog(message);
+            } else {
+                JOptionPane.showMessageDialog(mainPanel,
+                        message,
+                        "Active Environment Required",
+                        JOptionPane.WARNING_MESSAGE);
+            }
+            return;
+        }
+
         ApiCollection owningCollection = requestToCollectionMap.get(req);
         if (owningCollection == null) {
             owningCollection = findCollectionByName(req.sourceCollection);
         }
-        if (owningCollection != null) {
-            selectOAuth2Collection(owningCollection);
-        }
 
-        VariableResolver populateResolver = buildOAuth2PopulateResolver(owningCollection, req);
+        VariableResolver populateResolver = buildOAuth2PopulateResolver(owningCollection, req, activeEnvironmentOverlay());
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
         if (extracted.isEmpty()) {
             appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data.");
             return;
         }
 
-        Map<String, String> existing = owningCollection != null
-                ? buildOAuth2PopulateExistingVars(owningCollection)
-                : parseEnvVarsMap();
+        Map<String, String> existing = buildOAuth2PopulateExistingVars(owningCollection, req, activeEnvironment);
         Map<String, String> merged = burp.utils.OAuth2PopulateHelper.mergeWithExisting(extracted, existing);
         oauth2Panel.populateFromOAuth2Map(merged);
 
@@ -5754,47 +5725,29 @@ public class ImporterPanel {
         }
     }
 
-    private boolean selectOAuth2Collection(ApiCollection collection) {
-        if (oauth2CollectionCombo == null || collection == null) {
-            return false;
-        }
-        for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
-            CollectionRef ref = oauth2CollectionCombo.getItemAt(i);
-            if (ref != null && ref.collection == collection) {
-                oauth2CollectionCombo.setSelectedIndex(i);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private ApiCollection getSelectedOAuth2Collection() {
-        CollectionRef ref = getSelectedCollectionRef(oauth2CollectionCombo);
-        return ref != null ? ref.collection : null;
-    }
-
     private List<ApiRequest> collectOAuth2PopulateRequests(DefaultMutableTreeNode root) {
         List<ApiRequest> selected = collectCheckedRequests(root);
         return selected.size() == 1 ? selected : Collections.emptyList();
     }
 
-    static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
+    static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request, Map<String, String> activeOverlay) {
         VariableResolver resolver = new VariableResolver();
         if (collection != null) {
             resolver.addEnvironmentVariables(collection);
             resolver.addCollectionVariables(collection);
             resolver.addFolderVariables(collection, request);
-            if (collection.runtimeOAuth2 != null) {
-                resolver.addAll(collection.runtimeOAuth2);
-            }
-            if (collection.runtimeVars != null) {
-                resolver.addAll(collection.runtimeVars);
-            }
+        }
+        if (activeOverlay != null && !activeOverlay.isEmpty()) {
+            resolver.addAll(activeOverlay);
         }
         if (request != null) {
             resolver.addRequestVariables(request);
         }
         return resolver;
+    }
+
+    static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
+        return buildOAuth2PopulateResolver(collection, request, Collections.emptyMap());
     }
 
     static List<String> collectUnresolvedOAuth2PopulateVariables(Map<String, String> fields) {
@@ -5812,26 +5765,52 @@ public class ImporterPanel {
         return new ArrayList<>(unresolved);
     }
 
-    static Map<String, String> buildOAuth2PopulateExistingVars(ApiCollection collection) {
+    Map<String, String> buildOAuth2PopulateExistingVars(ApiCollection collection, ApiRequest request, EnvironmentProfile activeEnvironment) {
         Map<String, String> existing = new LinkedHashMap<>();
-        if (collection == null) {
-            return existing;
-        }
-        if (collection.environment != null) {
+        if (collection != null && collection.environment != null) {
             existing.putAll(collection.environment);
         }
-        if (collection.variables != null) {
+        if (collection != null && collection.variables != null) {
             for (ApiRequest.Variable variable : collection.variables) {
                 if (variable != null && variable.enabled && variable.key != null && variable.value != null) {
                     existing.put(variable.key, variable.value);
                 }
             }
         }
-        if (collection.runtimeOAuth2 != null) {
-            existing.putAll(collection.runtimeOAuth2);
+        if (collection != null && request != null) {
+            String folderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
+            if (folderPath != null && !folderPath.isBlank() && collection.folderVars != null) {
+                String[] parts = folderPath.split("/");
+                StringBuilder current = new StringBuilder();
+                for (String part : parts) {
+                    if (part == null || part.isBlank()) {
+                        continue;
+                    }
+                    if (current.length() > 0) {
+                        current.append("/");
+                    }
+                    current.append(part.trim());
+                    Map<String, String> vars = collection.folderVars.get(current.toString());
+                    if (vars != null) {
+                        existing.putAll(vars);
+                    }
+                }
+            }
         }
-        if (collection.runtimeVars != null) {
-            existing.putAll(collection.runtimeVars);
+        if (activeEnvironment != null) {
+            if (activeEnvironment.oauth2 != null && activeEnvironment.oauth2.config != null) {
+                existing.putAll(activeEnvironment.oauth2.config);
+            }
+            if (activeEnvironment.variables != null) {
+                existing.putAll(activeEnvironment.variables);
+            }
+        }
+        if (request != null && request.variables != null) {
+            for (ApiRequest.Variable variable : request.variables) {
+                if (variable != null && variable.key != null && variable.value != null && !variable.key.isBlank()) {
+                    existing.put(variable.key, variable.value);
+                }
+            }
         }
         return existing;
     }
@@ -5922,32 +5901,6 @@ public class ImporterPanel {
 
     private void applyActiveVariablesDraftToCollection(ApiCollection col) {
         // Legacy no-op. Active Environment owns the primary runtime layer.
-    }
-
-    private Map<String, String> parseEnvVarsMap() {
-        if (isVarsTableViewActive()) {
-            syncRawFromVarsTable();
-        }
-        Map<String, String> vars = new HashMap<>();
-        String text = envVarsArea.getText();
-        try {
-            com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseString(text).getAsJsonObject();
-            for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
-                vars.put(entry.getKey(), entry.getValue().getAsString());
-            }
-            return vars;
-        } catch (Exception e) {
-            // Not JSON, parse as key=value lines
-        }
-        for (String line : text.split("\n")) {
-            line = line.trim();
-            if (line.isEmpty() || line.startsWith("#")) continue;
-            int eqIdx = line.indexOf('=');
-            if (eqIdx > 0) {
-                vars.put(line.substring(0, eqIdx).trim(), line.substring(eqIdx + 1).trim());
-            }
-        }
-        return vars;
     }
 
     private Map<String, String> parseRuntimeOverrideFromRawText() {
