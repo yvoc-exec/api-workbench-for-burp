@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -259,6 +260,51 @@ class EnvironmentImportServiceTest {
                 .containsEntry("base_url", "https://uat.example.test")
                 .containsEntry("token", "abc=123")
                 .containsEntry("blank", "");
+    }
+
+    @Test
+    void importsDotEnvWithExportAndQuotedValues() throws Exception {
+        Path file = tempFile(".env", """
+                # comment
+                BASE_URL=https://api.example.test
+                export TOKEN=abc123
+                QUOTED_DOUBLE="hello world"
+                QUOTED_SINGLE='hello single'
+                EMPTY=
+                URL_WITH_EQUALS=https://example.test/callback?a=1=b
+                LITERAL_REF=${OTHER_KEY}
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        Map<String, String> vars = profiles.get(0).variables;
+        assertThat(vars).containsEntry("BASE_URL", "https://api.example.test");
+        assertThat(vars).containsEntry("TOKEN", "abc123");
+        assertThat(vars).containsEntry("QUOTED_DOUBLE", "hello world");
+        assertThat(vars).containsEntry("QUOTED_SINGLE", "hello single");
+        assertThat(vars).containsEntry("EMPTY", "");
+        assertThat(vars).containsEntry("URL_WITH_EQUALS", "https://example.test/callback?a=1=b");
+        assertThat(vars).containsEntry("LITERAL_REF", "${OTHER_KEY}");
+    }
+
+    @Test
+    void importsDotEnvSkipsCommentsBlankLinesAndInvalidKeys() throws Exception {
+        Path file = tempFile(".env", """
+                # comment
+
+                NO_EQUALS
+                =missingKey
+                VALID=value
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).variables)
+                .containsEntry("VALID", "value")
+                .doesNotContainKey("NO_EQUALS")
+                .doesNotContainKey("");
     }
 
     @Test
