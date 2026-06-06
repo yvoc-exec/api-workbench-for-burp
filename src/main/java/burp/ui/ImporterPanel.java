@@ -112,6 +112,12 @@ public class ImporterPanel {
     private HttpResponseEditor detailResponseEditor;
     private JTextArea detailVarsText;
 
+    // Workbench environment selector
+    private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
+    private JButton workbenchEnvironmentImportBtn;
+    private JLabel workbenchEnvironmentStatusLabel;
+    private boolean suppressWorkbenchEnvironmentEvents = false;
+
     // Environment tab
     private JComboBox<EnvironmentRef> environmentCombo;
     private JButton environmentImportBtn, environmentNewBtn, environmentDuplicateBtn,
@@ -408,11 +414,22 @@ public class ImporterPanel {
     private JPanel createEnvBindingRow() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         panel.setBorder(BorderFactory.createTitledBorder("Environment"));
-        JLabel status = new JLabel("Active Environment: " + (getActiveEnvironment() != null ? getActiveEnvironment().displayName() : "No Environment"));
-        JButton openEnvironmentTabBtn = new JButton("Open Environment");
-        openEnvironmentTabBtn.addActionListener(e -> switchToTabByName("Environment"));
-        panel.add(status);
-        panel.add(openEnvironmentTabBtn);
+
+        panel.add(new JLabel("Active Environment:"));
+        workbenchEnvironmentCombo = new JComboBox<>();
+        workbenchEnvironmentCombo.setPrototypeDisplayValue(new EnvironmentRef(null, "No Environment"));
+        workbenchEnvironmentCombo.addActionListener(e -> handleWorkbenchEnvironmentSelectionChanged());
+        panel.add(workbenchEnvironmentCombo);
+
+        workbenchEnvironmentImportBtn = new JButton("Import");
+        workbenchEnvironmentImportBtn.addActionListener(e -> handleEnvironmentImport());
+        panel.add(workbenchEnvironmentImportBtn);
+
+        workbenchEnvironmentStatusLabel = new JLabel("");
+        workbenchEnvironmentStatusLabel.setForeground(Color.GRAY);
+        panel.add(workbenchEnvironmentStatusLabel);
+
+        syncWorkbenchEnvironmentControls();
         return panel;
     }
 
@@ -481,7 +498,7 @@ public class ImporterPanel {
         final ApiCollection resolvedCol = col;
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
-        final Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
                 List.of(resolvedCol),
                 List.of(requestToSend),
@@ -492,7 +509,9 @@ public class ImporterPanel {
                 appendImportLog("Send cancelled due to unresolved variables.");
                 return;
             }
+            runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
         }
+        final Map<String, String> runtimeOverlayForSend = runtimeOverlay;
         requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
@@ -500,13 +519,13 @@ public class ImporterPanel {
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    var result = runtimeOverlay == null
+                    var result = runtimeOverlayForSend == null
                             ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
                             : importer.sendSingleRequestWithBuiltRequest(
                                     requestToSend,
                                     resolvedCol,
                                     follow,
-                                    runtimeOverlay,
+                                    runtimeOverlayForSend,
                                     ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
                     var rr = result.response;
 
@@ -1606,6 +1625,9 @@ public class ImporterPanel {
     }
 
     public void setActiveEnvironmentId(String environmentId) {
+        if (environmentDirty) {
+            commitEnvironmentEditorToSelectedProfile();
+        }
         activeEnvironmentId = environmentId;
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
@@ -2131,6 +2153,12 @@ public class ImporterPanel {
         if (selected == null) {
             return;
         }
+        if (environmentTable != null && environmentTable.isEditing()) {
+            javax.swing.table.TableCellEditor editor = environmentTable.getCellEditor();
+            if (editor != null) {
+                editor.stopCellEditing();
+            }
+        }
         Map<String, String> parsed = parseEnvironmentEditorVariables();
         selected.variables.clear();
         selected.variables.putAll(parsed);
@@ -2201,6 +2229,12 @@ public class ImporterPanel {
         if (environmentTableModel == null || environmentRawArea == null) {
             return;
         }
+        if (environmentTable != null && environmentTable.isEditing()) {
+            javax.swing.table.TableCellEditor editor = environmentTable.getCellEditor();
+            if (editor != null) {
+                editor.stopCellEditing();
+            }
+        }
         Map<String, String> parsed = parseEnvironmentTableVariables();
         suppressEnvironmentEditorEvents = true;
         try {
@@ -2214,6 +2248,12 @@ public class ImporterPanel {
         Map<String, String> vars = new LinkedHashMap<>();
         if (environmentTableModel == null) {
             return vars;
+        }
+        if (environmentTable != null && environmentTable.isEditing()) {
+            javax.swing.table.TableCellEditor editor = environmentTable.getCellEditor();
+            if (editor != null) {
+                editor.stopCellEditing();
+            }
         }
         for (int i = 0; i < environmentTableModel.getRowCount(); i++) {
             Object keyObj = environmentTableModel.getValueAt(i, 0);
@@ -2467,18 +2507,13 @@ public class ImporterPanel {
         if (issues == null || issues.isEmpty()) {
             return UnresolvedVariablesDialog.Action.CONTINUE_WITHOUT_APPLYING;
         }
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active == null) {
-            JOptionPane.showMessageDialog(mainPanel,
-                    "Unresolved variables require an Active Environment. Create or import one first.",
-                    "Active Environment Required",
-                    JOptionPane.WARNING_MESSAGE);
-            return UnresolvedVariablesDialog.Action.CANCEL;
-        }
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
-        UnresolvedVariablesDialog dialog = new UnresolvedVariablesDialog(owner, issues, targetCollections);
+        UnresolvedVariablesDialog dialog = createUnresolvedVariablesDialog(issues, targetCollections);
         UnresolvedVariablesDialog.Action action = dialog.showDialog();
         if (action == UnresolvedVariablesDialog.Action.APPLY_AND_CONTINUE) {
+            EnvironmentProfile active = getActiveEnvironment();
+            if (active == null) {
+                return UnresolvedVariablesDialog.Action.CONTINUE_WITHOUT_APPLYING;
+            }
             Map<String, String> entered = dialog.getEnteredValues();
             if (entered != null && !entered.isEmpty()) {
                 for (UnresolvedVariableIssue issue : issues) {
@@ -2500,6 +2535,23 @@ public class ImporterPanel {
             }
         }
         return action;
+    }
+
+    UnresolvedVariablesDialog createUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
+                                                              List<ApiCollection> targetCollections) {
+        EnvironmentProfile active = getActiveEnvironment();
+        boolean canApply = active != null;
+        String hintText = canApply
+                ? "Values will be saved to Active Environment: " + active.displayName()
+                : "No Active Environment selected. You may continue without applying, or cancel and create/import an environment.";
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        return new UnresolvedVariablesDialog(
+                owner,
+                issues,
+                targetCollections,
+                canApply,
+                "Apply to Active Environment",
+                hintText);
     }
 
     private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
@@ -2784,20 +2836,20 @@ public class ImporterPanel {
                     base.append("\n");
                     hasAny = true;
                 }
-                // Layer 4: runtime overrides (editable layer)
+                // Layer 4: environment overrides (editable layer)
                 sb.append(base);
                 varsBaseLayerText = base.toString().trim();
                 if (!varsBaseLayerText.isEmpty()) {
                     sb.append("\n");
                 }
                 if (col.runtimeVars != null && !col.runtimeVars.isEmpty()) {
-                    sb.append("# Runtime overrides (edits apply here)\n");
+                    sb.append("# Environment variables\n");
                     for (Map.Entry<String, String> entry : new TreeMap<>(col.runtimeVars).entrySet()) {
                         sb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
                     }
                     hasAny = true;
                 } else if (hasAny) {
-                    sb.append("# Runtime overrides (edits apply here)\n");
+                    sb.append("# Environment variables\n");
                 }
                 setVariablesEditorTextPreservingView(hasAny ? sb.toString() : "");
                 if (isVarsTableViewActive()) {
@@ -4196,9 +4248,75 @@ public class ImporterPanel {
         if (environmentHintLabel != null) {
             environmentHintLabel.setText("Active Environment values apply to previews, sends, runner, Repeater, Intruder, and Sitemap.");
         }
-        if (environmentCombo != null && environmentProfiles.isEmpty()) {
-            environmentCombo.setSelectedItem(null);
+        if (environmentCombo != null && environmentProfiles.isEmpty() && environmentCombo.getItemCount() > 0) {
+            environmentCombo.setSelectedIndex(0);
         }
+        syncWorkbenchEnvironmentControls();
+    }
+
+    private void syncWorkbenchEnvironmentControls() {
+        if (workbenchEnvironmentCombo == null) {
+            return;
+        }
+        suppressWorkbenchEnvironmentEvents = true;
+        try {
+            EnvironmentProfile active = getActiveEnvironment();
+            String selectedIdBefore = active != null ? active.id : null;
+            workbenchEnvironmentCombo.removeAllItems();
+            workbenchEnvironmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
+            for (EnvironmentProfile profile : environmentProfiles) {
+                if (profile == null) {
+                    continue;
+                }
+                profile.ensureDefaults();
+                profile.ensureId();
+                workbenchEnvironmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+            }
+            if (selectedIdBefore != null && selectWorkbenchEnvironmentById(selectedIdBefore)) {
+                // selected active env
+            } else {
+                workbenchEnvironmentCombo.setSelectedIndex(0);
+            }
+        } finally {
+            suppressWorkbenchEnvironmentEvents = false;
+        }
+        if (workbenchEnvironmentStatusLabel != null) {
+            EnvironmentProfile active = getActiveEnvironment();
+            workbenchEnvironmentStatusLabel.setText(active != null ? active.displayName() : "No active environment");
+            workbenchEnvironmentStatusLabel.setForeground(active != null ? Color.DARK_GRAY : Color.GRAY);
+        }
+        if (workbenchEnvironmentImportBtn != null) {
+            workbenchEnvironmentImportBtn.setEnabled(true);
+        }
+    }
+
+    private boolean selectWorkbenchEnvironmentById(String environmentId) {
+        if (workbenchEnvironmentCombo == null) {
+            return false;
+        }
+        for (int i = 0; i < workbenchEnvironmentCombo.getItemCount(); i++) {
+            EnvironmentRef ref = workbenchEnvironmentCombo.getItemAt(i);
+            if (ref != null && ref.environment != null && Objects.equals(ref.environment.id, environmentId)) {
+                workbenchEnvironmentCombo.setSelectedIndex(i);
+                return true;
+            }
+        }
+        if (workbenchEnvironmentCombo.getItemCount() > 0) {
+            workbenchEnvironmentCombo.setSelectedIndex(0);
+        }
+        return false;
+    }
+
+    private void handleWorkbenchEnvironmentSelectionChanged() {
+        if (suppressWorkbenchEnvironmentEvents || workbenchEnvironmentCombo == null) {
+            return;
+        }
+        EnvironmentRef ref = (EnvironmentRef) workbenchEnvironmentCombo.getSelectedItem();
+        String nextId = ref != null && ref.environment != null ? ref.environment.id : null;
+        if (Objects.equals(activeEnvironmentId, nextId)) {
+            return;
+        }
+        setActiveEnvironmentId(nextId);
     }
 
     private void syncOAuth2UiState() {
@@ -4261,44 +4379,49 @@ public class ImporterPanel {
         return ref != null ? ref.environment : null;
     }
 
-    private void selectEnvironmentById(String environmentId) {
+    private boolean selectEnvironmentById(String environmentId) {
         if (environmentCombo == null) {
-            return;
+            return false;
         }
         for (int i = 0; i < environmentCombo.getItemCount(); i++) {
             EnvironmentRef ref = environmentCombo.getItemAt(i);
             if (ref != null && ref.environment != null && Objects.equals(ref.environment.id, environmentId)) {
                 environmentCombo.setSelectedIndex(i);
-                return;
+                return true;
             }
         }
-        environmentCombo.setSelectedItem(null);
+        if (environmentCombo.getItemCount() > 0) {
+            environmentCombo.setSelectedIndex(0);
+        }
+        return false;
     }
 
     private void updateEnvironmentComboModel() {
         if (environmentCombo == null) {
             return;
         }
-        EnvironmentProfile selected = getSelectedEnvironmentProfile();
-        environmentCombo.removeAllItems();
-        if (environmentProfiles.isEmpty()) {
+        String selectedId = getSelectedEnvironmentProfile() != null ? getSelectedEnvironmentProfile().id : null;
+        suppressEnvironmentEditorEvents = true;
+        try {
+            environmentCombo.removeAllItems();
             environmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
-            environmentCombo.setSelectedIndex(0);
-            return;
-        }
-        for (EnvironmentProfile profile : environmentProfiles) {
-            if (profile != null) {
-                profile.ensureDefaults();
-                profile.ensureId();
-                environmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+            for (EnvironmentProfile profile : environmentProfiles) {
+                if (profile != null) {
+                    profile.ensureDefaults();
+                    profile.ensureId();
+                    environmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+                }
             }
-        }
-        if (selected != null) {
-            selectEnvironmentById(selected.id);
-        } else if (activeEnvironmentId != null) {
-            selectEnvironmentById(activeEnvironmentId);
-        } else {
-            environmentCombo.setSelectedIndex(0);
+            String idToSelect = activeEnvironmentId != null ? activeEnvironmentId : selectedId;
+            if (idToSelect != null) {
+                if (!selectEnvironmentById(idToSelect)) {
+                    environmentCombo.setSelectedIndex(0);
+                }
+            } else {
+                environmentCombo.setSelectedIndex(0);
+            }
+        } finally {
+            suppressEnvironmentEditorEvents = false;
         }
     }
 
@@ -4538,7 +4661,7 @@ public class ImporterPanel {
                 if (!varsBaseLayerText.endsWith("\n")) sb.append("\n");
                 sb.append("\n");
             }
-            sb.append("# Runtime overrides (edits apply here)\n");
+            sb.append("# Environment variables\n");
             for (Map.Entry<String, String> e : new TreeMap<>(vars).entrySet()) {
                 sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
             }
@@ -5324,6 +5447,7 @@ public class ImporterPanel {
                 appendImportLog("Import cancelled due to unresolved variables.");
                 return;
             }
+            runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
         }
         importer.setDebugRawRequest(debugRawRequestBox.isSelected());
 
@@ -5906,7 +6030,7 @@ public class ImporterPanel {
     private Map<String, String> parseRuntimeOverrideFromRawText() {
         Map<String, String> vars = new HashMap<>();
         String text = envVarsArea.getText();
-        String marker = "# Runtime overrides (edits apply here)";
+        String marker = "# Environment variables";
         int idx = text.indexOf(marker);
         if (idx >= 0) {
             text = text.substring(idx + marker.length());

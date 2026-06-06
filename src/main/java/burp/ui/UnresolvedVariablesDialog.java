@@ -27,13 +27,32 @@ public class UnresolvedVariablesDialog extends JDialog {
     private final LinkedHashMap<String, JTextField> variableFields = new LinkedHashMap<>();
     private final LinkedHashMap<String, String> enteredValues = new LinkedHashMap<>();
     private Action action = Action.CANCEL;
+    private final boolean canApplyToActiveEnvironment;
+    private final String applyButtonText;
+    private final String hintText;
+    private JButton applyButton;
+    private JLabel hintLabel;
 
     public UnresolvedVariablesDialog(Window owner,
                                      List<UnresolvedVariableIssue> issues,
                                      List<ApiCollection> collections) {
+        this(owner, issues, collections, true, "Apply to Active Environment", "");
+    }
+
+    public UnresolvedVariablesDialog(Window owner,
+                                     List<UnresolvedVariableIssue> issues,
+                                     List<ApiCollection> collections,
+                                     boolean canApplyToActiveEnvironment,
+                                     String applyButtonText,
+                                     String hintText) {
         super(owner, "Unresolved Variables", ModalityType.APPLICATION_MODAL);
         this.issues = issues != null ? new ArrayList<>(issues) : new ArrayList<>();
         this.collections = collections != null ? new ArrayList<>(collections) : new ArrayList<>();
+        this.canApplyToActiveEnvironment = canApplyToActiveEnvironment;
+        this.applyButtonText = applyButtonText != null && !applyButtonText.isBlank()
+                ? applyButtonText
+                : "Apply to Active Environment";
+        this.hintText = hintText != null ? hintText : "";
         buildUi();
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         addWindowListener(new WindowAdapter() {
@@ -60,6 +79,11 @@ public class UnresolvedVariablesDialog extends JDialog {
         JPanel root = new JPanel(new BorderLayout(10, 10));
         root.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
+        if (!hintText.isBlank()) {
+            hintLabel = new JLabel("<html><body style='width: 680px'>" + safeHtml(hintText) + "</body></html>");
+            hintLabel.setBorder(BorderFactory.createEmptyBorder(0, 0, 6, 0));
+            root.add(hintLabel, BorderLayout.NORTH);
+        }
         root.add(buildIssuesTable(), BorderLayout.CENTER);
         root.add(buildQuickEntryPanel(), BorderLayout.EAST);
         root.add(buildButtonRow(), BorderLayout.SOUTH);
@@ -138,7 +162,11 @@ public class UnresolvedVariablesDialog extends JDialog {
     private JComponent buildButtonRow() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 
-        JButton applyButton = new JButton("Apply to Runtime Vars");
+        applyButton = new JButton(applyButtonText);
+        applyButton.setToolTipText(canApplyToActiveEnvironment
+                ? "Apply entered values to the Active Environment."
+                : "Select an Active Environment before applying values.");
+        applyButton.setEnabled(canApplyToActiveEnvironment);
         applyButton.addActionListener(e -> {
             enteredValues.clear();
             enteredValues.putAll(collectEnteredValues());
@@ -180,5 +208,28 @@ public class UnresolvedVariablesDialog extends JDialog {
 
     private static String safe(String value) {
         return value != null ? value : "";
+    }
+
+    private static String safeHtml(String value) {
+        return safe(value)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+    }
+
+    String getApplyButtonText() {
+        return applyButton != null ? applyButton.getText() : applyButtonText;
+    }
+
+    boolean isApplyButtonEnabled() {
+        return applyButton != null && applyButton.isEnabled();
+    }
+
+    String getHintText() {
+        return hintText;
+    }
+
+    String getApplyButtonTooltip() {
+        return applyButton != null ? applyButton.getToolTipText() : null;
     }
 }

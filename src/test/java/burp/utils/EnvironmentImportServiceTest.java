@@ -172,6 +172,44 @@ class EnvironmentImportServiceTest {
     }
 
     @Test
+    void importsApiWorkbenchExportedEnvironmentShape() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "variables": {
+                    "baseUrl": "https://uat.example.test",
+                    "token": "uat-token"
+                  },
+                  "oauth2": {
+                    "config": {
+                      "oauth2_grant": "client_credentials",
+                      "oauth2_client_id": "client-123"
+                    },
+                    "outputBindings": {
+                      "accessToken": "token",
+                      "refreshToken": "refresh_token"
+                    }
+                  }
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).isEqualTo("UAT");
+        assertThat(profiles.get(0).sourceFormat).isEqualTo("api-workbench");
+        assertThat(profiles.get(0).variables)
+                .containsEntry("baseUrl", "https://uat.example.test")
+                .containsEntry("token", "uat-token");
+        assertThat(profiles.get(0).oauth2.config)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "client-123");
+        assertThat(profiles.get(0).oauth2.outputBindings)
+                .containsEntry("accessToken", "token")
+                .containsEntry("refreshToken", "refresh_token");
+    }
+
+    @Test
     void rejectsUnsupportedOrEmptyFileWithClearMessage() throws Exception {
         Path file = Files.createTempFile("environment-empty-", ".txt");
         file.toFile().deleteOnExit();
