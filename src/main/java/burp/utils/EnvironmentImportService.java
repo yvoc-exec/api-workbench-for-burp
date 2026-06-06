@@ -122,6 +122,11 @@ public final class EnvironmentImportService {
             return profiles;
         }
 
+        if (root.has("variables") && root.get("variables").isJsonObject()) {
+            EnvironmentProfile profile = fromApiWorkbenchExport(fileName, root);
+            return List.of(profile);
+        }
+
         if (root.has("values") && root.get("values").isJsonArray()) {
             Map<String, String> values = new LinkedHashMap<>();
             for (JsonElement valueElem : root.getAsJsonArray("values")) {
@@ -164,6 +169,12 @@ public final class EnvironmentImportService {
 
         Map<String, String> primitiveValues = new LinkedHashMap<>();
         for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
+            if ("oauth2".equals(entry.getKey()) && entry.getValue() != null && entry.getValue().isJsonObject()) {
+                continue;
+            }
+            if ("variables".equals(entry.getKey()) && entry.getValue() != null && entry.getValue().isJsonObject()) {
+                continue;
+            }
             if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isJsonNull()) {
                 continue;
             }
@@ -173,6 +184,48 @@ public final class EnvironmentImportService {
             throw new IOException("Unsupported or empty JSON environment file: " + fileName);
         }
         return List.of(fromKeyValueMap(stripExtension(fileName), "json-object", fileName, primitiveValues));
+    }
+
+    private static EnvironmentProfile fromApiWorkbenchExport(String fileName, JsonObject root) {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = firstNonBlank(getString(root, "name"), stripExtension(fileName), "Environment");
+        profile.sourceFormat = "api-workbench";
+        profile.sourceFileName = fileName;
+        profile.variables.clear();
+        if (root.has("variables") && root.get("variables").isJsonObject()) {
+            JsonObject values = root.getAsJsonObject("variables");
+            for (Map.Entry<String, JsonElement> entry : values.entrySet()) {
+                if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isJsonNull()) {
+                    continue;
+                }
+                profile.variables.put(entry.getKey(), stringifyJsonValue(entry.getValue()));
+            }
+        }
+        profile.ensureDefaults();
+        if (root.has("oauth2") && root.get("oauth2").isJsonObject()) {
+            JsonObject oauth2 = root.getAsJsonObject("oauth2");
+            if (oauth2.has("config") && oauth2.get("config").isJsonObject()) {
+                profile.oauth2.config.clear();
+                for (Map.Entry<String, JsonElement> entry : oauth2.getAsJsonObject("config").entrySet()) {
+                    if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isJsonNull()) {
+                        continue;
+                    }
+                    profile.oauth2.config.put(entry.getKey(), stringifyJsonValue(entry.getValue()));
+                }
+            }
+            if (oauth2.has("outputBindings") && oauth2.get("outputBindings").isJsonObject()) {
+                profile.oauth2.outputBindings.clear();
+                for (Map.Entry<String, JsonElement> entry : oauth2.getAsJsonObject("outputBindings").entrySet()) {
+                    if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isJsonNull()) {
+                        continue;
+                    }
+                    profile.oauth2.outputBindings.put(entry.getKey(), stringifyJsonValue(entry.getValue()));
+                }
+            }
+        }
+        profile.ensureId();
+        profile.ensureDefaults();
+        return profile;
     }
 
     private static String stringifyJsonValue(JsonElement value) {

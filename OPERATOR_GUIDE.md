@@ -281,7 +281,7 @@ The Environment tab can display read-only base sections:
 - Collection definition variables
 - Scoped OAuth2 runtime
 
-Only the `# Runtime overrides (edits apply here)` section is intended for normal operator edits.
+Only the `# Environment variables` section is intended for normal operator edits.
 
 ### Autosave
 
@@ -292,15 +292,15 @@ Autosave behavior:
 - Add/remove row actions autosave.
 - Switching target collection cancels pending autosave.
 - Programmatic refreshes do not autosave.
-- **Clear** only clears the editor UI and does not wipe runtime vars unless you later click **Save Now**.
+- **Clear** only clears the editor UI and does not wipe environment values unless you later click **Save**.
 
 Controls:
 
 | Control | Behavior |
 |---------|----------|
-| **Save Now** | Immediately writes the current editor contents to selected collection runtime vars |
+| **Save** | Immediately writes the current editor contents to the selected environment |
 | **Set Active** | Makes the selected environment the Active Environment |
-| **Export Environment** | Saves the selected environment profile to JSON |
+| **Export** | Saves the selected environment profile to JSON |
 | **Import Environment** | Loads environment values into the Environment tab |
 | **Clear** | Clears editor UI only; does not autosave an empty map |
 
@@ -319,7 +319,7 @@ Actions:
 
 | Action | Behavior |
 |--------|----------|
-| **Apply to Runtime Vars** | Saves entered values into the affected collection runtime vars and continues |
+| **Apply to Active Environment** | Saves entered values into the Active Environment and continues |
 | **Continue Without Applying** | Continues with unresolved placeholders intact |
 | **Cancel** | Stops the operation |
 
