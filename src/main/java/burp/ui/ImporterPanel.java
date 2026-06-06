@@ -67,7 +67,6 @@ public class ImporterPanel {
     private final List<EnvironmentProfile> environmentProfiles = new ArrayList<>();
     private String activeEnvironmentId;
     private OAuth2Panel oauth2Panel;
-    private File selectedEnv;
 
     // Workbench tab
     private JTree requestTree;
@@ -79,8 +78,6 @@ public class ImporterPanel {
     private JButton importBtn, sendToRunnerBtn, addCollectionBtn, removeCollectionBtn;
     private JButton actionsBtn;
     private JCheckBox debugRawRequestBox;
-    private JTextField envField;
-    private JButton envBrowseBtn, envApplyCheckedBtn, envApplyCheckedCollectionsBtn, envApplyAllBtn;
     private RequestEditorPanel requestEditor;
     private JTabbedPane workbenchDetailTabs;
     private HttpRequestEditor workbenchRequestEditor;
@@ -109,20 +106,36 @@ public class ImporterPanel {
     private JButton pauseRunnerBtn, resumeRunnerBtn, stepRunnerBtn, startRunnerBtn, cancelRunnerBtn;
     private RunnerPreviewTableModel runnerPreviewModel;
     private javax.swing.Timer runnerCancelPollTimer;
+    private CollectionRunner.RunnerListener activeRunnerListener;
 
     // Runner detail pane
     private HttpRequestEditor detailRequestEditor;
     private HttpResponseEditor detailResponseEditor;
     private JTextArea detailVarsText;
 
-    // Variables tab
+    // Environment tab
+    private JComboBox<EnvironmentRef> environmentCombo;
+    private JButton environmentImportBtn, environmentNewBtn, environmentDuplicateBtn,
+            environmentDeleteBtn, environmentSetActiveBtn, environmentExportBtn, environmentSaveBtn;
+    private JLabel environmentHintLabel;
+    private JLabel environmentStatusLabel;
+    private JTextArea environmentRawArea;
+    private JTable environmentTable;
+    private DefaultTableModel environmentTableModel;
+    private JPanel environmentEditorCardPanel;
+    private JRadioButton environmentRawViewBtn;
+    private JRadioButton environmentTableViewBtn;
+    private boolean environmentDirty = false;
+    private boolean suppressEnvironmentEditorEvents = false;
+
+    // Legacy scoped variables UI state retained for internal compatibility only.
     private JTextArea envVarsArea;
     private JTable varsTable;
     private DefaultTableModel varsTableModel;
     private JPanel varsEditorCardPanel;
     private JRadioButton varsRawViewBtn;
     private JRadioButton varsTableViewBtn;
-    private JComboBox<CollectionRef> varsCollectionCombo;
+    private JComboBox<CollectionRef> varsCollectionCombo = new JComboBox<>();
     private JButton bindVarsBtn;
     private JLabel varsHintLabel;
     private JLabel varsAutosaveStatusLabel;
@@ -145,20 +158,18 @@ public class ImporterPanel {
     private String varsBaseLayerText = "";
 
     // OAuth2 tab
-    private JComboBox<CollectionRef> oauth2CollectionCombo;
+    private JComboBox<CollectionRef> oauth2CollectionCombo = new JComboBox<>();
     private JButton bindOAuth2Btn;
     private JLabel oauth2HintLabel;
     private JLabel oauth2AutosaveStatusLabel;
-    private final Map<ApiCollection, OAuthAutoRefreshState> oauthAutoStates = new IdentityHashMap<>();
-    private final ScheduledExecutorService oauthAutoExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "oauth2-auto-refresh");
-        t.setDaemon(true);
-        return t;
-    });
+    private JLabel oauth2ActiveEnvironmentLabel;
+    private JLabel oauth2StatusLabel;
+    private JComboBox<String> oauth2AccessTokenBindingCombo;
+    private JComboBox<String> oauth2RefreshTokenBindingCombo;
+    private JComboBox<String> oauth2TokenTypeBindingCombo;
+    private JComboBox<String> oauth2ExpiresInBindingCombo;
+    private JLabel oauth2BindingHintLabel;
     private volatile boolean shuttingDown = false;
-
-    // Runner listener deduplication
-    private CollectionRunner.RunnerListener activeRunnerListener;
 
     // Workspace persistence callback
     private Runnable workspaceChangeListener;
@@ -168,24 +179,17 @@ public class ImporterPanel {
     private final burp.utils.ScriptMode scriptMode;
     private final List<ApiRequest> runnerQueuedRequests = new ArrayList<>();
 
-    private static class OAuthAutoRefreshState {
-        boolean enabled;
-        int intervalSeconds = 300;
-        ScheduledFuture<?> future;
-        String lastStatus;
-    }
-
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager, burp.utils.ScriptMode scriptMode) {
         this.scriptMode = scriptMode;
         this.oauth2Manager = oauth2Manager;
         this.requestBuilder = new burp.utils.RequestBuilder(importer.getApi(), oauth2Manager);
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
-        this.oauth2Panel.setTokenAcquiredCollectionSupplier(this::getSelectedOAuth2Collection);
+        this.oauth2Panel.setTokenAcquiredCollectionSupplier(() -> null);
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
         this.importer = importer;
         this.runner = runner;
         if (this.runner != null) {
-            this.runner.setRuntimeOverlayProvider(collection -> activeEnvironmentOverlay());
+            this.runner.setRuntimeOverlayProvider(collection -> hasActiveEnvironment() ? activeEnvironmentOverlay() : null);
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
         }
         this.mainPanel = createUI();
@@ -403,23 +407,12 @@ public class ImporterPanel {
 
     private JPanel createEnvBindingRow() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        panel.setBorder(BorderFactory.createTitledBorder("Environment Binding"));
-        envField = new JTextField(20);
-        envField.setEditable(false);
-        envBrowseBtn = new JButton("Browse...");
-        envBrowseBtn.addActionListener(e -> selectEnvironment());
-        envApplyCheckedBtn = new JButton("Apply to Checked Requests");
-        envApplyCheckedBtn.setEnabled(false);
-        envApplyCheckedBtn.addActionListener(e -> applyEnvToCheckedRequests());
-        envApplyCheckedCollectionsBtn = new JButton("Apply to Checked Collections");
-        envApplyCheckedCollectionsBtn.setEnabled(false);
-        envApplyCheckedCollectionsBtn.addActionListener(e -> applyEnvToCheckedCollections());
-        envApplyAllBtn = new JButton("Apply to All Collections");
-        envApplyAllBtn.setEnabled(false);
-        envApplyAllBtn.addActionListener(e -> applyEnvToAllCollections());
-        panel.add(new JLabel("Env:"));
-        panel.add(envField);
-        panel.add(envBrowseBtn);
+        panel.setBorder(BorderFactory.createTitledBorder("Environment"));
+        JLabel status = new JLabel("Active Environment: " + (getActiveEnvironment() != null ? getActiveEnvironment().displayName() : "No Environment"));
+        JButton openEnvironmentTabBtn = new JButton("Open Environment");
+        openEnvironmentTabBtn.addActionListener(e -> switchToTabByName("Environment"));
+        panel.add(status);
+        panel.add(openEnvironmentTabBtn);
         return panel;
     }
 
@@ -488,10 +481,11 @@ public class ImporterPanel {
         final ApiCollection resolvedCol = col;
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
+        final Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
                 List.of(resolvedCol),
                 List.of(requestToSend),
-                activeEnvironmentOverlay());
+                runtimeOverlay);
         if (!issues.isEmpty()) {
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
@@ -506,14 +500,13 @@ public class ImporterPanel {
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    Map<String, String> activeOverlay = activeEnvironmentOverlay();
-                    var result = activeOverlay.isEmpty()
+                    var result = runtimeOverlay == null
                             ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
                             : importer.sendSingleRequestWithBuiltRequest(
                                     requestToSend,
                                     resolvedCol,
                                     follow,
-                                    activeOverlay,
+                                    runtimeOverlay,
                                     ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
                     var rr = result.response;
 
@@ -734,211 +727,154 @@ public class ImporterPanel {
 
 
     // ========================================================================
-    // Variables Tab
+    // Environment Tab
     // ========================================================================
     private JPanel createVariablesTab() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBorder(BorderFactory.createTitledBorder("Environment Variables (JSON or key=value per line)"));
+        panel.setBorder(BorderFactory.createTitledBorder("Environment"));
 
-        envVarsArea = new JTextArea(20, 60);
-        envVarsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        envVarsArea.setText("# Example:\n# base_url=http://localhost:8080\n# api_key=your_key_here\n# token={{auth_token}}");
-        variablesRawEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesRawEditingSession());
-        variablesRawEditIdleTimer.setRepeats(false);
-        variablesTableEditIdleTimer = new javax.swing.Timer(2000, e -> expireVariablesTableEditingSession());
-        variablesTableEditIdleTimer.setRepeats(false);
-        envVarsArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
-            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
-            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { handleVariablesRawDocumentEdit(); }
+        environmentRawArea = new JTextArea(18, 60);
+        environmentRawArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        environmentRawArea.setText("# key=value per line\n# base_url=http://localhost:8080\n# token=abc123");
+        environmentRawArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { markEnvironmentDirty(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { markEnvironmentDirty(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { markEnvironmentDirty(); }
         });
 
-        suppressVariablesAutosave = true;
-        try {
-            varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
-            varsTable = RequestEditorTableSupport.createEditableTable(varsTableModel);
-            varsTableModel.addTableModelListener(e -> handleVariablesTableModelEdit());
-        } finally {
-            suppressVariablesAutosave = false;
-        }
+        environmentTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        environmentTableModel.addTableModelListener(e -> markEnvironmentDirty());
+        environmentTable = RequestEditorTableSupport.createEditableTable(environmentTableModel);
+        RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
 
-        varsEditorCardPanel = new JPanel(new CardLayout());
-        varsEditorCardPanel.add(new JScrollPane(envVarsArea), "raw");
+        environmentEditorCardPanel = new JPanel(new CardLayout());
+        environmentEditorCardPanel.add(new JScrollPane(environmentRawArea), "raw");
 
         JPanel tablePanel = new JPanel(new BorderLayout(5, 5));
-        tablePanel.add(new JScrollPane(varsTable), BorderLayout.CENTER);
-        tablePanel.add(RequestEditorTableSupport.createAddRemovePanel(varsTable, varsTableModel, () -> new Object[]{"", ""}), BorderLayout.SOUTH);
-        varsEditorCardPanel.add(tablePanel, "table");
-        RequestEditorStateMapper.ensureStarterRow(varsTableModel);
+        tablePanel.add(new JScrollPane(environmentTable), BorderLayout.CENTER);
+        tablePanel.add(RequestEditorTableSupport.createAddRemovePanel(environmentTable, environmentTableModel, () -> new Object[]{"", ""}), BorderLayout.SOUTH);
+        environmentEditorCardPanel.add(tablePanel, "table");
 
-        JPanel varsTopBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        varsRawViewBtn = new JRadioButton("Raw", true);
-        varsTableViewBtn = new JRadioButton("Table");
-        ButtonGroup varsViewGroup = new ButtonGroup();
-        varsViewGroup.add(varsRawViewBtn);
-        varsViewGroup.add(varsTableViewBtn);
-        varsRawViewBtn.addActionListener(e -> switchVarsView(false));
-        varsTableViewBtn.addActionListener(e -> switchVarsView(true));
-        varsTopBar.add(new JLabel("View:"));
-        varsTopBar.add(varsRawViewBtn);
-        varsTopBar.add(varsTableViewBtn);
+        environmentRawViewBtn = new JRadioButton("Raw", true);
+        environmentTableViewBtn = new JRadioButton("Table");
+        ButtonGroup viewGroup = new ButtonGroup();
+        viewGroup.add(environmentRawViewBtn);
+        viewGroup.add(environmentTableViewBtn);
+        environmentRawViewBtn.addActionListener(e -> switchEnvironmentView(false));
+        environmentTableViewBtn.addActionListener(e -> switchEnvironmentView(true));
+
+        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        environmentCombo = new JComboBox<>();
+        environmentCombo.setPrototypeDisplayValue(new EnvironmentRef(null, "No Environment"));
+        environmentCombo.addActionListener(e -> handleEnvironmentSelectionChanged());
+        environmentImportBtn = new JButton("Import");
+        environmentImportBtn.addActionListener(e -> handleEnvironmentImport());
+        environmentNewBtn = new JButton("New");
+        environmentNewBtn.addActionListener(e -> handleEnvironmentNew());
+        environmentDuplicateBtn = new JButton("Duplicate");
+        environmentDuplicateBtn.addActionListener(e -> handleEnvironmentDuplicate());
+        environmentDeleteBtn = new JButton("Delete");
+        environmentDeleteBtn.addActionListener(e -> handleEnvironmentDelete());
+        environmentSetActiveBtn = new JButton("Set Active");
+        environmentSetActiveBtn.addActionListener(e -> handleEnvironmentSetActive());
+        environmentExportBtn = new JButton("Export");
+        environmentExportBtn.addActionListener(e -> handleEnvironmentExport());
+        environmentSaveBtn = new JButton("Save");
+        environmentSaveBtn.addActionListener(e -> commitEnvironmentEditorToSelectedProfile());
+
+        topBar.add(new JLabel("Active Environment:"));
+        topBar.add(environmentCombo);
+        topBar.add(environmentImportBtn);
+        topBar.add(environmentNewBtn);
+        topBar.add(environmentDuplicateBtn);
+        topBar.add(environmentDeleteBtn);
+        topBar.add(environmentSetActiveBtn);
+        topBar.add(environmentExportBtn);
+        topBar.add(environmentSaveBtn);
 
         JPanel centerWrap = new JPanel(new BorderLayout(5, 5));
-        centerWrap.add(varsTopBar, BorderLayout.NORTH);
-        centerWrap.add(varsEditorCardPanel, BorderLayout.CENTER);
+        JPanel toggleBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        toggleBar.add(new JLabel("View:"));
+        toggleBar.add(environmentRawViewBtn);
+        toggleBar.add(environmentTableViewBtn);
+        centerWrap.add(toggleBar, BorderLayout.NORTH);
+        centerWrap.add(environmentEditorCardPanel, BorderLayout.CENTER);
+
+        environmentHintLabel = new JLabel("Active Environment values apply to previews, sends, runner, Repeater, Intruder, and Sitemap.");
+        environmentHintLabel.setForeground(Color.DARK_GRAY);
+        environmentStatusLabel = new JLabel("Saved.");
+        environmentStatusLabel.setForeground(Color.GRAY);
+        JPanel statusPanel = new JPanel(new GridLayout(2, 1));
+        statusPanel.add(environmentHintLabel);
+        statusPanel.add(environmentStatusLabel);
+
+        // Legacy runtime-vars field aliases retained for compatibility with
+        // existing tests and internal helper methods.
+        envVarsArea = environmentRawArea;
+        varsTable = environmentTable;
+        varsTableModel = environmentTableModel;
+        varsEditorCardPanel = environmentEditorCardPanel;
+        varsRawViewBtn = environmentRawViewBtn;
+        varsTableViewBtn = environmentTableViewBtn;
+        varsHintLabel = environmentHintLabel;
+        if (varsAutosaveStatusLabel == null) {
+            varsAutosaveStatusLabel = new JLabel("Saved.");
+            varsAutosaveStatusLabel.setVisible(false);
+        }
+
+        panel.add(topBar, BorderLayout.NORTH);
         panel.add(centerWrap, BorderLayout.CENTER);
+        panel.add(statusPanel, BorderLayout.SOUTH);
 
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-
-        // Hint label
-        varsHintLabel = new JLabel("Select a collection to edit scoped variables.");
-        varsHintLabel.setForeground(Color.GRAY);
-        varsAutosaveStatusLabel = new JLabel("Saved.");
-        varsAutosaveStatusLabel.setForeground(Color.GRAY);
-        JPanel varsStatusPanel = new JPanel(new GridLayout(2, 1));
-        varsStatusPanel.add(varsHintLabel);
-        varsStatusPanel.add(varsAutosaveStatusLabel);
-        bottomPanel.add(varsStatusPanel, BorderLayout.CENTER);
-
-        JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        varsCollectionCombo = new JComboBox<>();
-        varsCollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
-        varsCollectionCombo.addActionListener(e -> handleVariablesCollectionSelectionChange());
-        bindVarsBtn = new JButton("Save Now");
-        bindVarsBtn.addActionListener(e -> bindVarsToSelectedCollection());
-        JButton bindAllBtn = new JButton("Bind to All Collections");
-        bindAllBtn.addActionListener(e -> bindVarsToAllCollections());
-        JButton clearBtn = new JButton("Clear");
-        clearBtn.addActionListener(e -> clearVariablesEditorOnly());
-        bindPanel.add(new JLabel("Target:"));
-        bindPanel.add(varsCollectionCombo);
-        bindPanel.add(bindVarsBtn);
-        bindPanel.add(bindAllBtn);
-        JButton exportRuntimeBtn = new JButton("Export Runtime JSON");
-        exportRuntimeBtn.addActionListener(e -> exportSelectedCollectionRuntimeJson());
-        JButton importRuntimeBtn = new JButton("Import Runtime JSON");
-        importRuntimeBtn.addActionListener(e -> importSelectedCollectionRuntimeJson());
-        bindPanel.add(exportRuntimeBtn);
-        bindPanel.add(importRuntimeBtn);
-        bindPanel.add(clearBtn);
-        bottomPanel.add(bindPanel, BorderLayout.NORTH);
-
-        panel.add(bottomPanel, BorderLayout.SOUTH);
-        installVariablesSaveShortcut(panel);
-        installVariablesSaveShortcut(varsEditorCardPanel);
-        updateScopeControlState();
+        installEnvironmentSaveShortcut(panel);
+        installEnvironmentSaveShortcut(environmentEditorCardPanel);
+        updateEnvironmentComboModel();
+        updateEnvironmentUiState();
         return panel;
     }
 
     // ========================================================================
-    // OAuth2 Tab (wrapped with collection binding)
+    // OAuth2 Tab
     // ========================================================================
     private JPanel createOAuth2Tab() {
-        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
 
-        JPanel bindPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        oauth2CollectionCombo = new JComboBox<>();
-        oauth2CollectionCombo.setPrototypeDisplayValue(new CollectionRef(null, "Select collection..."));
-        oauth2HintLabel = new JLabel("Select a collection to bind OAuth2 settings.");
-        oauth2HintLabel.setForeground(Color.GRAY);
-        oauth2AutosaveStatusLabel = new JLabel("Autosave idle.");
-        oauth2AutosaveStatusLabel.setForeground(Color.GRAY);
-        bindPanel.add(new JLabel("Target:"));
-        bindPanel.add(oauth2CollectionCombo);
-        bindOAuth2Btn = new JButton("Save Now");
-        bindOAuth2Btn.addActionListener(e -> {
-            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-            if (ref == null) {
-                appendImportLog("OAuth2: No collection selected for binding.");
-                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
-                return;
-            }
-            ApiCollection col = ref.collection;
-            Map<String, String> vars = oauth2Panel.getVariables();
-            col.replaceRuntimeOAuth2(vars);
-            appendImportLog("OAuth2 bound to \"" + ref.label + "\": " + vars.size() + " var(s).");
-            setOAuth2AutosaveStatus("Saved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
-        });
-        bindPanel.add(bindOAuth2Btn);
-        JButton bindAllBtn = new JButton("Bind OAuth2 to All");
-        bindAllBtn.addActionListener(e -> {
-            if (loadedCollections.isEmpty()) {
-                appendImportLog("OAuth2: No collections loaded.");
-                return;
-            }
-            int confirm = JOptionPane.showConfirmDialog(mainPanel,
-                "This will overwrite OAuth2 settings in ALL " + loadedCollections.size() + " collection(s). Continue?",
-                "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
-            if (confirm != JOptionPane.YES_OPTION) return;
-            Map<String, String> vars = oauth2Panel.getVariables();
-            for (ApiCollection col : loadedCollections) {
-                col.replaceRuntimeOAuth2(vars);
-            }
-            appendImportLog("OAuth2 bound to all " + loadedCollections.size() + " collection(s).");
-            setOAuth2AutosaveStatus("Saved to all " + loadedCollections.size() + " collection(s).", new Color(0, 128, 0));
-        });
-        bindPanel.add(bindAllBtn);
-        panel.add(bindPanel, BorderLayout.NORTH);
+        JPanel top = new JPanel(new GridLayout(0, 1, 4, 4));
+        oauth2ActiveEnvironmentLabel = new JLabel("Active Environment: No Environment");
+        oauth2ActiveEnvironmentLabel.setForeground(Color.DARK_GRAY);
+        oauth2BindingHintLabel = new JLabel("Create or select an Active Environment before configuring OAuth2.");
+        oauth2BindingHintLabel.setForeground(Color.GRAY);
+        top.add(oauth2ActiveEnvironmentLabel);
+        top.add(oauth2BindingHintLabel);
+        panel.add(top, BorderLayout.NORTH);
+
         panel.add(oauth2Panel, BorderLayout.CENTER);
-        JPanel oauth2StatusPanel = new JPanel(new GridLayout(2, 1));
-        oauth2StatusPanel.add(oauth2HintLabel);
-        oauth2StatusPanel.add(oauth2AutosaveStatusLabel);
-        panel.add(oauth2StatusPanel, BorderLayout.SOUTH);
 
-        // Keep combo in sync with loaded collections
-        tabbedPane.addChangeListener(e -> {
-            if (tabbedPane.getSelectedIndex() == 2) { // OAuth2 tab
-                CollectionRef prev = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
-                oauth2CollectionCombo.removeAllItems();
-                List<CollectionRef> refs = buildCollectionRefs();
-                for (CollectionRef ref : refs) {
-                    oauth2CollectionCombo.addItem(ref);
-                }
-                if (prev != null) {
-                    for (int i = 0; i < oauth2CollectionCombo.getItemCount(); i++) {
-                        if (prev.collection == oauth2CollectionCombo.getItemAt(i).collection) {
-                            oauth2CollectionCombo.setSelectedIndex(i);
-                            break;
-                        }
-                    }
-                }
-                updateScopeControlState();
-            }
-        });
-        oauth2CollectionCombo.addActionListener(e -> {
-            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-            if (ref != null && ref.collection != null) {
-                refreshOAuth2PanelForCollection(ref.collection);
-                setOAuth2AutosaveStatus("Autosave idle.", Color.GRAY);
-            } else {
-                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
-            }
-            applyAutoRefreshUiForSelectedCollection();
-            updateScopeControlState();
-        });
-        oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> {
-            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-            if (ref == null || ref.collection == null) {
-                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
-                return;
-            }
-            if (replaceMode) {
-                ref.collection.replaceRuntimeOAuth2(vars);
-            } else {
-                ref.collection.putAllRuntimeOAuth2(vars);
-            }
-            setOAuth2AutosaveStatus("Autosaved to " + ref.label + " (" + vars.size() + " var(s)).", new Color(0, 128, 0));
-        });
-        oauth2Panel.setAutoRefreshToggleListener(this::toggleAutoRefreshForSelectedCollection);
-        oauth2Panel.setAutoRefreshIntervalListener(seconds -> {
-            ApiCollection col = getSelectedOAuth2Collection();
-            if (col != null) {
-                getAutoState(col).intervalSeconds = Math.max(30, seconds);
-            }
-        });
-        applyAutoRefreshUiForSelectedCollection();
-        updateScopeControlState();
+        JPanel bindings = new JPanel(new GridBagLayout());
+        bindings.setBorder(BorderFactory.createTitledBorder("Bind OAuth2 Output"));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridy = 0;
 
+        oauth2AccessTokenBindingCombo = createEditableBindingCombo("oauth2_access_token");
+        oauth2RefreshTokenBindingCombo = createEditableBindingCombo("oauth2_refresh_token");
+        oauth2TokenTypeBindingCombo = createEditableBindingCombo("oauth2_token_type");
+        oauth2ExpiresInBindingCombo = createEditableBindingCombo("oauth2_expires_in");
+
+        addBindingRow(bindings, gbc, "Access Token variable:", oauth2AccessTokenBindingCombo);
+        addBindingRow(bindings, gbc, "Refresh Token variable:", oauth2RefreshTokenBindingCombo);
+        addBindingRow(bindings, gbc, "Token Type variable:", oauth2TokenTypeBindingCombo);
+        addBindingRow(bindings, gbc, "Expires In variable:", oauth2ExpiresInBindingCombo);
+
+        oauth2StatusLabel = new JLabel("Saved.");
+        oauth2StatusLabel.setForeground(Color.GRAY);
+        gbc.gridx = 0;
+        gbc.gridwidth = 2;
+        bindings.add(oauth2StatusLabel, gbc);
+
+        panel.add(bindings, BorderLayout.SOUTH);
+        syncOAuth2UiState();
         return panel;
     }
 
@@ -1624,6 +1560,10 @@ public class ImporterPanel {
         return null;
     }
 
+    private boolean hasActiveEnvironment() {
+        return getActiveEnvironment() != null;
+    }
+
     private Map<String, String> activeEnvironmentOverlay() {
         EnvironmentProfile active = getActiveEnvironment();
         return active != null ? active.toRuntimeOverlay() : Collections.emptyMap();
@@ -1654,6 +1594,10 @@ public class ImporterPanel {
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
         }
+        updateEnvironmentComboModel();
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
         notifyWorkspaceChangedImmediately();
     }
 
@@ -1666,6 +1610,12 @@ public class ImporterPanel {
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
         }
+        updateEnvironmentComboModel();
+        if (activeEnvironmentId != null) {
+            selectEnvironmentById(activeEnvironmentId);
+        }
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
     }
@@ -2075,6 +2025,21 @@ public class ImporterPanel {
         @Override public String toString() { return label; }
     }
 
+    private static class EnvironmentRef {
+        final EnvironmentProfile environment;
+        final String label;
+
+        EnvironmentRef(EnvironmentProfile environment, String label) {
+            this.environment = environment;
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
     private List<CollectionRef> buildCollectionRefs() {
         Map<String, Integer> nameCounts = new HashMap<>();
         for (ApiCollection c : loadedCollections) {
@@ -2093,14 +2058,409 @@ public class ImporterPanel {
         return refs;
     }
 
+    private void switchEnvironmentView(boolean tableView) {
+        if (environmentEditorCardPanel == null) {
+            return;
+        }
+        if (tableView) {
+            syncEnvironmentTableFromRaw();
+        } else {
+            syncEnvironmentRawFromTable();
+        }
+        CardLayout cl = (CardLayout) environmentEditorCardPanel.getLayout();
+        cl.show(environmentEditorCardPanel, tableView ? "table" : "raw");
+    }
+
+    private void installEnvironmentSaveShortcut(JComponent component) {
+        if (component == null) {
+            return;
+        }
+        InputMap inputMap = component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT);
+        ActionMap actionMap = component.getActionMap();
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK);
+        inputMap.put(saveKey, "environment-save");
+        actionMap.put("environment-save", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                commitEnvironmentEditorToSelectedProfile();
+            }
+        });
+    }
+
+    private void commitEnvironmentEditorToSelectedProfile() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
+            return;
+        }
+        Map<String, String> parsed = parseEnvironmentEditorVariables();
+        selected.variables.clear();
+        selected.variables.putAll(parsed);
+        selected.ensureDefaults();
+        environmentDirty = false;
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Saved environment \"" + selected.displayName() + "\".");
+    }
+
+    private void renderSelectedEnvironmentIntoEditor() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
+            suppressEnvironmentEditorEvents = true;
+            try {
+                if (environmentRawArea != null) {
+                    environmentRawArea.setText("");
+                }
+                if (environmentTableModel != null) {
+                    environmentTableModel.setRowCount(0);
+                }
+                environmentDirty = false;
+            } finally {
+                suppressEnvironmentEditorEvents = false;
+            }
+            return;
+        }
+        selected.ensureDefaults();
+        suppressEnvironmentEditorEvents = true;
+        try {
+            if (environmentRawArea != null) {
+                environmentRawArea.setText(renderEnvironmentVariablesAsText(selected.variables));
+            }
+            if (environmentTableModel != null) {
+                environmentTableModel.setRowCount(0);
+                for (Map.Entry<String, String> entry : selected.variables.entrySet()) {
+                    environmentTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+                }
+                RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
+            }
+            environmentDirty = false;
+        } finally {
+            suppressEnvironmentEditorEvents = false;
+        }
+        updateEnvironmentUiState();
+    }
+
+    private void syncEnvironmentTableFromRaw() {
+        if (environmentTableModel == null || environmentRawArea == null) {
+            return;
+        }
+        Map<String, String> parsed = parseEnvironmentEditorVariablesFromText(environmentRawArea.getText());
+        suppressEnvironmentEditorEvents = true;
+        try {
+            environmentTableModel.setRowCount(0);
+            for (Map.Entry<String, String> entry : parsed.entrySet()) {
+                environmentTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+            }
+            RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
+        } finally {
+            suppressEnvironmentEditorEvents = false;
+        }
+    }
+
+    private void syncEnvironmentRawFromTable() {
+        if (environmentTableModel == null || environmentRawArea == null) {
+            return;
+        }
+        Map<String, String> parsed = parseEnvironmentTableVariables();
+        suppressEnvironmentEditorEvents = true;
+        try {
+            environmentRawArea.setText(renderEnvironmentVariablesAsText(parsed));
+        } finally {
+            suppressEnvironmentEditorEvents = false;
+        }
+    }
+
+    private Map<String, String> parseEnvironmentTableVariables() {
+        Map<String, String> vars = new LinkedHashMap<>();
+        if (environmentTableModel == null) {
+            return vars;
+        }
+        for (int i = 0; i < environmentTableModel.getRowCount(); i++) {
+            Object keyObj = environmentTableModel.getValueAt(i, 0);
+            Object valueObj = environmentTableModel.getValueAt(i, 1);
+            String key = keyObj != null ? keyObj.toString().trim() : "";
+            if (key.isEmpty()) {
+                continue;
+            }
+            vars.put(key, valueObj != null ? valueObj.toString() : "");
+        }
+        return vars;
+    }
+
+    private Map<String, String> parseEnvironmentEditorVariables() {
+        if (environmentTableViewBtn != null && environmentTableViewBtn.isSelected()) {
+            return parseEnvironmentTableVariables();
+        }
+        return parseEnvironmentEditorVariablesFromText(environmentRawArea != null ? environmentRawArea.getText() : "");
+    }
+
+    private Map<String, String> parseEnvironmentEditorVariablesFromText(String text) {
+        Map<String, String> vars = new LinkedHashMap<>();
+        if (text == null || text.isBlank()) {
+            return vars;
+        }
+        String trimmed = text.trim();
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+                com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseString(trimmed).getAsJsonObject();
+                for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
+                    if (entry.getKey() != null && !entry.getKey().isBlank() && entry.getValue() != null && !entry.getValue().isJsonNull()) {
+                        vars.put(entry.getKey(), entry.getValue().isJsonPrimitive() ? entry.getValue().getAsString() : entry.getValue().toString());
+                    }
+                }
+                return vars;
+            } catch (Exception ignored) {
+                // Fall through to key=value parsing
+            }
+        }
+        for (String line : text.split("\\R")) {
+            String normalized = line.trim();
+            if (normalized.isEmpty() || normalized.startsWith("#")) {
+                continue;
+            }
+            int eqIdx = normalized.indexOf('=');
+            if (eqIdx <= 0) {
+                continue;
+            }
+            String key = normalized.substring(0, eqIdx).trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            vars.put(key, normalized.substring(eqIdx + 1).trim());
+        }
+        return vars;
+    }
+
+    private String renderEnvironmentVariablesAsText(Map<String, String> vars) {
+        StringBuilder sb = new StringBuilder();
+        if (vars != null) {
+            for (Map.Entry<String, String> entry : vars.entrySet()) {
+                if (entry.getKey() == null || entry.getKey().isBlank()) {
+                    continue;
+                }
+                sb.append(entry.getKey()).append('=').append(entry.getValue() != null ? entry.getValue() : "").append('\n');
+            }
+        }
+        return sb.toString();
+    }
+
+    private JComboBox<String> createEditableBindingCombo(String defaultValue) {
+        JComboBox<String> combo = new JComboBox<>();
+        combo.setEditable(true);
+        combo.setPrototypeDisplayValue(defaultValue);
+        combo.setSelectedItem(defaultValue);
+        combo.addActionListener(e -> {
+            if (!suppressEnvironmentEditorEvents) {
+                markEnvironmentDirty();
+            }
+        });
+        return combo;
+    }
+
+    private void addBindingRow(JPanel panel, GridBagConstraints gbc, String label, JComboBox<String> combo) {
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel(label), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(combo, gbc);
+        gbc.gridy++;
+    }
+
+    private void setBindingCombosEnabled(boolean enabled) {
+        if (oauth2AccessTokenBindingCombo != null) oauth2AccessTokenBindingCombo.setEnabled(enabled);
+        if (oauth2RefreshTokenBindingCombo != null) oauth2RefreshTokenBindingCombo.setEnabled(enabled);
+        if (oauth2TokenTypeBindingCombo != null) oauth2TokenTypeBindingCombo.setEnabled(enabled);
+        if (oauth2ExpiresInBindingCombo != null) oauth2ExpiresInBindingCombo.setEnabled(enabled);
+    }
+
+    private void refreshOAuth2BindingCandidates() {
+        List<String> candidates = collectOAuth2BindingCandidates();
+        updateBindingComboChoices(oauth2AccessTokenBindingCombo, candidates, "oauth2_access_token");
+        updateBindingComboChoices(oauth2RefreshTokenBindingCombo, candidates, "oauth2_refresh_token");
+        updateBindingComboChoices(oauth2TokenTypeBindingCombo, candidates, "oauth2_token_type");
+        updateBindingComboChoices(oauth2ExpiresInBindingCombo, candidates, "oauth2_expires_in");
+        syncOAuth2BindingUiFromActiveEnvironment();
+    }
+
+    private void updateBindingComboChoices(JComboBox<String> combo, List<String> candidates, String defaultValue) {
+        if (combo == null) {
+            return;
+        }
+        Object current = combo.getSelectedItem();
+        suppressEnvironmentEditorEvents = true;
+        try {
+            combo.removeAllItems();
+            combo.addItem(defaultValue);
+            for (String candidate : candidates) {
+                if (candidate == null || candidate.isBlank()) {
+                    continue;
+                }
+                if (!containsComboItem(combo, candidate)) {
+                    combo.addItem(candidate);
+                }
+            }
+            combo.setSelectedItem(current != null ? current.toString() : defaultValue);
+        } finally {
+            suppressEnvironmentEditorEvents = false;
+        }
+    }
+
+    private boolean containsComboItem(JComboBox<String> combo, String value) {
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            if (Objects.equals(combo.getItemAt(i), value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> collectOAuth2BindingCandidates() {
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active != null && active.variables != null) {
+            candidates.addAll(active.variables.keySet());
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null) continue;
+            if (collection.environment != null) candidates.addAll(collection.environment.keySet());
+            if (collection.variables != null) {
+                for (ApiRequest.Variable variable : collection.variables) {
+                    if (variable != null && variable.key != null && !variable.key.isBlank()) {
+                        candidates.add(variable.key);
+                    }
+                }
+            }
+            if (collection.folderVars != null) {
+                for (Map<String, String> folder : collection.folderVars.values()) {
+                    if (folder != null) candidates.addAll(folder.keySet());
+                }
+            }
+            if (collection.requests != null) {
+                for (ApiRequest request : collection.requests) {
+                    collectPlaceholdersFromRequest(candidates, request);
+                }
+            }
+        }
+        if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
+            collectPlaceholdersFromRequest(candidates, requestEditor.getCurrentRequest());
+        }
+        return new ArrayList<>(candidates);
+    }
+
+    private void collectPlaceholdersFromRequest(Set<String> out, ApiRequest request) {
+        if (out == null || request == null) {
+            return;
+        }
+        Set<String> placeholders = burp.utils.RequestBuilder.findUnresolvedTokens(
+                request.url != null ? request.url.getBytes(StandardCharsets.UTF_8) : new byte[0]);
+        out.addAll(placeholders);
+        if (request.headers != null) {
+            for (ApiRequest.Header header : request.headers) {
+                if (header != null && header.value != null) {
+                    out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(header.value.getBytes(StandardCharsets.UTF_8)));
+                }
+            }
+        }
+        if (request.body != null && request.body.raw != null) {
+            out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(request.body.raw.getBytes(StandardCharsets.UTF_8)));
+        }
+        if (request.auth != null && request.auth.properties != null) {
+            for (String value : request.auth.properties.values()) {
+                if (value != null) {
+                    out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(value.getBytes(StandardCharsets.UTF_8)));
+                }
+            }
+        }
+    }
+
+    private Map<String, String> readOAuth2OutputBindingsFromUi() {
+        Map<String, String> bindings = new LinkedHashMap<>();
+        bindings.put("accessToken", readComboValue(oauth2AccessTokenBindingCombo, "oauth2_access_token"));
+        bindings.put("refreshToken", readComboValue(oauth2RefreshTokenBindingCombo, "oauth2_refresh_token"));
+        bindings.put("tokenType", readComboValue(oauth2TokenTypeBindingCombo, "oauth2_token_type"));
+        bindings.put("expiresIn", readComboValue(oauth2ExpiresInBindingCombo, "oauth2_expires_in"));
+        return bindings;
+    }
+
+    private void syncOAuth2BindingUiFromActiveEnvironment() {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            setBindingComboValue(oauth2AccessTokenBindingCombo, "oauth2_access_token");
+            setBindingComboValue(oauth2RefreshTokenBindingCombo, "oauth2_refresh_token");
+            setBindingComboValue(oauth2TokenTypeBindingCombo, "oauth2_token_type");
+            setBindingComboValue(oauth2ExpiresInBindingCombo, "oauth2_expires_in");
+            return;
+        }
+        setBindingComboValue(oauth2AccessTokenBindingCombo, active.oauth2.outputBindings.get("accessToken"));
+        setBindingComboValue(oauth2RefreshTokenBindingCombo, active.oauth2.outputBindings.get("refreshToken"));
+        setBindingComboValue(oauth2TokenTypeBindingCombo, active.oauth2.outputBindings.get("tokenType"));
+        setBindingComboValue(oauth2ExpiresInBindingCombo, active.oauth2.outputBindings.get("expiresIn"));
+    }
+
+    private void setBindingComboValue(JComboBox<String> combo, String value) {
+        if (combo == null) {
+            return;
+        }
+        suppressEnvironmentEditorEvents = true;
+        try {
+            combo.setSelectedItem(value != null && !value.isBlank() ? value : combo.getItemCount() > 0 ? combo.getItemAt(0) : "");
+        } finally {
+            suppressEnvironmentEditorEvents = false;
+        }
+    }
+
+    private String readComboValue(JComboBox<String> combo, String fallback) {
+        if (combo == null) {
+            return fallback;
+        }
+        Object selected = combo.getEditor() != null ? combo.getEditor().getItem() : combo.getSelectedItem();
+        if (selected == null) {
+            selected = combo.getSelectedItem();
+        }
+        String value = selected != null ? selected.toString().trim() : "";
+        return value.isEmpty() ? fallback : value;
+    }
+
     private UnresolvedVariablesDialog.Action showUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
                                                                            List<ApiCollection> targetCollections) {
         if (issues == null || issues.isEmpty()) {
             return UnresolvedVariablesDialog.Action.CONTINUE_WITHOUT_APPLYING;
         }
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            JOptionPane.showMessageDialog(mainPanel,
+                    "Unresolved variables require an Active Environment. Create or import one first.",
+                    "Active Environment Required",
+                    JOptionPane.WARNING_MESSAGE);
+            return UnresolvedVariablesDialog.Action.CANCEL;
+        }
         Window owner = SwingUtilities.getWindowAncestor(mainPanel);
         UnresolvedVariablesDialog dialog = new UnresolvedVariablesDialog(owner, issues, targetCollections);
-        return dialog.showDialog();
+        UnresolvedVariablesDialog.Action action = dialog.showDialog();
+        if (action == UnresolvedVariablesDialog.Action.APPLY_AND_CONTINUE) {
+            Map<String, String> entered = dialog.getEnteredValues();
+            if (entered != null && !entered.isEmpty()) {
+                for (UnresolvedVariableIssue issue : issues) {
+                    if (issue == null || issue.variableName == null || issue.variableName.isBlank()) {
+                        continue;
+                    }
+                    String value = entered.get(issue.variableName);
+                    if (value == null || value.isBlank()) {
+                        continue;
+                    }
+                    active.variables.put(issue.variableName, value);
+                }
+                active.ensureDefaults();
+                renderSelectedEnvironmentIntoEditor();
+                syncActiveEnvironmentToEditors();
+                updateEnvironmentUiState();
+                notifyWorkspaceChangedImmediately();
+                appendImportLog("Saved unresolved variables into active environment \"" + active.displayName() + "\".");
+            }
+        }
+        return action;
     }
 
     private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
@@ -2111,49 +2471,24 @@ public class ImporterPanel {
         }
 
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        if (activeEnvironment != null) {
-            activeEnvironment.oauth2.config.clear();
-            activeEnvironment.oauth2.config.putAll(filterOAuth2ConfigVars(oauth2Vars));
-            activeEnvironment.oauth2.ensureDefaults();
-            storeOAuth2TokenInActiveEnvironment(collection, entry);
-            syncActiveEnvironmentToEditors();
-            setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
-            appendImportLog("OAuth2 token saved to active environment \"" + activeEnvironment.displayName() + "\".");
+        if (activeEnvironment == null) {
+            appendImportLog("OAuth2 token fetch requires an active environment.");
+            setOAuth2AutosaveStatus("Create or select an Active Environment before fetching tokens.", Color.GRAY);
             return;
         }
 
-        if (collection == null) {
-            appendImportLog("OAuth2 acquire completed but no target collection was captured.");
-            return;
-        }
-
-        applyAcquiredOAuth2Runtime(collection, entry, oauth2Vars);
-        List<BearerTokenAliasCandidate> candidates = OAuth2BearerAliasDetector.detect(collection, entry.accessToken);
-        if (candidates.isEmpty()) {
-            refreshRuntimeViewsForCollection(collection);
-            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
-            return;
-        }
-
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
-        BearerTokenAliasDialog dialog = new BearerTokenAliasDialog(owner, candidates);
-        if (dialog.showDialog() != BearerTokenAliasDialog.Action.BIND_SELECTED) {
-            refreshRuntimeViewsForCollection(collection);
-            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
-            return;
-        }
-
-        Set<String> selectedAliases = dialog.getSelectedAliases();
-        if (selectedAliases.isEmpty()) {
-            refreshRuntimeViewsForCollection(collection);
-            setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
-            return;
-        }
-
-        OAuth2BearerAliasDetector.bindSelectedAliases(collection, candidates, selectedAliases, entry.accessToken);
-        refreshRuntimeViewsForCollection(collection);
-        appendImportLog("OAuth2 bearer aliases bound to \"" + collection.name + "\": " + String.join(", ", selectedAliases));
-        setOAuth2AutosaveStatus("Token values saved to " + collection.name + ".", new Color(0, 128, 0));
+        activeEnvironment.oauth2.config.clear();
+        activeEnvironment.oauth2.config.putAll(filterOAuth2ConfigVars(oauth2Vars));
+        activeEnvironment.oauth2.ensureDefaults();
+        activeEnvironment.oauth2.outputBindings.clear();
+        activeEnvironment.oauth2.outputBindings.putAll(readOAuth2OutputBindingsFromUi());
+        storeOAuth2TokenInActiveEnvironment(collection, entry);
+        syncOAuth2BindingUiFromActiveEnvironment();
+        renderSelectedEnvironmentIntoEditor();
+        syncActiveEnvironmentToEditors();
+        updateEnvironmentUiState();
+        setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
+        appendImportLog("OAuth2 token saved to active environment \"" + activeEnvironment.displayName() + "\".");
     }
 
     private Map<String, String> filterOAuth2ConfigVars(Map<String, String> oauth2Vars) {
@@ -2239,7 +2574,7 @@ public class ImporterPanel {
             }
         }
         if (statusUpdater != null) {
-            statusUpdater.accept("Editor cleared. Click Save Now to update the selected collection.");
+            statusUpdater.accept("Editor cleared. Click Save to update the selected environment.");
         }
     }
 
@@ -2441,7 +2776,6 @@ public class ImporterPanel {
         if (col != null && col.runtimeOAuth2 != null) {
             oauth2Panel.populateFromOAuth2Map(col.runtimeOAuth2);
         }
-        applyAutoRefreshUiForSelectedCollection();
     }
 
     private void refreshRuntimeViewsForCollection(ApiCollection col) {
@@ -2604,9 +2938,7 @@ public class ImporterPanel {
                     sendToRunnerBtn.setEnabled(true);
                     startRunnerBtn.setEnabled(true);
                     removeCollectionBtn.setEnabled(true);
-                    if (envApplyAllBtn != null) {
-                        envApplyAllBtn.setEnabled(selectedEnv != null);
-                    }
+                    updateEnvironmentUiState();
                     notifyWorkspaceChangedImmediately();
                 } catch (Exception e) {
                     appendImportLog("Error loading collection: " + e.getMessage());
@@ -2670,8 +3002,6 @@ public class ImporterPanel {
             return;
         }
         for (ApiCollection target : targets) {
-            stopAutoRefreshForCollection(target, "Collection removed");
-            oauthAutoStates.remove(target);
             target.clearChangeListeners();
             requestToCollectionMap.entrySet().removeIf(entry -> entry.getValue() == target);
             loadedCollections.remove(target);
@@ -2736,7 +3066,6 @@ public class ImporterPanel {
         captureWorkbenchSettings(state);
         captureRunnerSettings(state);
         captureRunnerDetailState(state);
-        captureOAuthAutoRefreshState(state);
         return state;
     }
 
@@ -2751,14 +3080,13 @@ public class ImporterPanel {
                     pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
                     restoreWorkspaceCollections(state.collections);
                     replaceEnvironmentProfiles(state.environments);
-                    activeEnvironmentId = state.activeEnvironmentId;
+                    setActiveEnvironmentId(state.activeEnvironmentId);
                     selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                     selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
-                    syncActiveEnvironmentToEditors();
                     restoreWorkbenchSettings(state);
-                restoreRunnerSettings(state);
-                restoreRunnerDetailState(state);
-                restoreOAuthAutoRefreshState(state.oauthAutoRefreshByCollection);
+                    restoreRunnerSettings(state);
+                    restoreRunnerDetailState(state);
+                    syncOAuth2UiState();
                 if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
@@ -3122,9 +3450,7 @@ public class ImporterPanel {
         if (removeCollectionBtn != null) {
             removeCollectionBtn.setEnabled(hasCollections);
         }
-        if (envApplyAllBtn != null) {
-            envApplyAllBtn.setEnabled(hasCollections && selectedEnv != null);
-        }
+        updateEnvironmentUiState();
 
         // Runner controls are stateful; derive from actual runner status.
         if (runner != null) {
@@ -3703,35 +4029,14 @@ public class ImporterPanel {
         state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
     }
 
-    private void captureOAuthAutoRefreshState(WorkspaceState state) {
-        if (state == null) {
-            return;
-        }
-        state.oauthAutoRefreshByCollection = new LinkedHashMap<>();
-        for (ApiCollection collection : loadedCollections) {
-            if (collection == null || collection.name == null) {
-                continue;
-            }
-            OAuthAutoRefreshState autoState = oauthAutoStates.get(collection);
-            if (autoState == null) {
-                continue;
-            }
-            WorkspaceState.OAuthAutoRefreshSnapshot snapshot = new WorkspaceState.OAuthAutoRefreshSnapshot();
-            snapshot.enabled = autoState.enabled;
-            snapshot.intervalSeconds = autoState.intervalSeconds;
-            snapshot.lastStatus = autoState.lastStatus;
-            state.oauthAutoRefreshByCollection.put(collection.name, snapshot);
-        }
-    }
-
     private void restoreWorkbenchSettings(WorkspaceState state) {
         if (state == null) {
             return;
         }
-        applyCheckboxState(repeaterBtn, state.workbenchRepeaterSelected, true);
+        applyCheckboxState(repeaterBtn, state.workbenchRepeaterSelected, false);
         applyCheckboxState(sitemapBtn, state.workbenchSitemapSelected, false);
         applyCheckboxState(intruderBtn, state.workbenchIntruderSelected, false);
-        applySpinnerState(delaySpinner, state.workbenchDelayMs, 200);
+        applySpinnerState(delaySpinner, state.workbenchDelayMs, 0);
         applyCheckboxState(debugRawRequestBox, state.workbenchDebugRawRequest, false);
         applyTabIndex(workbenchDetailTabs, state.workbenchDetailTabIndex);
     }
@@ -3740,8 +4045,8 @@ public class ImporterPanel {
         if (state == null) {
             return;
         }
-        applySpinnerState(runnerDelaySpinner, state.runnerDelayMs, 200);
-        applySpinnerState(runnerRetriesSpinner, state.runnerRetries, 1);
+        applySpinnerState(runnerDelaySpinner, state.runnerDelayMs, 0);
+        applySpinnerState(runnerRetriesSpinner, state.runnerRetries, 0);
         applyCheckboxState(stopOnErrorBox, state.runnerStopOnError, false);
         applyCheckboxState(stopOnAssertionFailureBox, state.runnerStopOnAssertionFailure, false);
         applyCheckboxState(stopOnStatusAtLeast400Box, state.runnerStopOnStatusAtLeast400, false);
@@ -3758,33 +4063,6 @@ public class ImporterPanel {
         applyTabIndex(runnerDetailTabs, state.runnerDetailTabIndex);
     }
 
-    private void restoreOAuthAutoRefreshState(Map<String, WorkspaceState.OAuthAutoRefreshSnapshot> snapshots) {
-        if (snapshots == null || snapshots.isEmpty()) {
-            return;
-        }
-        for (ApiCollection collection : loadedCollections) {
-            if (collection == null || collection.name == null) {
-                continue;
-            }
-            WorkspaceState.OAuthAutoRefreshSnapshot snapshot = snapshots.get(collection.name);
-            if (snapshot == null) {
-                continue;
-            }
-            OAuthAutoRefreshState state = getAutoState(collection);
-            state.intervalSeconds = Math.max(30, snapshot.intervalSeconds != null ? snapshot.intervalSeconds : 300);
-            state.lastStatus = snapshot.lastStatus;
-            if (Boolean.TRUE.equals(snapshot.enabled)) {
-                startAutoRefreshForCollection(collection, state.intervalSeconds);
-            } else {
-                if (state.future != null) {
-                    state.future.cancel(false);
-                    state.future = null;
-                }
-                state.enabled = false;
-                applyAutoRefreshUiForSelectedCollection();
-            }
-        }
-    }
 
     private static Integer spinnerIntValue(JSpinner spinner) {
         if (spinner == null) {
@@ -3914,7 +4192,6 @@ public class ImporterPanel {
         } else {
             updateVariablesSaveStatusForSelection();
         }
-        applyAutoRefreshUiForSelectedCollection();
         if (requestEditor != null && requestEditor.getCurrentCollection() != null) {
             syncRequestEditorRuntimeContext(requestEditor.getCurrentRequest(), requestEditor.getCurrentCollection());
         }
@@ -3927,299 +4204,320 @@ public class ImporterPanel {
     }
 
     private void updateScopeControlState() {
-        // Variables tab
-        if (varsCollectionCombo != null && envVarsArea != null) {
-            CollectionRef varsRef = varsCollectionCombo.getSelectedItem() != null ? (CollectionRef) varsCollectionCombo.getSelectedItem() : null;
-            boolean varsHasTarget = varsRef != null;
-            envVarsArea.setEnabled(varsHasTarget);
-            envVarsArea.setEditable(varsHasTarget);
-            if (varsTable != null) varsTable.setEnabled(varsHasTarget);
-            if (varsRawViewBtn != null) varsRawViewBtn.setEnabled(varsHasTarget);
-            if (varsTableViewBtn != null) varsTableViewBtn.setEnabled(varsHasTarget);
-            if (bindVarsBtn != null) bindVarsBtn.setEnabled(varsHasTarget);
-            if (varsHintLabel != null) {
-                if (varsHasTarget) {
-                    varsHintLabel.setText("Editing runtime overrides for: " + varsRef.label);
-                    varsHintLabel.setForeground(Color.BLACK);
-                } else {
-                    varsHintLabel.setText("Select a collection to edit scoped variables.");
-                    varsHintLabel.setForeground(Color.GRAY);
-                }
-            }
-            if (!varsHasTarget) {
-                setVarsAutosaveStatus("Select a collection to edit variables.", Color.GRAY);
-            } else {
-                updateVariablesSaveStatusForSelection();
-            }
-        }
-
-        // OAuth2 tab
-        if (oauth2CollectionCombo != null && oauth2Panel != null) {
-            CollectionRef oauth2Ref = oauth2CollectionCombo.getSelectedItem() != null ? (CollectionRef) oauth2CollectionCombo.getSelectedItem() : null;
-            boolean oauth2HasTarget = oauth2Ref != null;
-            oauth2Panel.setEditable(oauth2HasTarget);
-            if (bindOAuth2Btn != null) bindOAuth2Btn.setEnabled(oauth2HasTarget);
-            if (oauth2HintLabel != null) {
-                if (oauth2HasTarget) {
-                    oauth2HintLabel.setText("Binding OAuth2 to: " + oauth2Ref.label);
-                    oauth2HintLabel.setForeground(Color.BLACK);
-                } else {
-                    oauth2HintLabel.setText("Select a collection to bind OAuth2 settings.");
-                    oauth2HintLabel.setForeground(Color.GRAY);
-                }
-            }
-            if (!oauth2HasTarget) {
-                setOAuth2AutosaveStatus("Select a collection to autosave OAuth2 settings.", Color.GRAY);
-            }
-        }
-
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
         if (actionsBtn != null) {
             actionsBtn.setEnabled(!loadedCollections.isEmpty());
         }
-        if (requestTree != null && envApplyCheckedBtn != null) {
-            envApplyCheckedBtn.setEnabled(!getCheckedRequestsFromTree().isEmpty() && !loadedCollections.isEmpty());
+    }
+
+    private void updateEnvironmentUiState() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        boolean hasSelection = selected != null;
+        if (environmentRawArea != null) {
+            environmentRawArea.setEnabled(hasSelection);
+            environmentRawArea.setEditable(hasSelection);
         }
-        if (requestTree != null && envApplyCheckedCollectionsBtn != null) {
-            boolean hasSelectedEnv = selectedEnv != null;
-            boolean hasCheckedRequests = !getCheckedRequestsFromTree().isEmpty();
-            envApplyCheckedCollectionsBtn.setEnabled(hasSelectedEnv && hasCheckedRequests && !loadedCollections.isEmpty());
+        if (environmentTable != null) {
+            environmentTable.setEnabled(hasSelection);
         }
-        if (envApplyAllBtn != null) {
-            envApplyAllBtn.setEnabled(selectedEnv != null && !loadedCollections.isEmpty());
+        if (environmentRawViewBtn != null) {
+            environmentRawViewBtn.setEnabled(hasSelection);
+        }
+        if (environmentTableViewBtn != null) {
+            environmentTableViewBtn.setEnabled(hasSelection);
+        }
+        if (environmentSaveBtn != null) {
+            environmentSaveBtn.setEnabled(hasSelection && environmentDirty);
+        }
+        if (environmentDuplicateBtn != null) {
+            environmentDuplicateBtn.setEnabled(hasSelection);
+        }
+        if (environmentDeleteBtn != null) {
+            environmentDeleteBtn.setEnabled(hasSelection);
+        }
+        if (environmentSetActiveBtn != null) {
+            environmentSetActiveBtn.setEnabled(hasSelection && !Objects.equals(activeEnvironmentId, selected.id));
+        }
+        if (environmentExportBtn != null) {
+            environmentExportBtn.setEnabled(hasSelection);
+        }
+        if (environmentStatusLabel != null) {
+            environmentStatusLabel.setText(hasSelection
+                    ? (Objects.equals(activeEnvironmentId, selected.id) ? "Active: " : "Selected: ") + selected.displayName() + (environmentDirty ? " | Unsaved changes" : " | Saved")
+                    : "No Environment selected.");
+            environmentStatusLabel.setForeground(environmentDirty ? new Color(150, 90, 0) : Color.GRAY);
+        }
+        if (environmentHintLabel != null) {
+            environmentHintLabel.setText("Active Environment values apply to previews, sends, runner, Repeater, Intruder, and Sitemap.");
+        }
+        if (environmentCombo != null && environmentProfiles.isEmpty()) {
+            environmentCombo.setSelectedItem(null);
         }
     }
 
-    // ========================================================================
-    // Environment Binding
-    // ========================================================================
-    private void selectEnvironment() {
+    private void syncOAuth2UiState() {
+        EnvironmentProfile active = getActiveEnvironment();
+        boolean hasActive = active != null;
+        if (oauth2ActiveEnvironmentLabel != null) {
+            oauth2ActiveEnvironmentLabel.setText("Active Environment: " + (hasActive ? active.displayName() : "No Environment"));
+        }
+        if (oauth2BindingHintLabel != null) {
+            oauth2BindingHintLabel.setText(hasActive
+                    ? "OAuth2 config and token outputs are stored in the active environment."
+                    : "Create or select an Active Environment before configuring OAuth2.");
+            oauth2BindingHintLabel.setForeground(hasActive ? Color.DARK_GRAY : Color.GRAY);
+        }
+        if (oauth2StatusLabel != null && !hasActive) {
+            oauth2StatusLabel.setText("Create or select an Active Environment before fetching tokens.");
+            oauth2StatusLabel.setForeground(Color.GRAY);
+        }
+        if (oauth2Panel != null) {
+            oauth2Panel.setEditable(hasActive);
+        }
+        setBindingCombosEnabled(hasActive);
+        refreshOAuth2BindingCandidates();
+    }
+
+    private void handleEnvironmentSelectionChanged() {
+        if (suppressEnvironmentEditorEvents) {
+            return;
+        }
+        if (environmentDirty) {
+            commitEnvironmentEditorToSelectedProfile();
+        }
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+    }
+
+    private EnvironmentProfile getSelectedEnvironmentProfile() {
+        EnvironmentRef ref = environmentCombo != null && environmentCombo.getSelectedItem() != null
+                ? (EnvironmentRef) environmentCombo.getSelectedItem()
+                : null;
+        return ref != null ? ref.environment : null;
+    }
+
+    private void selectEnvironmentById(String environmentId) {
+        if (environmentCombo == null) {
+            return;
+        }
+        for (int i = 0; i < environmentCombo.getItemCount(); i++) {
+            EnvironmentRef ref = environmentCombo.getItemAt(i);
+            if (ref != null && ref.environment != null && Objects.equals(ref.environment.id, environmentId)) {
+                environmentCombo.setSelectedIndex(i);
+                return;
+            }
+        }
+        environmentCombo.setSelectedItem(null);
+    }
+
+    private void updateEnvironmentComboModel() {
+        if (environmentCombo == null) {
+            return;
+        }
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        environmentCombo.removeAllItems();
+        if (environmentProfiles.isEmpty()) {
+            environmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
+            environmentCombo.setSelectedIndex(0);
+            return;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null) {
+                profile.ensureDefaults();
+                profile.ensureId();
+                environmentCombo.addItem(new EnvironmentRef(profile, profile.displayName()));
+            }
+        }
+        if (selected != null) {
+            selectEnvironmentById(selected.id);
+        } else if (activeEnvironmentId != null) {
+            selectEnvironmentById(activeEnvironmentId);
+        } else {
+            environmentCombo.setSelectedIndex(0);
+        }
+    }
+
+    private void handleEnvironmentImport() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setFileFilter(new FileNameExtensionFilter("Environment files", "json", "bru"));
-        if (chooser.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
-            selectedEnv = chooser.getSelectedFile();
-            envField.setText(selectedEnv.getAbsolutePath());
-            updateScopeControlState();
-            showEnvironmentBindingDialog();
-        }
-    }
-
-    private void showEnvironmentBindingDialog() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
+        chooser.setDialogTitle("Import Environment");
+        chooser.setFileFilter(new FileNameExtensionFilter("Environment files", "json", "bru", "env"));
+        if (chooser.showOpenDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
             return;
         }
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Environment Binding", Dialog.ModalityType.APPLICATION_MODAL);
-        dialog.setLayout(new BorderLayout(8, 8));
-
-        JLabel selectedCountLabel = new JLabel("0 requests selected");
-        DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
-        JTree selectionTree = buildPopupSelectionTree(selectionRoot, selectedCountLabel);
-        JScrollPane treeScroll = new JScrollPane(selectionTree);
-        treeScroll.setBorder(BorderFactory.createTitledBorder("Select collections / requests"));
-        dialog.add(treeScroll, BorderLayout.CENTER);
-
-        JLabel envLabel = new JLabel("Env: " + selectedEnv.getAbsolutePath());
-        JPanel topPanel = new JPanel(new BorderLayout());
-        topPanel.add(envLabel, BorderLayout.CENTER);
-        topPanel.add(selectedCountLabel, BorderLayout.EAST);
-        dialog.add(topPanel, BorderLayout.NORTH);
-
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        JButton cancelBtn = new JButton("Cancel");
-        JButton applyRequestBtn = new JButton("Apply to Checked Request");
-        JButton applyCollectionBtn = new JButton("Apply to Checked Collection");
-        JButton applyAllBtn = new JButton("Apply to All Collection");
-        cancelBtn.addActionListener(e -> dialog.dispose());
-        applyRequestBtn.addActionListener(e -> {
-            List<ApiRequest> checkedRequests = collectCheckedRequests((DefaultMutableTreeNode) selectionTree.getModel().getRoot());
-            applyEnvToRequests(checkedRequests);
-            dialog.dispose();
-        });
-        applyCollectionBtn.addActionListener(e -> {
-            DefaultMutableTreeNode root = (DefaultMutableTreeNode) selectionTree.getModel().getRoot();
-            Set<ApiCollection> selectedCollections = new LinkedHashSet<>(collectCheckedCollections(root));
-            selectedCollections.addAll(resolveCheckedRequestCollections(collectCheckedRequests(root)));
-            applyEnvToCollections(selectedCollections);
-            dialog.dispose();
-        });
-        applyAllBtn.addActionListener(e -> {
-            applyEnvToAllCollectionsFromPopup();
-            dialog.dispose();
-        });
-        buttonPanel.add(cancelBtn);
-        buttonPanel.add(applyRequestBtn);
-        buttonPanel.add(applyCollectionBtn);
-        buttonPanel.add(applyAllBtn);
-        dialog.add(buttonPanel, BorderLayout.SOUTH);
-
-        dialog.setSize(720, 520);
-        dialog.setLocationRelativeTo(mainPanel);
-        dialog.setVisible(true);
-    }
-
-    static int applyEnvVarsToRequestVariables(ApiRequest request, Map<String, String> envVars) {
-        if (request == null || envVars == null || envVars.isEmpty()) {
-            return 0;
+        File file = chooser.getSelectedFile();
+        if (file == null) {
+            return;
         }
-        if (request.variables == null) {
-            request.variables = new ArrayList<>();
-        }
-
-        Map<String, ApiRequest.Variable> byKey = new LinkedHashMap<>();
-        for (ApiRequest.Variable variable : request.variables) {
-            if (variable != null && variable.key != null) {
-                byKey.put(variable.key, variable);
+        try {
+            List<EnvironmentProfile> imported = burp.utils.EnvironmentImportService.importEnvironment(file);
+            if (imported == null || imported.isEmpty()) {
+                appendImportLog("No environment profiles found in " + file.getName() + ".");
+                return;
             }
-        }
-
-        int changed = 0;
-        for (Map.Entry<String, String> entry : envVars.entrySet()) {
-            String key = entry.getKey();
-            if (key == null || key.isBlank()) {
-                continue;
+            for (EnvironmentProfile profile : imported) {
+                if (profile == null) continue;
+                profile.ensureDefaults();
+                profile.ensureId();
+                environmentProfiles.add(profile);
             }
-            ApiRequest.Variable variable = byKey.get(key);
-            if (variable == null) {
-                variable = new ApiRequest.Variable();
-                variable.key = key;
-                request.variables.add(variable);
-                byKey.put(key, variable);
+            if (activeEnvironmentId == null && !imported.isEmpty()) {
+                activeEnvironmentId = imported.get(0).id;
             }
-            variable.value = entry.getValue();
-            variable.enabled = true;
-            changed++;
+            updateEnvironmentComboModel();
+            selectEnvironmentById(imported.get(0).id);
+            renderSelectedEnvironmentIntoEditor();
+            updateEnvironmentUiState();
+            syncOAuth2UiState();
+            syncActiveEnvironmentToEditors();
+            notifyWorkspaceChangedImmediately();
+            appendImportLog("Imported " + imported.size() + " environment profile(s) from " + file.getName() + ".");
+        } catch (Exception e) {
+            appendImportLog("Environment import failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
-        return changed;
     }
 
-    private void applyEnvToRequests(List<ApiRequest> targets) {
-        if (targets == null || targets.isEmpty()) {
-            appendImportLog("No requests selected. Select one or more requests to bind env.");
+    private void handleEnvironmentNew() {
+        String name = JOptionPane.showInputDialog(mainPanel, "Environment name:", "New Environment", JOptionPane.PLAIN_MESSAGE);
+        if (name == null) {
             return;
         }
-        Map<String, String> parsed = new LinkedHashMap<>();
-        UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, parsed);
-        if (!result.isSuccess()) {
-            appendImportLog("Env bind FAILED for selected requests: " + result.errorMessage);
-            return;
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = name.trim().isEmpty() ? "Environment" : name.trim();
+        profile.sourceFormat = "manual";
+        profile.sourceFileName = null;
+        profile.ensureId();
+        profile.ensureDefaults();
+        environmentProfiles.add(profile);
+        if (activeEnvironmentId == null) {
+            activeEnvironmentId = profile.id;
         }
-        Set<ApiCollection> affectedCollections = new LinkedHashSet<>();
-        int totalApplied = 0;
-        for (ApiRequest request : targets) {
-            totalApplied += applyEnvVarsToRequestVariables(request, parsed);
-            ApiCollection collection = requestToCollectionMap.get(request);
-            if (collection == null) {
-                collection = findCollectionByName(request.sourceCollection);
-            }
-            if (collection != null) {
-                affectedCollections.add(collection);
-            }
-        }
-        appendImportLog("Env bound to " + targets.size() + " request(s): " + totalApplied + " var(s) total.");
-        for (ApiCollection collection : affectedCollections) {
-            refreshRuntimeViewsForCollection(collection);
-        }
-        notifyWorkspaceChanged();
-        renderEffectiveVariablesForSelectedCollection();
+        updateEnvironmentComboModel();
+        selectEnvironmentById(profile.id);
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Created environment \"" + profile.displayName() + "\".");
     }
 
-    private void applyEnvToCheckedRequests() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
+    private void handleEnvironmentDuplicate() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
             return;
         }
-        List<ApiRequest> targets = getCheckedRequestsFromTree();
-        if (targets.isEmpty()) {
-            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
-            return;
-        }
-        applyEnvToRequests(targets);
+        EnvironmentProfile duplicate = selected.copy();
+        duplicate.id = null;
+        duplicate.ensureId();
+        duplicate.name = selected.displayName() + " Copy";
+        duplicate.ensureDefaults();
+        environmentProfiles.add(duplicate);
+        updateEnvironmentComboModel();
+        selectEnvironmentById(duplicate.id);
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Duplicated environment \"" + selected.displayName() + "\".");
     }
 
-    private void applyEnvToCollections(Set<ApiCollection> affectedCollections) {
-        if (affectedCollections.isEmpty()) {
-            appendImportLog("No collections selected. Nothing to apply.");
-            return;
-        }
-        int totalLoaded = 0;
-        List<String> errors = new ArrayList<>();
-        for (ApiCollection collection : affectedCollections) {
-            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, collection.runtimeVars);
-            if (result.isSuccess()) {
-                totalLoaded += result.loadedCount;
-            } else {
-                errors.add("\"" + collection.name + "\": " + result.errorMessage);
-            }
-            collection.fireChanged();
-            refreshRuntimeViewsForCollection(collection);
-        }
-        appendImportLog("Env bound to " + affectedCollections.size() + " collection(s): " + totalLoaded + " var(s) total.");
-        for (String err : errors) {
-            appendImportLog("  Env bind error - " + err);
-        }
-        notifyWorkspaceChanged();
-        renderEffectiveVariablesForSelectedCollection();
-    }
-
-    private void applyEnvToCheckedCollections() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
-            return;
-        }
-        List<ApiRequest> targets = getCheckedRequestsFromTree();
-        if (targets.isEmpty()) {
-            appendImportLog("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
-            return;
-        }
-        Set<ApiCollection> affectedCollections = resolveCheckedRequestCollections(targets);
-        if (affectedCollections.isEmpty()) {
-            appendImportLog("No checked request nodes resolved to collections. Nothing to apply.");
-            return;
-        }
-        applyEnvToCollections(affectedCollections);
-    }
-
-    private void applyEnvToAllCollectionsFromPopup() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
-            return;
-        }
-        if (loadedCollections.isEmpty()) {
-            appendImportLog("No collections loaded.");
-            return;
-        }
-        int totalLoaded = 0;
-        List<String> errors = new ArrayList<>();
-        for (ApiCollection col : loadedCollections) {
-            UniversalImporter.EnvLoadResult result = importer.loadEnvFileIntoMap(selectedEnv, col.runtimeVars);
-            if (result.isSuccess()) {
-                totalLoaded += result.loadedCount;
-            } else {
-                errors.add("\"" + col.name + "\": " + result.errorMessage);
-            }
-            col.fireChanged();
-        }
-        appendImportLog("Env bound to all " + loadedCollections.size() + " collection(s): " + totalLoaded + " var(s) total.");
-        for (String err : errors) {
-            appendImportLog("  Env bind error - " + err);
-        }
-        notifyWorkspaceChanged();
-        renderEffectiveVariablesForSelectedCollection();
-    }
-
-    private void applyEnvToAllCollections() {
-        if (selectedEnv == null) {
-            appendImportLog("No environment file selected. Browse first.");
+    private void handleEnvironmentDelete() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
             return;
         }
         int confirm = JOptionPane.showConfirmDialog(mainPanel,
-            "This will bind the selected environment file to ALL " + loadedCollections.size() + " collection(s). Continue?",
-            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
-        if (confirm != JOptionPane.YES_OPTION) return;
-        applyEnvToAllCollectionsFromPopup();
+                "Delete environment \"" + selected.displayName() + "\"?",
+                "Delete Environment", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) {
+            return;
+        }
+        String removedId = selected.id;
+        environmentProfiles.removeIf(profile -> profile != null && Objects.equals(profile.id, removedId));
+        if (Objects.equals(activeEnvironmentId, removedId)) {
+            activeEnvironmentId = null;
+        }
+        updateEnvironmentComboModel();
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Deleted environment \"" + selected.displayName() + "\".");
+    }
+
+    private void handleEnvironmentSetActive() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
+            return;
+        }
+        setActiveEnvironmentId(selected.id);
+        appendImportLog("Active environment set to \"" + selected.displayName() + "\".");
+    }
+
+    private void handleEnvironmentExport() {
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null) {
+            return;
+        }
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export Environment");
+        chooser.setSelectedFile(new File(selected.displayName().replaceAll("[^a-zA-Z0-9._-]+", "_") + ".json"));
+        if (chooser.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File file = chooser.getSelectedFile();
+        if (file == null) {
+            return;
+        }
+        try {
+            EnvironmentProfile copy = selected.copy();
+            copy.ensureDefaults();
+            com.google.gson.JsonObject root = new com.google.gson.JsonObject();
+            root.addProperty("name", copy.displayName());
+            com.google.gson.JsonObject values = new com.google.gson.JsonObject();
+            for (Map.Entry<String, String> entry : copy.variables.entrySet()) {
+                values.addProperty(entry.getKey(), entry.getValue());
+            }
+            root.add("variables", values);
+            com.google.gson.JsonObject oauth2 = new com.google.gson.JsonObject();
+            com.google.gson.JsonObject config = new com.google.gson.JsonObject();
+            for (Map.Entry<String, String> entry : copy.oauth2.config.entrySet()) {
+                config.addProperty(entry.getKey(), entry.getValue());
+            }
+            oauth2.add("config", config);
+            com.google.gson.JsonObject bindings = new com.google.gson.JsonObject();
+            for (Map.Entry<String, String> entry : copy.oauth2.outputBindings.entrySet()) {
+                bindings.addProperty(entry.getKey(), entry.getValue());
+            }
+            oauth2.add("outputBindings", bindings);
+            root.add("oauth2", oauth2);
+            Files.writeString(file.toPath(), new com.google.gson.GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(root), StandardCharsets.UTF_8);
+            appendImportLog("Exported environment \"" + copy.displayName() + "\" to " + file.getName() + ".");
+        } catch (Exception e) {
+            appendImportLog("Environment export failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        }
+    }
+
+    private void markEnvironmentDirty() {
+        if (suppressEnvironmentEditorEvents) {
+            return;
+        }
+        environmentDirty = true;
+        if (environmentStatusLabel != null) {
+            environmentStatusLabel.setText("Unsaved changes");
+            environmentStatusLabel.setForeground(new Color(150, 90, 0));
+        }
+        if (environmentSaveBtn != null) {
+            environmentSaveBtn.setEnabled(true);
+        }
     }
 
     private void switchVarsView(boolean tableView) {
+
         if (varsEditorCardPanel == null) return;
         if (tableView) {
             resetVariablesRawEditingSession();
@@ -4584,10 +4882,10 @@ public class ImporterPanel {
     }
 
     // ========================================================================
-    // Variables Tab Binding
+    // Legacy runtime vars compatibility
     // ========================================================================
     private void scheduleVariablesAutosave() {
-        // Variables tab now saves explicitly via Save Now / Ctrl+S.
+        // Legacy runtime vars now save only through the environment editor.
     }
 
     void expireVariablesRawEditingForTests() {
@@ -4610,6 +4908,10 @@ public class ImporterPanel {
             oauth2AutosaveStatusLabel.setText(text);
             oauth2AutosaveStatusLabel.setForeground(color != null ? color : Color.GRAY);
         }
+        if (oauth2StatusLabel != null) {
+            oauth2StatusLabel.setText(text);
+            oauth2StatusLabel.setForeground(color != null ? color : Color.GRAY);
+        }
     }
 
     private void bindVarsToSelectedCollection() {
@@ -4629,7 +4931,7 @@ public class ImporterPanel {
         }
         int confirm = JOptionPane.showConfirmDialog(mainPanel,
             "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
-            "Confirm Apply to All Collections", JOptionPane.YES_NO_OPTION);
+            "Confirm Save to All Environments", JOptionPane.YES_NO_OPTION);
         if (confirm != JOptionPane.YES_OPTION) return;
         Map<String, String> vars = parseRuntimeOverrideSection();
         for (ApiCollection col : loadedCollections) {
@@ -5051,7 +5353,8 @@ public class ImporterPanel {
             appendImportLog("No destination selected.");
             return;
         }
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, activeEnvironmentOverlay());
+        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
@@ -5072,6 +5375,8 @@ public class ImporterPanel {
         }
 
         importer.importRequestsSequential(queue, destinations, delay,
+            runtimeOverlay,
+            this::storeOAuth2TokenInActiveEnvironment,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
                 if (importProgress != null) {
@@ -5115,7 +5420,8 @@ public class ImporterPanel {
             return;
         }
 
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, activeEnvironmentOverlay());
+        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, targetCollections);
@@ -5462,6 +5768,11 @@ public class ImporterPanel {
         return false;
     }
 
+    private ApiCollection getSelectedOAuth2Collection() {
+        CollectionRef ref = getSelectedCollectionRef(oauth2CollectionCombo);
+        return ref != null ? ref.collection : null;
+    }
+
     private List<ApiRequest> collectOAuth2PopulateRequests(DefaultMutableTreeNode root) {
         List<ApiRequest> selected = collectCheckedRequests(root);
         return selected.size() == 1 ? selected : Collections.emptyList();
@@ -5537,189 +5848,13 @@ public class ImporterPanel {
         return null;
     }
 
-    private OAuthAutoRefreshState getAutoState(ApiCollection col) {
-        OAuthAutoRefreshState state = oauthAutoStates.get(col);
-        if (state == null) {
-            state = new OAuthAutoRefreshState();
-            oauthAutoStates.put(col, state);
-        }
-        return state;
-    }
-
-    private ApiCollection getSelectedOAuth2Collection() {
-        CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-        return ref != null ? ref.collection : null;
-    }
-
-    private void applyAutoRefreshUiForSelectedCollection() {
-        ApiCollection col = getSelectedOAuth2Collection();
-        if (col == null) {
-            oauth2Panel.setAutoRefreshIntervalSeconds(300);
-            oauth2Panel.setAutoRefreshActive(false);
-            return;
-        }
-        OAuthAutoRefreshState state = getAutoState(col);
-        oauth2Panel.setAutoRefreshIntervalSeconds(state.intervalSeconds);
-        oauth2Panel.setAutoRefreshActive(state.enabled);
-    }
-
-    private void toggleAutoRefreshForSelectedCollection() {
-        ApiCollection col = getSelectedOAuth2Collection();
-        if (col == null) {
-            appendImportLog("OAuth2 auto-refresh: no target collection selected.");
-            oauth2Panel.appendStatus("OAuth2 auto-refresh: no target collection selected.");
-            return;
-        }
-        OAuthAutoRefreshState state = getAutoState(col);
-        if (state.enabled) {
-            stopAutoRefreshForCollection(col, "Stopped by user");
-            return;
-        }
-        int interval = Math.max(30, oauth2Panel.getAutoRefreshIntervalSeconds());
-        startAutoRefreshForCollection(col, interval);
-    }
-
-    private void startAutoRefreshForCollection(ApiCollection col, int intervalSeconds) {
-        OAuthAutoRefreshState state = getAutoState(col);
-        if (state.future != null && !state.future.isDone()) {
-            state.future.cancel(false);
-        }
-
-        Map<String, String> vars = col.runtimeOAuth2 != null ? new HashMap<>(col.runtimeOAuth2) : new HashMap<>();
-        OAuth2Config cfg = OAuth2Config.fromVariables(vars);
-        if (cfg.tokenUrl == null || cfg.tokenUrl.isEmpty() || cfg.clientId == null || cfg.clientId.isEmpty()) {
-            String msg = "OAuth2 auto-refresh not started for \"" + col.name + "\": missing oauth2_token_url or oauth2_client_id.";
-            appendImportLog(msg);
-            oauth2Panel.appendStatus(msg);
-            state.enabled = false;
-            applyAutoRefreshUiForSelectedCollection();
-            return;
-        }
-
-        String refresh = vars.get("oauth2_refresh_token");
-        if (refresh == null || refresh.isEmpty()) {
-            String key = TokenStore.makeKey(cfg);
-            TokenStore.TokenEntry entry = TokenStore.get(key);
-            if (entry != null && entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                refresh = entry.refreshToken;
-                col.putRuntimeOAuth2("oauth2_refresh_token", refresh);
-            }
-        }
-        if (refresh == null || refresh.isEmpty()) {
-            String msg = "OAuth2 auto-refresh not started for \"" + col.name + "\": missing refresh token.";
-            appendImportLog(msg);
-            oauth2Panel.appendStatus(msg);
-            state.enabled = false;
-            applyAutoRefreshUiForSelectedCollection();
-            return;
-        }
-
-        state.intervalSeconds = intervalSeconds;
-        state.enabled = true;
-        state.lastStatus = "Running";
-        state.future = oauthAutoExecutor.scheduleWithFixedDelay(
-            () -> runAutoRefreshTick(col), intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
-
-        String msg = "OAuth2 auto-refresh started for \"" + col.name + "\" (" + intervalSeconds + "s interval).";
-        appendImportLog(msg);
-        oauth2Panel.appendStatus(msg);
-        applyAutoRefreshUiForSelectedCollection();
-    }
-
-    private void runAutoRefreshTick(ApiCollection col) {
-        OAuthAutoRefreshState state = getAutoState(col);
-        if (!state.enabled) return;
-        try {
-            Map<String, String> vars = new HashMap<>();
-            if (col.runtimeOAuth2 != null) vars.putAll(col.runtimeOAuth2);
-            OAuth2Config cfg = OAuth2Config.fromVariables(vars);
-
-            String refresh = vars.get("oauth2_refresh_token");
-            if ((refresh == null || refresh.isEmpty()) && cfg.clientId != null && cfg.tokenUrl != null) {
-                TokenStore.TokenEntry existing = TokenStore.get(TokenStore.makeKey(cfg));
-                if (existing != null && existing.refreshToken != null && !existing.refreshToken.isEmpty()) {
-                    refresh = existing.refreshToken;
-                }
-            }
-            if (refresh == null || refresh.isEmpty()) {
-                state.lastStatus = "Refresh token unavailable";
-                logAutoRefreshMessage(col, "Auto-refresh skipped: refresh token unavailable.");
-                return;
-            }
-
-            cfg.refreshToken = refresh;
-            cfg.grantType = OAuth2Config.GrantType.REFRESH_TOKEN;
-            if (!cfg.isValid()) {
-                state.lastStatus = "Invalid config for refresh";
-                logAutoRefreshMessage(col, "Auto-refresh skipped: invalid config for refresh_token grant.");
-                return;
-            }
-
-            TokenStore.TokenEntry entry = oauth2Manager.acquireToken(cfg);
-            Map<String, String> update = new HashMap<>();
-            if (entry.accessToken != null && !entry.accessToken.isEmpty()) {
-                update.put("oauth2_access_token", entry.accessToken);
-            }
-            if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                update.put("oauth2_refresh_token", entry.refreshToken);
-            }
-            if (!update.isEmpty()) {
-                col.putAllRuntimeOAuth2(update);
-            }
-            state.lastStatus = "Last refresh OK";
-            logAutoRefreshMessage(col, "Auto-refresh success. Next run in ~" + state.intervalSeconds + "s.");
-        } catch (Exception ex) {
-            state.lastStatus = "Refresh failed: " + ex.getMessage();
-            logAutoRefreshMessage(col, "Auto-refresh failed: " + ex.getMessage());
-        }
-    }
-
-    private void logAutoRefreshMessage(ApiCollection col, String message) {
-        SwingUtilities.invokeLater(() -> {
-            String msg = "OAuth2 [" + col.name + "]: " + message;
-            appendImportLog(msg);
-            CollectionRef ref = (CollectionRef) oauth2CollectionCombo.getSelectedItem();
-            if (ref != null && ref.collection == col) {
-                oauth2Panel.appendStatus(msg);
-            }
-        });
-    }
-
-    private void stopAutoRefreshForCollection(ApiCollection col, String reason) {
-        OAuthAutoRefreshState state = getAutoState(col);
-        state.enabled = false;
-        if (state.future != null) {
-            state.future.cancel(false);
-            state.future = null;
-        }
-        state.lastStatus = reason;
-        String msg = "OAuth2 auto-refresh stopped for \"" + col.name + "\" (" + reason + ").";
-        appendImportLog(msg);
-        oauth2Panel.appendStatus(msg);
-        applyAutoRefreshUiForSelectedCollection();
-    }
-
     public void cleanup() {
         shuttingDown = true;
-        suppressVariablesAutosave = true;
-        try {
-            persistVariablesEditorStateSilently();
-        } finally {
-            suppressVariablesAutosave = false;
-        }
         persistCurrentRequestEditorState();
-        for (ApiCollection col : new ArrayList<>(oauthAutoStates.keySet())) {
-            OAuthAutoRefreshState state = oauthAutoStates.get(col);
-            if (state != null && state.future != null) {
-                state.future.cancel(false);
-            }
-        }
-        oauthAutoStates.clear();
-        oauthAutoExecutor.shutdownNow();
     }
 
     private void persistVariablesEditorStateSilently() {
-        // Variables tab now uses explicit save only; workspace snapshots should
+        // Environment editor uses explicit save only; workspace snapshots should
         // reflect committed runtime vars without mutating the live draft.
     }
 
@@ -5767,35 +5902,26 @@ public class ImporterPanel {
             }
             return;
         }
-        Map<String, String> effectiveRuntimeVars = activeEnvironmentOverlay();
-        if (effectiveRuntimeVars.isEmpty()) {
-            effectiveRuntimeVars = getEffectiveRuntimeVarsForRequestContext(col);
-        }
-        requestEditor.setRuntimeVariables(effectiveRuntimeVars);
+        EnvironmentProfile active = getActiveEnvironment();
+        requestEditor.setRuntimeVariables(active != null ? active.toRuntimeOverlay() : getEffectiveRuntimeVarsForRequestContext(col));
     }
 
     private Map<String, String> getEffectiveRuntimeVarsForRequestContext(ApiCollection col) {
         if (col == null) {
             return Collections.emptyMap();
         }
-        CollectionRef varsRef = getSelectedCollectionRef(varsCollectionCombo);
-        if (varsRef != null && varsRef.collection == col && envVarsArea != null) {
-            Map<String, String> draftVars = parseRuntimeOverrideSection();
-            return draftVars != null ? draftVars : Collections.emptyMap();
+        LinkedHashMap<String, String> runtime = new LinkedHashMap<>();
+        if (col.runtimeOAuth2 != null) {
+            runtime.putAll(col.runtimeOAuth2);
         }
-        return col.runtimeVars != null ? col.runtimeVars : Collections.emptyMap();
+        if (col.runtimeVars != null) {
+            runtime.putAll(col.runtimeVars);
+        }
+        return runtime;
     }
 
     private void applyActiveVariablesDraftToCollection(ApiCollection col) {
-        if (col == null) {
-            return;
-        }
-        CollectionRef varsRef = getSelectedCollectionRef(varsCollectionCombo);
-        if (varsRef == null || varsRef.collection != col || envVarsArea == null) {
-            return;
-        }
-        Map<String, String> draftVars = parseRuntimeOverrideSection();
-        silentlyReplaceRuntimeVars(col, draftVars);
+        // Legacy no-op. Active Environment owns the primary runtime layer.
     }
 
     private Map<String, String> parseEnvVarsMap() {
@@ -5853,8 +5979,7 @@ public class ImporterPanel {
     }
 
     /**
-     * Parses only the "# Runtime overrides" section from the Variables tab.
-     * If the marker is absent, falls back to full-text parsing for backward compatibility.
+     * Parses the environment editor text into key/value pairs.
      */
     private Map<String, String> parseRuntimeOverrideSection() {
         if (isVarsTableViewActive()) {

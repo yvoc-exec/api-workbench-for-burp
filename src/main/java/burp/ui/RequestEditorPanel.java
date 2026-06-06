@@ -47,6 +47,7 @@ public class RequestEditorPanel extends JPanel {
     // Resolved mirror
     private JTextArea resolvedViewArea;
     private Map<String, String> runtimeVariables = new HashMap<>();
+    private boolean runtimeVariablesExplicit = false;
     private final Set<String> materializedAutoHeaders = new LinkedHashSet<>();
 
     private ApiRequest currentRequest;
@@ -324,10 +325,12 @@ public class RequestEditorPanel extends JPanel {
 
     public void setRuntimeVariables(Map<String, String> vars) {
         Map<String, String> next = vars != null ? new HashMap<>(vars) : new HashMap<>();
-        if (Objects.equals(runtimeVariables, next)) {
+        boolean explicit = vars != null;
+        if (Objects.equals(runtimeVariables, next) && runtimeVariablesExplicit == explicit) {
             return;
         }
         runtimeVariables = next;
+        runtimeVariablesExplicit = explicit;
         refreshAll();
     }
 
@@ -688,7 +691,9 @@ public class RequestEditorPanel extends JPanel {
         var vr = RuntimeResolverFactory.build(
                 currentCollection,
                 currentRequest,
-                RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeVariables)
+                runtimeVariablesExplicit
+                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeVariables)
+                        : RuntimeResolverFactory.Options.defaultOptions()
         );
 
         StringBuilder out = new StringBuilder();

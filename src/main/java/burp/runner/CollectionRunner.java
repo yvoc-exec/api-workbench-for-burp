@@ -49,7 +49,7 @@ public class CollectionRunner {
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
-    private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = collection -> Collections.emptyMap();
+    private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
 
     public CollectionRunner(MontoyaApi api) {
@@ -87,7 +87,7 @@ public class CollectionRunner {
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
     public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
-        this.runtimeOverlayProvider = provider != null ? provider : collection -> Collections.emptyMap();
+        this.runtimeOverlayProvider = provider;
     }
     public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
         this.oauth2TokenSink = oauth2TokenSink;
@@ -360,7 +360,7 @@ public class CollectionRunner {
                 ExecutionResult exec;
                 if (pipeline == null) {
                     exec = null;
-                } else if ((overlay == null || overlay.isEmpty()) && oauth2TokenSink == null) {
+                } else if (overlay == null && oauth2TokenSink == null) {
                     exec = pipeline.execute(req, col, followRedirects);
                 } else {
                     exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink);
@@ -605,19 +605,21 @@ public class CollectionRunner {
     }
 
     private VariableResolver buildPreviewResolver(ApiRequest req, ApiCollection col) {
+        Map<String, String> overlay = runtimeOverlayFor(col);
         return burp.utils.RuntimeResolverFactory.build(
                 col,
                 req,
-                burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlayFor(col))
+                overlay != null
+                        ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay)
+                        : burp.utils.RuntimeResolverFactory.Options.defaultOptions()
         );
     }
 
     private Map<String, String> runtimeOverlayFor(ApiCollection col) {
         if (runtimeOverlayProvider == null) {
-            return Collections.emptyMap();
+            return null;
         }
-        Map<String, String> overlay = runtimeOverlayProvider.apply(col);
-        return overlay != null ? overlay : Collections.emptyMap();
+        return runtimeOverlayProvider.apply(col);
     }
 
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {

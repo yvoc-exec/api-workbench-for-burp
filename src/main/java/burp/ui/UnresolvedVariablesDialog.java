@@ -9,7 +9,6 @@ import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.ArrayList;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,6 +25,7 @@ public class UnresolvedVariablesDialog extends JDialog {
     private final List<ApiCollection> collections;
     private final List<UnresolvedVariableIssue> issues;
     private final LinkedHashMap<String, JTextField> variableFields = new LinkedHashMap<>();
+    private final LinkedHashMap<String, String> enteredValues = new LinkedHashMap<>();
     private Action action = Action.CANCEL;
 
     public UnresolvedVariablesDialog(Window owner,
@@ -52,39 +52,8 @@ public class UnresolvedVariablesDialog extends JDialog {
         return action;
     }
 
-    public static void applyEnteredValuesToCollections(List<ApiCollection> collections,
-                                                       List<UnresolvedVariableIssue> issues,
-                                                       Map<String, String> enteredValues) {
-        if (collections == null || collections.isEmpty() || issues == null || issues.isEmpty() ||
-            enteredValues == null || enteredValues.isEmpty()) {
-            return;
-        }
-
-        Map<ApiCollection, Map<String, String>> updatesByCollection = new IdentityHashMap<>();
-        for (UnresolvedVariableIssue issue : issues) {
-            if (issue == null || issue.collectionName == null || issue.variableName == null) {
-                continue;
-            }
-            String value = enteredValues.get(issue.variableName);
-            if (value == null || value.isBlank()) {
-                continue;
-            }
-            for (ApiCollection collection : collections) {
-                if (collection == null || collection.name == null) {
-                    continue;
-                }
-                if (!issue.collectionName.equals(collection.name)) {
-                    continue;
-                }
-                updatesByCollection
-                    .computeIfAbsent(collection, ignored -> new LinkedHashMap<>())
-                    .put(issue.variableName, value);
-            }
-        }
-
-        for (Map.Entry<ApiCollection, Map<String, String>> entry : updatesByCollection.entrySet()) {
-            entry.getKey().putAllRuntimeVars(entry.getValue());
-        }
+    public Map<String, String> getEnteredValues() {
+        return new LinkedHashMap<>(enteredValues);
     }
 
     private void buildUi() {
@@ -171,7 +140,8 @@ public class UnresolvedVariablesDialog extends JDialog {
 
         JButton applyButton = new JButton("Apply to Runtime Vars");
         applyButton.addActionListener(e -> {
-            applyEnteredValuesToCollections(collections, issues, collectEnteredValues());
+            enteredValues.clear();
+            enteredValues.putAll(collectEnteredValues());
             action = Action.APPLY_AND_CONTINUE;
             dispose();
         });

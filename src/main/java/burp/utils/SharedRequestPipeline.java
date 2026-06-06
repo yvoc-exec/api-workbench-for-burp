@@ -47,11 +47,11 @@ public class SharedRequestPipeline {
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        return execute(req, col, followRedirects, Collections.emptyMap(), null);
+        return execute(req, col, followRedirects, null, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
-        return build(req, col, Collections.emptyMap(), null);
+        return build(req, col, null, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -74,7 +74,7 @@ public class SharedRequestPipeline {
         VariableResolver resolver = RuntimeResolverFactory.build(
                 col,
                 req,
-                runtimeOverlay != null && !runtimeOverlay.isEmpty()
+                runtimeOverlay != null
                         ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
                         : RuntimeResolverFactory.Options.defaultOptions()
         );
@@ -84,7 +84,7 @@ public class SharedRequestPipeline {
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
-            if (col != null) {
+            if (scriptEngine != null && col != null) {
                 scriptEngine.executePreRequest(req, resolver, scriptContext);
             }
 
@@ -162,7 +162,7 @@ public class SharedRequestPipeline {
                 result.success = true;
 
                 // 5. Post-response scripts
-                if (col != null) {
+                if (scriptEngine != null && col != null) {
                     String body = response.response().bodyToString();
                     int statusCode = response.response().statusCode();
                     Map<String, List<String>> headersMap = new HashMap<>();

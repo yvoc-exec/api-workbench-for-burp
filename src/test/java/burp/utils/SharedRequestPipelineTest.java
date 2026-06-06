@@ -218,10 +218,6 @@ class SharedRequestPipelineTest {
         ApiCollection col = new ApiCollection();
         col.name = "OAuth Collection";
         col.runtimeVars.put("token", "stale");
-        col.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
-        col.runtimeOAuth2.put("oauth2_client_id", "client");
-        col.runtimeOAuth2.put("oauth2_client_secret", "secret");
-        col.runtimeOAuth2.put("oauth2_grant", "client_credentials");
 
         ApiRequest req = new ApiRequest();
         req.name = "OAuth Request";
@@ -231,10 +227,17 @@ class SharedRequestPipelineTest {
         req.auth.type = "oauth2";
         req.auth.properties.put("accessToken", "{{token}}");
 
+        Map<String, String> activeEnvironment = Map.of(
+                "token", "active-env-token",
+                "oauth2_token_url", "https://auth.example.test/token",
+                "oauth2_client_id", "client",
+                "oauth2_client_secret", "secret",
+                "oauth2_grant", "client_credentials");
+
         ExecutionResult exec = pipeline.build(
                 req,
                 col,
-                Map.of("token", "active-env-token"),
+                activeEnvironment,
                 (collection, tokenEntry) -> Map.of("oauth2_access_token", tokenEntry.accessToken, "token", tokenEntry.accessToken));
 
         assertThat(exec.success).isTrue();
