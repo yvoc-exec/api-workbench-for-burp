@@ -116,6 +116,15 @@ public class UniversalImporter {
      */
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
                                           int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
+        importRequestsSequential(queue, destinations, delayMs, null, null, logCallback, resultCallback);
+    }
+
+    public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
+                                         int delayMs,
+                                         Map<String, String> runtimeOverlay,
+                                         SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+                                         LogCallback logCallback,
+                                         ResultCallback resultCallback) {
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected ImportResult doInBackground() throws Exception {
@@ -131,7 +140,7 @@ public class UniversalImporter {
                             resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.collection, qr.request, destination, delayMs, logCallback, colSources);
+                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("[OK] " + qr.request.name);
@@ -412,13 +421,19 @@ public class UniversalImporter {
     }
 
     private void processRequest(ApiCollection collection, ApiRequest req, String destination, int delayMs,
+                                Map<String, String> runtimeOverlay,
+                                SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
                                 LogCallback logCallback,
                                 Map<String, String> colSources) throws Exception {
         String destinationLower = destination.toLowerCase();
         boolean liveSend = "sitemap".equals(destinationLower);
-        ExecutionResult exec = liveSend
-                ? pipeline.execute(req, collection, followRedirects)
-                : pipeline.build(req, collection);
+        ExecutionResult exec = runtimeOverlay != null
+                ? (liveSend
+                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink)
+                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink))
+                : (liveSend
+                    ? pipeline.execute(req, collection, followRedirects)
+                    : pipeline.build(req, collection));
         if (exec == null || !exec.success || exec.requestHeaders == null) {
             throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }

@@ -81,7 +81,7 @@ The extension keeps runtime state scoped per collection. If two loaded collectio
 When a request is built, values are resolved in this order, highest first:
 
 1. Request-level variables
-2. Runtime variables from Variables tab, unresolved-var preflight, scripts, or runner extraction
+2. Active Environment variables from the Environment tab, unresolved-var preflight, scripts, or runner extraction
 3. Scoped OAuth2 runtime values
 4. Collection variables
 5. Collection environment values
@@ -137,7 +137,7 @@ Controls:
 Notes:
 
 - Duplicate collection names are rejected to avoid ambiguous variable binding.
-- Removing a collection stops OAuth2 auto-refresh for that collection.
+- Removing a collection does not change the Active Environment.
 - Loaded collections can be restored from Burp project data when using a project on disk.
 
 ### Request Tree
@@ -275,7 +275,7 @@ or:
 
 ### Base Layers and Runtime Overrides
 
-The Variables tab can display read-only base sections:
+The Environment tab can display read-only base sections:
 
 - Collection environment
 - Collection definition variables
@@ -299,9 +299,9 @@ Controls:
 | Control | Behavior |
 |---------|----------|
 | **Save Now** | Immediately writes the current editor contents to selected collection runtime vars |
-| **Bind to All Collections** | Writes current editor runtime vars to every loaded collection after confirmation |
-| **Export Runtime JSON** | Saves runtime vars and OAuth2 runtime for selected collection to JSON |
-| **Import Runtime JSON** | Loads runtime JSON into selected collection with Merge or Replace |
+| **Set Active** | Makes the selected environment the Active Environment |
+| **Export Environment** | Saves the selected environment profile to JSON |
+| **Import Environment** | Loads environment values into the Environment tab |
 | **Clear** | Clears editor UI only; does not autosave an empty map |
 
 ### Unresolved Variables
@@ -739,7 +739,7 @@ After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer t
 
 1. Check runner preview unresolved vars column.
 2. Use preflight quick-entry modal to apply values.
-3. Confirm values land in the correct collection in Variables tab.
+3. Confirm values land in the Active Environment.
 4. Run again.
 
 ### Scenario: Save Test State for Later
@@ -747,7 +747,7 @@ After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer t
 Options:
 
 - Use a Burp project on disk for automatic workspace restore.
-- Use **Export Runtime JSON** for portable runtime values.
+- Use the Environment export when you intentionally need a portable environment snapshot.
 - Avoid exporting secrets unless needed and approved.
 
 ---
@@ -767,7 +767,7 @@ Options:
 
 | Symptom | Likely Cause | Action |
 |---------|--------------|--------|
-| `{{var}}` appears in final request | Missing runtime value | Use unresolved-variable modal or Variables tab |
+| `{{var}}` appears in final request | Missing runtime value | Use unresolved-variable modal or Active Environment |
 | Value from wrong collection | Target dropdown points to another collection | Select the correct collection before editing |
 | Edited vars disappear after switching collection | Edits were in UI but target changed before autosave | Use Save Now before switching for critical edits |
 | Clear wiped editor only | Expected behavior | Click Save Now if you intentionally want to persist empty overrides |
@@ -844,7 +844,7 @@ Options:
 - [ ] Confirm client auth mode.
 - [ ] Acquire token.
 - [ ] Bind bearer aliases if prompted.
-- [ ] Verify Variables tab shows alias values when expected.
+- [ ] Verify Environment tab shows alias values when expected.
 
 ### Before Saving/Sharing State
 

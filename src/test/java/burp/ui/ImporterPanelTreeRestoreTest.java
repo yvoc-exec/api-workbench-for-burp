@@ -671,101 +671,6 @@ class ImporterPanelTreeRestoreTest {
         assertThat(tree.isExpanded(publicPath)).isTrue();
     }
 
-    @Test
-    void snapshotAndRestoreWorkbenchRunnerSettingsAndOAuthAutoRefreshState() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection collection = new ApiCollection();
-        collection.name = "APIM";
-        collection.runtimeOAuth2.put("oauth2_token_url", "https://auth.example.test/token");
-        collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
-        collection.runtimeOAuth2.put("oauth2_refresh_token", "refresh-token");
-        panel.restoreWorkspaceCollections(List.of(collection));
-
-        setCheckbox(panel, "repeaterBtn", false);
-        setCheckbox(panel, "sitemapBtn", true);
-        setCheckbox(panel, "intruderBtn", true);
-        setSpinner(panel, "delaySpinner", 375);
-        setCheckbox(panel, "debugRawRequestBox", true);
-        setTabIndex(panel, "workbenchDetailTabs", 0);
-
-        setSpinner(panel, "runnerDelaySpinner", 480);
-        setSpinner(panel, "runnerRetriesSpinner", 4);
-        setCheckbox(panel, "stopOnErrorBox", true);
-        setCheckbox(panel, "stopOnAssertionFailureBox", true);
-        setCheckbox(panel, "stopOnStatusAtLeast400Box", true);
-        setCheckbox(panel, "stopOnMissingVariableBox", true);
-        setSpinner(panel, "stopAfterFailuresSpinner", 6);
-        setCheckbox(panel, "followRedirectsBox", false);
-        setCheckbox(panel, "runnerDebugRawRequestBox", true);
-        setTabIndex(panel, "runnerDetailTabs", 1);
-
-        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
-        assertThat(snapshot.workbenchRepeaterSelected).isFalse();
-        assertThat(snapshot.workbenchSitemapSelected).isTrue();
-        assertThat(snapshot.workbenchIntruderSelected).isTrue();
-        assertThat(snapshot.workbenchDelayMs).isEqualTo(375);
-        assertThat(snapshot.workbenchDebugRawRequest).isTrue();
-        assertThat(snapshot.workbenchDetailTabIndex).isEqualTo(0);
-        assertThat(snapshot.runnerDelayMs).isEqualTo(480);
-        assertThat(snapshot.runnerRetries).isEqualTo(4);
-        assertThat(snapshot.runnerStopOnError).isTrue();
-        assertThat(snapshot.runnerStopOnAssertionFailure).isTrue();
-        assertThat(snapshot.runnerStopOnStatusAtLeast400).isTrue();
-        assertThat(snapshot.runnerStopOnMissingVariable).isTrue();
-        assertThat(snapshot.runnerStopAfterFailures).isEqualTo(6);
-        assertThat(snapshot.runnerFollowRedirects).isFalse();
-        assertThat(snapshot.runnerDebugRawRequest).isTrue();
-        assertThat(snapshot.runnerDetailTabIndex).isEqualTo(1);
-
-        WorkspaceState.OAuthAutoRefreshSnapshot autoRefresh = new WorkspaceState.OAuthAutoRefreshSnapshot();
-        autoRefresh.enabled = Boolean.FALSE;
-        autoRefresh.intervalSeconds = 90;
-        autoRefresh.lastStatus = "Paused";
-        snapshot.oauthAutoRefreshByCollection = new LinkedHashMap<>();
-        snapshot.oauthAutoRefreshByCollection.put("APIM", autoRefresh);
-
-        setCheckbox(panel, "repeaterBtn", true);
-        setCheckbox(panel, "sitemapBtn", false);
-        setCheckbox(panel, "intruderBtn", false);
-        setSpinner(panel, "delaySpinner", 200);
-        setCheckbox(panel, "debugRawRequestBox", false);
-        setTabIndex(panel, "workbenchDetailTabs", 0);
-        setSpinner(panel, "runnerDelaySpinner", 200);
-        setSpinner(panel, "runnerRetriesSpinner", 1);
-        setCheckbox(panel, "stopOnErrorBox", false);
-        setCheckbox(panel, "stopOnAssertionFailureBox", false);
-        setCheckbox(panel, "stopOnStatusAtLeast400Box", false);
-        setCheckbox(panel, "stopOnMissingVariableBox", false);
-        setSpinner(panel, "stopAfterFailuresSpinner", 0);
-        setCheckbox(panel, "followRedirectsBox", true);
-        setCheckbox(panel, "runnerDebugRawRequestBox", false);
-        setTabIndex(panel, "runnerDetailTabs", 0);
-
-        panel.restoreWorkspaceState(snapshot);
-
-        assertThat(isCheckboxSelected(panel, "repeaterBtn")).isFalse();
-        assertThat(isCheckboxSelected(panel, "sitemapBtn")).isTrue();
-        assertThat(isCheckboxSelected(panel, "intruderBtn")).isTrue();
-        assertThat(spinnerValue(panel, "delaySpinner")).isEqualTo(375);
-        assertThat(isCheckboxSelected(panel, "debugRawRequestBox")).isTrue();
-        assertThat(tabIndex(panel, "workbenchDetailTabs")).isEqualTo(0);
-        assertThat(spinnerValue(panel, "runnerDelaySpinner")).isEqualTo(480);
-        assertThat(spinnerValue(panel, "runnerRetriesSpinner")).isEqualTo(4);
-        assertThat(isCheckboxSelected(panel, "stopOnErrorBox")).isTrue();
-        assertThat(isCheckboxSelected(panel, "stopOnAssertionFailureBox")).isTrue();
-        assertThat(isCheckboxSelected(panel, "stopOnStatusAtLeast400Box")).isTrue();
-        assertThat(isCheckboxSelected(panel, "stopOnMissingVariableBox")).isTrue();
-        assertThat(spinnerValue(panel, "stopAfterFailuresSpinner")).isEqualTo(6);
-        assertThat(isCheckboxSelected(panel, "followRedirectsBox")).isFalse();
-        assertThat(isCheckboxSelected(panel, "runnerDebugRawRequestBox")).isTrue();
-        assertThat(tabIndex(panel, "runnerDetailTabs")).isEqualTo(1);
-
-        Map<?, ?> autoStates = (Map<?, ?>) privateField(panel, "oauthAutoStates");
-        Object restoredAutoState = autoStates.get(snapshot.collections.get(0));
-        assertThat(restoredAutoState).isNotNull();
-        assertThat((Boolean) privateField(restoredAutoState, "enabled")).isFalse();
-        assertThat((Integer) privateField(restoredAutoState, "intervalSeconds")).isEqualTo(90);
-    }
 
     @Test
     void restoreWorkspaceCollectionsLeavesPrimaryActionsReadyForNextSession() throws Exception {
@@ -780,7 +685,7 @@ class ImporterPanelTreeRestoreTest {
         assertThat(isButtonEnabled(panel, "importBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "sendToRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "removeCollectionBtn")).isTrue();
-        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
+        assertThat(isButtonEnabled(panel, "environmentImportBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "startRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "cancelRunnerBtn")).isFalse();
     }
@@ -841,135 +746,10 @@ class ImporterPanelTreeRestoreTest {
                 .isTrue();
     }
 
-    @Test
-    void envApplyCheckedCollectionsButtonDependsOnEnvSelectionCheckedRequestsAndLoadedCollections() throws Exception {
-        ImporterPanel panel = newPanel();
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collectionWithRequests("APIM", "req-a", "Alpha", "req-b", "Beta")));
-        panel.restoreWorkspaceState(state);
 
-        assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
-        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
 
-        setPrivateField(panel, "selectedEnv", tempEnvFile("baseUrl", "https://api.example.test", "token", "abc"));
-        invokePrivateMethod(panel, "updateScopeControlState");
-        assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
-        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isTrue();
 
-        CollectionTreeNode alphaNode = findRequestNode(requestTree(panel), "req-a");
-        alphaNode.setChecked(true);
-        invokePrivateMethod(panel, "updateScopeControlState");
-        assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isTrue();
 
-        setPrivateField(panel, "selectedEnv", null);
-        invokePrivateMethod(panel, "updateScopeControlState");
-        assertThat(isButtonEnabled(panel, "envApplyCheckedCollectionsBtn")).isFalse();
-        assertThat(isButtonEnabled(panel, "envApplyAllBtn")).isFalse();
-    }
-
-    @Test
-    void applyEnvToCheckedCollectionsUpdatesOnlyOwningCollectionsAndRefreshesVariablesTab() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection alpha = collectionWithRequests("Alpha", "req-a1", "Alpha One", "req-a2", "Alpha Two");
-        ApiCollection beta = collectionWithRequests("Beta", "req-b1", "Beta One", null, null);
-        ApiCollection gamma = collectionWithRequests("Gamma", "req-c1", "Gamma One", null, null);
-        alpha.runtimeVars.put("stale", "keep-alpha");
-        beta.runtimeVars.put("stale", "keep-beta");
-        gamma.runtimeVars.put("stale", "keep-gamma");
-
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(alpha, beta, gamma));
-        panel.restoreWorkspaceState(state);
-        ApiCollection restoredAlpha = state.collections.get(0);
-        ApiCollection restoredBeta = state.collections.get(1);
-        ApiCollection restoredGamma = state.collections.get(2);
-        setPrivateField(panel, "selectedEnv", tempEnvFile("baseUrl", "https://api.example.test", "token", "abc"));
-
-        JTree tree = requestTree(panel);
-        findRequestNode(tree, "req-a1").setChecked(true);
-        findRequestNode(tree, "req-a2").setChecked(true);
-        findRequestNode(tree, "req-b1").setChecked(true);
-        invokePrivateMethod(panel, "updateScopeControlState");
-
-        ((JComboBox<?>) privateField(panel, "varsCollectionCombo")).setSelectedItem(((JComboBox<?>) privateField(panel, "varsCollectionCombo")).getItemAt(0));
-        AtomicInteger notifications = new AtomicInteger();
-        panel.setWorkspaceChangeListener(notifications::incrementAndGet);
-
-        invokePrivateMethod(panel, "applyEnvToCheckedCollections");
-
-        assertThat(restoredAlpha.runtimeVars).containsEntry("stale", "keep-alpha");
-        assertThat(restoredAlpha.runtimeVars).containsEntry("baseUrl", "https://api.example.test");
-        assertThat(restoredAlpha.runtimeVars).containsEntry("token", "abc");
-        assertThat(restoredBeta.runtimeVars).containsEntry("stale", "keep-beta");
-        assertThat(restoredBeta.runtimeVars).containsEntry("baseUrl", "https://api.example.test");
-        assertThat(restoredBeta.runtimeVars).containsEntry("token", "abc");
-        assertThat(restoredGamma.runtimeVars).containsEntry("stale", "keep-gamma");
-        assertThat(restoredGamma.runtimeVars).doesNotContainKey("baseUrl");
-        assertThat(restoredGamma.runtimeVars).doesNotContainKey("token");
-        assertThat(notifications.get()).isGreaterThan(0);
-        assertThat(importLogText(panel)).contains("Env bound to 2 collection(s): 4 var(s) total.");
-        assertThat(envVarsText(panel)).contains("baseUrl=https://api.example.test");
-        assertThat(envVarsText(panel)).contains("token=abc");
-    }
-
-    @Test
-    void applyEnvToCheckedCollectionsNoCheckedRequestsDoesNotMutateRuntimeVarsAndLogsExpectedMessage() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection collection = collectionWithRequests("APIM", "req-a", "Alpha", null, null);
-        collection.runtimeVars.put("stale", "keep");
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
-        panel.restoreWorkspaceState(state);
-        ApiCollection restored = state.collections.get(0);
-        setPrivateField(panel, "selectedEnv", tempEnvFile("baseUrl", "https://api.example.test"));
-
-        AtomicInteger notifications = new AtomicInteger();
-        panel.setWorkspaceChangeListener(notifications::incrementAndGet);
-
-        invokePrivateMethod(panel, "applyEnvToCheckedCollections");
-
-        assertThat(restored.runtimeVars).containsEntry("stale", "keep");
-        assertThat(restored.runtimeVars).doesNotContainKey("baseUrl");
-        assertThat(notifications.get()).isZero();
-        assertThat(importLogText(panel)).contains("No checked request nodes. Check one or more requests, folders, or collections to bind env.");
-    }
-
-    @Test
-    void applyEnvToCheckedCollectionsWithoutSelectedEnvDoesNothing() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection collection = collectionWithRequests("APIM", "req-a", "Alpha", null, null);
-        collection.runtimeVars.put("stale", "keep");
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
-        panel.restoreWorkspaceState(state);
-        ApiCollection restored = state.collections.get(0);
-        findRequestNode(requestTree(panel), "req-a").setChecked(true);
-        invokePrivateMethod(panel, "updateScopeControlState");
-
-        invokePrivateMethod(panel, "applyEnvToCheckedCollections");
-
-        assertThat(restored.runtimeVars).containsEntry("stale", "keep");
-        assertThat(restored.runtimeVars).doesNotContainKey("baseUrl");
-        assertThat(importLogText(panel)).contains("No environment file selected. Browse first.");
-    }
-
-    @Test
-    void applyEnvToCheckedCollectionsWithCheckedRequestsButNoResolvedCollectionsDoesNothing() throws Exception {
-        ImporterPanel panel = newPanel();
-        ApiCollection collection = collectionWithRequests("APIM", "req-a", "Alpha", null, null);
-        collection.runtimeVars.put("stale", "keep");
-        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
-        panel.restoreWorkspaceState(state);
-        ApiCollection restored = state.collections.get(0);
-        setPrivateField(panel, "selectedEnv", tempEnvFile("baseUrl", "https://api.example.test"));
-        CollectionTreeNode requestNode = findRequestNode(requestTree(panel), "req-a");
-        requestNode.setChecked(true);
-        requestNode.request.sourceCollection = null;
-        ((Map<?, ?>) privateField(panel, "requestToCollectionMap")).clear();
-        invokePrivateMethod(panel, "updateScopeControlState");
-
-        clickButton(panel, "envApplyCheckedCollectionsBtn");
-
-        assertThat(restored.runtimeVars).containsEntry("stale", "keep");
-        assertThat(restored.runtimeVars).doesNotContainKey("baseUrl");
-        assertThat(importLogText(panel)).contains("No checked request nodes resolved to collections. Nothing to apply.");
-    }
 
     private static ApiRequest request(String id, String name, String method, String url, int sequenceOrder) {
         ApiRequest request = new ApiRequest();

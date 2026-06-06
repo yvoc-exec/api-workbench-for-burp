@@ -32,7 +32,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Collection-level / global variables (source depends on format; see Playbook 4)
 - Environment files (Postman environment JSON)
 - Request-level variables (Bruno `vars` block, Postman request vars)
-- Custom manual variables (Variables tab + OAuth2 tab)
+- Custom manual variables (Environment tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
 - Live effective headers in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
@@ -80,14 +80,14 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Client Credentials** - fully automated, no browser
 - **Password (ROPC)** - automated with username/password
 - **Authorization Code + PKCE** - opens browser and uses the configured `oauth2_redirect_uri` loopback callback listener; default remains `http://localhost:9876/callback`
-- **Refresh Token** - auto-refresh before expiry
+- **Refresh Token** - standard refresh-token grant support
 - Live token cache stored in-memory via `TokenStore`; workspace snapshots can still persist runtime OAuth2 values in Burp project data
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 - For safety, Authorization Code callback handling only accepts HTTP loopback redirect URIs such as `http://localhost:9876/callback` or `http://127.0.0.1:9988/oauth/callback`
 
-> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use Export Runtime JSON only when you intentionally want a portable snapshot.
+> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use the Environment export or Burp project save only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -247,7 +247,7 @@ If a request returns 400 or 401, check in order:
 - **Token URL and grant type** - verify `oauth2_token_url` resolves to the correct endpoint and `oauth2_grant` matches the server expectation.
 - **Required body params** - Password grant needs `oauth2_username` + `oauth2_password`; Refresh Token needs `oauth2_refresh_token`; Authorization Code needs `oauth2_code`.
 - **Client auth mode** - `oauth2_client_auth` can be `body`, `basic`, or `prefer_basic`. Try switching if the server rejects client credentials placement.
-- **Unresolved variables** - check that `{{variable}}` placeholders have values in the Variables tab or OAuth2 tab.
+- **Unresolved variables** - check that `{{variable}}` placeholders have values in the Active Environment or OAuth2 tab.
 - **Nested extraction paths** - ensure script paths like `jsonData.data.token` use dot notation correctly; the runner and script engine support nested dotted paths.
 
 ### Mode Selection Guide

@@ -500,13 +500,6 @@ class WorkspaceStateJsonTest {
         state.runnerDebugRawRequest = Boolean.TRUE;
         state.runnerDetailTabIndex = 1;
 
-        WorkspaceState.OAuthAutoRefreshSnapshot autoRefresh = new WorkspaceState.OAuthAutoRefreshSnapshot();
-        autoRefresh.enabled = Boolean.TRUE;
-        autoRefresh.intervalSeconds = 180;
-        autoRefresh.lastStatus = "Running";
-        state.oauthAutoRefreshByCollection = new java.util.LinkedHashMap<>();
-        state.oauthAutoRefreshByCollection.put("Demo", autoRefresh);
-
         WorkspaceState copy = WorkspaceState.copyOf(state);
         WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
 
@@ -529,10 +522,6 @@ class WorkspaceStateJsonTest {
         assertThat(copy.runnerFollowRedirects).isFalse();
         assertThat(copy.runnerDebugRawRequest).isTrue();
         assertThat(copy.runnerDetailTabIndex).isEqualTo(1);
-        assertThat(copy.oauthAutoRefreshByCollection).containsKey("Demo");
-        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").enabled).isTrue();
-        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").intervalSeconds).isEqualTo(180);
-        assertThat(copy.oauthAutoRefreshByCollection.get("Demo").lastStatus).isEqualTo("Running");
 
         assertThat(parsed.selectedRequestIdentityKey).isEqualTo("Demo\u001Fid=req-1");
         assertThat(parsed.checkedRequestIdentityKeys).containsExactly("Demo\u001Fid=req-1", "Demo\u001Findex=1");
@@ -553,10 +542,6 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.runnerFollowRedirects).isFalse();
         assertThat(parsed.runnerDebugRawRequest).isTrue();
         assertThat(parsed.runnerDetailTabIndex).isEqualTo(1);
-        assertThat(parsed.oauthAutoRefreshByCollection).containsKey("Demo");
-        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").enabled).isTrue();
-        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").intervalSeconds).isEqualTo(180);
-        assertThat(parsed.oauthAutoRefreshByCollection.get("Demo").lastStatus).isEqualTo("Running");
     }
 
     @Test

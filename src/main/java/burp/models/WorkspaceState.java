@@ -37,13 +37,6 @@ public class WorkspaceState {
     public Boolean runnerFollowRedirects;
     public Boolean runnerDebugRawRequest;
     public Integer runnerDetailTabIndex;
-    public Map<String, OAuthAutoRefreshSnapshot> oauthAutoRefreshByCollection = new LinkedHashMap<>();
-
-    public static class OAuthAutoRefreshSnapshot {
-        public Boolean enabled;
-        public Integer intervalSeconds = 300;
-        public String lastStatus;
-    }
 
     public static WorkspaceState fromCollections(List<ApiCollection> source) {
         WorkspaceState state = new WorkspaceState();
@@ -87,7 +80,6 @@ public class WorkspaceState {
         copy.runnerFollowRedirects = source.runnerFollowRedirects;
         copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
-        copy.oauthAutoRefreshByCollection = copyOAuthAutoRefreshMap(source.oauthAutoRefreshByCollection);
         return copy;
     }
 
@@ -213,27 +205,6 @@ public class WorkspaceState {
                         ? new LinkedHashMap<>(entry.getValue())
                         : new LinkedHashMap<>());
             }
-        }
-        return out;
-    }
-
-    private static Map<String, OAuthAutoRefreshSnapshot> copyOAuthAutoRefreshMap(Map<String, OAuthAutoRefreshSnapshot> src) {
-        Map<String, OAuthAutoRefreshSnapshot> out = new LinkedHashMap<>();
-        if (src == null) {
-            return out;
-        }
-        for (Map.Entry<String, OAuthAutoRefreshSnapshot> entry : src.entrySet()) {
-            if (entry.getKey() == null) {
-                continue;
-            }
-            OAuthAutoRefreshSnapshot snapshot = entry.getValue();
-            OAuthAutoRefreshSnapshot copy = new OAuthAutoRefreshSnapshot();
-            if (snapshot != null) {
-                copy.enabled = snapshot.enabled;
-                copy.intervalSeconds = snapshot.intervalSeconds;
-                copy.lastStatus = snapshot.lastStatus;
-            }
-            out.put(entry.getKey(), copy);
         }
         return out;
     }

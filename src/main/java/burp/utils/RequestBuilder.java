@@ -315,8 +315,9 @@ public class RequestBuilder {
             case "oauth2":
                 if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                     String accessToken = auth.properties.get("accessToken");
-                    if ((accessToken == null || accessToken.isEmpty() || accessToken.contains("{{"))
-                            && resolver != null && resolver.getVariables() != null) {
+                    if (accessToken != null && !accessToken.isBlank()) {
+                        accessToken = resolver != null ? resolver.resolve(accessToken) : accessToken;
+                    } else if (resolver != null && resolver.getVariables() != null) {
                         accessToken = resolver.getVariables().get("oauth2_access_token");
                     }
                     if (accessToken != null && !accessToken.isEmpty()) {

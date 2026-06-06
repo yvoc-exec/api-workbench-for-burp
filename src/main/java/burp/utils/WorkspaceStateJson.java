@@ -54,9 +54,6 @@ public final class WorkspaceStateJson {
         if (out.requestTreePaths == null) {
             out.requestTreePaths = new java.util.LinkedHashMap<>();
         }
-        if (out.oauthAutoRefreshByCollection == null) {
-            out.oauthAutoRefreshByCollection = new java.util.LinkedHashMap<>();
-        }
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
         }

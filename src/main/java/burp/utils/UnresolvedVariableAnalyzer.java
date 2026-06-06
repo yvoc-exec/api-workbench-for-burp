@@ -16,7 +16,7 @@ public class UnresolvedVariableAnalyzer {
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
 
     public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request) {
-        return analyze(collection, request, java.util.Collections.emptyMap());
+        return analyze(collection, request, null);
     }
 
     public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request, java.util.Map<String, String> runtimeOverlay) {
@@ -89,7 +89,7 @@ public class UnresolvedVariableAnalyzer {
         return RuntimeResolverFactory.build(
                 collection,
                 request,
-                runtimeOverlay != null && !runtimeOverlay.isEmpty()
+                runtimeOverlay != null
                         ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
                         : RuntimeResolverFactory.Options.defaultOptions()
         );

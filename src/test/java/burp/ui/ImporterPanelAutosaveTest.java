@@ -107,6 +107,6 @@ class ImporterPanelAutosaveTest {
         assertThat(model.getRowCount()).isZero();
         assertThat(baseLayer.get()).isEmpty();
         assertThat(suppress.get()).isFalse();
-        assertThat(status.get()).isEqualTo("Editor cleared. Click Save Now to update the selected collection.");
+        assertThat(status.get()).isEqualTo("Editor cleared. Click Save to update the selected environment.");
     }
 }
