@@ -346,8 +346,10 @@ public class CollectionRunner {
         result.requestId = req.id;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
+        Map<String, String> initialOverlay = runtimeOverlayFor(col);
+        boolean activeEnvironmentMode = initialOverlay != null;
         Map<String, String> scopedExtractedVars = extractedVars;
-        if (col != null) {
+        if (col != null && !activeEnvironmentMode) {
             scopedExtractedVars = extractedVarsByCollection.computeIfAbsent(col, c -> new ConcurrentHashMap<>());
             // Merge previously extracted vars only for the current collection so pipeline sees them.
             if (!scopedExtractedVars.isEmpty()) {
@@ -418,7 +420,11 @@ public class CollectionRunner {
                     }
 
                     // Copy extracted vars and assertions for cross-request continuity
-                    mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
+                    if (activeEnvironmentMode) {
+                        copyExecutionVariablesToResultOnly(result, exec);
+                    } else {
+                        mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
+                    }
                     if (!exec.assertions.isEmpty()) {
                         result.assertions.addAll(exec.assertions);
                     }
@@ -597,6 +603,20 @@ public class CollectionRunner {
             if (aggregateExtractedVars != null) {
                 aggregateExtractedVars.putAll(exec.extractedVars);
             }
+            result.extractedVariables.putAll(exec.extractedVars);
+        }
+    }
+
+    static void copyExecutionVariablesToResultOnly(RunnerResult result, ExecutionResult exec) {
+        if (exec == null || result == null) {
+            return;
+        }
+        if (exec.removedVars != null && !exec.removedVars.isEmpty()) {
+            for (String key : exec.removedVars) {
+                result.extractedVariables.remove(key);
+            }
+        }
+        if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
             result.extractedVariables.putAll(exec.extractedVars);
         }
     }
