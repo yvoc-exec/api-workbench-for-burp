@@ -1,0 +1,191 @@
+package burp.utils;
+
+import burp.models.EnvironmentProfile;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class EnvironmentImportServiceTest {
+
+    @Test
+    void importsPostmanValuesAsEnvironmentProfile() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "baseUrl", "value": "https://uat.example.test", "enabled": true},
+                    {"key": "token", "value": "abc123", "enabled": true}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).isEqualTo("UAT");
+        assertThat(profiles.get(0).sourceFormat).isEqualTo("postman");
+        assertThat(profiles.get(0).variables)
+                .containsEntry("baseUrl", "https://uat.example.test")
+                .containsEntry("token", "abc123");
+    }
+
+    @Test
+    void skipsDisabledPostmanValues() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "baseUrl", "value": "https://uat.example.test", "enabled": true},
+                    {"key": "token", "value": "abc123", "enabled": false}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).variables).containsEntry("baseUrl", "https://uat.example.test");
+        assertThat(profiles.get(0).variables).doesNotContainKey("token");
+    }
+
+    @Test
+    void importsJsonVariablesArrayAndSkipsDisabled() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "QA",
+                  "variables": [
+                    {"name": "baseUrl", "value": "https://qa.example.test", "enabled": true},
+                    {"name": "secret", "value": "hidden", "enabled": false}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).isEqualTo("QA");
+        assertThat(profiles.get(0).variables).containsEntry("baseUrl", "https://qa.example.test");
+        assertThat(profiles.get(0).variables).doesNotContainKey("secret");
+    }
+
+    @Test
+    void importsGenericJsonObject() throws Exception {
+        Path dir = Files.createTempDirectory("environment-json-");
+        Path file = dir.resolve("dev-env.json");
+        Files.writeString(file, """
+                {
+                  "baseUrl": "https://dev.example.test",
+                  "token": "dev-token",
+                  "nested": {"a": 1}
+                }
+                """, StandardCharsets.UTF_8);
+        file.toFile().deleteOnExit();
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).isEqualTo("dev-env");
+        assertThat(profiles.get(0).variables)
+                .containsEntry("baseUrl", "https://dev.example.test")
+                .containsEntry("token", "dev-token")
+                .containsEntry("nested", "{\"a\":1}");
+    }
+
+    @Test
+    void importsDotEnvFile() throws Exception {
+        Path file = tempFile(".env", """
+                # comment
+                base_url=https://uat.example.test
+                token=abc=123
+                blank=
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).startsWith("environment-");
+        assertThat(profiles.get(0).sourceFormat).isEqualTo("dotenv");
+        assertThat(profiles.get(0).variables)
+                .containsEntry("base_url", "https://uat.example.test")
+                .containsEntry("token", "abc=123")
+                .containsEntry("blank", "");
+    }
+
+    @Test
+    void importsBrunoVarsBlock() throws Exception {
+        Path file = tempFile(".bru", """
+                vars {
+                  base_url: https://bruno.example.test
+                  token: bruno-token
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).startsWith("environment-");
+        assertThat(profiles.get(0).sourceFormat).isEqualTo("bruno");
+        assertThat(profiles.get(0).variables)
+                .containsEntry("base_url", "https://bruno.example.test")
+                .containsEntry("token", "bruno-token");
+    }
+
+    @Test
+    void importsMultipleInsomniaEnvironmentResources() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "resources": [
+                    {
+                      "_type": "environment",
+                      "_id": "env_uat",
+                      "name": "UAT",
+                      "data": {"baseUrl": "https://uat.example.test"}
+                    },
+                    {
+                      "_type": "environment",
+                      "_id": "env_prd",
+                      "data": {"baseUrl": "https://prd.example.test"}
+                    },
+                    {
+                      "_type": "workspace",
+                      "_id": "ws_1"
+                    }
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(2);
+        assertThat(profiles.get(0).name).isEqualTo("UAT");
+        assertThat(profiles.get(0).sourceFormat).isEqualTo("insomnia");
+        assertThat(profiles.get(0).variables).containsEntry("baseUrl", "https://uat.example.test");
+        assertThat(profiles.get(1).name).isEqualTo("env_prd");
+        assertThat(profiles.get(1).variables).containsEntry("baseUrl", "https://prd.example.test");
+    }
+
+    @Test
+    void rejectsUnsupportedOrEmptyFileWithClearMessage() throws Exception {
+        Path file = Files.createTempFile("environment-empty-", ".txt");
+        file.toFile().deleteOnExit();
+
+        assertThatThrownBy(() -> EnvironmentImportService.importEnvironment(file.toFile()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("empty")
+                .hasMessageContaining(file.getFileName().toString());
+    }
+
+    private static Path tempFile(String suffix, String content) throws IOException {
+        Path file = Files.createTempFile("environment-", suffix);
+        Files.writeString(file, content, StandardCharsets.UTF_8);
+        file.toFile().deleteOnExit();
+        return file;
+    }
+}

@@ -56,6 +56,22 @@ class UnresolvedVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeUsesActiveEnvironmentOverlay() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Profile";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Overlay";
+        request.url = "{{activeBaseUrl}}/users";
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+
+        List<UnresolvedVariableIssue> issues = analyzer.analyze(collection, request, java.util.Map.of("activeBaseUrl", "https://active.example.test"));
+
+        assertThat(issues).isEmpty();
+    }
+
+    @Test
     void analyzeIgnoresAuthMappedOauth2RuntimeVariables() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Profile";

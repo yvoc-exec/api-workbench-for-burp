@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -56,6 +57,10 @@ public final class WorkspaceStateJson {
         if (out.oauthAutoRefreshByCollection == null) {
             out.oauthAutoRefreshByCollection = new java.util.LinkedHashMap<>();
         }
+        if (out.environments == null) {
+            out.environments = new java.util.ArrayList<>();
+        }
+        normalizeEnvironmentProfiles(out);
         JsonObject rawRoot = raw != null && raw.isJsonObject() ? raw.getAsJsonObject() : null;
         JsonElement rawCollections = rawRoot != null ? rawRoot.get("collections") : null;
         for (int i = 0; i < out.collections.size(); i++) {
@@ -96,6 +101,35 @@ public final class WorkspaceStateJson {
             out.version = 1;
         }
         return out;
+    }
+
+    private static void normalizeEnvironmentProfiles(WorkspaceState state) {
+        if (state == null || state.environments == null) {
+            return;
+        }
+        java.util.Set<String> seenIds = new java.util.LinkedHashSet<>();
+        for (EnvironmentProfile profile : state.environments) {
+            if (profile == null) {
+                continue;
+            }
+            if (profile.variables == null) {
+                profile.variables = new java.util.LinkedHashMap<>();
+            }
+            if (profile.oauth2 == null) {
+                profile.oauth2 = new burp.models.OAuth2EnvironmentState();
+            }
+            profile.oauth2.ensureDefaults();
+            profile.ensureId();
+            while (profile.id != null && seenIds.contains(profile.id)) {
+                profile.id = java.util.UUID.randomUUID().toString();
+            }
+            if (profile.id != null) {
+                seenIds.add(profile.id);
+            }
+        }
+        if (state.activeEnvironmentId != null && seenIds.stream().noneMatch(id -> id.equals(state.activeEnvironmentId))) {
+            state.activeEnvironmentId = null;
+        }
     }
 
     private static void normalizeRequest(burp.models.ApiRequest request, JsonObject rawRequest) {

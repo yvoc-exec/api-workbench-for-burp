@@ -184,7 +184,16 @@ public class UniversalImporter {
      */
     public SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, Collections.emptyMap(), null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }

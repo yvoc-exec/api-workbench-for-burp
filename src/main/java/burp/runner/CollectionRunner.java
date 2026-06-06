@@ -16,11 +16,13 @@ import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
+import burp.utils.SharedRequestPipeline;
 
 import java.util.*;
 import java.util.concurrent.*;
 import javax.swing.SwingUtilities;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 import java.util.regex.*;
 
 /**
@@ -47,6 +49,8 @@ public class CollectionRunner {
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
+    private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = collection -> Collections.emptyMap();
+    private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
 
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
@@ -82,6 +86,12 @@ public class CollectionRunner {
     }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
+    public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
+        this.runtimeOverlayProvider = provider != null ? provider : collection -> Collections.emptyMap();
+    }
+    public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
+        this.oauth2TokenSink = oauth2TokenSink;
+    }
 
     public void pauseAfterCurrent() {
         synchronized (pauseLock) {
@@ -346,7 +356,15 @@ public class CollectionRunner {
         while (attempts < maxAttempts && !cancelled) {
             attempts++;
             try {
-                ExecutionResult exec = pipeline.execute(req, col, followRedirects);
+                Map<String, String> overlay = runtimeOverlayFor(col);
+                ExecutionResult exec;
+                if (pipeline == null) {
+                    exec = null;
+                } else if ((overlay == null || overlay.isEmpty()) && oauth2TokenSink == null) {
+                    exec = pipeline.execute(req, col, followRedirects);
+                } else {
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink);
+                }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     return null;
@@ -587,7 +605,19 @@ public class CollectionRunner {
     }
 
     private VariableResolver buildPreviewResolver(ApiRequest req, ApiCollection col) {
-        return burp.utils.RuntimeResolverFactory.build(col, req);
+        return burp.utils.RuntimeResolverFactory.build(
+                col,
+                req,
+                burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlayFor(col))
+        );
+    }
+
+    private Map<String, String> runtimeOverlayFor(ApiCollection col) {
+        if (runtimeOverlayProvider == null) {
+            return Collections.emptyMap();
+        }
+        Map<String, String> overlay = runtimeOverlayProvider.apply(col);
+        return overlay != null ? overlay : Collections.emptyMap();
     }
 
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {
