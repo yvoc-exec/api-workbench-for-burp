@@ -115,7 +115,6 @@ public class ImporterPanel {
     // Workbench environment selector
     private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
     private JButton workbenchEnvironmentImportBtn;
-    private JLabel workbenchEnvironmentStatusLabel;
     private boolean suppressWorkbenchEnvironmentEvents = false;
 
     // Environment tab
@@ -424,10 +423,6 @@ public class ImporterPanel {
         workbenchEnvironmentImportBtn = new JButton("Import");
         workbenchEnvironmentImportBtn.addActionListener(e -> handleEnvironmentImport());
         panel.add(workbenchEnvironmentImportBtn);
-
-        workbenchEnvironmentStatusLabel = new JLabel("");
-        workbenchEnvironmentStatusLabel.setForeground(Color.GRAY);
-        panel.add(workbenchEnvironmentStatusLabel);
 
         syncWorkbenchEnvironmentControls();
         return panel;
@@ -4300,11 +4295,6 @@ public class ImporterPanel {
         } finally {
             suppressWorkbenchEnvironmentEvents = false;
         }
-        if (workbenchEnvironmentStatusLabel != null) {
-            EnvironmentProfile active = getActiveEnvironment();
-            workbenchEnvironmentStatusLabel.setText(active != null ? active.displayName() : "No active environment");
-            workbenchEnvironmentStatusLabel.setForeground(active != null ? Color.DARK_GRAY : Color.GRAY);
-        }
         if (workbenchEnvironmentImportBtn != null) {
             workbenchEnvironmentImportBtn.setEnabled(true);
         }
@@ -4462,25 +4452,58 @@ public class ImporterPanel {
                 appendImportLog("No environment profiles found in " + file.getName() + ".");
                 return;
             }
-            for (EnvironmentProfile profile : imported) {
-                if (profile == null) continue;
-                profile.ensureDefaults();
-                profile.ensureId();
-                environmentProfiles.add(profile);
-            }
-            if (activeEnvironmentId == null && !imported.isEmpty()) {
-                activeEnvironmentId = imported.get(0).id;
-            }
-            updateEnvironmentComboModel();
-            selectEnvironmentById(imported.get(0).id);
-            renderSelectedEnvironmentIntoEditor();
-            updateEnvironmentUiState();
-            syncOAuth2UiState();
-            syncActiveEnvironmentToEditors();
-            notifyWorkspaceChangedImmediately();
-            appendImportLog("Imported " + imported.size() + " environment profile(s) from " + file.getName() + ".");
+            addImportedEnvironmentProfiles(imported, file.getName());
         } catch (Exception e) {
-            appendImportLog("Environment import failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            appendImportLog("Environment import failed: " + message);
+            if (!GraphicsEnvironment.isHeadless()) {
+                JOptionPane.showMessageDialog(mainPanel,
+                        "Environment import failed:\n" + message,
+                        "Import Failed",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    void addImportedEnvironmentProfiles(List<EnvironmentProfile> imported, String sourceName) {
+        if (imported == null || imported.isEmpty()) {
+            return;
+        }
+        for (EnvironmentProfile profile : imported) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            environmentProfiles.add(profile);
+        }
+        if (activeEnvironmentId == null && imported.get(0) != null) {
+            activeEnvironmentId = imported.get(0).id;
+        }
+        updateEnvironmentComboModel();
+        selectEnvironmentById(imported.get(0).id);
+        renderSelectedEnvironmentIntoEditor();
+        updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Imported " + imported.size() + " environment profile(s) from " + sourceName + ".");
+        for (EnvironmentProfile profile : imported) {
+            if (profile == null) {
+                continue;
+            }
+            int count = profile.variables != null ? profile.variables.size() : 0;
+            appendImportLog("Environment \"" + profile.displayName() + "\" variables: " + count + ".");
+            if (count == 0) {
+                appendImportLog("Environment \"" + profile.displayName() + "\" imported with 0 variables.");
+                if (!GraphicsEnvironment.isHeadless()) {
+                    JOptionPane.showMessageDialog(mainPanel,
+                            "Environment imported but contains 0 variables.",
+                            "Import Warning",
+                            JOptionPane.WARNING_MESSAGE);
+                }
+            }
         }
     }
 

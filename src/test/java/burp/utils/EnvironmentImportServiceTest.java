@@ -37,6 +37,75 @@ class EnvironmentImportServiceTest {
     }
 
     @Test
+    void importsWrappedPostmanEnvironmentValues() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "environment": {
+                    "name": "UAT",
+                    "values": [
+                      {"key": "base_url", "value": "https://uat.example.test", "enabled": true}
+                    ]
+                  }
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).name).isEqualTo("UAT");
+        assertThat(profiles.get(0).variables).containsEntry("base_url", "https://uat.example.test");
+    }
+
+    @Test
+    void importsPostmanVariableSingularArray() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "variable": [
+                    {"key": "base_url", "value": "https://uat.example.test"}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles).hasSize(1);
+        assertThat(profiles.get(0).variables).containsEntry("base_url", "https://uat.example.test");
+    }
+
+    @Test
+    void importsCurrentValueWhenValueMissing() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "token", "currentValue": "current-token"}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles.get(0).variables).containsEntry("token", "current-token");
+    }
+
+    @Test
+    void importsInitialValueWhenValueAndCurrentValueMissing() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "token", "initialValue": "initial-token"}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles.get(0).variables).containsEntry("token", "initial-token");
+    }
+
+    @Test
     void skipsDisabledPostmanValues() throws Exception {
         Path file = tempFile(".json", """
                 {
@@ -53,6 +122,44 @@ class EnvironmentImportServiceTest {
         assertThat(profiles).hasSize(1);
         assertThat(profiles.get(0).variables).containsEntry("baseUrl", "https://uat.example.test");
         assertThat(profiles.get(0).variables).doesNotContainKey("token");
+    }
+
+    @Test
+    void skipsEnabledFalseString() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "baseUrl", "value": "https://uat.example.test", "enabled": "false"},
+                    {"key": "token", "value": "abc123", "enabled": "true"}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles.get(0).variables)
+                .containsEntry("token", "abc123")
+                .doesNotContainKey("baseUrl");
+    }
+
+    @Test
+    void skipsDisabledTrueBoolean() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "values": [
+                    {"key": "baseUrl", "value": "https://uat.example.test", "disabled": true},
+                    {"key": "token", "value": "abc123"}
+                  ]
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles.get(0).variables)
+                .containsEntry("token", "abc123")
+                .doesNotContainKey("baseUrl");
     }
 
     @Test
@@ -96,6 +203,42 @@ class EnvironmentImportServiceTest {
                 .containsEntry("baseUrl", "https://dev.example.test")
                 .containsEntry("token", "dev-token")
                 .containsEntry("nested", "{\"a\":1}");
+    }
+
+    @Test
+    void doesNotImportPostmanMetadataAsVariables() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "_postman_variable_scope": "environment",
+                  "_postman_exported_at": "2026-06-07T00:00:00Z",
+                  "_postman_exported_using": "Postman/11.0.0",
+                  "token": "abc123"
+                }
+                """);
+
+        List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(file.toFile());
+
+        assertThat(profiles.get(0).variables)
+                .containsEntry("token", "abc123")
+                .doesNotContainKeys("_postman_variable_scope", "_postman_exported_at", "_postman_exported_using", "name");
+    }
+
+    @Test
+    void throwsClearMessageForMetadataOnlyPostmanFile() throws Exception {
+        Path file = tempFile(".json", """
+                {
+                  "name": "UAT",
+                  "_postman_variable_scope": "environment",
+                  "_postman_exported_at": "2026-06-07T00:00:00Z",
+                  "_postman_exported_using": "Postman/11.0.0"
+                }
+                """);
+
+        assertThatThrownBy(() -> EnvironmentImportService.importEnvironment(file.toFile()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("No environment variables found")
+                .hasMessageContaining(file.getFileName().toString());
     }
 
     @Test

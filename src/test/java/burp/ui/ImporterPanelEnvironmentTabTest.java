@@ -49,12 +49,11 @@ class ImporterPanelEnvironmentTabTest {
 
         JComboBox<?> combo = (JComboBox<?>) privateField(panel, "workbenchEnvironmentCombo");
         JButton importBtn = (JButton) privateField(panel, "workbenchEnvironmentImportBtn");
-        JLabel status = (JLabel) privateField(panel, "workbenchEnvironmentStatusLabel");
 
         assertThat(combo).isInstanceOf(JComboBox.class);
         assertThat(importBtn).isInstanceOf(JButton.class);
         assertThat(importBtn.getText()).isEqualTo("Import");
-        assertThat(status.getText()).contains("No active environment");
+        assertThat(combo.getItemCount()).isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -100,6 +99,70 @@ class ImporterPanelEnvironmentTabTest {
         assertThat(rawArea.getText()).contains("base_url=https://uat.example.test");
         assertThat(rawArea.getText()).contains("token=abc123");
         assertThat(model.getRowCount()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void addImportedEnvironmentProfilesRendersVariablesInRawAndTable() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        profile.variables.put("token", "abc123");
+
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(profile),
+                "uat.postman_environment.json");
+        drainEdt();
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "environmentTableModel");
+
+        assertThat(rawArea.getText()).contains("base_url=https://uat.example.test");
+        assertThat(rawArea.getText()).contains("token=abc123");
+        assertThat(model.getRowCount()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void addImportedEnvironmentProfilesSetsActiveWhenNoActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(profile),
+                "uat.json");
+
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(profile.id);
+    }
+
+    @Test
+    void addImportedEnvironmentProfilesSyncsWorkbenchDropdown() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(profile),
+                "uat.json");
+        drainEdt();
+
+        JComboBox<?> combo = (JComboBox<?>) privateField(panel, "workbenchEnvironmentCombo");
+        assertThat(combo.getSelectedItem()).hasToString("UAT");
+    }
+
+    @Test
+    void addImportedEnvironmentProfilesLogsVariableCount() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        profile.variables.put("token", "abc123");
+
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(profile),
+                "uat.json");
+        drainEdt();
+
+        JTextArea logArea = (JTextArea) privateField(panel, "importLog");
+        assertThat(logArea.getText()).contains("Environment \"UAT\" variables: 2.");
     }
 
     @Test
@@ -228,6 +291,12 @@ class ImporterPanelEnvironmentTabTest {
         Method method = ImporterPanel.class.getDeclaredMethod(name, parameterTypes);
         method.setAccessible(true);
         method.invoke(panel, arg);
+    }
+
+    private static void invokePrivate(ImporterPanel panel, String name, Class<?>[] parameterTypes, Object arg1, Object arg2) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(name, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, arg1, arg2);
     }
 
     private static Object privateFieldUnchecked(Object target, String name) {
