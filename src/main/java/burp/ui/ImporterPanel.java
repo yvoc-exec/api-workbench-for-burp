@@ -3168,32 +3168,51 @@ public class ImporterPanel {
     }
 
     public void restoreWorkspaceState(WorkspaceState state) {
-        if (state == null || state.collections == null || state.collections.isEmpty()) {
+        if (!hasRestorableWorkspaceState(state)) {
             return;
         }
-        PendingMainRequestTreeRestore pendingRestore = new PendingMainRequestTreeRestore(state);
+        boolean hasCollections = state.collections != null && !state.collections.isEmpty();
+        PendingMainRequestTreeRestore pendingRestore = hasCollections ? new PendingMainRequestTreeRestore(state) : null;
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-                pendingWorkspaceRequestTreePaths = pendingRestore.requestTreePaths;
-                try {
+            pendingWorkspaceRequestTreePaths = pendingRestore != null
+                    ? pendingRestore.requestTreePaths
+                    : Collections.emptyMap();
+            try {
+                if (pendingRestore != null) {
                     pendingRestore.repairedRequestPathCount = applyWorkspaceRequestTreePathsToRequests(state.collections, pendingRestore.requestTreePaths);
-                    restoreWorkspaceCollections(state.collections);
-                    replaceEnvironmentProfiles(state.environments);
-                    setActiveEnvironmentId(state.activeEnvironmentId);
-                    selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
-                    selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
-                    restoreWorkbenchSettings(state);
-                    restoreRunnerSettings(state);
-                    restoreRunnerDetailState(state);
-                    syncOAuth2UiState();
+                }
+                restoreWorkspaceCollections(state.collections != null ? state.collections : Collections.emptyList());
+                replaceEnvironmentProfiles(state.environments);
+                setActiveEnvironmentId(state.activeEnvironmentId);
+                selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
+                selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
+                restoreWorkbenchSettings(state);
+                restoreRunnerSettings(state);
+                restoreRunnerDetailState(state);
+                syncOAuth2UiState();
+                updateEnvironmentUiState();
+                syncWorkbenchEnvironmentControls();
+                syncActiveEnvironmentToEditors();
                 if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
                     int index = Math.max(0, Math.min(state.selectedTabIndex, tabbedPane.getTabCount() - 1));
                     tabbedPane.setSelectedIndex(index);
                 }
-                scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> finalizeRestoredMainRequestTree(pendingRestore));
+                if (pendingRestore != null) {
+                    scheduleMainRequestTreeRestoreAfterWorkbenchVisible(() -> finalizeRestoredMainRequestTree(pendingRestore));
+                }
             } finally {
                 pendingWorkspaceRequestTreePaths = Collections.emptyMap();
             }
         });
+    }
+
+    private static boolean hasRestorableWorkspaceState(WorkspaceState state) {
+        if (state == null) {
+            return false;
+        }
+        boolean hasCollections = state.collections != null && !state.collections.isEmpty();
+        boolean hasEnvironments = state.environments != null && !state.environments.isEmpty();
+        return hasCollections || hasEnvironments;
     }
 
     private static final class PendingMainRequestTreeRestore {

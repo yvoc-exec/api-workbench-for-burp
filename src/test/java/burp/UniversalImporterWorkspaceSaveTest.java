@@ -350,6 +350,65 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void workspaceRestoreRestoresEnvironmentProfilesWithoutCollections() throws Exception {
+        ImporterPanel ui = newImporterUi();
+
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "Env Only";
+        profile.variables.put("baseUrl", "https://env-only.example.test");
+        profile.ensureId();
+
+        WorkspaceState state = new WorkspaceState();
+        state.collections = java.util.Collections.emptyList();
+        state.environments = java.util.List.of(profile);
+        state.activeEnvironmentId = profile.id;
+
+        ui.restoreWorkspaceState(state);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+        assertThat(snapshot.collections).isEmpty();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.activeEnvironmentId).isEqualTo(profile.id);
+        assertThat(snapshot.environments.get(0).variables)
+                .containsEntry("baseUrl", "https://env-only.example.test");
+    }
+
+    @Test
+    void importerRestoresEnvironmentOnlyWorkspaceStateAfterUiRegistration() throws Exception {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = "Env Only";
+        profile.variables.put("baseUrl", "https://env-only.example.test");
+        profile.ensureId();
+
+        WorkspaceState state = new WorkspaceState();
+        state.collections = java.util.Collections.emptyList();
+        state.environments = java.util.List.of(profile);
+        state.activeEnvironmentId = profile.id;
+        String json = WorkspaceStateJson.toJson(state);
+
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.when(persistedObject.getString(Mockito.anyString())).thenReturn(json);
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+
+        Method restoreWorkspaceStateAfterUiRegistration = UniversalImporter.class.getDeclaredMethod("restoreWorkspaceStateAfterUiRegistration");
+        restoreWorkspaceStateAfterUiRegistration.setAccessible(true);
+        restoreWorkspaceStateAfterUiRegistration.invoke(importer);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        ImporterPanel ui = importer.getUI();
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+        assertThat(snapshot.collections).isEmpty();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.activeEnvironmentId).isEqualTo(profile.id);
+        assertThat(snapshot.environments.get(0).variables)
+                .containsEntry("baseUrl", "https://env-only.example.test");
+    }
+
+    @Test
     void manualReaddedAuthorizationTriggersImmediateWorkspaceSaveAndClearsSuppression() throws Exception {
         WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
         fixture.writeCount.set(0);
