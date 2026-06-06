@@ -195,6 +195,7 @@ public class ImporterPanel {
         if (this.runner != null) {
             this.runner.setRuntimeOverlayProvider(collection -> hasActiveEnvironment() ? activeEnvironmentOverlay() : null);
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
+            this.runner.setRuntimeVariableSink(ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
         }
         this.mainPanel = createUI();
         if (oauth2Panel.getPopulateButton() != null) {
@@ -493,7 +494,7 @@ public class ImporterPanel {
         final ApiCollection resolvedCol = col;
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
-        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
                 List.of(resolvedCol),
                 List.of(requestToSend),
@@ -504,7 +505,7 @@ public class ImporterPanel {
                 appendImportLog("Send cancelled due to unresolved variables.");
                 return;
             }
-            runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+            runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
         final Map<String, String> runtimeOverlayForSend = runtimeOverlay;
         requestEditor.setSendEnabled(false);
@@ -521,7 +522,8 @@ public class ImporterPanel {
                                     resolvedCol,
                                     follow,
                                     runtimeOverlayForSend,
-                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
+                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
                     var rr = result.response;
 
                     if (rr != null && rr.response() != null) {
@@ -822,19 +824,7 @@ public class ImporterPanel {
         statusPanel.add(environmentHintLabel);
         statusPanel.add(environmentStatusLabel);
 
-        // Legacy runtime-vars field aliases retained for compatibility with
-        // existing tests and internal helper methods.
-        envVarsArea = environmentRawArea;
-        varsTable = environmentTable;
-        varsTableModel = environmentTableModel;
-        varsEditorCardPanel = environmentEditorCardPanel;
-        varsRawViewBtn = environmentRawViewBtn;
-        varsTableViewBtn = environmentTableViewBtn;
-        varsHintLabel = environmentHintLabel;
-        if (varsAutosaveStatusLabel == null) {
-            varsAutosaveStatusLabel = new JLabel("Saved.");
-            varsAutosaveStatusLabel.setVisible(false);
-        }
+        initializeLegacyVariablesCompatibilityComponents();
 
         panel.add(topBar, BorderLayout.NORTH);
         panel.add(centerWrap, BorderLayout.CENTER);
@@ -845,6 +835,32 @@ public class ImporterPanel {
         updateEnvironmentComboModel();
         updateEnvironmentUiState();
         return panel;
+    }
+
+    private void initializeLegacyVariablesCompatibilityComponents() {
+        envVarsArea = new JTextArea();
+        varsTableModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        varsTable = RequestEditorTableSupport.createEditableTable(varsTableModel);
+        RequestEditorStateMapper.ensureStarterRow(varsTableModel);
+
+        varsEditorCardPanel = new JPanel(new CardLayout());
+        varsEditorCardPanel.add(new JScrollPane(envVarsArea), "raw");
+
+        JPanel tablePanel = new JPanel(new BorderLayout(5, 5));
+        tablePanel.add(new JScrollPane(varsTable), BorderLayout.CENTER);
+        varsEditorCardPanel.add(tablePanel, "table");
+
+        varsRawViewBtn = new JRadioButton("Raw", true);
+        varsTableViewBtn = new JRadioButton("Table");
+        ButtonGroup group = new ButtonGroup();
+        group.add(varsRawViewBtn);
+        group.add(varsTableViewBtn);
+
+        varsHintLabel = new JLabel("");
+        if (varsAutosaveStatusLabel == null) {
+            varsAutosaveStatusLabel = new JLabel("Saved.");
+            varsAutosaveStatusLabel.setVisible(false);
+        }
     }
 
     // ========================================================================
@@ -1580,7 +1596,28 @@ public class ImporterPanel {
 
     private Map<String, String> activeEnvironmentOverlay() {
         EnvironmentProfile active = getActiveEnvironment();
-        return active != null ? active.toRuntimeOverlay() : Collections.emptyMap();
+        if (active == null) {
+            return Collections.emptyMap();
+        }
+        synchronized (active) {
+            return active.toRuntimeOverlay();
+        }
+    }
+
+    private void commitDirtyActiveEnvironmentBeforeRuntimeUse() {
+        if (!environmentDirty) {
+            return;
+        }
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null || activeEnvironmentId == null || !Objects.equals(activeEnvironmentId, selected.id)) {
+            return;
+        }
+        commitEnvironmentEditorToSelectedProfile();
+    }
+
+    private Map<String, String> activeEnvironmentOverlayForRuntimeUse() {
+        commitDirtyActiveEnvironmentBeforeRuntimeUse();
+        return hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
     }
 
     public List<EnvironmentProfile> getEnvironmentProfilesSnapshot() {
@@ -1611,6 +1648,7 @@ public class ImporterPanel {
         updateEnvironmentComboModel();
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
         notifyWorkspaceChangedImmediately();
     }
@@ -1632,6 +1670,7 @@ public class ImporterPanel {
             selectEnvironmentById(activeEnvironmentId);
         }
         updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
@@ -1639,7 +1678,54 @@ public class ImporterPanel {
 
     private void syncActiveEnvironmentToEditors() {
         if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
-            requestEditor.setRuntimeVariables(activeEnvironmentOverlay());
+            Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+            requestEditor.setRuntimeVariables(runtimeOverlay != null ? runtimeOverlay : Collections.emptyMap());
+        }
+    }
+
+    private void applyRuntimeVariableDeltaToActiveEnvironment(ApiCollection collection,
+                                                              Map<String, String> changedVars,
+                                                              Set<String> removedKeys) {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            if (collection != null) {
+                collection.applyRuntimeVarDelta(changedVars, removedKeys);
+            }
+            return;
+        }
+
+        active.ensureDefaults();
+        boolean changed = false;
+        synchronized (active) {
+            if (removedKeys != null) {
+                for (String key : removedKeys) {
+                    if (key != null && active.variables.remove(key) != null) {
+                        changed = true;
+                    }
+                }
+            }
+            if (changedVars != null) {
+                for (Map.Entry<String, String> entry : changedVars.entrySet()) {
+                    String key = entry.getKey();
+                    if (key == null || key.isBlank()) {
+                        continue;
+                    }
+                    String value = entry.getValue() != null ? entry.getValue() : "";
+                    if (!Objects.equals(active.variables.get(key), value)) {
+                        active.variables.put(key, value);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            SwingUtilities.invokeLater(() -> {
+                renderSelectedEnvironmentIntoEditor();
+                syncActiveEnvironmentToEditors();
+                updateEnvironmentUiState();
+                notifyWorkspaceChangedImmediately();
+            });
         }
     }
 
@@ -4469,6 +4555,10 @@ public class ImporterPanel {
         if (imported == null || imported.isEmpty()) {
             return;
         }
+        EnvironmentProfile firstImported = imported.stream()
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
         for (EnvironmentProfile profile : imported) {
             if (profile == null) {
                 continue;
@@ -4477,11 +4567,13 @@ public class ImporterPanel {
             profile.ensureId();
             environmentProfiles.add(profile);
         }
-        if (activeEnvironmentId == null && imported.get(0) != null) {
-            activeEnvironmentId = imported.get(0).id;
+        if (firstImported != null) {
+            activeEnvironmentId = firstImported.id;
         }
         updateEnvironmentComboModel();
-        selectEnvironmentById(imported.get(0).id);
+        if (firstImported != null) {
+            selectEnvironmentById(firstImported.id);
+        }
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
@@ -4489,6 +4581,9 @@ public class ImporterPanel {
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
         appendImportLog("Imported " + imported.size() + " environment profile(s) from " + sourceName + ".");
+        if (firstImported != null) {
+            appendImportLog("Active environment set to imported environment \"" + firstImported.displayName() + "\".");
+        }
         for (EnvironmentProfile profile : imported) {
             if (profile == null) {
                 continue;
@@ -4526,6 +4621,7 @@ public class ImporterPanel {
         selectEnvironmentById(profile.id);
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
@@ -4547,6 +4643,7 @@ public class ImporterPanel {
         selectEnvironmentById(duplicate.id);
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
         notifyWorkspaceChangedImmediately();
         appendImportLog("Duplicated environment \"" + selected.displayName() + "\".");
@@ -4571,6 +4668,7 @@ public class ImporterPanel {
         updateEnvironmentComboModel();
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
@@ -5481,7 +5579,7 @@ public class ImporterPanel {
             appendImportLog("No destination selected.");
             return;
         }
-        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
@@ -5490,7 +5588,7 @@ public class ImporterPanel {
                 appendImportLog("Import cancelled due to unresolved variables.");
                 return;
             }
-            runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+            runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
         importer.setDebugRawRequest(debugRawRequestBox.isSelected());
 
@@ -5506,6 +5604,7 @@ public class ImporterPanel {
         importer.importRequestsSequential(queue, destinations, delay,
             runtimeOverlay,
             this::storeOAuth2TokenInActiveEnvironment,
+            this::applyRuntimeVariableDeltaToActiveEnvironment,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
                 if (importProgress != null) {
@@ -5549,7 +5648,7 @@ public class ImporterPanel {
             return;
         }
 
-        Map<String, String> runtimeOverlay = hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+        Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);

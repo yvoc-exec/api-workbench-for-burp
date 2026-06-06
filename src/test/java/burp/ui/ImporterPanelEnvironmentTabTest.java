@@ -1,6 +1,7 @@
 package burp.ui;
 
 import burp.auth.OAuth2Manager;
+import burp.models.ApiCollection;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -13,6 +14,7 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -135,6 +137,22 @@ class ImporterPanelEnvironmentTabTest {
     }
 
     @Test
+    void importingEnvironmentMakesImportedProfileActiveEvenWhenAnotherActiveExists() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile old = environment("OLD", "https://old.example.test");
+        panel.replaceEnvironmentProfiles(List.of(old));
+        panel.setActiveEnvironmentId(old.id);
+
+        EnvironmentProfile imported = environment("UAT", "https://uat.example.test");
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(imported),
+                "uat.json");
+
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(imported.id);
+    }
+
+    @Test
     void addImportedEnvironmentProfilesSyncsWorkbenchDropdown() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
@@ -163,6 +181,46 @@ class ImporterPanelEnvironmentTabTest {
 
         JTextArea logArea = (JTextArea) privateField(panel, "importLog");
         assertThat(logArea.getText()).contains("Environment \"UAT\" variables: 2.");
+    }
+
+    @Test
+    void collectionRuntimeRefreshDoesNotOverwriteEnvironmentRawEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        profile.variables.put("token", "abc123");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        collection.runtimeVars.put("legacy", "legacy-value");
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        assertThat(rawArea.getText()).contains("token=abc123");
+        assertThat(rawArea.getText()).doesNotContain("legacy=legacy-value");
+    }
+
+    @Test
+    void dirtyRawEnvironmentTextIsNotOverwrittenByCollectionRuntimeListener() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        panel.restoreWorkspaceCollections(List.of(collection));
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        SwingUtilities.invokeAndWait(() -> rawArea.setText("base_url=https://dirty.example.test\ntoken=abc123\n"));
+        collection.putRuntimeVar("legacy", "legacy-value");
+        drainEdt();
+
+        assertThat(rawArea.getText()).contains("base_url=https://dirty.example.test");
+        assertThat(rawArea.getText()).contains("token=abc123");
+        assertThat(rawArea.getText()).doesNotContain("legacy=legacy-value");
     }
 
     @Test
@@ -238,6 +296,25 @@ class ImporterPanelEnvironmentTabTest {
     }
 
     @Test
+    void dirtyActiveEnvironmentRawEditIsCommittedBeforeRuntimeUse() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://old.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        rawArea.setText("base_url=https://new.example.test\ntoken=abc123\n");
+
+        @SuppressWarnings("unchecked")
+        Map<String, String> overlay = (Map<String, String>) invokePrivateReturning(panel, "activeEnvironmentOverlayForRuntimeUse");
+
+        assertThat(overlay)
+                .containsEntry("base_url", "https://new.example.test")
+                .containsEntry("token", "abc123");
+        assertThat(profile.variables).containsEntry("base_url", "https://new.example.test");
+    }
+
+    @Test
     void setActiveDoesNotEraseValues() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
@@ -297,6 +374,12 @@ class ImporterPanelEnvironmentTabTest {
         Method method = ImporterPanel.class.getDeclaredMethod(name, parameterTypes);
         method.setAccessible(true);
         method.invoke(panel, arg1, arg2);
+    }
+
+    private static Object invokePrivateReturning(ImporterPanel panel, String name) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(name);
+        method.setAccessible(true);
+        return method.invoke(panel);
     }
 
     private static Object privateFieldUnchecked(Object target, String name) {

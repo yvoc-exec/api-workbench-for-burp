@@ -202,7 +202,7 @@ Precedence during runtime (highest to lowest):
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
 
 **Unresolved-variable preflight:**
-Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. Entered values are applied into the selected collection runtime variables before continuing.
+Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. When an Active Environment is selected, entered values can be applied into that Active Environment before continuing. Without an Active Environment, you can still continue intentionally without applying values.
 
 **Environment portability:**
 Use **Export** and **Import** in the Environment tab to save and reload an environment profile. OAuth2 token outputs are written into the active environment using the selected output binding.

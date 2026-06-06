@@ -236,7 +236,7 @@ Buttons:
 | **Import Checked** | Imports checked requests to selected destinations |
 | **Run Checked** | Sends checked requests to the Collection Runner flow |
 
-Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into collection runtime variables.
+Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into the Active Environment when one is selected.
 
 ---
 
@@ -399,7 +399,7 @@ When **Acquire Token** succeeds:
    Bind them to the acquired access token?
    ```
 
-4. Selected aliases are written to that collection's runtime variables.
+4. Selected aliases are written to the Active Environment variables using the configured output bindings.
 
 The dialog only scans the captured collection from the moment **Acquire Token** was clicked. It does not scan or modify other loaded collections.
 
