@@ -7,7 +7,10 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -99,6 +102,54 @@ class SharedRequestPipelineTest {
         assertThat(exec.success).isTrue();
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/active-env-token");
         assertThat(col.runtimeVars).containsEntry("token", "collection-token");
+    }
+
+    @Test
+    void buildWithRuntimeOverlayAppliesScriptMutationsThroughRuntimeSink() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+
+        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
+            @Override
+            public void executePreRequest(ApiRequest request,
+                                          burp.parser.VariableResolver resolver,
+                                          java.util.Map<String, String> context) {
+                ScriptEngine.PostmanApi pm = new ScriptEngine.PostmanApi(resolver, context, null);
+                assertThat(pm.environment.get("token")).isEqualTo("active-token");
+                pm.environment.set("session", "fresh-session");
+                pm.environment.unset("token");
+            }
+        };
+
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+        col.runtimeVars.put("token", "collection-token");
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{session}}";
+
+        Map<String, String> changed = new LinkedHashMap<>();
+        Set<String> removed = new LinkedHashSet<>();
+
+        ExecutionResult exec = pipeline.build(
+                req,
+                col,
+                Map.of("token", "active-token"),
+                null,
+                (collection, changedVars, removedKeys) -> {
+                    changed.putAll(changedVars);
+                    removed.addAll(removedKeys);
+                });
+
+        assertThat(exec.success).isTrue();
+        assertThat(exec.resolvedUrl).isEqualTo("http://example.com/fresh-session");
+        assertThat(changed).containsEntry("session", "fresh-session");
+        assertThat(removed).contains("token");
+        assertThat(col.runtimeVars).containsEntry("token", "collection-token");
+        assertThat(col.runtimeVars).doesNotContainKey("session");
     }
 
     @Test

@@ -51,6 +51,7 @@ public class CollectionRunner {
     private volatile Future<?> activeFuture;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
+    private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
 
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
@@ -91,6 +92,9 @@ public class CollectionRunner {
     }
     public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
         this.oauth2TokenSink = oauth2TokenSink;
+    }
+    public void setRuntimeVariableSink(SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) {
+        this.runtimeVariableSink = runtimeVariableSink;
     }
 
     public void pauseAfterCurrent() {
@@ -363,7 +367,7 @@ public class CollectionRunner {
                 } else if (overlay == null && oauth2TokenSink == null) {
                     exec = pipeline.execute(req, col, followRedirects);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
