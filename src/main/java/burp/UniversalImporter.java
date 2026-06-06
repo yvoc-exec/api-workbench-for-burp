@@ -564,7 +564,7 @@ public class UniversalImporter {
         }
         try {
             WorkspaceState state = workspaceStateService.load();
-            if (state == null || state.collections == null || state.collections.isEmpty()) {
+            if (!hasRestorableWorkspaceState(state)) {
                 return;
             }
             lastSavedWorkspaceJson = WorkspaceStateJson.toJson(state);
@@ -578,6 +578,15 @@ public class UniversalImporter {
         } catch (Exception e) {
             logWorkspaceStateError("load", e);
         }
+    }
+
+    private static boolean hasRestorableWorkspaceState(WorkspaceState state) {
+        if (state == null) {
+            return false;
+        }
+        boolean hasCollections = state.collections != null && !state.collections.isEmpty();
+        boolean hasEnvironments = state.environments != null && !state.environments.isEmpty();
+        return hasCollections || hasEnvironments;
     }
 
     void restoreWorkspaceStateAfterUiRegistration() {
