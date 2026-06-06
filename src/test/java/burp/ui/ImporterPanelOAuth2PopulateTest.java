@@ -7,6 +7,7 @@ import burp.auth.OAuth2Manager;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.WorkspaceState;
 import burp.parser.VariableResolver;
 import burp.runner.CollectionRunner;
 import org.junit.jupiter.api.Test;
@@ -212,6 +213,43 @@ class ImporterPanelOAuth2PopulateTest {
         assertThat(oauth2Panel(panel).getVariables()).isEmpty();
     }
 
+    @Test
+    void environmentSavePersistsOAuth2OutputBindingEdits() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.variables.put("baseUrl", "https://uat.example.test");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        JComboBox<String> accessTokenBinding = bindingCombo(panel, "oauth2AccessTokenBindingCombo");
+        SwingUtilities.invokeAndWait(() -> accessTokenBinding.setSelectedItem("access_token"));
+
+        invokePrivate(panel, "commitEnvironmentEditorToSelectedProfile");
+        drainEdt();
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.environments.get(0).oauth2.outputBindings)
+                .containsEntry("accessToken", "access_token");
+    }
+
+    @Test
+    void runtimeUseCommitsLatestOAuth2BindingBeforeOverlay() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.variables.put("baseUrl", "https://uat.example.test");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        JComboBox<String> accessTokenBinding = bindingCombo(panel, "oauth2AccessTokenBindingCombo");
+        SwingUtilities.invokeAndWait(() -> accessTokenBinding.setSelectedItem("access_token"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, String> overlay = (Map<String, String>) invokePrivateReturning(panel, "activeEnvironmentOverlayForRuntimeUse");
+        assertThat(overlay).isNotNull();
+        assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "access_token");
+    }
+
     private ImporterPanel newPanel() throws Exception {
         burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
@@ -269,6 +307,12 @@ class ImporterPanelOAuth2PopulateTest {
         method.invoke(panel, arg);
     }
 
+    private static void invokePrivate(ImporterPanel panel, String methodName) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        method.invoke(panel);
+    }
+
     private static void clearTokens(ImporterPanel panel) throws Exception {
         OAuth2Panel oauth2Panel = oauth2Panel(panel);
         JButton clearBtn = (JButton) privateField(oauth2Panel, "clearBtn");
@@ -280,10 +324,21 @@ class ImporterPanelOAuth2PopulateTest {
         return (OAuth2Panel) privateField(panel, "oauth2Panel");
     }
 
+    @SuppressWarnings("unchecked")
+    private static JComboBox<String> bindingCombo(ImporterPanel panel, String field) throws Exception {
+        return (JComboBox<String>) privateField(panel, field);
+    }
+
     private static Object privateField(Object target, String name) throws Exception {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.get(target);
+    }
+
+    private static Object invokePrivateReturning(ImporterPanel panel, String methodName) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        return method.invoke(panel);
     }
 
     private static void drainEdt() throws Exception {
