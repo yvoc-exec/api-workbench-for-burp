@@ -6,6 +6,7 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.models.EnvironmentProfile;
+import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -83,6 +84,39 @@ class ImporterPanelEnvironmentTabTest {
         drainEdt();
 
         assertThat(panel.getActiveEnvironmentId()).isEqualTo(prd.id);
+    }
+
+    @Test
+    void duplicateEnvironmentNamesAreDisambiguatedInDropdownLabelsOnly() throws Exception {
+        ImporterPanel ui = newPanel();
+
+        EnvironmentProfile first = new EnvironmentProfile();
+        first.name = "UAT";
+        first.ensureId();
+
+        EnvironmentProfile second = new EnvironmentProfile();
+        second.name = "UAT";
+        second.ensureId();
+
+        EnvironmentProfile third = new EnvironmentProfile();
+        third.name = "UAT";
+        third.ensureId();
+
+        ui.replaceEnvironmentProfiles(List.of(first, second, third));
+        ui.setActiveEnvironmentId(first.id);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        JComboBox<?> environmentCombo = (JComboBox<?>) privateField(ui, "environmentCombo");
+        JComboBox<?> workbenchCombo = (JComboBox<?>) privateField(ui, "workbenchEnvironmentCombo");
+        List<String> labels = comboLabels(environmentCombo);
+        List<String> workbenchLabels = comboLabels(workbenchCombo);
+
+        assertThat(labels).contains("No Environment", "UAT", "UAT (#2)", "UAT (#3)");
+        assertThat(workbenchLabels).contains("No Environment", "UAT", "UAT (#2)", "UAT (#3)");
+
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments).extracting(env -> env.name)
+                .containsExactly("UAT", "UAT", "UAT");
     }
 
     @Test
@@ -401,5 +435,14 @@ class ImporterPanelEnvironmentTabTest {
 
     private static void drainEdt() throws Exception {
         SwingUtilities.invokeAndWait(() -> { });
+    }
+
+    private static List<String> comboLabels(JComboBox<?> combo) {
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            Object item = combo.getItemAt(i);
+            labels.add(String.valueOf(item));
+        }
+        return labels;
     }
 }
