@@ -1616,6 +1616,7 @@ public class ImporterPanel {
     }
 
     private Map<String, String> activeEnvironmentOverlayForRuntimeUse() {
+        commitOAuth2BindingUiToActiveEnvironment();
         commitDirtyActiveEnvironmentBeforeRuntimeUse();
         return hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
     }
@@ -1727,6 +1728,16 @@ public class ImporterPanel {
                 notifyWorkspaceChangedImmediately();
             });
         }
+    }
+
+    private void commitOAuth2BindingUiToActiveEnvironment() {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            return;
+        }
+        active.ensureDefaults();
+        active.oauth2.outputBindings.clear();
+        active.oauth2.outputBindings.putAll(readOAuth2OutputBindingsFromUi());
     }
 
     private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
@@ -2244,6 +2255,7 @@ public class ImporterPanel {
         selected.variables.clear();
         selected.variables.putAll(parsed);
         selected.ensureDefaults();
+        commitOAuth2BindingUiToActiveEnvironment();
         environmentDirty = false;
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
@@ -2672,8 +2684,7 @@ public class ImporterPanel {
         activeEnvironment.oauth2.config.clear();
         activeEnvironment.oauth2.config.putAll(filterOAuth2ConfigVars(oauth2Vars));
         activeEnvironment.oauth2.ensureDefaults();
-        activeEnvironment.oauth2.outputBindings.clear();
-        activeEnvironment.oauth2.outputBindings.putAll(readOAuth2OutputBindingsFromUi());
+        commitOAuth2BindingUiToActiveEnvironment();
         storeOAuth2TokenInActiveEnvironment(collection, entry);
         syncOAuth2BindingUiFromActiveEnvironment();
         renderSelectedEnvironmentIntoEditor();
