@@ -36,12 +36,15 @@ public class OAuth2Panel extends JPanel {
     private JTextField scopeField;
     private JCheckBox pkceBox;
     private JButton acquireBtn;
+    private JButton bindBtn;
     private JButton clearBtn;
     private JButton populateBtn;
+    private JCheckBox autoBindCheck;
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
     private boolean editable = true;
     private boolean suppressChangeNotifications = false;
+    private TokenStore.TokenEntry lastAcquiredToken;
     private VariablesChangeListener variablesChangeListener;
     private TokenAcquiredListener tokenAcquiredListener;
     private ClearTokensListener clearTokensListener;
@@ -131,24 +134,36 @@ public class OAuth2Panel extends JPanel {
         // Buttons
         gbc.gridx = 0; gbc.gridy = 10; gbc.gridwidth = 2;
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        acquireBtn = new JButton("Fetch Token");
+        populateBtn = new JButton("Populate from Request");
+        btnPanel.add(populateBtn);
+
+        acquireBtn = new JButton("Acquire Token");
         acquireBtn.addActionListener(e -> acquireToken());
+        btnPanel.add(acquireBtn);
+
+        bindBtn = new JButton("Bind Token");
+        bindBtn.setEnabled(false);
+        btnPanel.add(bindBtn);
+
         clearBtn = new JButton("Clear Tokens");
         clearBtn.addActionListener(e -> {
             manager.clearTokens();
             updateStatus("Tokens cleared");
             tokenPreviewField.setText("");
+            lastAcquiredToken = null;
+            bindBtn.setEnabled(false);
             if (clearTokensListener != null) {
                 clearTokensListener.onClearTokensRequested();
             }
             notifyVariablesChanged(true);
         });
-        btnPanel.add(acquireBtn);
         btnPanel.add(clearBtn);
-        populateBtn = new JButton("Populate from Checked Request");
-        btnPanel.add(populateBtn);
         gbc.gridy = 11;
         panel.add(btnPanel, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
+        autoBindCheck = new JCheckBox("Auto-bind token to Active Environment", true);
+        panel.add(autoBindCheck, gbc);
 
         return panel;
     }
@@ -182,8 +197,10 @@ public class OAuth2Panel extends JPanel {
         scopeField.setEnabled(editable);
         pkceBox.setEnabled(editable);
         acquireBtn.setEnabled(editable);
+        bindBtn.setEnabled(editable && lastAcquiredToken != null);
         clearBtn.setEnabled(editable);
         populateBtn.setEnabled(editable);
+        autoBindCheck.setEnabled(editable);
         if (editable) {
             updateFieldVisibility();
         }
@@ -228,6 +245,7 @@ public class OAuth2Panel extends JPanel {
             return;
         }
         ApiCollection targetCollection = tokenAcquiredCollectionSupplier != null ? tokenAcquiredCollectionSupplier.get() : null;
+        appendRequestSummary(config);
 
         SwingWorker<TokenStore.TokenEntry, String> worker = new SwingWorker<>() {
             @Override
@@ -245,13 +263,14 @@ public class OAuth2Panel extends JPanel {
             protected void done() {
                 try {
                     TokenStore.TokenEntry entry = get();
+                    lastAcquiredToken = entry;
+                    bindBtn.setEnabled(editable && entry != null && entry.accessToken != null && !entry.accessToken.isBlank());
                     if (entry.accessToken == null || entry.accessToken.isBlank()) {
                         updateStatus("FAILED: Token acquisition returned no access token.");
                         return;
                     }
-                    String preview = entry.accessToken.substring(0, Math.min(20, entry.accessToken.length())) + "...";
-                    tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
-                    updateStatus("SUCCESS: Token acquired. Refresh token available: " + (entry.refreshToken != null));
+                    tokenPreviewField.setText(entry.accessToken);
+                    appendResponseSummary(entry);
                     Map<String, String> vars = getVariables();
                     vars.put("oauth2_access_token", entry.accessToken);
                     if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
@@ -284,6 +303,35 @@ public class OAuth2Panel extends JPanel {
 
     public void setTokenAcquiredCollectionSupplier(Supplier<ApiCollection> supplier) {
         this.tokenAcquiredCollectionSupplier = supplier;
+    }
+
+    public TokenStore.TokenEntry getLastAcquiredToken() {
+        return lastAcquiredToken;
+    }
+
+    public void setLastAcquiredToken(TokenStore.TokenEntry entry) {
+        this.lastAcquiredToken = entry;
+        if (bindBtn != null) {
+            bindBtn.setEnabled(editable && entry != null && entry.accessToken != null && !entry.accessToken.isBlank());
+        }
+    }
+
+    public JButton getBindTokenButton() {
+        return bindBtn;
+    }
+
+    public JCheckBox getAutoBindCheckBox() {
+        return autoBindCheck;
+    }
+
+    public boolean isAutoBindSelected() {
+        return autoBindCheck != null && autoBindCheck.isSelected();
+    }
+
+    public void setBindTokenEnabled(boolean enabled) {
+        if (bindBtn != null) {
+            bindBtn.setEnabled(editable && enabled && lastAcquiredToken != null && lastAcquiredToken.accessToken != null && !lastAcquiredToken.accessToken.isBlank());
+        }
     }
 
     public void setClearTokensListener(ClearTokensListener listener) {
@@ -399,6 +447,43 @@ public class OAuth2Panel extends JPanel {
         try {
             variablesChangeListener.onVariablesChanged(getVariables(), replaceMode);
         } catch (Exception ignored) {}
+    }
+
+    private void appendRequestSummary(OAuth2Config config) {
+        if (config == null) {
+            return;
+        }
+        updateStatus("OAuth2 Request:");
+        updateStatus("  Grant: " + config.grantType);
+        updateStatus("  Token URL: " + safe(config.tokenUrl));
+        updateStatus("  Auth URL: " + safe(config.authUrl));
+        updateStatus("  Client ID: " + safe(config.clientId));
+        updateStatus("  Scope: " + safe(config.scope));
+        updateStatus("  PKCE: " + config.usePkce);
+    }
+
+    private void appendResponseSummary(TokenStore.TokenEntry entry) {
+        if (entry == null) {
+            updateStatus("OAuth2 Response:");
+            updateStatus("  Token acquired: no");
+            return;
+        }
+        updateStatus("OAuth2 Response:");
+        updateStatus("  Token acquired: yes");
+        updateStatus("  Access Token: " + safe(entry.accessToken));
+        updateStatus("  Refresh Token: " + safe(entry.refreshToken));
+        updateStatus("  Token Type: " + safe(entry.tokenType));
+        if (entry.expiresAt > 0) {
+            long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+            updateStatus("  Expires In: " + expiresInSeconds + "s");
+        }
+        if (entry.scope != null && !entry.scope.isBlank()) {
+            updateStatus("  Scope: " + entry.scope);
+        }
+    }
+
+    private static String safe(String value) {
+        return value != null ? value : "";
     }
 
     public Map<String, String> getVariables() {

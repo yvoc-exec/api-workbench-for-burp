@@ -6,7 +6,6 @@ import burp.models.UnresolvedVariableIssue;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 class UnresolvedVariableAnalyzerTest {
@@ -135,6 +134,67 @@ class UnresolvedVariableAnalyzerTest {
         assertThat(issues).hasSize(1);
         assertThat(issues.get(0).variableName).isEqualTo("missing");
         assertThat(issues.get(0).location).isEqualTo("body");
+    }
+
+    @Test
+    void analyzeReportsEmptyActiveEnvironmentValueAsUnresolvedWhenUsed() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Checkout";
+        collection.environment.put("base_url", "");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Get Cart";
+        request.url = "https://api.example.com/{{base_url}}/cart";
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+
+        List<UnresolvedVariableIssue> issues = analyzer.analyze(collection, request);
+
+        assertThat(issues)
+                .hasSize(1);
+        assertThat(issues.get(0).variableName).isEqualTo("base_url");
+        assertThat(issues.get(0).location).isEqualTo("url");
+        assertThat(issues.get(0).message).contains("empty value");
+    }
+
+    @Test
+    void analyzeDoesNotReportUnusedEmptyEnvironmentValue() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Checkout";
+        collection.environment.put("unused", "");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Get Cart";
+        request.url = "https://api.example.com/{{base_url}}/cart";
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+
+        List<UnresolvedVariableIssue> issues = analyzer.analyze(collection, request);
+
+        assertThat(issues)
+                .hasSize(1);
+        assertThat(issues.get(0).variableName).isEqualTo("base_url");
+        assertThat(issues.get(0).message).contains("unresolved");
+    }
+
+    @Test
+    void analyzeTreatsLegacyRuntimeEmptyValueAsUnresolvedWhenUsed() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Legacy";
+        collection.runtimeVars.put("base_url", "");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Get Cart";
+        request.url = "{{base_url}}/cart";
+
+        UnresolvedVariableAnalyzer analyzer = new UnresolvedVariableAnalyzer();
+
+        List<UnresolvedVariableIssue> issues = analyzer.analyze(collection, request);
+
+        assertThat(issues)
+                .hasSize(1);
+        assertThat(issues.get(0).variableName).isEqualTo("base_url");
+        assertThat(issues.get(0).message).contains("empty value");
     }
 
     private static ApiRequest.Variable variable(String key, String value) {
