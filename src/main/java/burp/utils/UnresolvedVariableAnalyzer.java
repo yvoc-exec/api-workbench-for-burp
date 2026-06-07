@@ -26,33 +26,34 @@ public class UnresolvedVariableAnalyzer {
         }
 
         VariableResolver resolver = seedResolver(collection, request, runtimeOverlay);
+        java.util.Map<String, String> resolvedVariables = resolver.getVariables();
         Set<String> seen = new LinkedHashSet<>();
         String collectionName = collection != null ? collection.name : request.sourceCollection;
         String requestName = request.name;
 
-        scanValue(issues, seen, resolver, collectionName, requestName, "url", request.url);
+        scanValue(issues, seen, resolvedVariables, collectionName, requestName, "url", request.url);
 
         if (request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
                 if (header == null || header.disabled) {
                     continue;
                 }
-                scanValue(issues, seen, resolver, collectionName, requestName, "header:key", header.key);
-                scanValue(issues, seen, resolver, collectionName, requestName, "header:value", header.value);
+                scanValue(issues, seen, resolvedVariables, collectionName, requestName, "header:key", header.key);
+                scanValue(issues, seen, resolvedVariables, collectionName, requestName, "header:value", header.value);
             }
         }
 
         if (request.body != null) {
-            scanValue(issues, seen, resolver, collectionName, requestName, "body", request.body.raw);
+            scanValue(issues, seen, resolvedVariables, collectionName, requestName, "body", request.body.raw);
 
             if (request.body.urlencoded != null) {
                 for (ApiRequest.Body.FormField field : request.body.urlencoded) {
                     if (field == null || field.disabled) {
                         continue;
                     }
-                    scanValue(issues, seen, resolver, collectionName, requestName, "urlencoded:key", field.key);
-                    scanValue(issues, seen, resolver, collectionName, requestName, "urlencoded:value", field.value);
-                    scanValue(issues, seen, resolver, collectionName, requestName, "urlencoded:filePath", field.filePath);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "urlencoded:key", field.key);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "urlencoded:value", field.value);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "urlencoded:filePath", field.filePath);
                 }
             }
 
@@ -61,15 +62,15 @@ public class UnresolvedVariableAnalyzer {
                     if (field == null || field.disabled) {
                         continue;
                     }
-                    scanValue(issues, seen, resolver, collectionName, requestName, "formdata:key", field.key);
-                    scanValue(issues, seen, resolver, collectionName, requestName, "formdata:value", field.value);
-                    scanValue(issues, seen, resolver, collectionName, requestName, "formdata:filePath", field.filePath);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "formdata:key", field.key);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "formdata:value", field.value);
+                    scanValue(issues, seen, resolvedVariables, collectionName, requestName, "formdata:filePath", field.filePath);
                 }
             }
 
             if (request.body.graphql != null) {
-                scanValue(issues, seen, resolver, collectionName, requestName, "graphql:query", request.body.graphql.query);
-                scanValue(issues, seen, resolver, collectionName, requestName, "graphql:variables", request.body.graphql.variables);
+                scanValue(issues, seen, resolvedVariables, collectionName, requestName, "graphql:query", request.body.graphql.query);
+                scanValue(issues, seen, resolvedVariables, collectionName, requestName, "graphql:variables", request.body.graphql.variables);
             }
         }
 
@@ -78,7 +79,7 @@ public class UnresolvedVariableAnalyzer {
                 if (entry == null) {
                     continue;
                 }
-                scanValue(issues, seen, resolver, collectionName, requestName, "auth:" + entry.getKey(), entry.getValue());
+                scanValue(issues, seen, resolvedVariables, collectionName, requestName, "auth:" + entry.getKey(), entry.getValue());
             }
         }
 
@@ -97,7 +98,7 @@ public class UnresolvedVariableAnalyzer {
 
     private void scanValue(List<UnresolvedVariableIssue> issues,
                            Set<String> seen,
-                           VariableResolver resolver,
+                           java.util.Map<String, String> resolvedVariables,
                            String collectionName,
                            String requestName,
                            String location,
@@ -113,13 +114,19 @@ public class UnresolvedVariableAnalyzer {
             if (variableName.isEmpty() || defaultValue != null) {
                 continue;
             }
-            if (resolver.getVariables().containsKey(variableName)) {
-                continue;
+            if (resolvedVariables.containsKey(variableName)) {
+                String resolvedValue = resolvedVariables.get(variableName);
+                if (resolvedValue != null && !resolvedValue.isBlank()) {
+                    continue;
+                }
             }
 
             String dedupeKey = collectionName + "\u0000" + requestName + "\u0000" + variableName + "\u0000" + location;
             if (seen.add(dedupeKey)) {
-                issues.add(new UnresolvedVariableIssue(collectionName, requestName, variableName, location));
+                String message = resolvedVariables.containsKey(variableName)
+                        ? "Variable \"" + variableName + "\" exists in the active/runtime scope but has an empty value."
+                        : "Variable \"" + variableName + "\" is unresolved.";
+                issues.add(new UnresolvedVariableIssue(collectionName, requestName, variableName, location, message));
             }
         }
     }

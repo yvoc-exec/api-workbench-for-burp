@@ -92,7 +92,7 @@ public class UnresolvedVariablesDialog extends JDialog {
     }
 
     private JComponent buildIssuesTable() {
-        DefaultTableModel model = new DefaultTableModel(new Object[]{"Collection", "Request", "Variable", "Location"}, 0) {
+        DefaultTableModel model = new DefaultTableModel(new Object[]{"Collection", "Request", "Variable", "Location", "Details"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -106,7 +106,8 @@ public class UnresolvedVariablesDialog extends JDialog {
                     safe(issue.collectionName),
                     safe(issue.requestName),
                     safe(issue.variableName),
-                    safe(issue.location)
+                    safe(issue.location),
+                    safe(issue.message)
             });
         }
 

@@ -4,6 +4,7 @@ import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.auth.OAuth2Manager;
+import burp.auth.TokenStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -91,6 +92,50 @@ class ImporterPanelOAuth2PopulateTest {
 
         OAuth2Panel oauth2Panel = oauth2Panel(panel);
         assertThat(oauth2Panel.getVariables()).isEmpty();
+    }
+
+    @Test
+    void oauth2TabUsesExpectedButtonLabels() throws Exception {
+        ImporterPanel panel = newPanel();
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+
+        assertThat(((JButton) privateField(oauth2Panel, "populateBtn")).getText()).isEqualTo("Populate from Request");
+        assertThat(((JButton) privateField(oauth2Panel, "acquireBtn")).getText()).isEqualTo("Acquire Token");
+        assertThat(((JButton) privateField(oauth2Panel, "bindBtn")).getText()).isEqualTo("Bind Token");
+        assertThat(((JButton) privateField(oauth2Panel, "clearBtn")).getText()).isEqualTo("Clear Tokens");
+    }
+
+    @Test
+    void oauth2ButtonsAreDisabledWithoutActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+
+        assertThat(((JButton) privateField(oauth2Panel, "populateBtn")).isEnabled()).isFalse();
+        assertThat(((JButton) privateField(oauth2Panel, "acquireBtn")).isEnabled()).isFalse();
+        assertThat(((JButton) privateField(oauth2Panel, "bindBtn")).isEnabled()).isFalse();
+        assertThat(((JButton) privateField(oauth2Panel, "clearBtn")).isEnabled()).isFalse();
+    }
+
+    @Test
+    void oauth2ActiveEnvironmentDropdownSyncsWithWorkbench() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile uat = environment("UAT");
+        EnvironmentProfile prd = environment("PRD");
+        panel.replaceEnvironmentProfiles(List.of(uat, prd));
+        panel.setActiveEnvironmentId(prd.id);
+        drainEdt();
+
+        JComboBox<?> oauth2Combo = (JComboBox<?>) privateField(panel, "oauth2EnvironmentCombo");
+        JComboBox<?> workbenchCombo = (JComboBox<?>) privateField(panel, "workbenchEnvironmentCombo");
+        assertThat(oauth2Combo.getSelectedItem()).hasToString("PRD");
+        assertThat(workbenchCombo.getSelectedItem()).hasToString("PRD");
+
+        SwingUtilities.invokeAndWait(() -> oauth2Combo.setSelectedIndex(1));
+        drainEdt();
+
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(uat.id);
+        assertThat(workbenchCombo.getSelectedItem()).hasToString("UAT");
+        assertThat(oauth2Combo.getSelectedItem()).hasToString("UAT");
     }
 
     @Test
@@ -223,6 +268,7 @@ class ImporterPanelOAuth2PopulateTest {
                 .containsEntry("oauth2_client_secret", "client-secret-from-request")
                 .containsEntry("oauth2_token_url", "https://auth.example.test/token")
                 .containsEntry("oauth2_scope", "api.read");
+        assertThat(active.variables).doesNotContainKey("oauth2_access_token");
     }
 
     @Test
@@ -344,14 +390,18 @@ class ImporterPanelOAuth2PopulateTest {
         panel.replaceEnvironmentProfiles(List.of(active));
         panel.setActiveEnvironmentId(active.id);
 
-        JComboBox<String> accessTokenBinding = bindingCombo(panel, "oauth2AccessTokenBindingCombo");
-        SwingUtilities.invokeAndWait(() -> accessTokenBinding.setSelectedItem("access_token"));
+        TokenStore.TokenEntry entry = token("access-token");
+        invokePrivate(panel, "applyOAuth2TokenBindingSelection",
+                new Class<?>[]{TokenStore.TokenEntry.class, Map.class},
+                entry,
+                Map.of("accessToken", "access_token"));
 
         invokePrivate(panel, "commitEnvironmentEditorToSelectedProfile");
         drainEdt();
 
         WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
         assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.environments.get(0).variables).containsEntry("access_token", "access-token");
         assertThat(snapshot.environments.get(0).oauth2.outputBindings)
                 .containsEntry("accessToken", "access_token");
     }
@@ -364,13 +414,129 @@ class ImporterPanelOAuth2PopulateTest {
         panel.replaceEnvironmentProfiles(List.of(active));
         panel.setActiveEnvironmentId(active.id);
 
-        JComboBox<String> accessTokenBinding = bindingCombo(panel, "oauth2AccessTokenBindingCombo");
-        SwingUtilities.invokeAndWait(() -> accessTokenBinding.setSelectedItem("access_token"));
+        TokenStore.TokenEntry entry = token("runtime-access-token");
+        invokePrivate(panel, "applyOAuth2TokenBindingSelection",
+                new Class<?>[]{TokenStore.TokenEntry.class, Map.class},
+                entry,
+                Map.of("accessToken", "access_token"));
 
         @SuppressWarnings("unchecked")
         Map<String, String> overlay = (Map<String, String>) invokePrivateReturning(panel, "activeEnvironmentOverlayForRuntimeUse");
         assertThat(overlay).isNotNull();
+        assertThat(overlay).containsEntry("access_token", "runtime-access-token");
         assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "access_token");
+    }
+
+    @Test
+    void autoBindUncheckedDoesNotWriteTokenOnAcquire() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        SwingUtilities.invokeAndWait(() -> oauth2Panel.getAutoBindCheckBox().setSelected(false));
+
+        TokenStore.TokenEntry entry = token("auto-bind-off-token");
+        invokePrivate(panel, "handleOAuth2TokenAcquired",
+                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class},
+                entry,
+                null,
+                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"));
+        drainEdt();
+
+        assertThat(active.variables).doesNotContainKey("oauth2_access_token");
+        assertThat(oauth2Panel.getBindTokenButton().isEnabled()).isTrue();
+    }
+
+    @Test
+    void autoBindCheckedWithExistingBindingUpdatesActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.outputBindings.put("accessToken", "token");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        SwingUtilities.invokeAndWait(() -> oauth2Panel.getAutoBindCheckBox().setSelected(true));
+
+        TokenStore.TokenEntry entry = token("auto-bind-on-token");
+        invokePrivate(panel, "handleOAuth2TokenAcquired",
+                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class},
+                entry,
+                null,
+                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"));
+        drainEdt();
+
+        assertThat(active.variables).containsEntry("token", "auto-bind-on-token");
+        assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "token");
+    }
+
+    @Test
+    void bindTokenWritesAccessTokenToSelectedExistingEnvironmentVariable() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.variables.put("token", "");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        TokenStore.TokenEntry entry = token("full-access-token");
+        invokePrivate(panel, "applyOAuth2TokenBindingSelection",
+                new Class<?>[]{TokenStore.TokenEntry.class, Map.class},
+                entry,
+                Map.of("accessToken", "token"));
+
+        assertThat(active.variables).containsEntry("token", "full-access-token");
+        assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "token");
+    }
+
+    @Test
+    void bindTokenCanCreateNewVariable() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        TokenStore.TokenEntry entry = token("new-access-token");
+        invokePrivate(panel, "applyOAuth2TokenBindingSelection",
+                new Class<?>[]{TokenStore.TokenEntry.class, Map.class},
+                entry,
+                Map.of("accessToken", "access_token"));
+
+        assertThat(active.variables).containsEntry("access_token", "new-access-token");
+        assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "access_token");
+    }
+
+    @Test
+    void tokenStatusShowsFullToken() throws Exception {
+        OAuth2Manager manager = Mockito.mock(OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS);
+        TokenStore.TokenEntry entry = token("full-visible-token");
+        Mockito.when(manager.acquireToken(Mockito.any())).thenReturn(entry);
+
+        OAuth2Panel oauth2Panel = new OAuth2Panel(manager);
+        SwingUtilities.invokeAndWait(() -> oauth2Panel.populateFromOAuth2Map(Map.of(
+                "oauth2_grant", "client_credentials",
+                "oauth2_client_id", "client-id",
+                "oauth2_client_secret", "client-secret",
+                "oauth2_token_url", "https://auth.example.test/token",
+                "oauth2_scope", "api.read"
+        )));
+        drainEdt();
+
+        JButton acquireBtn = (JButton) privateField(oauth2Panel, "acquireBtn");
+        SwingUtilities.invokeAndWait(acquireBtn::doClick);
+        waitForStatusText(oauth2Panel, "Access Token: full-visible-token");
+
+        JTextArea statusArea = (JTextArea) privateField(oauth2Panel, "statusArea");
+        assertThat(statusArea.getText()).contains("OAuth2 Request:");
+        assertThat(statusArea.getText()).contains("OAuth2 Response:");
+        assertThat(statusArea.getText()).contains("Access Token: full-visible-token");
+        assertThat(statusArea.getText()).contains("Refresh Token: refresh-full-visible-token");
+        assertThat(statusArea.getText()).contains("Token Type: Bearer");
     }
 
     @Test
@@ -440,6 +606,16 @@ class ImporterPanelOAuth2PopulateTest {
         return variable;
     }
 
+    private static TokenStore.TokenEntry token(String accessToken) {
+        TokenStore.TokenEntry entry = new TokenStore.TokenEntry();
+        entry.accessToken = accessToken;
+        entry.refreshToken = "refresh-" + accessToken;
+        entry.tokenType = "Bearer";
+        entry.scope = "api.read";
+        entry.expiresAt = System.currentTimeMillis() + 3600_000L;
+        return entry;
+    }
+
     private static Map<String, String> invokePopulateExistingVars(ImporterPanel panel,
                                                                   ApiCollection collection,
                                                                   ApiRequest request,
@@ -461,6 +637,18 @@ class ImporterPanelOAuth2PopulateTest {
         method.invoke(panel, arg);
     }
 
+    private static void invokePrivate(ImporterPanel panel, String methodName, Class<?>[] parameterTypes, Object arg1, Object arg2) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, arg1, arg2);
+    }
+
+    private static void invokePrivate(ImporterPanel panel, String methodName, Class<?>[] parameterTypes, Object arg1, Object arg2, Object arg3) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, arg1, arg2, arg3);
+    }
+
     private static void invokePrivate(ImporterPanel panel, String methodName) throws Exception {
         Method method = ImporterPanel.class.getDeclaredMethod(methodName);
         method.setAccessible(true);
@@ -476,11 +664,6 @@ class ImporterPanelOAuth2PopulateTest {
 
     private static OAuth2Panel oauth2Panel(ImporterPanel panel) throws Exception {
         return (OAuth2Panel) privateField(panel, "oauth2Panel");
-    }
-
-    @SuppressWarnings("unchecked")
-    private static JComboBox<String> bindingCombo(ImporterPanel panel, String field) throws Exception {
-        return (JComboBox<String>) privateField(panel, field);
     }
 
     private static Object privateField(Object target, String name) throws Exception {
@@ -505,5 +688,18 @@ class ImporterPanelOAuth2PopulateTest {
 
     private static void drainEdt() throws Exception {
         SwingUtilities.invokeAndWait(() -> { });
+    }
+
+    private static void waitForStatusText(OAuth2Panel panel, String expected) throws Exception {
+        JTextArea statusArea = (JTextArea) privateField(panel, "statusArea");
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline) {
+            drainEdt();
+            if (statusArea.getText().contains(expected)) {
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        throw new AssertionError("Timed out waiting for status text: " + expected + "\nCurrent text:\n" + statusArea.getText());
     }
 }

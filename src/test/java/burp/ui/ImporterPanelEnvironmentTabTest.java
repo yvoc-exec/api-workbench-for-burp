@@ -457,11 +457,12 @@ class ImporterPanelEnvironmentTabTest {
         ImporterPanel panel = newPanel();
 
         assertThat(privateField(panel, "oauth2ActiveEnvironmentLabel")).isInstanceOf(JLabel.class);
-        assertThat(privateField(panel, "oauth2BindingHintLabel")).isInstanceOf(JLabel.class);
-        assertThat(privateField(panel, "oauth2AccessTokenBindingCombo")).isInstanceOf(JComboBox.class);
-        assertThat(privateField(panel, "oauth2RefreshTokenBindingCombo")).isInstanceOf(JComboBox.class);
-        assertThat(privateField(panel, "oauth2TokenTypeBindingCombo")).isInstanceOf(JComboBox.class);
-        assertThat(privateField(panel, "oauth2ExpiresInBindingCombo")).isInstanceOf(JComboBox.class);
+        assertThat(privateField(panel, "oauth2EnvironmentCombo")).isInstanceOf(JComboBox.class);
+        assertThat(privateField(panel, "oauth2StatusLabel")).isInstanceOf(JLabel.class);
+        assertThat(((JButton) privateField(privateField(panel, "oauth2Panel"), "populateBtn")).getText()).isEqualTo("Populate from Request");
+        assertThat(((JButton) privateField(privateField(panel, "oauth2Panel"), "acquireBtn")).getText()).isEqualTo("Acquire Token");
+        assertThat(((JButton) privateField(privateField(panel, "oauth2Panel"), "bindBtn")).getText()).isEqualTo("Bind Token");
+        assertThat(((JButton) privateField(privateField(panel, "oauth2Panel"), "clearBtn")).getText()).isEqualTo("Clear Tokens");
     }
 
     private ImporterPanel newPanel() {

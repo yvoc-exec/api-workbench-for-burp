@@ -163,16 +163,11 @@ public class ImporterPanel {
 
     // OAuth2 tab
     private JComboBox<CollectionRef> oauth2CollectionCombo = new JComboBox<>();
-    private JButton bindOAuth2Btn;
-    private JLabel oauth2HintLabel;
     private JLabel oauth2AutosaveStatusLabel;
     private JLabel oauth2ActiveEnvironmentLabel;
+    private JComboBox<EnvironmentRef> oauth2EnvironmentCombo;
+    private boolean suppressOAuth2EnvironmentEvents = false;
     private JLabel oauth2StatusLabel;
-    private JComboBox<String> oauth2AccessTokenBindingCombo;
-    private JComboBox<String> oauth2RefreshTokenBindingCombo;
-    private JComboBox<String> oauth2TokenTypeBindingCombo;
-    private JComboBox<String> oauth2ExpiresInBindingCombo;
-    private JLabel oauth2BindingHintLabel;
     private boolean oauth2ConfigDirty = false;
     private String renderedOAuth2ConfigEnvironmentId = null;
     private boolean oauth2ConfigRefreshPending = false;
@@ -203,8 +198,10 @@ public class ImporterPanel {
         this.mainPanel = createUI();
         this.oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> markOAuth2ConfigDirty());
         if (oauth2Panel.getPopulateButton() != null) {
-            oauth2Panel.getPopulateButton().setText("Populate from Request");
             oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromRequest());
+        }
+        if (oauth2Panel.getBindTokenButton() != null) {
+            oauth2Panel.getBindTokenButton().addActionListener(e -> showOAuth2BindTokenDialog());
         }
         this.oauth2Panel.setClearTokensListener(this::clearActiveEnvironmentOAuth2TokenOutputs);
     }
@@ -872,41 +869,39 @@ public class ImporterPanel {
     private JPanel createOAuth2Tab() {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
 
-        JPanel top = new JPanel(new GridLayout(0, 1, 4, 4));
+        JPanel top = new JPanel(new GridBagLayout());
+        GridBagConstraints topGbc = new GridBagConstraints();
+        topGbc.gridx = 0;
+        topGbc.gridy = 0;
+        topGbc.weightx = 0;
+        topGbc.insets = new Insets(2, 2, 2, 8);
+        topGbc.anchor = GridBagConstraints.WEST;
         oauth2ActiveEnvironmentLabel = new JLabel("Active Environment: No Environment");
         oauth2ActiveEnvironmentLabel.setForeground(Color.DARK_GRAY);
-        oauth2BindingHintLabel = new JLabel("Create or select an Active Environment before configuring OAuth2.");
-        oauth2BindingHintLabel.setForeground(Color.GRAY);
-        top.add(oauth2ActiveEnvironmentLabel);
-        top.add(oauth2BindingHintLabel);
+        top.add(oauth2ActiveEnvironmentLabel, topGbc);
+
+        topGbc.gridx = 1;
+        topGbc.weightx = 1;
+        topGbc.fill = GridBagConstraints.HORIZONTAL;
+        oauth2EnvironmentCombo = new JComboBox<>();
+        oauth2EnvironmentCombo.setPrototypeDisplayValue(new EnvironmentRef(null, "No Environment"));
+        oauth2EnvironmentCombo.addActionListener(e -> handleOAuth2EnvironmentSelectionChanged());
+        top.add(oauth2EnvironmentCombo, topGbc);
+
+        topGbc.gridx = 0;
+        topGbc.gridy = 1;
+        topGbc.gridwidth = 2;
+        topGbc.weightx = 1;
+        topGbc.fill = GridBagConstraints.HORIZONTAL;
+        oauth2StatusLabel = new JLabel("Saved.");
+        oauth2StatusLabel.setForeground(Color.GRAY);
+        oauth2AutosaveStatusLabel = oauth2StatusLabel;
+        top.add(oauth2StatusLabel, topGbc);
+
         panel.add(top, BorderLayout.NORTH);
 
         panel.add(oauth2Panel, BorderLayout.CENTER);
 
-        JPanel bindings = new JPanel(new GridBagLayout());
-        bindings.setBorder(BorderFactory.createTitledBorder("Bind OAuth2 Output"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(4, 4, 4, 4);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.gridy = 0;
-
-        oauth2AccessTokenBindingCombo = createEditableBindingCombo("oauth2_access_token");
-        oauth2RefreshTokenBindingCombo = createEditableBindingCombo("oauth2_refresh_token");
-        oauth2TokenTypeBindingCombo = createEditableBindingCombo("oauth2_token_type");
-        oauth2ExpiresInBindingCombo = createEditableBindingCombo("oauth2_expires_in");
-
-        addBindingRow(bindings, gbc, "Access Token variable:", oauth2AccessTokenBindingCombo);
-        addBindingRow(bindings, gbc, "Refresh Token variable:", oauth2RefreshTokenBindingCombo);
-        addBindingRow(bindings, gbc, "Token Type variable:", oauth2TokenTypeBindingCombo);
-        addBindingRow(bindings, gbc, "Expires In variable:", oauth2ExpiresInBindingCombo);
-
-        oauth2StatusLabel = new JLabel("Saved.");
-        oauth2StatusLabel.setForeground(Color.GRAY);
-        gbc.gridx = 0;
-        gbc.gridwidth = 2;
-        bindings.add(oauth2StatusLabel, gbc);
-
-        panel.add(bindings, BorderLayout.SOUTH);
         syncOAuth2UiState();
         return panel;
     }
@@ -1658,6 +1653,7 @@ public class ImporterPanel {
         renderSelectedEnvironmentIntoEditor();
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
+        syncOAuth2EnvironmentControls();
         syncOAuth2UiState();
         notifyWorkspaceChanged();
     }
@@ -1681,6 +1677,7 @@ public class ImporterPanel {
         }
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
+        syncOAuth2EnvironmentControls();
         syncOAuth2UiState(true);
         syncActiveEnvironmentToEditors();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
@@ -1744,13 +1741,9 @@ public class ImporterPanel {
     }
 
     private void commitOAuth2BindingUiToActiveEnvironment() {
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active == null) {
-            return;
-        }
-        active.ensureDefaults();
-        active.oauth2.outputBindings.clear();
-        active.oauth2.outputBindings.putAll(readOAuth2OutputBindingsFromUi());
+        // Legacy bottom-panel binding UI removed; token binding now flows through
+        // the Bind Token popup and active-environment variables directly.
+        return;
     }
 
     private Map<String, String> normalizeOAuth2ConfigForComparison(Map<String, String> vars) {
@@ -1849,15 +1842,15 @@ public class ImporterPanel {
         if (active == null) {
             setOAuth2AutosaveStatus("Tokens cleared. No Active Environment selected.", Color.GRAY);
             syncActiveEnvironmentToEditors();
+            if (oauth2Panel != null) {
+                oauth2Panel.setLastAcquiredToken(null);
+            }
             return;
         }
 
         commitOAuth2ConfigUiToActiveEnvironment();
         active.ensureDefaults();
         Map<String, String> bindings = active.oauth2 != null ? active.oauth2.outputBindings : Collections.emptyMap();
-        if (bindings == null || bindings.isEmpty()) {
-            bindings = readOAuth2OutputBindingsFromUi();
-        }
 
         LinkedHashSet<String> keysToRemove = new LinkedHashSet<>();
         addBindingTarget(keysToRemove, bindings.get("accessToken"));
@@ -1870,12 +1863,14 @@ public class ImporterPanel {
         }
 
         syncOAuth2PanelFromActiveEnvironment(true);
-        syncOAuth2BindingUiFromActiveEnvironment();
         renderSelectedEnvironmentIntoEditor(true);
         syncActiveEnvironmentToEditors();
         updateEnvironmentUiState();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         setOAuth2AutosaveStatus("Cleared OAuth2 token variables from Active Environment \"" + active.displayName() + "\".", Color.GRAY);
+        if (oauth2Panel != null) {
+            oauth2Panel.setLastAcquiredToken(null);
+        }
     }
 
     private void addBindingTarget(Set<String> keys, String value) {
@@ -2510,184 +2505,6 @@ public class ImporterPanel {
         return sb.toString();
     }
 
-    private JComboBox<String> createEditableBindingCombo(String defaultValue) {
-        JComboBox<String> combo = new JComboBox<>();
-        combo.setEditable(true);
-        combo.setPrototypeDisplayValue(defaultValue);
-        combo.setSelectedItem(defaultValue);
-        combo.addActionListener(e -> {
-            if (!suppressEnvironmentEditorEvents) {
-                markEnvironmentDirty();
-            }
-        });
-        return combo;
-    }
-
-    private void addBindingRow(JPanel panel, GridBagConstraints gbc, String label, JComboBox<String> combo) {
-        gbc.gridx = 0;
-        gbc.weightx = 0;
-        panel.add(new JLabel(label), gbc);
-        gbc.gridx = 1;
-        gbc.weightx = 1;
-        panel.add(combo, gbc);
-        gbc.gridy++;
-    }
-
-    private void setBindingCombosEnabled(boolean enabled) {
-        if (oauth2AccessTokenBindingCombo != null) oauth2AccessTokenBindingCombo.setEnabled(enabled);
-        if (oauth2RefreshTokenBindingCombo != null) oauth2RefreshTokenBindingCombo.setEnabled(enabled);
-        if (oauth2TokenTypeBindingCombo != null) oauth2TokenTypeBindingCombo.setEnabled(enabled);
-        if (oauth2ExpiresInBindingCombo != null) oauth2ExpiresInBindingCombo.setEnabled(enabled);
-    }
-
-    private void refreshOAuth2BindingCandidates() {
-        List<String> candidates = collectOAuth2BindingCandidates();
-        updateBindingComboChoices(oauth2AccessTokenBindingCombo, candidates, "oauth2_access_token");
-        updateBindingComboChoices(oauth2RefreshTokenBindingCombo, candidates, "oauth2_refresh_token");
-        updateBindingComboChoices(oauth2TokenTypeBindingCombo, candidates, "oauth2_token_type");
-        updateBindingComboChoices(oauth2ExpiresInBindingCombo, candidates, "oauth2_expires_in");
-        syncOAuth2BindingUiFromActiveEnvironment();
-    }
-
-    private void updateBindingComboChoices(JComboBox<String> combo, List<String> candidates, String defaultValue) {
-        if (combo == null) {
-            return;
-        }
-        Object current = combo.getSelectedItem();
-        suppressEnvironmentEditorEvents = true;
-        try {
-            combo.removeAllItems();
-            combo.addItem(defaultValue);
-            for (String candidate : candidates) {
-                if (candidate == null || candidate.isBlank()) {
-                    continue;
-                }
-                if (!containsComboItem(combo, candidate)) {
-                    combo.addItem(candidate);
-                }
-            }
-            combo.setSelectedItem(current != null ? current.toString() : defaultValue);
-        } finally {
-            suppressEnvironmentEditorEvents = false;
-        }
-    }
-
-    private boolean containsComboItem(JComboBox<String> combo, String value) {
-        for (int i = 0; i < combo.getItemCount(); i++) {
-            if (Objects.equals(combo.getItemAt(i), value)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private List<String> collectOAuth2BindingCandidates() {
-        LinkedHashSet<String> candidates = new LinkedHashSet<>();
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active != null && active.variables != null) {
-            candidates.addAll(active.variables.keySet());
-        }
-        for (ApiCollection collection : loadedCollections) {
-            if (collection == null) continue;
-            if (collection.environment != null) candidates.addAll(collection.environment.keySet());
-            if (collection.variables != null) {
-                for (ApiRequest.Variable variable : collection.variables) {
-                    if (variable != null && variable.key != null && !variable.key.isBlank()) {
-                        candidates.add(variable.key);
-                    }
-                }
-            }
-            if (collection.folderVars != null) {
-                for (Map<String, String> folder : collection.folderVars.values()) {
-                    if (folder != null) candidates.addAll(folder.keySet());
-                }
-            }
-            if (collection.requests != null) {
-                for (ApiRequest request : collection.requests) {
-                    collectPlaceholdersFromRequest(candidates, request);
-                }
-            }
-        }
-        if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
-            collectPlaceholdersFromRequest(candidates, requestEditor.getCurrentRequest());
-        }
-        return new ArrayList<>(candidates);
-    }
-
-    private void collectPlaceholdersFromRequest(Set<String> out, ApiRequest request) {
-        if (out == null || request == null) {
-            return;
-        }
-        Set<String> placeholders = burp.utils.RequestBuilder.findUnresolvedTokens(
-                request.url != null ? request.url.getBytes(StandardCharsets.UTF_8) : new byte[0]);
-        out.addAll(placeholders);
-        if (request.headers != null) {
-            for (ApiRequest.Header header : request.headers) {
-                if (header != null && header.value != null) {
-                    out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(header.value.getBytes(StandardCharsets.UTF_8)));
-                }
-            }
-        }
-        if (request.body != null && request.body.raw != null) {
-            out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(request.body.raw.getBytes(StandardCharsets.UTF_8)));
-        }
-        if (request.auth != null && request.auth.properties != null) {
-            for (String value : request.auth.properties.values()) {
-                if (value != null) {
-                    out.addAll(burp.utils.RequestBuilder.findUnresolvedTokens(value.getBytes(StandardCharsets.UTF_8)));
-                }
-            }
-        }
-    }
-
-    private Map<String, String> readOAuth2OutputBindingsFromUi() {
-        Map<String, String> bindings = new LinkedHashMap<>();
-        bindings.put("accessToken", readComboValue(oauth2AccessTokenBindingCombo, "oauth2_access_token"));
-        bindings.put("refreshToken", readComboValue(oauth2RefreshTokenBindingCombo, "oauth2_refresh_token"));
-        bindings.put("tokenType", readComboValue(oauth2TokenTypeBindingCombo, "oauth2_token_type"));
-        bindings.put("expiresIn", readComboValue(oauth2ExpiresInBindingCombo, "oauth2_expires_in"));
-        return bindings;
-    }
-
-    private void syncOAuth2BindingUiFromActiveEnvironment() {
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active == null) {
-            setBindingComboValue(oauth2AccessTokenBindingCombo, "oauth2_access_token");
-            setBindingComboValue(oauth2RefreshTokenBindingCombo, "oauth2_refresh_token");
-            setBindingComboValue(oauth2TokenTypeBindingCombo, "oauth2_token_type");
-            setBindingComboValue(oauth2ExpiresInBindingCombo, "oauth2_expires_in");
-            return;
-        }
-        setBindingComboValue(oauth2AccessTokenBindingCombo, active.oauth2.outputBindings.get("accessToken"));
-        setBindingComboValue(oauth2RefreshTokenBindingCombo, active.oauth2.outputBindings.get("refreshToken"));
-        setBindingComboValue(oauth2TokenTypeBindingCombo, active.oauth2.outputBindings.get("tokenType"));
-        setBindingComboValue(oauth2ExpiresInBindingCombo, active.oauth2.outputBindings.get("expiresIn"));
-    }
-
-    private void setBindingComboValue(JComboBox<String> combo, String value) {
-        if (combo == null) {
-            return;
-        }
-        suppressEnvironmentEditorEvents = true;
-        try {
-            combo.setSelectedItem(value != null && !value.isBlank() ? value : combo.getItemCount() > 0 ? combo.getItemAt(0) : "");
-        } finally {
-            suppressEnvironmentEditorEvents = false;
-        }
-    }
-
-    private String readComboValue(JComboBox<String> combo, String fallback) {
-        if (combo == null) {
-            return fallback;
-        }
-        Object selected = combo.getEditor() != null ? combo.getEditor().getItem() : combo.getSelectedItem();
-        if (selected == null) {
-            selected = combo.getSelectedItem();
-        }
-        String value = selected != null ? selected.toString().trim() : "";
-        return value.isEmpty() ? fallback : value;
-    }
-
     private UnresolvedVariablesDialog.Action showUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
                                                                            List<ApiCollection> targetCollections) {
         if (issues == null || issues.isEmpty()) {
@@ -2775,14 +2592,230 @@ public class ImporterPanel {
         }
 
         applyOAuth2ConfigToActiveEnvironment(filterOAuth2ConfigVars(oauth2Vars));
-        commitOAuth2BindingUiToActiveEnvironment();
-        storeOAuth2TokenInActiveEnvironment(collection, entry);
-        syncOAuth2BindingUiFromActiveEnvironment();
+        oauth2Panel.setLastAcquiredToken(entry);
+
+        boolean autoBind = oauth2Panel.isAutoBindSelected();
+        Map<String, String> stored = Collections.emptyMap();
+        if (autoBind) {
+            stored = storeOAuth2TokenInActiveEnvironment(collection, entry);
+        }
+
+        syncActiveEnvironmentToEditors();
+        updateEnvironmentUiState();
+        if (autoBind && stored != null && !stored.isEmpty()) {
+            renderSelectedEnvironmentIntoEditor(true);
+            setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
+            appendImportLog("OAuth2 token auto-bound to active environment \"" + activeEnvironment.displayName() + "\".");
+        } else {
+            setOAuth2AutosaveStatus("Token acquired. Click Bind Token to choose target variables.", new Color(150, 90, 0));
+            appendImportLog("OAuth2 token acquired for active environment \"" + activeEnvironment.displayName() + "\".");
+        }
+        notifyWorkspaceChangedImmediately();
+    }
+
+    private void showOAuth2BindTokenDialog() {
+        EnvironmentProfile active = getActiveEnvironment();
+        TokenStore.TokenEntry entry = oauth2Panel != null ? oauth2Panel.getLastAcquiredToken() : null;
+        if (active == null || entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
+            appendImportLog("Bind Token: acquire a token first and select an Active Environment.");
+            return;
+        }
+
+        if (environmentDirty) {
+            commitEnvironmentEditorToSelectedProfile();
+        }
+
+        active.ensureDefaults();
+        List<String> variableNames = new ArrayList<>();
+        if (active.variables != null) {
+            variableNames.addAll(active.variables.keySet());
+        }
+        variableNames.addAll(List.of("oauth2_access_token", "oauth2_refresh_token", "oauth2_token_type", "oauth2_expires_in"));
+        LinkedHashSet<String> uniqueNames = new LinkedHashSet<>();
+        for (String value : variableNames) {
+            if (value != null && !value.isBlank()) {
+                uniqueNames.add(value);
+            }
+        }
+        List<String> candidates = new ArrayList<>(uniqueNames);
+
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        JDialog dialog = new JDialog(owner, "Bind OAuth2 Token", Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+
+        JPanel root = new JPanel(new BorderLayout(8, 8));
+        root.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+
+        JTextArea varsPreview = new JTextArea(renderEnvironmentVariablesAsText(active.variables));
+        varsPreview.setEditable(false);
+        varsPreview.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        varsPreview.setRows(8);
+        varsPreview.setLineWrap(false);
+        root.add(new JScrollPane(varsPreview), BorderLayout.NORTH);
+
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 0;
+
+        Map<String, JComboBox<String>> targetCombos = new LinkedHashMap<>();
+        Map<String, JCheckBox> targetChecks = new LinkedHashMap<>();
+
+        addOAuth2BindRow(form, gbc, "Access Token", "accessToken", candidates,
+                active.oauth2.outputBindings.get("accessToken"), true, true, targetCombos, targetChecks);
+        targetChecks.get("accessToken").setEnabled(false);
+        addOAuth2BindRow(form, gbc, "Refresh Token", "refreshToken", candidates,
+                active.oauth2.outputBindings.get("refreshToken"), entry.refreshToken != null && !entry.refreshToken.isBlank(),
+                entry.refreshToken != null && !entry.refreshToken.isBlank(), targetCombos, targetChecks);
+        addOAuth2BindRow(form, gbc, "Token Type", "tokenType", candidates,
+                active.oauth2.outputBindings.get("tokenType"), entry.tokenType != null && !entry.tokenType.isBlank(),
+                entry.tokenType != null && !entry.tokenType.isBlank(), targetCombos, targetChecks);
+        addOAuth2BindRow(form, gbc, "Expires In", "expiresIn", candidates,
+                active.oauth2.outputBindings.get("expiresIn"), entry.expiresAt > 0,
+                entry.expiresAt > 0, targetCombos, targetChecks);
+
+        root.add(form, BorderLayout.CENTER);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton bindButton = new JButton("Bind");
+        bindButton.addActionListener(e -> {
+            Map<String, String> selections = new LinkedHashMap<>();
+            selections.put("accessToken", readOAuth2BindTarget(targetCombos.get("accessToken"), "oauth2_access_token"));
+            if (targetChecks.get("refreshToken").isSelected()) {
+                selections.put("refreshToken", readOAuth2BindTarget(targetCombos.get("refreshToken"), "oauth2_refresh_token"));
+            }
+            if (targetChecks.get("tokenType").isSelected()) {
+                selections.put("tokenType", readOAuth2BindTarget(targetCombos.get("tokenType"), "oauth2_token_type"));
+            }
+            if (targetChecks.get("expiresIn").isSelected()) {
+                selections.put("expiresIn", readOAuth2BindTarget(targetCombos.get("expiresIn"), "oauth2_expires_in"));
+            }
+            applyOAuth2TokenBindingSelection(entry, selections);
+            dialog.dispose();
+        });
+        JButton cancelButton = new JButton("Cancel");
+        cancelButton.addActionListener(e -> dialog.dispose());
+        buttons.add(cancelButton);
+        buttons.add(bindButton);
+
+        root.add(buttons, BorderLayout.SOUTH);
+        dialog.setContentPane(root);
+        dialog.setSize(860, 620);
+        dialog.setLocationRelativeTo(mainPanel);
+        dialog.setVisible(true);
+    }
+
+    private void addOAuth2BindRow(JPanel panel,
+                                  GridBagConstraints gbc,
+                                  String label,
+                                  String key,
+                                  List<String> candidates,
+                                  String defaultValue,
+                                  boolean available,
+                                  boolean selected,
+                                  Map<String, JComboBox<String>> targetCombos,
+                                  Map<String, JCheckBox> targetChecks) {
+        JCheckBox checkBox = new JCheckBox("Bind", selected);
+        checkBox.setEnabled(available);
+        targetChecks.put(key, checkBox);
+
+        JComboBox<String> combo = new JComboBox<>();
+        combo.setEditable(true);
+        combo.setPrototypeDisplayValue(defaultValue != null && !defaultValue.isBlank() ? defaultValue : "oauth2_access_token");
+        combo.addItem(defaultValue != null && !defaultValue.isBlank() ? defaultValue : "oauth2_access_token");
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isBlank()) {
+                continue;
+            }
+            if (((DefaultComboBoxModel<String>) combo.getModel()).getIndexOf(candidate) < 0) {
+                combo.addItem(candidate);
+            }
+        }
+        combo.setSelectedItem(defaultValue != null && !defaultValue.isBlank() ? defaultValue : combo.getItemAt(0));
+        combo.setEnabled(available);
+        targetCombos.put(key, combo);
+
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel(label + ":"), gbc);
+
+        gbc.gridx = 1;
+        gbc.weightx = 0;
+        panel.add(checkBox, gbc);
+
+        gbc.gridx = 2;
+        gbc.weightx = 1;
+        panel.add(combo, gbc);
+        gbc.gridy++;
+    }
+
+    private String readOAuth2BindTarget(JComboBox<String> combo, String fallback) {
+        if (combo == null) {
+            return fallback;
+        }
+        Object selected = combo.getEditor() != null ? combo.getEditor().getItem() : combo.getSelectedItem();
+        if (selected == null) {
+            selected = combo.getSelectedItem();
+        }
+        String value = selected != null ? selected.toString().trim() : "";
+        return value.isEmpty() ? fallback : value;
+    }
+
+    private void applyOAuth2TokenBindingSelection(TokenStore.TokenEntry entry, Map<String, String> selectedBindings) {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null || entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
+            return;
+        }
+
+        if (environmentDirty) {
+            commitEnvironmentEditorToSelectedProfile();
+        }
+
+        active.ensureDefaults();
+        active.oauth2.ensureDefaults();
+
+        String accessBinding = selectedBindings != null ? selectedBindings.get("accessToken") : null;
+        if (accessBinding == null || accessBinding.isBlank()) {
+            accessBinding = active.oauth2.outputBindings.get("accessToken");
+        }
+        if (accessBinding == null || accessBinding.isBlank()) {
+            accessBinding = "oauth2_access_token";
+        }
+        active.oauth2.outputBindings.put("accessToken", accessBinding);
+        active.variables.put(accessBinding, entry.accessToken);
+
+        if (selectedBindings != null) {
+            String refreshBinding = selectedBindings.get("refreshToken");
+            if (refreshBinding != null && !refreshBinding.isBlank() && entry.refreshToken != null && !entry.refreshToken.isBlank()) {
+                active.oauth2.outputBindings.put("refreshToken", refreshBinding);
+                active.variables.put(refreshBinding, entry.refreshToken);
+            }
+
+            String tokenTypeBinding = selectedBindings.get("tokenType");
+            if (tokenTypeBinding != null && !tokenTypeBinding.isBlank() && entry.tokenType != null && !entry.tokenType.isBlank()) {
+                active.oauth2.outputBindings.put("tokenType", tokenTypeBinding);
+                active.variables.put(tokenTypeBinding, entry.tokenType);
+            }
+
+            String expiresInBinding = selectedBindings.get("expiresIn");
+            if (expiresInBinding != null && !expiresInBinding.isBlank() && entry.expiresAt > 0) {
+                long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+                active.oauth2.outputBindings.put("expiresIn", expiresInBinding);
+                active.variables.put(expiresInBinding, String.valueOf(expiresInSeconds));
+            }
+        }
+
+        oauth2Panel.setLastAcquiredToken(entry);
         renderSelectedEnvironmentIntoEditor(true);
         syncActiveEnvironmentToEditors();
         updateEnvironmentUiState();
-        setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
-        appendImportLog("OAuth2 token saved to active environment \"" + activeEnvironment.displayName() + "\".");
+        notifyWorkspaceChangedImmediately();
+        setOAuth2AutosaveStatus("OAuth2 token bound to active environment \"" + active.displayName() + "\".", new Color(0, 128, 0));
+        appendImportLog("OAuth2 token bound to active environment \"" + active.displayName() + "\".");
     }
 
     private Map<String, String> filterOAuth2ConfigVars(Map<String, String> oauth2Vars) {
@@ -2975,7 +3008,6 @@ public class ImporterPanel {
 
     private void refreshOAuth2PanelForCollection(ApiCollection col) {
         syncOAuth2PanelFromActiveEnvironment();
-        syncOAuth2BindingUiFromActiveEnvironment();
     }
 
     private void refreshRuntimeViewsForCollection(ApiCollection col) {
@@ -4478,6 +4510,7 @@ public class ImporterPanel {
             environmentCombo.setSelectedIndex(0);
         }
         syncWorkbenchEnvironmentControls();
+        syncOAuth2EnvironmentControls();
     }
 
     private void syncWorkbenchEnvironmentControls() {
@@ -4542,6 +4575,65 @@ public class ImporterPanel {
         setActiveEnvironmentId(nextId);
     }
 
+    private void syncOAuth2EnvironmentControls() {
+        if (oauth2EnvironmentCombo == null) {
+            return;
+        }
+        suppressOAuth2EnvironmentEvents = true;
+        try {
+            EnvironmentProfile active = getActiveEnvironment();
+            String selectedIdBefore = active != null ? active.id : null;
+            Map<String, String> labelsById = buildEnvironmentDisplayLabelsById();
+            oauth2EnvironmentCombo.removeAllItems();
+            oauth2EnvironmentCombo.addItem(new EnvironmentRef(null, "No Environment"));
+            for (EnvironmentProfile profile : environmentProfiles) {
+                if (profile == null) {
+                    continue;
+                }
+                profile.ensureDefaults();
+                profile.ensureId();
+                oauth2EnvironmentCombo.addItem(new EnvironmentRef(profile,
+                        labelsById.getOrDefault(profile.id, profile.displayName())));
+            }
+            if (selectedIdBefore != null && selectOAuth2EnvironmentById(selectedIdBefore)) {
+                // selected active env
+            } else {
+                oauth2EnvironmentCombo.setSelectedIndex(0);
+            }
+        } finally {
+            suppressOAuth2EnvironmentEvents = false;
+        }
+    }
+
+    private boolean selectOAuth2EnvironmentById(String environmentId) {
+        if (oauth2EnvironmentCombo == null) {
+            return false;
+        }
+        for (int i = 0; i < oauth2EnvironmentCombo.getItemCount(); i++) {
+            EnvironmentRef ref = oauth2EnvironmentCombo.getItemAt(i);
+            if (ref != null && ref.environment != null && Objects.equals(ref.environment.id, environmentId)) {
+                oauth2EnvironmentCombo.setSelectedIndex(i);
+                return true;
+            }
+        }
+        if (oauth2EnvironmentCombo.getItemCount() > 0) {
+            oauth2EnvironmentCombo.setSelectedIndex(0);
+        }
+        return false;
+    }
+
+    private void handleOAuth2EnvironmentSelectionChanged() {
+        if (suppressOAuth2EnvironmentEvents || oauth2EnvironmentCombo == null) {
+            return;
+        }
+        EnvironmentRef ref = (EnvironmentRef) oauth2EnvironmentCombo.getSelectedItem();
+        String nextId = ref != null && ref.environment != null ? ref.environment.id : null;
+        if (Objects.equals(activeEnvironmentId, nextId)) {
+            return;
+        }
+        setActiveEnvironmentId(nextId);
+    }
+
     private void syncOAuth2UiState() {
         syncOAuth2UiState(false);
     }
@@ -4552,22 +4644,16 @@ public class ImporterPanel {
         if (oauth2ActiveEnvironmentLabel != null) {
             oauth2ActiveEnvironmentLabel.setText("Active Environment: " + (hasActive ? active.displayName() : "No Environment"));
         }
-        if (oauth2BindingHintLabel != null) {
-            oauth2BindingHintLabel.setText(hasActive
-                    ? "OAuth2 config and token outputs are stored in the active environment."
-                    : "Create or select an Active Environment before configuring OAuth2.");
-            oauth2BindingHintLabel.setForeground(hasActive ? Color.DARK_GRAY : Color.GRAY);
-        }
         if (oauth2StatusLabel != null && !hasActive) {
-            oauth2StatusLabel.setText("Create or select an Active Environment before fetching tokens.");
+            oauth2StatusLabel.setText("Create or select an Active Environment before acquiring tokens.");
             oauth2StatusLabel.setForeground(Color.GRAY);
         }
         if (oauth2Panel != null) {
             oauth2Panel.setEditable(hasActive);
+            oauth2Panel.setBindTokenEnabled(hasActive && oauth2Panel.getLastAcquiredToken() != null);
         }
+        syncOAuth2EnvironmentControls();
         syncOAuth2PanelFromActiveEnvironment(force);
-        setBindingCombosEnabled(hasActive);
-        refreshOAuth2BindingCandidates();
     }
 
     private void syncOAuth2PanelFromActiveEnvironment() {
