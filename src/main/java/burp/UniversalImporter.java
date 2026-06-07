@@ -311,115 +311,25 @@ public class UniversalImporter {
         if (environmentFile == null || target == null) {
             return new EnvLoadResult(0, "Null file or target map");
         }
-        int count = 0;
-        String name = environmentFile.getName().toLowerCase(Locale.ROOT);
         try {
-            if (name.endsWith(".bru")) {
-                return parseBrunoEnvFile(environmentFile, target);
-            }
-            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
-                com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
-                if (obj.has("values") && obj.get("values").isJsonArray()) {
-                    for (com.google.gson.JsonElement v : obj.getAsJsonArray("values")) {
-                        if (!v.isJsonObject()) {
-                            continue;
-                        }
-                        com.google.gson.JsonObject var = v.getAsJsonObject();
-                        String key = getBrunoEnvName(var, "key");
-                        if (key == null) {
-                            continue;
-                        }
-                        target.put(key, getBrunoEnvString(var, "value", ""));
-                        count++;
+            List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(environmentFile);
+            int count = 0;
+            for (EnvironmentProfile profile : profiles) {
+                if (profile == null || profile.variables == null) {
+                    continue;
+                }
+                for (Map.Entry<String, String> entry : profile.variables.entrySet()) {
+                    if (entry.getKey() == null || entry.getKey().isBlank()) {
+                        continue;
                     }
-                } else if (obj.has("variables") && obj.get("variables").isJsonArray()) {
-                    for (com.google.gson.JsonElement v : obj.getAsJsonArray("variables")) {
-                        if (!v.isJsonObject()) {
-                            continue;
-                        }
-                        com.google.gson.JsonObject var = v.getAsJsonObject();
-                        String key = getBrunoEnvName(var, "name");
-                        if (key == null) {
-                            continue;
-                        }
-                        boolean enabled = !var.has("enabled") || var.get("enabled").isJsonNull() || var.get("enabled").getAsBoolean();
-                        if (!enabled) {
-                            continue;
-                        }
-                        target.put(key, getBrunoEnvString(var, "value", ""));
-                        count++;
-                    }
+                    target.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+                    count++;
                 }
-                return new EnvLoadResult(count, null);
-            }
-        } catch (Exception e) {
-            return new EnvLoadResult(0, e.getMessage());
-        }
-    }
-
-    private static EnvLoadResult parseBrunoEnvFile(File environmentFile, Map<String, String> target) {
-        int count = 0;
-        boolean inVars = false;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                if (!inVars) {
-                    if (trimmed.startsWith("vars") && trimmed.contains("{")) {
-                        inVars = true;
-                    }
-                    continue;
-                }
-                if (trimmed.startsWith("}")) {
-                    inVars = false;
-                    continue;
-                }
-                if (trimmed.startsWith("#")) {
-                    continue;
-                }
-                int colonIdx = trimmed.indexOf(':');
-                if (colonIdx <= 0) {
-                    continue;
-                }
-                String key = trimmed.substring(0, colonIdx).trim();
-                if (key.isEmpty()) {
-                    continue;
-                }
-                String value = trimmed.substring(colonIdx + 1);
-                if (value == null) {
-                    value = "";
-                }
-                target.put(key, value.trim());
-                count++;
             }
             return new EnvLoadResult(count, null);
         } catch (Exception e) {
-            return new EnvLoadResult(0, e.getMessage());
+            return new EnvLoadResult(0, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
         }
-    }
-
-    private static String getBrunoEnvName(com.google.gson.JsonObject var, String key) {
-        if (var == null || key == null || !var.has(key) || var.get(key).isJsonNull()) {
-            return null;
-        }
-        if (!var.get(key).isJsonPrimitive()) {
-            return null;
-        }
-        String value = var.get(key).getAsString();
-        return value == null || value.isBlank() ? null : value;
-    }
-
-    private static String getBrunoEnvString(com.google.gson.JsonObject var, String key, String defaultValue) {
-        if (var == null || key == null || !var.has(key) || var.get(key).isJsonNull()) {
-            return defaultValue;
-        }
-        if (!var.get(key).isJsonPrimitive()) {
-            return defaultValue;
-        }
-        return var.get(key).getAsString();
     }
 
     public static class QueuedRequest {

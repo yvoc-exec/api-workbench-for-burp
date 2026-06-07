@@ -73,4 +73,39 @@ class UniversalImporterEnvFileTest {
         assertThat(brunoJsonTarget).containsEntry("blank", "");
         assertThat(brunoJsonTarget).doesNotContainKey("disabled_token");
     }
+
+    @Test
+    void legacyLoadEnvFileIntoMapUsesEnhancedDotEnvParser() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "legacy-env-", ".env").toAbsolutePath().normalize();
+        Files.writeString(file, """
+                BASE_URL=https://api.example.test
+                export TOKEN=abc123
+                QUOTED="hello world"
+                EMPTY=
+                """, StandardCharsets.UTF_8);
+
+        Map<String, String> target = new LinkedHashMap<>();
+        UniversalImporter.EnvLoadResult result = UniversalImporter.loadEnvFileIntoMap(file.toFile(), target);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.loadedCount).isEqualTo(4);
+        assertThat(target)
+                .containsEntry("BASE_URL", "https://api.example.test")
+                .containsEntry("TOKEN", "abc123")
+                .containsEntry("QUOTED", "hello world")
+                .containsEntry("EMPTY", "");
+    }
+
+    @Test
+    void legacyLoadEnvFileIntoMapReturnsErrorForInvalidEnvironmentFile() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "legacy-env-invalid-", ".txt").toAbsolutePath().normalize();
+        Files.writeString(file, "not an environment", StandardCharsets.UTF_8);
+
+        Map<String, String> target = new LinkedHashMap<>();
+        UniversalImporter.EnvLoadResult result = UniversalImporter.loadEnvFileIntoMap(file.toFile(), target);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.loadedCount).isZero();
+        assertThat(target).isEmpty();
+    }
 }
