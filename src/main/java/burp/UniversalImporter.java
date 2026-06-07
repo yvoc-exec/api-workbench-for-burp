@@ -477,9 +477,22 @@ public class UniversalImporter {
             if (!hasRestorableWorkspaceState(state)) {
                 return;
             }
-            lastSavedWorkspaceJson = WorkspaceStateJson.toJson(state);
+            String restoreJson = WorkspaceStateJson.toJson(state);
+            lastSavedWorkspaceJson = restoreJson;
             SwingUtilities.invokeLater(() -> {
                 try {
+                    if (!Objects.equals(lastSavedWorkspaceJson, restoreJson)) {
+                        if (api != null) {
+                            api.logging().logToOutput("Workspace state restore skipped because newer workspace state was saved before restore executed.");
+                        }
+                        return;
+                    }
+                    if (ui.hasUnsavedEnvironmentEditorChanges()) {
+                        if (api != null) {
+                            api.logging().logToOutput("Workspace state restore skipped because the Environment editor has unsaved changes.");
+                        }
+                        return;
+                    }
                     ui.restoreWorkspaceState(state);
                 } catch (Exception e) {
                     logWorkspaceStateError("restore", e);

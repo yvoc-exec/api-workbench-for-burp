@@ -375,6 +375,80 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void queuedWorkspaceRestoreDoesNotOverwriteNewerEnvironmentState() throws Exception {
+        WorkspaceState oldState = new WorkspaceState();
+        EnvironmentProfile oldProfile = new EnvironmentProfile();
+        oldProfile.name = "Old";
+        oldProfile.variables.put("baseUrl", "https://old.example.test");
+        oldProfile.ensureId();
+        oldState.environments = List.of(oldProfile);
+        oldState.activeEnvironmentId = oldProfile.id;
+        String oldJson = WorkspaceStateJson.toJson(oldState);
+
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.when(persistedObject.getString(Mockito.anyString())).thenReturn(oldJson);
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+        ImporterPanel ui = importer.getUI();
+
+        EnvironmentProfile newerProfile = new EnvironmentProfile();
+        newerProfile.name = "New";
+        newerProfile.variables.put("baseUrl", "https://new.example.test");
+        newerProfile.ensureId();
+
+        SwingUtilities.invokeAndWait(() -> {
+            invokeRestoreWorkspaceStateAfterUiRegistration(importer);
+            ui.replaceEnvironmentProfiles(List.of(newerProfile));
+            ui.setActiveEnvironmentId(newerProfile.id);
+            importer.requestWorkspaceStateSaveNow();
+        });
+
+        SwingUtilities.invokeAndWait(() -> { });
+
+        WorkspaceState snapshot = ui.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.activeEnvironmentId).isEqualTo(newerProfile.id);
+        assertThat(snapshot.environments.get(0).variables).containsEntry("baseUrl", "https://new.example.test");
+    }
+
+    @Test
+    void queuedWorkspaceRestoreSkipsWhenEnvironmentEditorDirty() throws Exception {
+        WorkspaceState oldState = new WorkspaceState();
+        EnvironmentProfile oldProfile = new EnvironmentProfile();
+        oldProfile.name = "Old";
+        oldProfile.variables.put("baseUrl", "https://old.example.test");
+        oldProfile.ensureId();
+        oldState.environments = List.of(oldProfile);
+        oldState.activeEnvironmentId = oldProfile.id;
+        String oldJson = WorkspaceStateJson.toJson(oldState);
+
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.when(persistedObject.getString(Mockito.anyString())).thenReturn(oldJson);
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+        ImporterPanel ui = importer.getUI();
+
+        SwingUtilities.invokeAndWait(() -> {
+            invokeRestoreWorkspaceStateAfterUiRegistration(importer);
+            try {
+                JTextArea rawArea = (JTextArea) privateField(ui, "environmentRawArea");
+                rawArea.setText("baseUrl=https://draft.example.test");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        SwingUtilities.invokeAndWait(() -> { });
+
+        JTextArea rawArea = (JTextArea) privateField(ui, "environmentRawArea");
+        assertThat(rawArea.getText()).contains("baseUrl=https://draft.example.test");
+    }
+
+    @Test
     void importerRestoresEnvironmentOnlyWorkspaceStateAfterUiRegistration() throws Exception {
         EnvironmentProfile profile = new EnvironmentProfile();
         profile.name = "Env Only";
@@ -507,6 +581,16 @@ class UniversalImporterWorkspaceSaveTest {
                 }
             }
         });
+    }
+
+    private static void invokeRestoreWorkspaceStateAfterUiRegistration(UniversalImporter importer) {
+        try {
+            Method method = UniversalImporter.class.getDeclaredMethod("restoreWorkspaceStateAfterUiRegistration");
+            method.setAccessible(true);
+            method.invoke(importer);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void awaitWriteCount(AtomicInteger writeCount, int expected) throws Exception {

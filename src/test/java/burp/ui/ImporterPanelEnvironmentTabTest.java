@@ -220,6 +220,29 @@ class ImporterPanelEnvironmentTabTest {
     }
 
     @Test
+    void importedEnvironmentRemainsVisibleAfterPassiveUiRefresh() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("Imported", "https://imported.example.test");
+
+        invokePrivate(panel, "addImportedEnvironmentProfiles",
+                new Class<?>[]{List.class, String.class},
+                List.of(profile),
+                "env.json");
+        drainEdt();
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        assertThat(rawArea.getText()).contains("base_url=https://imported.example.test");
+
+        invokePrivate(panel, "updateEnvironmentUiState");
+        invokePrivate(panel, "syncWorkbenchEnvironmentControls");
+        invokePrivate(panel, "syncOAuth2UiState");
+        invokePrivate(panel, "syncActiveEnvironmentToEditors");
+        drainEdt();
+
+        assertThat(rawArea.getText()).contains("base_url=https://imported.example.test");
+    }
+
+    @Test
     void collectionRuntimeRefreshDoesNotOverwriteEnvironmentRawEditor() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
@@ -276,6 +299,47 @@ class ImporterPanelEnvironmentTabTest {
         assertThat(profile.variables)
                 .containsEntry("base_url", "https://new.example.test")
                 .containsEntry("token", "abc123");
+        assertThat(rawArea.getText()).contains("base_url=https://new.example.test");
+        assertThat(rawArea.getText()).contains("token=abc123");
+    }
+
+    @Test
+    void dirtyEnvironmentEditorIsNotOverwrittenByNonForceRender() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://saved.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        SwingUtilities.invokeAndWait(() -> rawArea.setText("base_url=https://draft.example.test"));
+
+        Method render = ImporterPanel.class.getDeclaredMethod("renderSelectedEnvironmentIntoEditor", boolean.class);
+        render.setAccessible(true);
+        render.invoke(panel, false);
+        drainEdt();
+
+        assertThat(rawArea.getText()).contains("base_url=https://draft.example.test");
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments.get(0).variables).containsEntry("base_url", "https://saved.example.test");
+    }
+
+    @Test
+    void transientNoEnvironmentSelectionDoesNotClearEditorWhenActiveEnvironmentExists() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://active.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        SwingUtilities.invokeAndWait(() -> rawArea.setText("base_url=https://draft.example.test"));
+
+        JComboBox<?> environmentCombo = (JComboBox<?>) privateField(panel, "environmentCombo");
+        SwingUtilities.invokeAndWait(() -> environmentCombo.setSelectedIndex(0));
+        drainEdt();
+
+        JComboBox<?> selectedCombo = (JComboBox<?>) privateField(panel, "environmentCombo");
+        assertThat(selectedCombo.getSelectedItem()).hasToString("UAT");
+        assertThat(rawArea.getText()).contains("base_url=https://draft.example.test");
     }
 
     @Test
