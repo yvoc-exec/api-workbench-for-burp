@@ -251,6 +251,44 @@ class CollectionRunnerTest {
     }
 
     @Test
+    void runnerWithNullPipelineReturnsFailedResultInsteadOfThrowing() throws Exception {
+        CopyOnWriteArrayList<String> debugMessages = new CopyOnWriteArrayList<>();
+        CollectionRunner runner = new CollectionRunner(null);
+        runner.setDelayMs(0);
+        runner.setMaxRetries(2);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onTimeline(RunnerTimelineRow row) { }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onDebug(String message) { debugMessages.add(message); }
+        });
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Null Pipeline Collection";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Request";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.sequenceOrder = 1;
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        runner.runCollections(List.of(collection), List.of(request));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(runner.getResults()).hasSize(1);
+        RunnerResult result = runner.getResults().get(0);
+        assertThat(result.success).isFalse();
+        assertThat(result.errorMessage).contains("Runner pipeline unavailable");
+        assertThat(debugMessages).noneMatch(message -> message.contains("Retrying in"));
+    }
+
+    @Test
     void retriesAreCountedAfterTheFirstAttempt() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CopyOnWriteArrayList<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();
