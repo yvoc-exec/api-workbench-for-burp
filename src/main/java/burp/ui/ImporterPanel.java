@@ -1621,6 +1621,10 @@ public class ImporterPanel {
         return hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
     }
 
+    private Map<String, String> activeEnvironmentOverlayForPreview() {
+        return hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
+    }
+
     public List<EnvironmentProfile> getEnvironmentProfilesSnapshot() {
         List<EnvironmentProfile> copy = new ArrayList<>();
         for (EnvironmentProfile profile : environmentProfiles) {
@@ -1679,7 +1683,7 @@ public class ImporterPanel {
 
     private void syncActiveEnvironmentToEditors() {
         if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
-            Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+            Map<String, String> runtimeOverlay = activeEnvironmentOverlayForPreview();
             requestEditor.setRuntimeVariables(runtimeOverlay != null ? runtimeOverlay : Collections.emptyMap());
         }
     }

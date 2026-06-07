@@ -2,12 +2,14 @@ package burp.ui;
 
 import burp.auth.OAuth2Manager;
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.ui.RequestEditorPanel;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -327,6 +329,31 @@ class ImporterPanelEnvironmentTabTest {
 
         assertThat(uat.variables).containsEntry("base_url", "https://dirty.example.test");
         assertThat(panel.getActiveEnvironmentId()).isEqualTo(prd.id);
+    }
+
+    @Test
+    void syncActiveEnvironmentToEditorsDoesNotCommitDirtyEnvironmentDraft() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT", "https://saved.example.test");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        RequestEditorPanel requestEditor = (RequestEditorPanel) privateField(panel, "requestEditor");
+        SwingUtilities.invokeAndWait(() -> requestEditor.loadRequest(new ApiRequest()));
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        SwingUtilities.invokeAndWait(() -> rawArea.setText("""
+                base_url=https://draft.example.test
+                """));
+
+        invokePrivate(panel, "syncActiveEnvironmentToEditors");
+        drainEdt();
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.environments.get(0).variables)
+                .containsEntry("base_url", "https://saved.example.test")
+                .doesNotContainEntry("base_url", "https://draft.example.test");
     }
 
     @Test
