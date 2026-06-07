@@ -130,6 +130,7 @@ public class ImporterPanel {
     private JRadioButton environmentRawViewBtn;
     private JRadioButton environmentTableViewBtn;
     private boolean environmentDirty = false;
+    private String renderedEnvironmentEditorProfileId = null;
     private boolean suppressEnvironmentEditorEvents = false;
 
     // Legacy scoped variables UI state retained for internal compatibility only.
@@ -1686,6 +1687,10 @@ public class ImporterPanel {
         }
     }
 
+    public boolean hasUnsavedEnvironmentEditorChanges() {
+        return environmentDirty;
+    }
+
     private void applyRuntimeVariableDeltaToActiveEnvironment(ApiCollection collection,
                                                               Map<String, String> changedVars,
                                                               Set<String> removedKeys) {
@@ -1807,7 +1812,7 @@ public class ImporterPanel {
 
         syncOAuth2PanelFromActiveEnvironment();
         syncOAuth2BindingUiFromActiveEnvironment();
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         syncActiveEnvironmentToEditors();
         updateEnvironmentUiState();
         notifyWorkspaceChangedImmediately();
@@ -2259,7 +2264,7 @@ public class ImporterPanel {
         selected.ensureDefaults();
         commitOAuth2BindingUiToActiveEnvironment();
         environmentDirty = false;
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
@@ -2267,8 +2272,33 @@ public class ImporterPanel {
     }
 
     private void renderSelectedEnvironmentIntoEditor() {
+        renderSelectedEnvironmentIntoEditor(false);
+    }
+
+    private void renderSelectedEnvironmentIntoEditor(boolean force) {
         EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        String selectedId = selected != null ? selected.id : null;
+
+        if (!force && environmentDirty && Objects.equals(renderedEnvironmentEditorProfileId, selectedId)) {
+            updateEnvironmentUiState();
+            return;
+        }
+
         if (selected == null) {
+            if (!force && !environmentProfiles.isEmpty() && activeEnvironmentId != null) {
+                EnvironmentProfile active = getActiveEnvironment();
+                if (active != null) {
+                    suppressEnvironmentEditorEvents = true;
+                    try {
+                        selectEnvironmentById(active.id);
+                    } finally {
+                        suppressEnvironmentEditorEvents = false;
+                    }
+                    renderSelectedEnvironmentIntoEditor(false);
+                    return;
+                }
+            }
+
             suppressEnvironmentEditorEvents = true;
             try {
                 if (environmentRawArea != null) {
@@ -2277,6 +2307,7 @@ public class ImporterPanel {
                 if (environmentTableModel != null) {
                     environmentTableModel.setRowCount(0);
                 }
+                renderedEnvironmentEditorProfileId = null;
                 environmentDirty = false;
             } finally {
                 suppressEnvironmentEditorEvents = false;
@@ -2296,6 +2327,7 @@ public class ImporterPanel {
                 }
                 RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
             }
+            renderedEnvironmentEditorProfileId = selected.id;
             environmentDirty = false;
         } finally {
             suppressEnvironmentEditorEvents = false;
@@ -2622,7 +2654,7 @@ public class ImporterPanel {
                     active.variables.put(issue.variableName, value);
                 }
                 active.ensureDefaults();
-                renderSelectedEnvironmentIntoEditor();
+                renderSelectedEnvironmentIntoEditor(true);
                 syncActiveEnvironmentToEditors();
                 updateEnvironmentUiState();
                 notifyWorkspaceChangedImmediately();
@@ -2689,7 +2721,7 @@ public class ImporterPanel {
         commitOAuth2BindingUiToActiveEnvironment();
         storeOAuth2TokenInActiveEnvironment(collection, entry);
         syncOAuth2BindingUiFromActiveEnvironment();
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         syncActiveEnvironmentToEditors();
         updateEnvironmentUiState();
         setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
@@ -3203,6 +3235,7 @@ public class ImporterPanel {
                 restoreRunnerSettings(state);
                 restoreRunnerDetailState(state);
                 syncOAuth2UiState();
+                renderSelectedEnvironmentIntoEditor(true);
                 updateEnvironmentUiState();
                 syncWorkbenchEnvironmentControls();
                 syncActiveEnvironmentToEditors();
@@ -4493,10 +4526,27 @@ public class ImporterPanel {
         if (suppressEnvironmentEditorEvents) {
             return;
         }
+        EnvironmentProfile selected = getSelectedEnvironmentProfile();
+        if (selected == null && !environmentProfiles.isEmpty() && activeEnvironmentId != null) {
+            EnvironmentProfile active = getActiveEnvironment();
+            if (active != null) {
+                suppressEnvironmentEditorEvents = true;
+                try {
+                    selectEnvironmentById(active.id);
+                } finally {
+                    suppressEnvironmentEditorEvents = false;
+                }
+                renderSelectedEnvironmentIntoEditor(false);
+                updateEnvironmentUiState();
+                syncOAuth2UiState();
+                syncActiveEnvironmentToEditors();
+                return;
+            }
+        }
         if (environmentDirty) {
             commitEnvironmentEditorToSelectedProfile();
         }
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncOAuth2UiState();
         syncActiveEnvironmentToEditors();
@@ -4639,7 +4689,7 @@ public class ImporterPanel {
         if (firstImported != null) {
             selectEnvironmentById(firstImported.id);
         }
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
@@ -4684,7 +4734,7 @@ public class ImporterPanel {
         }
         updateEnvironmentComboModel();
         selectEnvironmentById(profile.id);
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
@@ -4706,7 +4756,7 @@ public class ImporterPanel {
         environmentProfiles.add(duplicate);
         updateEnvironmentComboModel();
         selectEnvironmentById(duplicate.id);
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
@@ -4731,7 +4781,7 @@ public class ImporterPanel {
             activeEnvironmentId = null;
         }
         updateEnvironmentComboModel();
-        renderSelectedEnvironmentIntoEditor();
+        renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
