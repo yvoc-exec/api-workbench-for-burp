@@ -140,7 +140,6 @@ public class ImporterPanel {
     private JRadioButton varsRawViewBtn;
     private JRadioButton varsTableViewBtn;
     private JComboBox<CollectionRef> varsCollectionCombo = new JComboBox<>();
-    private JButton bindVarsBtn;
     private JLabel varsHintLabel;
     private JLabel varsAutosaveStatusLabel;
     private boolean suppressVariablesAutosave = false;
@@ -487,7 +486,6 @@ public class ImporterPanel {
             return;
         }
         applyEditedRequestToLiveRequest(col, liveRequest, edited);
-        applyActiveVariablesDraftToCollection(col);
         syncRequestEditorRuntimeContext(liveRequest, col);
         notifyWorkspaceChanged();
 
@@ -5177,10 +5175,6 @@ public class ImporterPanel {
     // ========================================================================
     // Legacy runtime vars compatibility
     // ========================================================================
-    private void scheduleVariablesAutosave() {
-        // Legacy runtime vars now save only through the environment editor.
-    }
-
     void expireVariablesRawEditingForTests() {
         expireVariablesRawEditingSession();
     }
@@ -5215,26 +5209,6 @@ public class ImporterPanel {
             return;
         }
         commitVariablesDraftToCollection(ref.collection, ref.label);
-    }
-
-    private void bindVarsToAllCollections() {
-        if (loadedCollections.isEmpty()) {
-            appendImportLog("Variables: No collections loaded.");
-            return;
-        }
-        int confirm = JOptionPane.showConfirmDialog(mainPanel,
-            "This will overwrite scoped variables in ALL " + loadedCollections.size() + " collection(s) with the current text. Continue?",
-            "Confirm Save to All Environments", JOptionPane.YES_NO_OPTION);
-        if (confirm != JOptionPane.YES_OPTION) return;
-        Map<String, String> vars = parseRuntimeOverrideSection();
-        for (ApiCollection col : loadedCollections) {
-            col.replaceRuntimeVars(vars);
-        }
-        appendImportLog("Variables bound to all " + loadedCollections.size() + " collection(s): " + vars.size() + " var(s).");
-        clearVariablesDirty();
-        syncRequestEditorRuntimeContext(requestEditor != null ? requestEditor.getCurrentRequest() : null,
-                requestEditor != null ? requestEditor.getCurrentCollection() : null);
-        setVarsAutosaveStatus("Saved to all " + loadedCollections.size() + " collection(s).", new Color(0, 128, 0));
     }
 
     private JPanel createDiagnosticsTab() {
@@ -6230,10 +6204,6 @@ public class ImporterPanel {
             runtime.putAll(col.runtimeVars);
         }
         return runtime;
-    }
-
-    private void applyActiveVariablesDraftToCollection(ApiCollection col) {
-        // Legacy no-op. Active Environment owns the primary runtime layer.
     }
 
     private Map<String, String> parseRuntimeOverrideFromRawText() {
