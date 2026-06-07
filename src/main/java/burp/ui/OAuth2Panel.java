@@ -316,6 +316,10 @@ public class OAuth2Panel extends JPanel {
     }
 
     public void populateFromOAuth2Map(Map<String, String> vars) {
+        populateFromOAuth2Map(vars, null);
+    }
+
+    public void populateFromOAuth2Map(Map<String, String> vars, Runnable afterPopulate) {
         SwingUtilities.invokeLater(() -> {
             suppressChangeNotifications = true;
             try {
@@ -372,6 +376,12 @@ public class OAuth2Panel extends JPanel {
                 updateFieldVisibility();
             } finally {
                 suppressChangeNotifications = false;
+                if (afterPopulate != null) {
+                    try {
+                        afterPopulate.run();
+                    } catch (Exception ignored) {
+                    }
+                }
             }
         });
     }

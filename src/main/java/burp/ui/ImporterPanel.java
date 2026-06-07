@@ -173,6 +173,9 @@ public class ImporterPanel {
     private JComboBox<String> oauth2TokenTypeBindingCombo;
     private JComboBox<String> oauth2ExpiresInBindingCombo;
     private JLabel oauth2BindingHintLabel;
+    private boolean oauth2ConfigDirty = false;
+    private String renderedOAuth2ConfigEnvironmentId = null;
+    private boolean oauth2ConfigRefreshPending = false;
     private volatile boolean shuttingDown = false;
 
     // Workspace persistence callback
@@ -198,6 +201,7 @@ public class ImporterPanel {
             this.runner.setRuntimeVariableSink(ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
         }
         this.mainPanel = createUI();
+        this.oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> markOAuth2ConfigDirty());
         if (oauth2Panel.getPopulateButton() != null) {
             oauth2Panel.getPopulateButton().setText("Populate from Request");
             oauth2Panel.getPopulateButton().addActionListener(e -> populateOAuth2FromRequest());
@@ -1615,6 +1619,7 @@ public class ImporterPanel {
     }
 
     private Map<String, String> activeEnvironmentOverlayForRuntimeUse() {
+        commitOAuth2ConfigUiToActiveEnvironment();
         commitOAuth2BindingUiToActiveEnvironment();
         commitDirtyActiveEnvironmentBeforeRuntimeUse();
         return hasActiveEnvironment() ? activeEnvironmentOverlay() : null;
@@ -1654,7 +1659,7 @@ public class ImporterPanel {
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
-        notifyWorkspaceChangedImmediately();
+        notifyWorkspaceChanged();
     }
 
     public String getActiveEnvironmentId() {
@@ -1665,6 +1670,7 @@ public class ImporterPanel {
         if (environmentDirty) {
             commitEnvironmentEditorToSelectedProfile();
         }
+        commitOAuth2ConfigUiToActiveEnvironment();
         activeEnvironmentId = environmentId;
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
@@ -1675,9 +1681,9 @@ public class ImporterPanel {
         }
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
-        syncOAuth2UiState();
+        syncOAuth2UiState(true);
         syncActiveEnvironmentToEditors();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
     }
 
     private void syncActiveEnvironmentToEditors() {
@@ -1747,6 +1753,58 @@ public class ImporterPanel {
         active.oauth2.outputBindings.putAll(readOAuth2OutputBindingsFromUi());
     }
 
+    private Map<String, String> normalizeOAuth2ConfigForComparison(Map<String, String> vars) {
+        Map<String, String> normalized = filterOAuth2ConfigVars(vars);
+        normalized.remove("oauth2_client_auth");
+        return normalized;
+    }
+
+    private void applyOAuth2ConfigToActiveEnvironment(Map<String, String> configVars) {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null) {
+            return;
+        }
+        active.ensureDefaults();
+        String preservedClientAuth = active.oauth2 != null && active.oauth2.config != null
+                ? active.oauth2.config.get("oauth2_client_auth")
+                : null;
+        active.oauth2.config.clear();
+        if (configVars != null && !configVars.isEmpty()) {
+            active.oauth2.config.putAll(configVars);
+        }
+        if (preservedClientAuth != null && !preservedClientAuth.isBlank()) {
+            active.oauth2.config.put("oauth2_client_auth", preservedClientAuth);
+        }
+        active.oauth2.ensureDefaults();
+        oauth2ConfigDirty = false;
+        renderedOAuth2ConfigEnvironmentId = active.id;
+    }
+
+    private void commitOAuth2ConfigUiToActiveEnvironment() {
+        EnvironmentProfile active = getActiveEnvironment();
+        if (active == null || oauth2Panel == null || oauth2ConfigRefreshPending) {
+            return;
+        }
+        applyOAuth2ConfigToActiveEnvironment(filterOAuth2ConfigVars(oauth2Panel.getVariables()));
+    }
+
+    private void markOAuth2ConfigDirty() {
+        if (shuttingDown || oauth2Panel == null || oauth2ConfigRefreshPending) {
+            return;
+        }
+        EnvironmentProfile active = getActiveEnvironment();
+        Map<String, String> current = normalizeOAuth2ConfigForComparison(oauth2Panel.getVariables());
+        Map<String, String> saved = active != null
+                ? normalizeOAuth2ConfigForComparison(active.oauth2 != null ? active.oauth2.config : Collections.emptyMap())
+                : Collections.emptyMap();
+        boolean dirty = active != null ? !saved.equals(current) : !current.isEmpty();
+        oauth2ConfigDirty = dirty;
+        renderedOAuth2ConfigEnvironmentId = active != null ? active.id : null;
+        if (dirty) {
+            setOAuth2AutosaveStatus("OAuth2 settings have unsaved changes.", new Color(150, 90, 0));
+        }
+    }
+
     private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
         EnvironmentProfile active = getActiveEnvironment();
         Map<String, String> stored = new LinkedHashMap<>();
@@ -1794,6 +1852,7 @@ public class ImporterPanel {
             return;
         }
 
+        commitOAuth2ConfigUiToActiveEnvironment();
         active.ensureDefaults();
         Map<String, String> bindings = active.oauth2 != null ? active.oauth2.outputBindings : Collections.emptyMap();
         if (bindings == null || bindings.isEmpty()) {
@@ -1810,12 +1869,12 @@ public class ImporterPanel {
             active.variables.remove(key);
         }
 
-        syncOAuth2PanelFromActiveEnvironment();
+        syncOAuth2PanelFromActiveEnvironment(true);
         syncOAuth2BindingUiFromActiveEnvironment();
         renderSelectedEnvironmentIntoEditor(true);
         syncActiveEnvironmentToEditors();
         updateEnvironmentUiState();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         setOAuth2AutosaveStatus("Cleared OAuth2 token variables from Active Environment \"" + active.displayName() + "\".", Color.GRAY);
     }
 
@@ -2715,9 +2774,7 @@ public class ImporterPanel {
             return;
         }
 
-        activeEnvironment.oauth2.config.clear();
-        activeEnvironment.oauth2.config.putAll(filterOAuth2ConfigVars(oauth2Vars));
-        activeEnvironment.oauth2.ensureDefaults();
+        applyOAuth2ConfigToActiveEnvironment(filterOAuth2ConfigVars(oauth2Vars));
         commitOAuth2BindingUiToActiveEnvironment();
         storeOAuth2TokenInActiveEnvironment(collection, entry);
         syncOAuth2BindingUiFromActiveEnvironment();
@@ -3180,7 +3237,10 @@ public class ImporterPanel {
     }
 
     public WorkspaceState getWorkspaceStateSnapshot() {
-        runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            commitOAuth2ConfigUiToActiveEnvironment();
+            persistCurrentRequestEditorState();
+        });
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
         state.environments = getEnvironmentProfilesSnapshot();
@@ -4483,6 +4543,10 @@ public class ImporterPanel {
     }
 
     private void syncOAuth2UiState() {
+        syncOAuth2UiState(false);
+    }
+
+    private void syncOAuth2UiState(boolean force) {
         EnvironmentProfile active = getActiveEnvironment();
         boolean hasActive = active != null;
         if (oauth2ActiveEnvironmentLabel != null) {
@@ -4501,25 +4565,46 @@ public class ImporterPanel {
         if (oauth2Panel != null) {
             oauth2Panel.setEditable(hasActive);
         }
-        syncOAuth2PanelFromActiveEnvironment();
+        syncOAuth2PanelFromActiveEnvironment(force);
         setBindingCombosEnabled(hasActive);
         refreshOAuth2BindingCandidates();
     }
 
     private void syncOAuth2PanelFromActiveEnvironment() {
+        syncOAuth2PanelFromActiveEnvironment(false);
+    }
+
+    private void syncOAuth2PanelFromActiveEnvironment(boolean force) {
         EnvironmentProfile active = getActiveEnvironment();
         if (oauth2Panel == null) {
             return;
         }
+        String activeId = active != null ? active.id : null;
+        if (!force && oauth2ConfigDirty && Objects.equals(renderedOAuth2ConfigEnvironmentId, activeId)) {
+            return;
+        }
         if (active == null) {
-            oauth2Panel.populateFromOAuth2Map(Collections.emptyMap());
+            if (!force && oauth2ConfigDirty) {
+                return;
+            }
+            oauth2ConfigRefreshPending = true;
+            oauth2Panel.populateFromOAuth2Map(Collections.emptyMap(), () -> {
+                oauth2ConfigRefreshPending = false;
+                renderedOAuth2ConfigEnvironmentId = null;
+                oauth2ConfigDirty = false;
+            });
             return;
         }
         LinkedHashMap<String, String> values = new LinkedHashMap<>();
         if (active.oauth2 != null && active.oauth2.config != null) {
             values.putAll(active.oauth2.config);
         }
-        oauth2Panel.populateFromOAuth2Map(values);
+        oauth2ConfigRefreshPending = true;
+        oauth2Panel.populateFromOAuth2Map(values, () -> {
+            oauth2ConfigRefreshPending = false;
+            renderedOAuth2ConfigEnvironmentId = active.id;
+            oauth2ConfigDirty = false;
+        });
     }
 
     private void handleEnvironmentSelectionChanged() {
@@ -4682,7 +4767,9 @@ public class ImporterPanel {
             profile.ensureId();
             environmentProfiles.add(profile);
         }
-        if (firstImported != null) {
+        boolean activeChanged = firstImported != null;
+        if (activeChanged) {
+            commitOAuth2ConfigUiToActiveEnvironment();
             activeEnvironmentId = firstImported.id;
         }
         updateEnvironmentComboModel();
@@ -4692,9 +4779,9 @@ public class ImporterPanel {
         renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
-        syncOAuth2UiState();
+        syncOAuth2UiState(activeChanged);
         syncActiveEnvironmentToEditors();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Imported " + imported.size() + " environment profile(s) from " + sourceName + ".");
         if (firstImported != null) {
             appendImportLog("Active environment set to imported environment \"" + firstImported.displayName() + "\".");
@@ -4729,7 +4816,8 @@ public class ImporterPanel {
         profile.ensureId();
         profile.ensureDefaults();
         environmentProfiles.add(profile);
-        if (activeEnvironmentId == null) {
+        boolean activeChanged = activeEnvironmentId == null;
+        if (activeChanged) {
             activeEnvironmentId = profile.id;
         }
         updateEnvironmentComboModel();
@@ -4737,9 +4825,9 @@ public class ImporterPanel {
         renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
-        syncOAuth2UiState();
+        syncOAuth2UiState(activeChanged);
         syncActiveEnvironmentToEditors();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Created environment \"" + profile.displayName() + "\".");
     }
 
@@ -4760,7 +4848,7 @@ public class ImporterPanel {
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
         syncOAuth2UiState();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Duplicated environment \"" + selected.displayName() + "\".");
     }
 
@@ -4769,6 +4857,7 @@ public class ImporterPanel {
         if (selected == null) {
             return;
         }
+        boolean activeDeleted = Objects.equals(activeEnvironmentId, selected.id);
         int confirm = JOptionPane.showConfirmDialog(mainPanel,
                 "Delete environment \"" + selected.displayName() + "\"?",
                 "Delete Environment", JOptionPane.YES_NO_OPTION);
@@ -4784,9 +4873,9 @@ public class ImporterPanel {
         renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncWorkbenchEnvironmentControls();
-        syncOAuth2UiState();
+        syncOAuth2UiState(activeDeleted);
         syncActiveEnvironmentToEditors();
-        notifyWorkspaceChangedImmediately();
+        SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Deleted environment \"" + selected.displayName() + "\".");
     }
 
@@ -6070,7 +6159,15 @@ public class ImporterPanel {
 
         Map<String, String> existing = buildOAuth2PopulateExistingVars(owningCollection, req, activeEnvironment);
         Map<String, String> merged = burp.utils.OAuth2PopulateHelper.mergeWithExisting(extracted, existing);
-        oauth2Panel.populateFromOAuth2Map(merged);
+        Map<String, String> configVars = filterOAuth2ConfigVars(merged);
+        applyOAuth2ConfigToActiveEnvironment(configVars);
+        oauth2ConfigRefreshPending = true;
+        oauth2Panel.populateFromOAuth2Map(configVars, () -> {
+            oauth2ConfigRefreshPending = false;
+            renderedOAuth2ConfigEnvironmentId = activeEnvironment.id;
+            oauth2ConfigDirty = false;
+            notifyWorkspaceChangedImmediately();
+        });
 
         String collectionName = owningCollection != null && owningCollection.name != null ? owningCollection.name : "unknown collection";
         appendImportLog("Populate OAuth2: Filled " + extracted.size() + " field(s) from request \"" + req.name
