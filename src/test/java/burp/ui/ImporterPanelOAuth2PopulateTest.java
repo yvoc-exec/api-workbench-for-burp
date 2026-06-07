@@ -136,6 +136,129 @@ class ImporterPanelOAuth2PopulateTest {
     }
 
     @Test
+    void oauth2PopulateFromRequestPersistsConfigToActiveEnvironment() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("Token Request");
+        request.sourceCollection = collection.name;
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("grantType", "client_credentials");
+        request.auth.properties.put("clientId", "client-id-from-request");
+        request.auth.properties.put("clientSecret", "client-secret-from-request");
+        request.auth.properties.put("accessTokenUrl", "https://auth.example.test/token");
+        request.auth.properties.put("scope", "api.read");
+        collection.requests.add(request);
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        invokePrivate(panel, "populateOAuth2FromRequest", new Class<?>[]{ApiRequest.class}, request);
+        drainEdt();
+
+        assertThat(active.oauth2.config)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "client-id-from-request")
+                .containsEntry("oauth2_client_secret", "client-secret-from-request")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token")
+                .containsEntry("oauth2_scope", "api.read");
+
+        Map<String, String> vars = oauth2Panel(panel).getVariables();
+        assertThat(vars)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "client-id-from-request")
+                .containsEntry("oauth2_client_secret", "client-secret-from-request")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token")
+                .containsEntry("oauth2_scope", "api.read");
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        assertThat(snapshot.environments).hasSize(1);
+        assertThat(snapshot.environments.get(0).oauth2.config)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "client-id-from-request")
+                .containsEntry("oauth2_client_secret", "client-secret-from-request")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token")
+                .containsEntry("oauth2_scope", "api.read");
+    }
+
+    @Test
+    void oauth2PopulateFormSurvivesPassiveSync() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("Token Request");
+        request.sourceCollection = collection.name;
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "oauth2";
+        request.auth.properties.put("grantType", "client_credentials");
+        request.auth.properties.put("clientId", "client-id-from-request");
+        request.auth.properties.put("clientSecret", "client-secret-from-request");
+        request.auth.properties.put("accessTokenUrl", "https://auth.example.test/token");
+        request.auth.properties.put("scope", "api.read");
+        collection.requests.add(request);
+
+        panel.restoreWorkspaceCollections(List.of(collection));
+        invokePrivate(panel, "populateOAuth2FromRequest", new Class<?>[]{ApiRequest.class}, request);
+        drainEdt();
+
+        invokePrivate(panel, "syncOAuth2UiState");
+        invokePrivate(panel, "syncWorkbenchEnvironmentControls");
+        invokePrivate(panel, "updateEnvironmentUiState");
+        invokePrivate(panel, "syncActiveEnvironmentToEditors");
+        drainEdt();
+
+        Map<String, String> vars = oauth2Panel(panel).getVariables();
+        assertThat(vars)
+                .containsEntry("oauth2_grant", "client_credentials")
+                .containsEntry("oauth2_client_id", "client-id-from-request")
+                .containsEntry("oauth2_client_secret", "client-secret-from-request")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token")
+                .containsEntry("oauth2_scope", "api.read");
+    }
+
+    @Test
+    void dirtyOAuth2FormIsNotOverwrittenByPassiveSync() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.config.put("oauth2_client_id", "saved-client");
+        active.oauth2.config.put("oauth2_client_secret", "saved-secret");
+        active.oauth2.config.put("oauth2_token_url", "https://saved.example.test/token");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        SwingUtilities.invokeAndWait(() -> {
+            ((JTextField) privateFieldUnchecked(oauth2Panel, "clientIdField")).setText("draft-client");
+            ((JPasswordField) privateFieldUnchecked(oauth2Panel, "clientSecretField")).setText("draft-secret");
+            ((JTextField) privateFieldUnchecked(oauth2Panel, "tokenUrlField")).setText("https://draft.example.test/token");
+        });
+        drainEdt();
+
+        invokePrivate(panel, "syncOAuth2UiState");
+        drainEdt();
+
+        Map<String, String> vars = oauth2Panel(panel).getVariables();
+        assertThat(vars)
+                .containsEntry("oauth2_client_id", "draft-client")
+                .containsEntry("oauth2_client_secret", "draft-secret")
+                .containsEntry("oauth2_token_url", "https://draft.example.test/token");
+        assertThat(active.oauth2.config)
+                .containsEntry("oauth2_client_id", "saved-client")
+                .containsEntry("oauth2_client_secret", "saved-secret")
+                .containsEntry("oauth2_token_url", "https://saved.example.test/token");
+    }
+
+    @Test
     void oauth2PopulateDoesNotMutateEnvironmentUntilTokenFetch() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile active = environment("UAT");
@@ -250,6 +373,37 @@ class ImporterPanelOAuth2PopulateTest {
         assertThat(active.oauth2.outputBindings).containsEntry("accessToken", "access_token");
     }
 
+    @Test
+    void runtimeUseCommitsDirtyOAuth2ConfigBeforeOverlay() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile active = environment("UAT");
+        active.oauth2.config.put("oauth2_client_id", "saved-client");
+        active.oauth2.config.put("oauth2_client_secret", "saved-secret");
+        active.oauth2.config.put("oauth2_token_url", "https://saved.example.test/token");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        SwingUtilities.invokeAndWait(() -> {
+            ((JTextField) privateFieldUnchecked(oauth2Panel, "clientIdField")).setText("draft-client");
+            ((JPasswordField) privateFieldUnchecked(oauth2Panel, "clientSecretField")).setText("draft-secret");
+            ((JTextField) privateFieldUnchecked(oauth2Panel, "tokenUrlField")).setText("https://draft.example.test/token");
+        });
+        drainEdt();
+
+        @SuppressWarnings("unchecked")
+        Map<String, String> overlay = (Map<String, String>) invokePrivateReturning(panel, "activeEnvironmentOverlayForRuntimeUse");
+        assertThat(overlay)
+                .containsEntry("oauth2_client_id", "draft-client")
+                .containsEntry("oauth2_client_secret", "draft-secret")
+                .containsEntry("oauth2_token_url", "https://draft.example.test/token");
+        assertThat(active.oauth2.config)
+                .containsEntry("oauth2_client_id", "draft-client")
+                .containsEntry("oauth2_client_secret", "draft-secret")
+                .containsEntry("oauth2_token_url", "https://draft.example.test/token");
+    }
+
     private ImporterPanel newPanel() throws Exception {
         burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
@@ -333,6 +487,14 @@ class ImporterPanelOAuth2PopulateTest {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.get(target);
+    }
+
+    private static Object privateFieldUnchecked(Object target, String name) {
+        try {
+            return privateField(target, name);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static Object invokePrivateReturning(ImporterPanel panel, String methodName) throws Exception {
