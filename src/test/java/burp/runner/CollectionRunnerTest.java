@@ -251,6 +251,28 @@ class CollectionRunnerTest {
     }
 
     @Test
+    void runnerPreviewTreatsBlankLegacyRuntimeVariablesAsUnresolvedWhenUsed() {
+        CollectionRunner runner = new CollectionRunner(null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        collection.runtimeVars.put("base_url", "");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Legacy Runtime Request";
+        request.method = "GET";
+        request.url = "{{base_url}}/preview";
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).urlPreview).isEqualTo("/preview");
+        assertThat(rows.get(0).unresolvedVariables).containsExactly("base_url");
+    }
+
+    @Test
     void runnerWithNullPipelineReturnsFailedResultInsteadOfThrowing() throws Exception {
         CopyOnWriteArrayList<String> debugMessages = new CopyOnWriteArrayList<>();
         CollectionRunner runner = new CollectionRunner(null);

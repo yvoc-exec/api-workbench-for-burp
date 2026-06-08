@@ -127,6 +127,11 @@ public class VariableResolver {
             }
             if (!variables.containsKey(varName)) {
                 unresolved.add(varName);
+                continue;
+            }
+            String value = variables.get(varName);
+            if (value == null || value.isBlank()) {
+                unresolved.add(varName);
             }
         }
         return unresolved;
