@@ -686,7 +686,7 @@ class ImporterPanelTreeRestoreTest {
         assertThat(isButtonEnabled(panel, "sendToRunnerBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "removeCollectionBtn")).isTrue();
         assertThat(isButtonEnabled(panel, "environmentImportBtn")).isTrue();
-        assertThat(isButtonEnabled(panel, "startRunnerBtn")).isTrue();
+        assertThat(isButtonEnabled(panel, "startRunnerBtn")).isFalse();
         assertThat(isButtonEnabled(panel, "cancelRunnerBtn")).isFalse();
     }
 

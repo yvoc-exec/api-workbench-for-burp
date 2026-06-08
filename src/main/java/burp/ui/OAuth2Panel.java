@@ -162,7 +162,7 @@ public class OAuth2Panel extends JPanel {
         panel.add(btnPanel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
-        autoBindCheck = new JCheckBox("Auto-bind token to Active Environment", true);
+        autoBindCheck = new JCheckBox("Auto-bind token to Active Environment", false);
         panel.add(autoBindCheck, gbc);
 
         return panel;

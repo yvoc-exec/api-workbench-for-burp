@@ -1024,12 +1024,8 @@ public class ImporterPanel {
         actionRow.add(runnerProgress, BorderLayout.WEST);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
-        JButton clearBtn = new JButton("Clear Results");
-        clearBtn.addActionListener(e -> {
-            resultModel.clear();
-            timelineModel.clear();
-            runnerLog.setText("");
-        });
+        JButton clearBtn = new JButton("Clear Runner");
+        clearBtn.addActionListener(e -> clearRunnerFromUi());
         pauseRunnerBtn = new JButton("Pause");
         pauseRunnerBtn.setEnabled(false);
         pauseRunnerBtn.addActionListener(e -> pauseRunnerFromUi());
@@ -3168,7 +3164,7 @@ public class ImporterPanel {
                     appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
                     importBtn.setEnabled(true);
                     sendToRunnerBtn.setEnabled(true);
-                    startRunnerBtn.setEnabled(true);
+                    updateRunnerQueueUiState();
                     removeCollectionBtn.setEnabled(true);
                     updateEnvironmentUiState();
                     notifyWorkspaceChangedImmediately();
@@ -3249,6 +3245,7 @@ public class ImporterPanel {
             removeCollectionBtn.setEnabled(false);
         }
         runnerQueuedRequests.removeIf(req -> requestToCollectionMap.get(req) == null);
+        updateRunnerQueueUiState();
     }
 
     private void registerCollectionRuntimeListener(ApiCollection col) {
@@ -3711,9 +3708,7 @@ public class ImporterPanel {
         if (runner != null) {
             setRunnerControlsRunning(runner.isRunning());
         } else {
-            if (startRunnerBtn != null) {
-                startRunnerBtn.setEnabled(hasCollections);
-            }
+            updateRunnerQueueUiState();
             if (cancelRunnerBtn != null) {
                 cancelRunnerBtn.setEnabled(false);
             }
@@ -5886,6 +5881,8 @@ public class ImporterPanel {
             requestEditor.commitAllEdits();
         }
         if (selected.isEmpty()) {
+            runnerQueuedRequests.clear();
+            updateRunnerQueueUiState();
             appendImportLog("No requests selected to run.");
             return;
         }
@@ -5893,6 +5890,7 @@ public class ImporterPanel {
         runnerQueuedRequests.addAll(selected);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
+        updateRunnerQueueUiState();
     }
 
     private void switchToTabByName(String name) {
@@ -5911,6 +5909,7 @@ public class ImporterPanel {
         List<ApiRequest> selected = new ArrayList<>(runnerQueuedRequests);
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests queued. Use Workbench > Actions > Run Checked first.");
+            updateRunnerQueueUiState();
             return;
         }
 
@@ -5932,10 +5931,17 @@ public class ImporterPanel {
         }
 
         if (showPreviewDialog || hasRunnerPreviewWarnings(previewRows)) {
-            if (!showRunnerPreviewDialog(previewRows, showPreviewDialog)) {
+            if (!showRunnerPreviewDialog(selected, previewRows, showPreviewDialog)) {
                 appendRunnerLog("Runner preview cancelled.");
+                updateRunnerQueueUiState();
                 return;
             }
+        }
+
+        if (selected.isEmpty()) {
+            appendRunnerLog("Runner queue is empty.");
+            updateRunnerQueueUiState();
+            return;
         }
 
         startRunnerExecution(selected);
@@ -5962,7 +5968,6 @@ public class ImporterPanel {
                     appendRunnerLog("Starting runner (" + total + " requests from " +
                         loadedCollections.size() + " collection(s))");
                     setRunnerControlsRunning(true);
-                    startRunnerBtn.setEnabled(false);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
                 });
@@ -5992,7 +5997,6 @@ public class ImporterPanel {
                     appendRunnerLog("Success: " + success + "/" + results.size());
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
                     setRunnerControlsRunning(false);
-                    startRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -6003,7 +6007,6 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
                     setRunnerControlsRunning(false);
-                    startRunnerBtn.setEnabled(true);
                     cancelRunnerBtn.setEnabled(false);
                 });
             }
@@ -6026,10 +6029,9 @@ public class ImporterPanel {
     }
 
     private void setRunnerControlsRunning(boolean running) {
-        boolean hasCollections = !loadedCollections.isEmpty();
         boolean paused = running && runner != null && runner.isPaused();
         if (startRunnerBtn != null) {
-            startRunnerBtn.setEnabled(!running && hasCollections);
+            startRunnerBtn.setEnabled(!running && !runnerQueuedRequests.isEmpty());
         }
         if (cancelRunnerBtn != null) {
             cancelRunnerBtn.setEnabled(running);
@@ -6090,10 +6092,6 @@ public class ImporterPanel {
 
     private void restoreRunnerControlsAfterCancellation() {
         setRunnerControlsRunning(false);
-        boolean hasCollections = !loadedCollections.isEmpty();
-        if (startRunnerBtn != null) {
-            startRunnerBtn.setEnabled(hasCollections);
-        }
     }
 
     private boolean hasRunnerPreviewWarnings(List<RunnerPreviewRow> previewRows) {
@@ -6108,7 +6106,84 @@ public class ImporterPanel {
         return false;
     }
 
-    private boolean showRunnerPreviewDialog(List<RunnerPreviewRow> previewRows, boolean previewRequested) {
+    private void clearRunnerFromUi() {
+        if (runner != null && runner.isRunning()) {
+            appendRunnerLog("Runner is running. Cancel it before clearing the queue.");
+            return;
+        }
+
+        if (resultModel != null) {
+            resultModel.clear();
+        }
+        if (timelineModel != null) {
+            timelineModel.clear();
+        }
+        if (runnerLog != null) {
+            runnerLog.setText("");
+        }
+        runnerQueuedRequests.clear();
+        if (runnerProgress != null) {
+            runnerProgress.setValue(0);
+        }
+        updateRunnerDetailPane(null);
+        setRunnerControlsRunning(false);
+    }
+
+    private void updateRunnerQueueUiState() {
+        boolean hasQueue = !runnerQueuedRequests.isEmpty();
+        boolean running = runner != null && runner.isRunning();
+        if (startRunnerBtn != null) {
+            startRunnerBtn.setEnabled(!running && hasQueue);
+        }
+    }
+
+    static void clearRunnerPreviewQueue(List<ApiRequest> selectedRequests,
+                                        List<RunnerPreviewRow> previewRows,
+                                        List<ApiRequest> queuedRequests) {
+        if (selectedRequests != null) {
+            selectedRequests.clear();
+        }
+        if (previewRows != null) {
+            previewRows.clear();
+        }
+        if (queuedRequests != null) {
+            queuedRequests.clear();
+        }
+    }
+
+    static void removeRunnerPreviewRows(List<ApiRequest> selectedRequests,
+                                        List<RunnerPreviewRow> previewRows,
+                                        List<ApiRequest> queuedRequests,
+                                        int... modelRows) {
+        if (selectedRequests == null || previewRows == null || modelRows == null || modelRows.length == 0) {
+            if (queuedRequests != null) {
+                queuedRequests.clear();
+                if (selectedRequests != null) {
+                    queuedRequests.addAll(selectedRequests);
+                }
+            }
+            return;
+        }
+
+        java.util.Set<Integer> indexes = new java.util.TreeSet<>(java.util.Collections.reverseOrder());
+        for (int index : modelRows) {
+            if (index >= 0 && index < selectedRequests.size() && index < previewRows.size()) {
+                indexes.add(index);
+            }
+        }
+        for (int index : indexes) {
+            selectedRequests.remove(index);
+            previewRows.remove(index);
+        }
+        if (queuedRequests != null) {
+            queuedRequests.clear();
+            queuedRequests.addAll(selectedRequests);
+        }
+    }
+
+    private boolean showRunnerPreviewDialog(List<ApiRequest> selectedRequests,
+                                            List<RunnerPreviewRow> previewRows,
+                                            boolean previewRequested) {
         if (previewRows == null || previewRows.isEmpty()) {
             return true;
         }
@@ -6116,12 +6191,14 @@ public class ImporterPanel {
         if (runnerPreviewModel == null) {
             runnerPreviewModel = new RunnerPreviewTableModel();
         }
-        runnerPreviewModel.setRows(previewRows);
+        List<ApiRequest> workingSelectedRequests = selectedRequests != null ? selectedRequests : new ArrayList<>();
+        List<RunnerPreviewRow> workingPreviewRows = new ArrayList<>(previewRows);
+        runnerPreviewModel.setRows(workingPreviewRows);
 
         JTable previewTable = new JTable(runnerPreviewModel);
         previewTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         previewTable.setFillsViewportHeight(true);
-        previewTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        previewTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         JScrollPane previewScroll = new JScrollPane(previewTable);
         previewScroll.setPreferredSize(new Dimension(900, 280));
 
@@ -6155,17 +6232,61 @@ public class ImporterPanel {
         content.add(previewScroll, BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton clearBtn = new JButton("Clear");
+        JButton removeBtn = new JButton("Remove Selected");
         JButton continueBtn = new JButton("Start Runner");
         JButton cancelBtn = new JButton("Cancel");
         final boolean[] accepted = {false};
+        Runnable refreshButtons = () -> {
+            boolean hasRows = !workingSelectedRequests.isEmpty();
+            boolean hasSelection = previewTable.getSelectedRowCount() > 0;
+            continueBtn.setEnabled(hasRows);
+            removeBtn.setEnabled(hasSelection && hasRows);
+            clearBtn.setEnabled(hasRows);
+        };
+        previewTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                refreshButtons.run();
+            }
+        });
+        clearBtn.addActionListener(e -> {
+            clearRunnerPreviewQueue(workingSelectedRequests, workingPreviewRows, runnerQueuedRequests);
+            runnerPreviewModel.setRows(Collections.emptyList());
+            updateRunnerQueueUiState();
+            appendRunnerLog("Runner queue cleared from preview.");
+            dialog.dispose();
+        });
+        removeBtn.addActionListener(e -> {
+            int[] viewRows = previewTable.getSelectedRows();
+            if (viewRows == null || viewRows.length == 0) {
+                return;
+            }
+            int[] modelRows = new int[viewRows.length];
+            for (int i = 0; i < viewRows.length; i++) {
+                modelRows[i] = previewTable.convertRowIndexToModel(viewRows[i]);
+            }
+            removeRunnerPreviewRows(workingSelectedRequests, workingPreviewRows, runnerQueuedRequests, modelRows);
+            runnerPreviewModel.setRows(workingPreviewRows);
+            previewTable.clearSelection();
+            updateRunnerQueueUiState();
+            refreshButtons.run();
+        });
         continueBtn.addActionListener(e -> {
+            if (workingSelectedRequests.isEmpty()) {
+                appendRunnerLog("No requests queued.");
+                refreshButtons.run();
+                return;
+            }
             accepted[0] = true;
             dialog.dispose();
         });
         cancelBtn.addActionListener(e -> dialog.dispose());
+        buttonPanel.add(clearBtn);
+        buttonPanel.add(removeBtn);
         buttonPanel.add(cancelBtn);
         buttonPanel.add(continueBtn);
         content.add(buttonPanel, BorderLayout.SOUTH);
+        refreshButtons.run();
 
         dialog.setContentPane(content);
         dialog.pack();
@@ -6493,8 +6614,20 @@ public class ImporterPanel {
 
     private void updateRunnerDetailPane(RunnerResult r) {
         if (r == null) {
-            if (detailRequestEditor != null) detailRequestEditor.setRequest(HttpRequest.httpRequest());
-            if (detailResponseEditor != null) detailResponseEditor.setResponse(HttpResponse.httpResponse());
+            if (detailRequestEditor != null) {
+                try {
+                    detailRequestEditor.setRequest(HttpRequest.httpRequest());
+                } catch (RuntimeException ignored) {
+                    // Tests may construct the panel without a Montoya object factory.
+                }
+            }
+            if (detailResponseEditor != null) {
+                try {
+                    detailResponseEditor.setResponse(HttpResponse.httpResponse());
+                } catch (RuntimeException ignored) {
+                    // Tests may construct the panel without a Montoya object factory.
+                }
+            }
             detailVarsText.setText("");
             return;
         }
@@ -6537,8 +6670,10 @@ public class ImporterPanel {
         } else {
             vars.append("No variables extracted.");
         }
-        detailVarsText.setText(vars.toString());
-        detailVarsText.setCaretPosition(0);
+        if (detailVarsText != null) {
+            detailVarsText.setText(vars.toString());
+            detailVarsText.setCaretPosition(0);
+        }
     }
 
     public JPanel getPanel() { return mainPanel; }

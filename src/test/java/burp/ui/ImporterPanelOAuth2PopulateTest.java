@@ -117,6 +117,21 @@ class ImporterPanelOAuth2PopulateTest {
     }
 
     @Test
+    void oauth2AutoBindDefaultsUnchecked() throws Exception {
+        ImporterPanel panel = newPanel();
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+
+        assertThat(oauth2Panel.getAutoBindCheckBox().isSelected()).isFalse();
+
+        EnvironmentProfile active = environment("UAT");
+        panel.replaceEnvironmentProfiles(List.of(active));
+        panel.setActiveEnvironmentId(active.id);
+        drainEdt();
+
+        assertThat(oauth2Panel.getAutoBindCheckBox().isSelected()).isFalse();
+    }
+
+    @Test
     void oauth2ActiveEnvironmentDropdownSyncsWithWorkbench() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile uat = environment("UAT");
