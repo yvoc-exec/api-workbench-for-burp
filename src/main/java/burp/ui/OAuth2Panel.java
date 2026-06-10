@@ -17,14 +17,11 @@ public class OAuth2Panel extends JPanel {
     public interface VariablesChangeListener {
         void onVariablesChanged(Map<String, String> vars, boolean replaceMode);
     }
-    public interface AutoRefreshToggleListener {
-        void onToggleRequested();
-    }
-    public interface AutoRefreshIntervalListener {
-        void onIntervalChanged(int seconds);
-    }
     public interface TokenAcquiredListener {
         void onTokenAcquired(TokenStore.TokenEntry entry, ApiCollection collection, Map<String, String> oauth2Vars);
+    }
+    public interface ClearTokensListener {
+        void onClearTokensRequested();
     }
 
     private final OAuth2Manager manager;
@@ -39,21 +36,19 @@ public class OAuth2Panel extends JPanel {
     private JTextField scopeField;
     private JCheckBox pkceBox;
     private JButton acquireBtn;
-    private JButton refreshBtn;
+    private JButton bindBtn;
     private JButton clearBtn;
     private JButton populateBtn;
-    private JSpinner autoRefreshIntervalSpinner;
+    private JCheckBox autoBindCheck;
     private JTextArea statusArea;
     private JTextField tokenPreviewField;
     private boolean editable = true;
     private boolean suppressChangeNotifications = false;
+    private TokenStore.TokenEntry lastAcquiredToken;
     private VariablesChangeListener variablesChangeListener;
-    private AutoRefreshToggleListener autoRefreshToggleListener;
-    private AutoRefreshIntervalListener autoRefreshIntervalListener;
     private TokenAcquiredListener tokenAcquiredListener;
+    private ClearTokensListener clearTokensListener;
     private Supplier<ApiCollection> tokenAcquiredCollectionSupplier;
-    private Color defaultRefreshBg;
-    private Color defaultRefreshFg;
 
     public OAuth2Panel(OAuth2Manager manager) {
         this.manager = manager;
@@ -139,44 +134,36 @@ public class OAuth2Panel extends JPanel {
         // Buttons
         gbc.gridx = 0; gbc.gridy = 10; gbc.gridwidth = 2;
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        populateBtn = new JButton("Populate from Request");
+        btnPanel.add(populateBtn);
+
         acquireBtn = new JButton("Acquire Token");
         acquireBtn.addActionListener(e -> acquireToken());
-        refreshBtn = new JButton("Start Auto Refresh");
-        refreshBtn.addActionListener(e -> {
-            if (autoRefreshToggleListener != null) {
-                autoRefreshToggleListener.onToggleRequested();
-            }
-        });
-        defaultRefreshBg = refreshBtn.getBackground();
-        defaultRefreshFg = refreshBtn.getForeground();
+        btnPanel.add(acquireBtn);
+
+        bindBtn = new JButton("Bind Token");
+        bindBtn.setEnabled(false);
+        btnPanel.add(bindBtn);
+
         clearBtn = new JButton("Clear Tokens");
         clearBtn.addActionListener(e -> {
             manager.clearTokens();
             updateStatus("Tokens cleared");
-            refreshBtn.setEnabled(false);
             tokenPreviewField.setText("");
+            lastAcquiredToken = null;
+            bindBtn.setEnabled(false);
+            if (clearTokensListener != null) {
+                clearTokensListener.onClearTokensRequested();
+            }
             notifyVariablesChanged(true);
         });
-        btnPanel.add(acquireBtn);
-        btnPanel.add(refreshBtn);
         btnPanel.add(clearBtn);
-        populateBtn = new JButton("Populate from Checked Request");
-        btnPanel.add(populateBtn);
         gbc.gridy = 11;
         panel.add(btnPanel, gbc);
 
-        gbc.gridy = 10; gbc.gridwidth = 2;
-        JPanel autoPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        autoPanel.add(new JLabel("Interval (seconds):"));
-        autoRefreshIntervalSpinner = new JSpinner(new SpinnerNumberModel(300, 30, 86400, 10));
-        autoRefreshIntervalSpinner.setPreferredSize(new Dimension(90, 24));
-        autoRefreshIntervalSpinner.addChangeListener(e -> {
-            if (autoRefreshIntervalListener != null) {
-                autoRefreshIntervalListener.onIntervalChanged(getAutoRefreshIntervalSeconds());
-            }
-        });
-        autoPanel.add(autoRefreshIntervalSpinner);
-        panel.add(autoPanel, gbc);
+        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
+        autoBindCheck = new JCheckBox("Auto-bind token to Active Environment", false);
+        panel.add(autoBindCheck, gbc);
 
         return panel;
     }
@@ -210,10 +197,10 @@ public class OAuth2Panel extends JPanel {
         scopeField.setEnabled(editable);
         pkceBox.setEnabled(editable);
         acquireBtn.setEnabled(editable);
-        refreshBtn.setEnabled(editable);
+        bindBtn.setEnabled(editable && lastAcquiredToken != null);
         clearBtn.setEnabled(editable);
         populateBtn.setEnabled(editable);
-        autoRefreshIntervalSpinner.setEnabled(editable);
+        autoBindCheck.setEnabled(editable);
         if (editable) {
             updateFieldVisibility();
         }
@@ -224,8 +211,6 @@ public class OAuth2Panel extends JPanel {
         String grant = (String) grantTypeBox.getSelectedItem();
         boolean isAuthCode = "Authorization Code".equals(grant);
         boolean isPassword = "Password".equals(grant);
-        boolean isRefresh = "Refresh Token".equals(grant);
-
         authUrlField.setEnabled(isAuthCode);
         redirectUriField.setEnabled(isAuthCode);
         pkceBox.setEnabled(isAuthCode);
@@ -260,6 +245,7 @@ public class OAuth2Panel extends JPanel {
             return;
         }
         ApiCollection targetCollection = tokenAcquiredCollectionSupplier != null ? tokenAcquiredCollectionSupplier.get() : null;
+        appendRequestSummary(config);
 
         SwingWorker<TokenStore.TokenEntry, String> worker = new SwingWorker<>() {
             @Override
@@ -277,14 +263,14 @@ public class OAuth2Panel extends JPanel {
             protected void done() {
                 try {
                     TokenStore.TokenEntry entry = get();
+                    lastAcquiredToken = entry;
+                    bindBtn.setEnabled(editable && entry != null && entry.accessToken != null && !entry.accessToken.isBlank());
                     if (entry.accessToken == null || entry.accessToken.isBlank()) {
                         updateStatus("FAILED: Token acquisition returned no access token.");
                         return;
                     }
-                    String preview = entry.accessToken.substring(0, Math.min(20, entry.accessToken.length())) + "...";
-                    tokenPreviewField.setText("Access Token: " + preview + " | Expires: " + ((entry.expiresAt - System.currentTimeMillis()) / 1000) + "s");
-                    refreshBtn.setEnabled(entry.refreshToken != null);
-                    updateStatus("SUCCESS: Token acquired. Refresh token available: " + (entry.refreshToken != null));
+                    tokenPreviewField.setText(entry.accessToken);
+                    appendResponseSummary(entry);
                     Map<String, String> vars = getVariables();
                     vars.put("oauth2_access_token", entry.accessToken);
                     if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
@@ -311,44 +297,45 @@ public class OAuth2Panel extends JPanel {
         worker.execute();
     }
 
-    public int getAutoRefreshIntervalSeconds() {
-        Object v = autoRefreshIntervalSpinner.getValue();
-        return v instanceof Integer ? (Integer) v : 300;
-    }
-
-    public void setAutoRefreshIntervalSeconds(int seconds) {
-        int clamped = Math.max(30, seconds);
-        autoRefreshIntervalSpinner.setValue(clamped);
-    }
-
-    public void setAutoRefreshActive(boolean active) {
-        if (active) {
-            refreshBtn.setText("Stop Auto Refresh");
-            refreshBtn.setBackground(new Color(46, 125, 50));
-            refreshBtn.setForeground(Color.WHITE);
-            refreshBtn.setOpaque(true);
-        } else {
-            refreshBtn.setText("Start Auto Refresh");
-            refreshBtn.setBackground(defaultRefreshBg);
-            refreshBtn.setForeground(defaultRefreshFg);
-            refreshBtn.setOpaque(true);
-        }
-    }
-
-    public void setAutoRefreshToggleListener(AutoRefreshToggleListener listener) {
-        this.autoRefreshToggleListener = listener;
-    }
-
-    public void setAutoRefreshIntervalListener(AutoRefreshIntervalListener listener) {
-        this.autoRefreshIntervalListener = listener;
-    }
-
     public void setTokenAcquiredListener(TokenAcquiredListener listener) {
         this.tokenAcquiredListener = listener;
     }
 
     public void setTokenAcquiredCollectionSupplier(Supplier<ApiCollection> supplier) {
         this.tokenAcquiredCollectionSupplier = supplier;
+    }
+
+    public TokenStore.TokenEntry getLastAcquiredToken() {
+        return lastAcquiredToken;
+    }
+
+    public void setLastAcquiredToken(TokenStore.TokenEntry entry) {
+        this.lastAcquiredToken = entry;
+        if (bindBtn != null) {
+            bindBtn.setEnabled(editable && entry != null && entry.accessToken != null && !entry.accessToken.isBlank());
+        }
+    }
+
+    public JButton getBindTokenButton() {
+        return bindBtn;
+    }
+
+    public JCheckBox getAutoBindCheckBox() {
+        return autoBindCheck;
+    }
+
+    public boolean isAutoBindSelected() {
+        return autoBindCheck != null && autoBindCheck.isSelected();
+    }
+
+    public void setBindTokenEnabled(boolean enabled) {
+        if (bindBtn != null) {
+            bindBtn.setEnabled(editable && enabled && lastAcquiredToken != null && lastAcquiredToken.accessToken != null && !lastAcquiredToken.accessToken.isBlank());
+        }
+    }
+
+    public void setClearTokensListener(ClearTokensListener listener) {
+        this.clearTokensListener = listener;
     }
 
     private OAuth2Config buildConfig() {
@@ -377,10 +364,29 @@ public class OAuth2Panel extends JPanel {
     }
 
     public void populateFromOAuth2Map(Map<String, String> vars) {
+        populateFromOAuth2Map(vars, null);
+    }
+
+    public void populateFromOAuth2Map(Map<String, String> vars, Runnable afterPopulate) {
         SwingUtilities.invokeLater(() -> {
-            if (vars == null) return;
             suppressChangeNotifications = true;
             try {
+                grantTypeBox.setSelectedItem("Client Credentials");
+                tokenUrlField.setText("");
+                authUrlField.setText("");
+                redirectUriField.setText("");
+                clientIdField.setText("");
+                clientSecretField.setText("");
+                usernameField.setText("");
+                passwordField.setText("");
+                scopeField.setText("");
+                pkceBox.setSelected(true);
+                tokenPreviewField.setText("");
+
+                if (vars == null) {
+                    updateFieldVisibility();
+                    return;
+                }
                 String grant = vars.get("oauth2_grant");
                 if (grant != null) {
                     switch (grant.toLowerCase()) {
@@ -414,12 +420,16 @@ public class OAuth2Panel extends JPanel {
                     if (t != null && !t.isEmpty()) {
                         tokenPreviewField.setText("Access Token: " + t.substring(0, Math.min(20, t.length())) + "...");
                     }
-                } else {
-                    tokenPreviewField.setText("");
                 }
                 updateFieldVisibility();
             } finally {
                 suppressChangeNotifications = false;
+                if (afterPopulate != null) {
+                    try {
+                        afterPopulate.run();
+                    } catch (Exception ignored) {
+                    }
+                }
             }
         });
     }
@@ -437,6 +447,43 @@ public class OAuth2Panel extends JPanel {
         try {
             variablesChangeListener.onVariablesChanged(getVariables(), replaceMode);
         } catch (Exception ignored) {}
+    }
+
+    private void appendRequestSummary(OAuth2Config config) {
+        if (config == null) {
+            return;
+        }
+        updateStatus("OAuth2 Request:");
+        updateStatus("  Grant: " + config.grantType);
+        updateStatus("  Token URL: " + safe(config.tokenUrl));
+        updateStatus("  Auth URL: " + safe(config.authUrl));
+        updateStatus("  Client ID: " + safe(config.clientId));
+        updateStatus("  Scope: " + safe(config.scope));
+        updateStatus("  PKCE: " + config.usePkce);
+    }
+
+    private void appendResponseSummary(TokenStore.TokenEntry entry) {
+        if (entry == null) {
+            updateStatus("OAuth2 Response:");
+            updateStatus("  Token acquired: no");
+            return;
+        }
+        updateStatus("OAuth2 Response:");
+        updateStatus("  Token acquired: yes");
+        updateStatus("  Access Token: " + safe(entry.accessToken));
+        updateStatus("  Refresh Token: " + safe(entry.refreshToken));
+        updateStatus("  Token Type: " + safe(entry.tokenType));
+        if (entry.expiresAt > 0) {
+            long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
+            updateStatus("  Expires In: " + expiresInSeconds + "s");
+        }
+        if (entry.scope != null && !entry.scope.isBlank()) {
+            updateStatus("  Scope: " + entry.scope);
+        }
+    }
+
+    private static String safe(String value) {
+        return value != null ? value : "";
     }
 
     public Map<String, String> getVariables() {

@@ -116,6 +116,16 @@ public class UniversalImporter {
      */
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
                                           int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
+        importRequestsSequential(queue, destinations, delayMs, null, null, null, logCallback, resultCallback);
+    }
+
+    public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
+                                         int delayMs,
+                                         Map<String, String> runtimeOverlay,
+                                         SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+                                         SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+                                         LogCallback logCallback,
+                                         ResultCallback resultCallback) {
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected ImportResult doInBackground() throws Exception {
@@ -131,7 +141,7 @@ public class UniversalImporter {
                             resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.collection, qr.request, destination, delayMs, logCallback, colSources);
+                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("[OK] " + qr.request.name);
@@ -184,7 +194,26 @@ public class UniversalImporter {
      */
     public SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, null, null, null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) throws Exception {
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
@@ -282,115 +311,25 @@ public class UniversalImporter {
         if (environmentFile == null || target == null) {
             return new EnvLoadResult(0, "Null file or target map");
         }
-        int count = 0;
-        String name = environmentFile.getName().toLowerCase(Locale.ROOT);
         try {
-            if (name.endsWith(".bru")) {
-                return parseBrunoEnvFile(environmentFile, target);
-            }
-            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8)) {
-                com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
-                if (obj.has("values") && obj.get("values").isJsonArray()) {
-                    for (com.google.gson.JsonElement v : obj.getAsJsonArray("values")) {
-                        if (!v.isJsonObject()) {
-                            continue;
-                        }
-                        com.google.gson.JsonObject var = v.getAsJsonObject();
-                        String key = getBrunoEnvName(var, "key");
-                        if (key == null) {
-                            continue;
-                        }
-                        target.put(key, getBrunoEnvString(var, "value", ""));
-                        count++;
+            List<EnvironmentProfile> profiles = EnvironmentImportService.importEnvironment(environmentFile);
+            int count = 0;
+            for (EnvironmentProfile profile : profiles) {
+                if (profile == null || profile.variables == null) {
+                    continue;
+                }
+                for (Map.Entry<String, String> entry : profile.variables.entrySet()) {
+                    if (entry.getKey() == null || entry.getKey().isBlank()) {
+                        continue;
                     }
-                } else if (obj.has("variables") && obj.get("variables").isJsonArray()) {
-                    for (com.google.gson.JsonElement v : obj.getAsJsonArray("variables")) {
-                        if (!v.isJsonObject()) {
-                            continue;
-                        }
-                        com.google.gson.JsonObject var = v.getAsJsonObject();
-                        String key = getBrunoEnvName(var, "name");
-                        if (key == null) {
-                            continue;
-                        }
-                        boolean enabled = !var.has("enabled") || var.get("enabled").isJsonNull() || var.get("enabled").getAsBoolean();
-                        if (!enabled) {
-                            continue;
-                        }
-                        target.put(key, getBrunoEnvString(var, "value", ""));
-                        count++;
-                    }
+                    target.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+                    count++;
                 }
-                return new EnvLoadResult(count, null);
-            }
-        } catch (Exception e) {
-            return new EnvLoadResult(0, e.getMessage());
-        }
-    }
-
-    private static EnvLoadResult parseBrunoEnvFile(File environmentFile, Map<String, String> target) {
-        int count = 0;
-        boolean inVars = false;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(environmentFile), java.nio.charset.StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                if (!inVars) {
-                    if (trimmed.startsWith("vars") && trimmed.contains("{")) {
-                        inVars = true;
-                    }
-                    continue;
-                }
-                if (trimmed.startsWith("}")) {
-                    inVars = false;
-                    continue;
-                }
-                if (trimmed.startsWith("#")) {
-                    continue;
-                }
-                int colonIdx = trimmed.indexOf(':');
-                if (colonIdx <= 0) {
-                    continue;
-                }
-                String key = trimmed.substring(0, colonIdx).trim();
-                if (key.isEmpty()) {
-                    continue;
-                }
-                String value = trimmed.substring(colonIdx + 1);
-                if (value == null) {
-                    value = "";
-                }
-                target.put(key, value.trim());
-                count++;
             }
             return new EnvLoadResult(count, null);
         } catch (Exception e) {
-            return new EnvLoadResult(0, e.getMessage());
+            return new EnvLoadResult(0, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
         }
-    }
-
-    private static String getBrunoEnvName(com.google.gson.JsonObject var, String key) {
-        if (var == null || key == null || !var.has(key) || var.get(key).isJsonNull()) {
-            return null;
-        }
-        if (!var.get(key).isJsonPrimitive()) {
-            return null;
-        }
-        String value = var.get(key).getAsString();
-        return value == null || value.isBlank() ? null : value;
-    }
-
-    private static String getBrunoEnvString(com.google.gson.JsonObject var, String key, String defaultValue) {
-        if (var == null || key == null || !var.has(key) || var.get(key).isJsonNull()) {
-            return defaultValue;
-        }
-        if (!var.get(key).isJsonPrimitive()) {
-            return defaultValue;
-        }
-        return var.get(key).getAsString();
     }
 
     public static class QueuedRequest {
@@ -403,13 +342,20 @@ public class UniversalImporter {
     }
 
     private void processRequest(ApiCollection collection, ApiRequest req, String destination, int delayMs,
+                                Map<String, String> runtimeOverlay,
+                                SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+                                SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
                                 LogCallback logCallback,
                                 Map<String, String> colSources) throws Exception {
         String destinationLower = destination.toLowerCase();
         boolean liveSend = "sitemap".equals(destinationLower);
-        ExecutionResult exec = liveSend
-                ? pipeline.execute(req, collection, followRedirects)
-                : pipeline.build(req, collection);
+        ExecutionResult exec = runtimeOverlay != null
+                ? (liveSend
+                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink)
+                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink))
+                : (liveSend
+                    ? pipeline.execute(req, collection, followRedirects)
+                    : pipeline.build(req, collection));
         if (exec == null || !exec.success || exec.requestHeaders == null) {
             throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }
@@ -528,12 +474,25 @@ public class UniversalImporter {
         }
         try {
             WorkspaceState state = workspaceStateService.load();
-            if (state == null || state.collections == null || state.collections.isEmpty()) {
+            if (!hasRestorableWorkspaceState(state)) {
                 return;
             }
-            lastSavedWorkspaceJson = WorkspaceStateJson.toJson(state);
+            String restoreJson = WorkspaceStateJson.toJson(state);
+            lastSavedWorkspaceJson = restoreJson;
             SwingUtilities.invokeLater(() -> {
                 try {
+                    if (!Objects.equals(lastSavedWorkspaceJson, restoreJson)) {
+                        if (api != null) {
+                            api.logging().logToOutput("Workspace state restore skipped because newer workspace state was saved before restore executed.");
+                        }
+                        return;
+                    }
+                    if (ui.hasUnsavedEnvironmentEditorChanges()) {
+                        if (api != null) {
+                            api.logging().logToOutput("Workspace state restore skipped because the Environment editor has unsaved changes.");
+                        }
+                        return;
+                    }
                     ui.restoreWorkspaceState(state);
                 } catch (Exception e) {
                     logWorkspaceStateError("restore", e);
@@ -542,6 +501,15 @@ public class UniversalImporter {
         } catch (Exception e) {
             logWorkspaceStateError("load", e);
         }
+    }
+
+    private static boolean hasRestorableWorkspaceState(WorkspaceState state) {
+        if (state == null) {
+            return false;
+        }
+        boolean hasCollections = state.collections != null && !state.collections.isEmpty();
+        boolean hasEnvironments = state.environments != null && !state.environments.isEmpty();
+        return hasCollections || hasEnvironments;
     }
 
     void restoreWorkspaceStateAfterUiRegistration() {

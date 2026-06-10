@@ -27,7 +27,7 @@ public class ApiCollection {
     /** Folder auth overrides keyed by normalized folder path. */
     public Map<String, ApiRequest.Auth> folderAuth = new LinkedHashMap<>();
 
-    /** Collection-scoped runtime overrides (Variables tab / env file bound to this collection). */
+    /** Collection-scoped runtime overrides used by legacy extraction flows. */
     public Map<String, String> runtimeVars = new HashMap<>();
     /** Collection-scoped OAuth2 overrides bound to this collection. */
     public Map<String, String> runtimeOAuth2 = new HashMap<>();

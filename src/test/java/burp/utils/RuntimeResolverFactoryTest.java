@@ -82,6 +82,26 @@ class RuntimeResolverFactoryTest {
     }
 
     @Test
+    void runtimeResolverFactoryAppliesActiveEnvironmentOverlayWithoutChangingCollectionState() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        collection.runtimeVars.put("token", "collection-token");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Request";
+        request.url = "https://example.test/{{token}}";
+
+        VariableResolver resolver = RuntimeResolverFactory.build(
+                collection,
+                request,
+                RuntimeResolverFactory.Options.withRuntimeVariableOverlay(Map.of("token", "active-env-token"))
+        );
+
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("active-env-token");
+        assertThat(collection.runtimeVars).containsEntry("token", "collection-token");
+    }
+
+    @Test
     void runtimeResolverFactoryPreservesRequestVariablePrecedence() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Collection";

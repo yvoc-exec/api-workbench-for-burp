@@ -117,6 +117,15 @@ class VariableResolverTest {
     }
 
     @Test
+    void findUnresolvedVariablesTreatsBlankValuesAsUnresolved() {
+        resolver.addCustomVariable("base_url", "");
+
+        Set<String> missing = resolver.findUnresolvedVariables("{{base_url}}/users");
+
+        assertThat(missing).containsExactly("base_url");
+    }
+
+    @Test
     void findUnresolvedVariablesReturnsEmptyWhenAllResolved() {
         resolver.addCustomVariable("a", "1");
         resolver.addCustomVariable("b", "2");

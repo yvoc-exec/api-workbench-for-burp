@@ -29,6 +29,14 @@ import java.util.*;
  *   6. Default values {{var|default}} handled by resolver internally
  */
 public class SharedRequestPipeline {
+    public interface OAuth2TokenSink {
+        Map<String, String> store(ApiCollection collection, TokenStore.TokenEntry entry);
+    }
+
+    public interface RuntimeVariableSink {
+        void apply(ApiCollection collection, Map<String, String> changedVars, Set<String> removedKeys);
+    }
+
     private final MontoyaApi api;
     private final RequestBuilder requestBuilder;
     private final ScriptEngine scriptEngine;
@@ -43,41 +51,95 @@ public class SharedRequestPipeline {
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true);
+        return execute(req, col, followRedirects, null, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
-        return executeInternal(req, col, true, new ExecutionResult(), false);
+        return build(req, col, null, null);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink) {
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink) {
+        ExecutionResult result = new ExecutionResult();
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
+    }
+
+    public ExecutionResult build(ApiRequest req, ApiCollection col,
+                                 Map<String, String> runtimeOverlay,
+                                 OAuth2TokenSink oauth2TokenSink) {
+        return build(req, col, runtimeOverlay, oauth2TokenSink, null);
+    }
+
+    public ExecutionResult build(ApiRequest req, ApiCollection col,
+                                 Map<String, String> runtimeOverlay,
+                                 OAuth2TokenSink oauth2TokenSink,
+                                 RuntimeVariableSink runtimeVariableSink) {
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
     }
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
-                                            ExecutionResult result, boolean sendRequest) {
-        VariableResolver resolver = RuntimeResolverFactory.build(col, req);
-        Map<String, String> scriptContext = col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>();
+                                            ExecutionResult result, boolean sendRequest,
+                                            Map<String, String> runtimeOverlay,
+                                            OAuth2TokenSink oauth2TokenSink,
+                                            RuntimeVariableSink runtimeVariableSink) {
+        VariableResolver resolver = RuntimeResolverFactory.build(
+                col,
+                req,
+                runtimeOverlay != null
+                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
+                        : RuntimeResolverFactory.Options.defaultOptions()
+        );
+        Map<String, String> scriptContext = runtimeOverlay != null
+                ? new HashMap<>(runtimeOverlay)
+                : (col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>());
         Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
-            if (col != null) {
+            if (scriptEngine != null && col != null) {
                 scriptEngine.executePreRequest(req, resolver, scriptContext);
             }
 
             // 2. OAuth2 token refresh if needed
             if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
                 try {
-                    OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
-                    if (config.isValid()) {
-                        TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
-                        if (entry != null && entry.accessToken != null) {
-                            resolver.addCustomVariable("oauth2_access_token", entry.accessToken);
-                            // Persist token into collection OAuth2 context for UI mirroring
-                            if (col != null) {
-                                col.putRuntimeOAuth2("oauth2_access_token", entry.accessToken);
+                        OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                        if (config.isValid()) {
+                            TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
+                            if (entry != null && entry.accessToken != null) {
+                                Map<String, String> storedVars;
+                                if (oauth2TokenSink != null) {
+                                    storedVars = oauth2TokenSink.store(col, entry);
+                                } else {
+                                    storedVars = new LinkedHashMap<>();
+                                    if (col != null) {
+                                        col.putRuntimeOAuth2("oauth2_access_token", entry.accessToken);
+                                        storedVars.put("oauth2_access_token", entry.accessToken);
+                                        if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                                            col.putRuntimeOAuth2("oauth2_refresh_token", entry.refreshToken);
+                                            storedVars.put("oauth2_refresh_token", entry.refreshToken);
+                                        }
+                                    } else {
+                                        storedVars.put("oauth2_access_token", entry.accessToken);
+                                        if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                                            storedVars.put("oauth2_refresh_token", entry.refreshToken);
+                                        }
+                                    }
+                                }
+                                if (storedVars != null && !storedVars.isEmpty()) {
+                                    resolver.addAll(storedVars);
+                                }
                             }
                         }
-                    }
                 } catch (Exception e) {
                     if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
                 }
@@ -121,7 +183,7 @@ public class SharedRequestPipeline {
                 result.success = true;
 
                 // 5. Post-response scripts
-                if (col != null) {
+                if (scriptEngine != null && col != null) {
                     String body = response.response().bodyToString();
                     int statusCode = response.response().statusCode();
                     Map<String, List<String>> headersMap = new HashMap<>();
@@ -170,7 +232,9 @@ public class SharedRequestPipeline {
 
             // Commit script mutations back to collection runtime context via helper (fires change listeners)
             // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
-            if (col != null) {
+            if (runtimeVariableSink != null && runtimeOverlay != null) {
+                runtimeVariableSink.apply(col, changedVars, removedKeys);
+            } else if (col != null) {
                 col.applyRuntimeVarDelta(changedVars, removedKeys);
             }
         }

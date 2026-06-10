@@ -38,4 +38,23 @@ class ImporterPanelPreflightTest {
                         "Beta:Beta Request:betaHost:url"
                 );
     }
+
+    @Test
+    void collectionDefaultsResolveAllVariablesWithoutActiveEnvironment() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.environment.put("baseUrl", "https://api.example.test");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Health";
+        request.sourceCollection = "APIM";
+        request.url = "{{baseUrl}}/health";
+
+        List<UnresolvedVariableIssue> issues = ImporterPanel.collectUnresolvedVariableIssues(
+                List.of(collection),
+                List.of(request)
+        );
+
+        assertThat(issues).isEmpty();
+    }
 }
