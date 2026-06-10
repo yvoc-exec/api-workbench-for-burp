@@ -115,7 +115,7 @@ public final class RequestTreePathService {
         if (!normalized.contains("/")) {
             return false;
         }
-        String name = requestName != null ? requestName.trim() : "";
+        String name = requestName != null ? requestName.replace('\\', '/').trim() : "";
         if (name.isEmpty()) {
             return true;
         }

@@ -154,4 +154,14 @@ class AuthInheritanceResolverTest {
         request.path = "";
         assertThat(AuthInheritanceResolver.getRequestFolderPath(request)).isEqualTo("");
     }
+
+    @Test
+    void getRequestFolderPathTreatsBackslashInRequestNameAsLabel() {
+        ApiRequest request = new ApiRequest();
+        request.name = "users\\{id}";
+        request.path = "Auth/users\\{id}";
+
+        assertThat(AuthInheritanceResolver.getRequestFolderPath(request)).isEqualTo("Auth");
+        assertThat(burp.ui.tree.RequestTreePathService.getRequestFolderPath(request)).isEqualTo("Auth");
+    }
 }
