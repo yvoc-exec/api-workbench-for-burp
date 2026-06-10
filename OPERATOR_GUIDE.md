@@ -151,7 +151,21 @@ Collection
 ```
 
 Use checkboxes for batch operations. Click a request row to load it into the request editor.
-Right-click a collection, folder, or request node to open **Auth Settings...** for that scope.
+Right-click the tree to create and manage items directly:
+
+| Right-click target | Menu actions |
+|--------------------|--------------|
+| Empty/root area | **New Collection** |
+| Collection | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
+| Folder | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
+| Request | **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
+
+Notes:
+
+- Duplicate names are prevented within the same parent scope, and duplicate actions generate incremental names such as `Login Copy`, `Login Copy 2`, and `Login Copy 3`.
+- Selecting a collection or folder clears the request editor and disables Send until you click a request again.
+- New Request starts as a blank `GET` request with an empty URL. Set the URL before sending, importing, or running; if left blank, the existing request build/send path will fail naturally.
+- Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy runtime execution state such as `runtimeVars` or `runtimeOAuth2`.
 
 ### Request Editor
 

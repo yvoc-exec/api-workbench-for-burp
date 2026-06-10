@@ -73,6 +73,8 @@ public final class WorkspaceStateJson {
             }
             if (collection.folderPaths == null) {
                 collection.folderPaths = new java.util.ArrayList<>();
+            } else {
+                collection.folderPaths = normalizeFolderPaths(collection.folderPaths);
             }
             if (collection.folderVars == null) {
                 collection.folderVars = new java.util.LinkedHashMap<>();
@@ -99,6 +101,21 @@ public final class WorkspaceStateJson {
         }
         if (out.version <= 0) {
             out.version = 1;
+        }
+        return out;
+    }
+
+    private static java.util.List<String> normalizeFolderPaths(java.util.List<String> folderPaths) {
+        java.util.LinkedHashSet<String> normalized = new java.util.LinkedHashSet<>();
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (folderPaths == null) {
+            return out;
+        }
+        for (String folderPath : folderPaths) {
+            String value = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath != null ? folderPath.replace('\\', '/') : null);
+            if (!value.isEmpty() && normalized.add(value)) {
+                out.add(value);
+            }
         }
         return out;
     }

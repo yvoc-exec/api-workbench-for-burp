@@ -124,6 +124,24 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void normalizeFolderPathsTrimsDeduplicatesAndNormalizesSlashes() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        collection.folderPaths.add(" Auth ");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Auth//OAuth");
+        collection.folderPaths.add("");
+        collection.folderPaths.add("  ");
+        collection.folderPaths.add("Auth\\Token");
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.collections.get(0).folderPaths)
+                .containsExactly("Auth", "Auth/OAuth", "Auth/Token");
+    }
+
+    @Test
     void roundTripsEditableAuthInheritanceMetadata() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Auth Demo";
