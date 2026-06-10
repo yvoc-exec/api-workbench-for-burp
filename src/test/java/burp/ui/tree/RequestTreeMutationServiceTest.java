@@ -33,8 +33,9 @@ class RequestTreeMutationServiceTest {
         assertThat(created.variables).isEmpty();
         assertThat(created.preRequestScripts).isEmpty();
         assertThat(created.postResponseScripts).isEmpty();
-        assertThat(created.editorMaterialized).isTrue();
-        assertThat(created.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(created.editorMaterialized).isFalse();
+        assertThat(created.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(created.suppressedAutoHeaders).isEmpty();
         assertThat(created.authOverrideMode).isEqualTo("inherit");
         assertThat(created.explicitAuth).isNull();
         assertThat(created.auth).isNull();
@@ -153,6 +154,8 @@ class RequestTreeMutationServiceTest {
         request.body.raw = "{\"login\":true}";
         request.preRequestScripts.add(new ApiRequest.Script("js", "console.log('pre');"));
         request.postResponseScripts.add(new ApiRequest.Script("js", "console.log('post');"));
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
         collection.requests.add(request);
 
         ApiRequest copy1 = service.duplicateRequest(collection, request);
@@ -171,6 +174,8 @@ class RequestTreeMutationServiceTest {
         assertThat(copy1.preRequestScripts).hasSize(1);
         assertThat(copy1.postResponseScripts).hasSize(1);
         assertThat(copy1.id).isNotEqualTo(request.id);
+        assertThat(copy1.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(copy1.editorMaterialized).isFalse();
         assertThat(collection.requests).extracting(req -> req.name)
                 .contains("Login", "Login Copy", "Login Copy 2", "Login Copy 3");
     }
@@ -211,6 +216,26 @@ class RequestTreeMutationServiceTest {
         assertThat(duplicate.sourceCollection).isEqualTo("APIM");
         assertThat(collection.requests).extracting(req -> req.name)
                 .contains("users\\{id}", "users\\{id} Copy");
+    }
+
+    @Test
+    void renameRequestPreservesAutoCompatibleBuildModeAndEditorMaterializedState() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-1", "Other", "Auth");
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
+        collection.requests.add(request);
+
+        String renamed = service.renameRequest(collection, request, "GET /users");
+
+        assertThat(renamed).isEqualTo("GET /users");
+        assertThat(request.name).isEqualTo("GET /users");
+        assertThat(request.path).isEqualTo("Auth");
+        assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(request.editorMaterialized).isFalse();
+        assertThat(request.sourceCollection).isEqualTo("APIM");
     }
 
     @Test

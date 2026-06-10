@@ -66,8 +66,8 @@ public final class RequestTreeMutationService {
         request.variables = new ArrayList<>();
         request.preRequestScripts = new ArrayList<>();
         request.postResponseScripts = new ArrayList<>();
-        request.editorMaterialized = true;
-        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = false;
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
         request.suppressedAutoHeaders = new LinkedHashSet<>();
         request.authOverrideMode = "inherit";
         request.explicitAuth = null;
@@ -183,8 +183,6 @@ public final class RequestTreeMutationService {
         String parentFolderPath = RequestTreePathService.getRequestFolderPath(request);
         request.name = normalizedName;
         request.path = parentFolderPath;
-        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
-        request.editorMaterialized = true;
         AuthInheritanceResolver.resolveRequestAuth(collection, request);
         return normalizedName;
     }
@@ -607,8 +605,6 @@ public final class RequestTreeMutationService {
         copy.authSource = source.authSource;
         copy.authOverrideMode = source.authOverrideMode;
         copy.explicitAuth = AuthInheritanceResolver.copyAuth(source.explicitAuth);
-        copy.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
-        copy.editorMaterialized = true;
         return copy;
     }
 
