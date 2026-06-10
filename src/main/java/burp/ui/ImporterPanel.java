@@ -11,6 +11,9 @@ import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
+import burp.ui.tree.RequestTreeMutationService;
+import burp.ui.tree.RequestTreeNamingPolicy;
+import burp.ui.tree.RequestTreePathService;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -57,6 +60,7 @@ public class ImporterPanel {
     private final CollectionRunner runner;
     private final OAuth2Manager oauth2Manager;
     private final burp.utils.RequestBuilder requestBuilder;
+    private final RequestTreeMutationService requestTreeMutationService = new RequestTreeMutationService();
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -360,20 +364,7 @@ public class ImporterPanel {
         tree.addMouseListener(new TreeMouseListener());
         tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         tree.addTreeSelectionListener(e -> {
-            persistCurrentRequestEditorState();
-            TreePath path = requestTree.getSelectionPath();
-            if (path != null) {
-                Object node = path.getLastPathComponent();
-                if (node instanceof CollectionTreeNode) {
-                    CollectionTreeNode ctn = (CollectionTreeNode) node;
-                    if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
-                        ApiCollection selectedCollection = findCollectionForNode(ctn);
-                        requestEditor.setCurrentCollection(selectedCollection);
-                        syncRequestEditorRuntimeContext(ctn.request, selectedCollection);
-                        requestEditor.loadRequest(ctn.request);
-                    }
-                }
-            }
+            handleRequestTreeSelectionChanged();
             updateScopeControlState();
         });
         return tree;
@@ -382,6 +373,7 @@ public class ImporterPanel {
     private JComponent createRightWorkbenchPanel() {
         requestEditor = new RequestEditorPanel();
         requestEditor.setRequestBuilder(requestBuilder);
+        requestEditor.setSendControlsEnabled(false);
         requestEditor.setTrackedHeaderStateChangeListener(() -> {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
@@ -1088,6 +1080,8 @@ public class ImporterPanel {
         Object node = path != null ? path.getLastPathComponent() : null;
         if (path != null) {
             requestTree.setSelectionPath(path);
+        } else if (requestTree.getSelectionPath() != null) {
+            requestTree.clearSelection();
         }
         JPopupMenu menu = buildRequestTreeContextMenu(node);
         if (menu != null && menu.getComponentCount() > 0) {
@@ -1181,10 +1175,9 @@ public class ImporterPanel {
 
     private void createNewCollectionFromTree() {
         persistCurrentRequestEditorState();
-        ApiCollection collection = new ApiCollection();
-        collection.name = uniqueCollectionName("Untitled Collection");
+        clearRequestEditorForNonRequestSelection();
+        ApiCollection collection = requestTreeMutationService.createCollection(loadedCollections);
         registerCollectionRuntimeListener(collection);
-        loadedCollections.add(collection);
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findCollectionTreePath(collection);
             if (path != null) {
@@ -1203,12 +1196,11 @@ public class ImporterPanel {
             return;
         }
         persistCurrentRequestEditorState();
+        clearRequestEditorForNonRequestSelection();
         String parentFolderPath = node.getNodeType() == CollectionTreeNode.Type.FOLDER
-                ? burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath)
+                ? RequestTreePathService.normalizeFolderPath(node.folderPath)
                 : "";
-        String folderName = uniqueChildName(collection, parentFolderPath, "Untitled Folder");
-        String folderPath = joinFolderPath(parentFolderPath, folderName);
-        addCollectionFolderPath(collection, folderPath, parentFolderPath, null);
+        String folderPath = requestTreeMutationService.createFolder(collection, parentFolderPath);
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findFolderTreePath(collection, folderPath);
             if (path != null) {
@@ -1228,12 +1220,9 @@ public class ImporterPanel {
         }
         persistCurrentRequestEditorState();
         String parentFolderPath = node.getNodeType() == CollectionTreeNode.Type.FOLDER
-                ? burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath)
+                ? RequestTreePathService.normalizeFolderPath(node.folderPath)
                 : "";
-        String requestName = uniqueRequestName("Untitled Request");
-        ApiRequest request = createBlankManualRequest(collection, requestName, parentFolderPath);
-        insertRequestForParentPath(collection, request, parentFolderPath, null);
-        burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, request);
+        ApiRequest request = requestTreeMutationService.createBlankManualRequest(collection, parentFolderPath);
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findRequestTreePathByRequest(request);
             if (path != null) {
@@ -1426,7 +1415,7 @@ public class ImporterPanel {
             if (col.folderPaths != null && !col.folderPaths.isEmpty()) {
                 LinkedHashSet<String> explicitFolderPaths = new LinkedHashSet<>();
                 for (String folderPath : col.folderPaths) {
-                    String normalized = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath);
+                    String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
                     if (!normalized.isEmpty()) {
                         explicitFolderPaths.add(normalized);
                     }
@@ -1463,6 +1452,7 @@ public class ImporterPanel {
                 } else if (path.isBlank() && isNestedRequestPath(req.path, req.name)) {
                     path = req.path;
                 }
+                path = RequestTreePathService.normalizeFolderPath(path);
                 String[] parts = path.split("/");
                 java.util.List<String> segments = new java.util.ArrayList<>();
                 for (String p : parts) {
@@ -2366,6 +2356,25 @@ public class ImporterPanel {
         requestEditor.setCurrentCollection(collection);
         syncRequestEditorRuntimeContext(request, collection);
         requestEditor.loadRequest(request);
+        requestEditor.setSendControlsEnabled(true);
+    }
+
+    private void handleRequestTreeSelectionChanged() {
+        persistCurrentRequestEditorState();
+        CollectionTreeNode node = getSelectedRequestTreeNode();
+        if (node != null && node.getNodeType() == CollectionTreeNode.Type.REQUEST && node.request != null) {
+            ApiCollection selectedCollection = findCollectionForNode(node);
+            openRequestInEditor(node.request, selectedCollection);
+            return;
+        }
+        clearRequestEditorForNonRequestSelection();
+    }
+
+    private void clearRequestEditorForNonRequestSelection() {
+        clearRequestEditorSafely();
+        if (requestEditor != null) {
+            requestEditor.setSendControlsEnabled(false);
+        }
     }
 
     private void refreshRequestTreeAfterMutation(Runnable afterRefresh) {
@@ -2419,7 +2428,7 @@ public class ImporterPanel {
         if (treeModel == null || treeModel.getRoot() == null || collection == null) {
             return null;
         }
-        return findFolderTreePath((DefaultMutableTreeNode) treeModel.getRoot(), collection, burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath), null);
+        return findFolderTreePath((DefaultMutableTreeNode) treeModel.getRoot(), collection, RequestTreePathService.normalizeFolderPath(folderPath), null);
     }
 
     private TreePath findFolderTreePath(DefaultMutableTreeNode node,
@@ -2432,7 +2441,7 @@ public class ImporterPanel {
             if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
                 nextCollectionName = ctn.collection != null ? ctn.collection.name : currentCollectionName;
             } else if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER
-                    && Objects.equals(burp.utils.AuthInheritanceResolver.normalizeFolderPath(ctn.folderPath), folderPath)) {
+                    && Objects.equals(RequestTreePathService.normalizeFolderPath(ctn.folderPath), folderPath)) {
                 if (collection == null || Objects.equals(nextCollectionName, collection.name)) {
                     return new TreePath(ctn.getPath());
                 }
@@ -2588,11 +2597,11 @@ public class ImporterPanel {
     }
 
     private String normalizeTreeLabel(String label) {
-        return label != null ? label.trim() : "";
+        return RequestTreeNamingPolicy.normalizeTreeLabel(label);
     }
 
     private String uniqueCollectionName(String baseName) {
-        return uniqueName(collectCollectionNames(), baseName);
+        return RequestTreeNamingPolicy.uniqueCollectionName(loadedCollections, baseName);
     }
 
     private String uniqueRequestName(String baseName) {
@@ -2600,7 +2609,7 @@ public class ImporterPanel {
     }
 
     private String uniqueChildName(ApiCollection collection, String parentFolderPath, String baseName) {
-        return uniqueName(collectDirectChildNames(collection, parentFolderPath), baseName);
+        return RequestTreeNamingPolicy.uniqueChildName(collection, parentFolderPath, baseName);
     }
 
     private String uniqueName(Collection<String> existingNames, String baseName) {
@@ -2699,30 +2708,15 @@ public class ImporterPanel {
     }
 
     private String leafFolderName(String folderPath) {
-        String normalized = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath);
-        if (normalized.isEmpty()) {
-            return "";
-        }
-        int lastSlash = normalized.lastIndexOf('/');
-        return lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+        return RequestTreePathService.leafFolderName(folderPath);
     }
 
     private String getParentFolderPath(String folderPath) {
-        String normalized = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath);
-        if (normalized.isEmpty()) {
-            return "";
-        }
-        int lastSlash = normalized.lastIndexOf('/');
-        return lastSlash >= 0 ? normalized.substring(0, lastSlash) : "";
+        return RequestTreePathService.getParentFolderPath(folderPath);
     }
 
     private String joinFolderPath(String parentFolderPath, String childName) {
-        String parent = burp.utils.AuthInheritanceResolver.normalizeFolderPath(parentFolderPath);
-        String leaf = normalizeTreeLabel(childName);
-        if (parent.isEmpty()) {
-            return leaf;
-        }
-        return leaf.isEmpty() ? parent : parent + "/" + leaf;
+        return RequestTreePathService.joinFolderPath(parentFolderPath, childName);
     }
 
     private int findCollectionIndexByReference(ApiCollection collection) {
@@ -2998,8 +2992,7 @@ public class ImporterPanel {
         if (requestEditor == null) {
             return;
         }
-        requestEditor.setCurrentCollection(null);
-        requestEditor.loadRequest(null);
+        requestEditor.clearRequest();
         syncRequestEditorRuntimeContext(null, null);
     }
 
@@ -3011,39 +3004,20 @@ public class ImporterPanel {
         if (request == null) {
             return false;
         }
-        String normalizedPrefix = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPrefix);
+        String normalizedPrefix = RequestTreePathService.normalizeFolderPath(folderPrefix);
         if (normalizedPrefix.isEmpty()) {
             return true;
         }
-        String requestFolderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
-        return Objects.equals(requestFolderPath, normalizedPrefix)
-                || requestFolderPath.startsWith(normalizedPrefix + "/");
+        String requestFolderPath = RequestTreePathService.getRequestFolderPath(request);
+        return RequestTreePathService.isFolderPathInSubtree(requestFolderPath, normalizedPrefix);
     }
 
     private boolean isFolderPathInSubtree(String folderPath, String subtreePrefix) {
-        String normalizedPath = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath);
-        String normalizedPrefix = burp.utils.AuthInheritanceResolver.normalizeFolderPath(subtreePrefix);
-        if (normalizedPrefix.isEmpty()) {
-            return !normalizedPath.isEmpty();
-        }
-        return Objects.equals(normalizedPath, normalizedPrefix)
-                || normalizedPath.startsWith(normalizedPrefix + "/");
+        return RequestTreePathService.isFolderPathInSubtree(folderPath, subtreePrefix);
     }
 
     private String rewriteFolderPathPrefix(String value, String sourcePrefix, String targetPrefix) {
-        String normalizedValue = burp.utils.AuthInheritanceResolver.normalizeFolderPath(value);
-        String normalizedSource = burp.utils.AuthInheritanceResolver.normalizeFolderPath(sourcePrefix);
-        String normalizedTarget = burp.utils.AuthInheritanceResolver.normalizeFolderPath(targetPrefix);
-        if (normalizedValue.isEmpty() || normalizedSource.isEmpty()) {
-            return normalizedValue;
-        }
-        if (!Objects.equals(normalizedValue, normalizedSource) && !normalizedValue.startsWith(normalizedSource + "/")) {
-            return normalizedValue;
-        }
-        String suffix = normalizedValue.length() == normalizedSource.length()
-                ? ""
-                : normalizedValue.substring(normalizedSource.length());
-        return normalizedTarget + suffix;
+        return RequestTreePathService.rewriteFolderPathPrefix(value, sourcePrefix, targetPrefix);
     }
 
     private void updateFolderTreeNodePaths(CollectionTreeNode node, String sourcePrefix, String targetPrefix) {
@@ -3256,16 +3230,8 @@ public class ImporterPanel {
         }
         persistCurrentRequestEditorState();
         ApiCollection source = node.collection;
-        String sourceName = normalizeTreeLabel(source.name);
-        String duplicateName = uniqueCollectionName(sourceName + " Copy");
-        ApiCollection copy = copyCollectionForDuplicate(source, duplicateName);
-        int insertIndex = findCollectionIndexByReference(source);
+        ApiCollection copy = requestTreeMutationService.duplicateCollection(loadedCollections, source);
         registerCollectionRuntimeListener(copy);
-        if (insertIndex < 0 || insertIndex >= loadedCollections.size()) {
-            loadedCollections.add(copy);
-        } else {
-            loadedCollections.add(insertIndex + 1, copy);
-        }
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findCollectionTreePath(copy);
             if (path != null) {
@@ -3283,12 +3249,8 @@ public class ImporterPanel {
             return;
         }
         persistCurrentRequestEditorState();
-        String sourcePrefix = burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath);
-        String parentPrefix = getParentFolderPath(sourcePrefix);
-        String sourceLeaf = leafFolderName(sourcePrefix);
-        String duplicateLeaf = uniqueChildName(collection, parentPrefix, sourceLeaf + " Copy");
-        String targetPrefix = joinFolderPath(parentPrefix, duplicateLeaf);
-        addCopyOfFolderSubtree(collection, sourcePrefix, targetPrefix);
+        String sourcePrefix = RequestTreePathService.normalizeFolderPath(node.folderPath);
+        String targetPrefix = requestTreeMutationService.duplicateFolder(collection, sourcePrefix);
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findFolderTreePath(collection, targetPrefix);
             if (path != null) {
@@ -3306,12 +3268,7 @@ public class ImporterPanel {
             return;
         }
         persistCurrentRequestEditorState();
-        String parentFolderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(node.request);
-        String duplicateName = uniqueRequestName(normalizeTreeLabel(node.request.name) + " Copy");
-        String duplicatePath = joinFolderPath(parentFolderPath, duplicateName);
-        ApiRequest duplicate = copyRequestForDuplicate(node.request, collection.name, duplicateName, duplicatePath);
-        insertRequestForParentPath(collection, duplicate, parentFolderPath, node.request);
-        burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, duplicate);
+        ApiRequest duplicate = requestTreeMutationService.duplicateRequest(collection, node.request);
         refreshRequestTreeAfterMutation(() -> {
             TreePath path = findRequestTreePathByRequest(duplicate);
             if (path != null) {
@@ -3342,6 +3299,9 @@ public class ImporterPanel {
         boolean currentRequestRemoved = currentRequest != null && requestToCollectionMap.get(currentRequest) == collection;
         if (currentRequestRemoved) {
             clearRequestEditorSafely();
+            if (requestEditor != null) {
+                requestEditor.setSendControlsEnabled(false);
+            }
         }
         removeCollections(List.of(collection));
         if (!currentRequestRemoved && currentRequest != null) {
@@ -3381,16 +3341,11 @@ public class ImporterPanel {
         boolean currentRequestRemoved = currentRequest != null && isRequestInFolderSubtree(currentRequest, sourcePrefix);
         if (currentRequestRemoved) {
             clearRequestEditorSafely();
-        }
-        List<ApiRequest> removedRequests = new ArrayList<>();
-        if (collection.requests != null) {
-            for (ApiRequest request : collection.requests) {
-                if (request != null && isRequestInFolderSubtree(request, sourcePrefix)) {
-                    removedRequests.add(request);
-                }
+            if (requestEditor != null) {
+                requestEditor.setSendControlsEnabled(false);
             }
         }
-        removeFolderSubtree(collection, sourcePrefix);
+        List<ApiRequest> removedRequests = requestTreeMutationService.removeFolderSubtree(collection, sourcePrefix);
         removeRequestsFromRunnerQueue(removedRequests);
         refreshRequestTreeAfterMutation(() -> {
             if (!currentRequestRemoved && currentRequest != null) {
@@ -3432,11 +3387,12 @@ public class ImporterPanel {
         boolean currentRequestRemoved = currentRequest != null && currentRequest == node.request;
         if (currentRequestRemoved) {
             clearRequestEditorSafely();
+            if (requestEditor != null) {
+                requestEditor.setSendControlsEnabled(false);
+            }
         }
-        if (collection.requests != null) {
-            collection.requests.remove(node.request);
-        }
-        removeRequestsFromRunnerQueue(List.of(node.request));
+        List<ApiRequest> removedRequests = requestTreeMutationService.removeRequest(collection, node.request);
+        removeRequestsFromRunnerQueue(removedRequests);
         refreshRequestTreeAfterMutation(() -> {
             if (!currentRequestRemoved && currentRequest != null) {
                 TreePath path = findRequestTreePathByRequest(currentRequest);
@@ -3460,65 +3416,89 @@ public class ImporterPanel {
     }
 
     private void handleTreeNodeRenamed(CollectionTreeNode node, String oldName, String newName) {
-        if (node == null || newName == null || newName.isBlank()) {
+        if (node == null || newName == null) {
+            return;
+        }
+
+        String normalizedName = RequestTreeNamingPolicy.normalizeTreeLabel(newName);
+        if (normalizedName.isBlank()) {
+            rejectTreeRename(node, oldName, null);
             return;
         }
 
         ApiCollection collection = findCollectionForNode(node);
         switch (node.getNodeType()) {
-            case COLLECTION:
-                if (node.collection == null || Objects.equals(node.collection.name, newName)) {
+            case COLLECTION: {
+                RequestTreeNamingPolicy.RenameValidation validation = RequestTreeNamingPolicy.validateCollectionRename(loadedCollections, node.collection, normalizedName);
+                if (!validation.valid) {
+                    rejectTreeRename(node, oldName, validation.message);
                     return;
                 }
-                node.collection.name = newName;
-                if (node.collection.requests != null) {
-                    for (ApiRequest request : node.collection.requests) {
-                        if (request != null) {
-                            request.sourceCollection = newName;
-                        }
-                    }
-                }
-                burp.utils.AuthInheritanceResolver.recomputeCollectionAuth(node.collection);
+                requestTreeMutationService.renameCollection(node.collection, validation.normalizedName);
+                node.setUserObject(validation.normalizedName);
                 refreshRequestEditorForCollection(node.collection);
                 break;
-            case FOLDER:
+            }
+            case FOLDER: {
                 if (collection == null || node.folderPath == null) {
                     return;
                 }
-                String oldFolderPath = burp.utils.AuthInheritanceResolver.normalizeFolderPath(node.folderPath);
-                String parentPath = getParentFolderPath(oldFolderPath);
-                String newFolderPath = joinFolderPath(parentPath, newName);
-                if (Objects.equals(oldFolderPath, newFolderPath)) {
+                String oldFolderPath = RequestTreePathService.normalizeFolderPath(node.folderPath);
+                RequestTreeNamingPolicy.RenameValidation validation = RequestTreeNamingPolicy.validateFolderRename(collection, oldFolderPath, normalizedName);
+                if (!validation.valid) {
+                    rejectTreeRename(node, oldName, validation.message);
                     return;
                 }
-                node.folderPath = newFolderPath;
+                String newFolderPath = requestTreeMutationService.renameFolder(collection, oldFolderPath, validation.normalizedName);
                 updateFolderTreeNodePaths(node, oldFolderPath, newFolderPath);
-                rewriteCollectionFolderMetadata(collection, oldFolderPath, newFolderPath);
+                node.folderPath = newFolderPath;
+                node.setUserObject(leafFolderName(newFolderPath));
                 refreshRequestEditorForCollection(collection);
                 break;
-            case REQUEST:
+            }
+            case REQUEST: {
                 if (collection == null || node.request == null) {
                     return;
                 }
-                String parentFolderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(node.request);
-                String updatedPath = joinFolderPath(parentFolderPath, newName);
-                if (Objects.equals(node.request.name, newName) && Objects.equals(node.request.path, updatedPath)) {
+                RequestTreeNamingPolicy.RenameValidation validation = RequestTreeNamingPolicy.validateRequestRename(collection, node.request, normalizedName);
+                if (!validation.valid) {
+                    rejectTreeRename(node, oldName, validation.message);
                     return;
                 }
-                node.request.name = newName;
-                node.request.path = updatedPath;
-                burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, node.request);
+                requestTreeMutationService.renameRequest(collection, node.request, validation.normalizedName);
+                node.setUserObject(validation.normalizedName);
                 refreshRequestEditorForCollection(collection);
                 break;
+            }
         }
 
         refreshCollectionCombos();
         updateScopeControlState();
         refreshSessionActionControls();
+        if (treeModel != null) {
+            treeModel.nodeChanged(node);
+        }
         if (requestTree != null) {
             requestTree.repaint();
         }
         notifyWorkspaceChangedImmediately();
+    }
+
+    private void rejectTreeRename(CollectionTreeNode node, String oldName, String message) {
+        if (node == null) {
+            return;
+        }
+        node.setUserObject(oldName);
+        if (treeModel != null) {
+            treeModel.nodeChanged(node);
+        }
+        if (message != null && !message.isBlank()) {
+            appendImportLog(message);
+            LOGGER.warning(message);
+        }
+        if (requestTree != null) {
+            requestTree.repaint();
+        }
     }
 
 
@@ -4906,7 +4886,7 @@ public class ImporterPanel {
                 } else if (requestName.isBlank()) {
                     request.path = folderPath;
                 } else {
-                    request.path = folderPath + "/" + requestName;
+                    request.path = RequestTreePathService.joinFolderPath(folderPath, requestName);
                 }
                 if (!Objects.equals(previousPath, request.path)) {
                     repairedCount++;
@@ -4917,18 +4897,7 @@ public class ImporterPanel {
     }
 
     static boolean isNestedRequestPath(String requestPath, String requestName) {
-        if (requestPath == null || requestPath.isBlank()) {
-            return false;
-        }
-        String normalized = requestPath.replace('\\', '/').trim();
-        if (!normalized.contains("/")) {
-            return false;
-        }
-        String name = requestName != null ? requestName.trim() : "";
-        if (name.isEmpty()) {
-            return true;
-        }
-        return normalized.equals(name) || normalized.endsWith("/" + name);
+        return RequestTreePathService.isNestedRequestPath(requestPath, requestName);
     }
 
     public void restoreWorkspaceCollections(List<ApiCollection> collections) {
@@ -4942,6 +4911,16 @@ public class ImporterPanel {
             for (ApiCollection col : collections) {
             if (col == null) {
                 continue;
+            }
+            if (col.folderPaths != null) {
+                LinkedHashSet<String> normalizedFolderPaths = new LinkedHashSet<>();
+                for (String folderPath : col.folderPaths) {
+                    String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+                    if (!normalized.isEmpty()) {
+                        normalizedFolderPaths.add(normalized);
+                    }
+                }
+                col.folderPaths = new ArrayList<>(normalizedFolderPaths);
             }
             loadedCollections.add(col);
             registerCollectionRuntimeListener(col);

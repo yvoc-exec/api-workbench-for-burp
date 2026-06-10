@@ -22,6 +22,16 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex); pre/post scripts run automatically (respecting script mode)
 - **Import destinations** - Repeater, Sitemap, Intruder
 
+### Workbench Request Tree Create Flow
+- Right-click the request tree to create and manage collections, folders, and requests directly in place.
+- Empty tree/root area: **New Collection**
+- Collection or folder nodes: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Request nodes: **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Selecting a collection or folder clears the request editor and disables Send until a request node is selected again.
+- New Request starts as a blank `GET` request with an empty URL; fill the URL before sending, importing, or running.
+- Duplicate names are prevented within the same parent scope, and duplicate actions generate incremental names such as `Login Copy`, `Login Copy 2`, and `Login Copy 3`.
+- Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy `runtimeVars` or `runtimeOAuth2` execution state.
+
 ### Import Destinations
 - **Repeater** - creates tabs for manual testing (no live requests)
 - **Sitemap** - sends live requests, populates Target/Sitemap with real responses
@@ -35,6 +45,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Custom manual variables (Environment tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
+- The Workbench request tree also supports manual collection/folder/request creation, inline rename, duplicate, and delete actions from the right-click context menu
 - Live effective headers in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values

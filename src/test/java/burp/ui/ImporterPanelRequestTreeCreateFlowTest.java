@@ -120,11 +120,10 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(loadedCollections(panel)).extracting(col -> col.name)
                 .contains("Untitled Collection 2");
 
-        CollectionTreeNode collectionNode = collectionNode(requestTree(panel), "Untitled Collection 2");
-        invokeOnEdt(panel, "createNewRequestFromTree", new Class<?>[]{CollectionTreeNode.class}, collectionNode);
+        CollectionTreeNode originalCollectionNode = collectionNode(requestTree(panel), "Untitled Collection");
+        invokeOnEdt(panel, "createNewRequestFromTree", new Class<?>[]{CollectionTreeNode.class}, originalCollectionNode);
         drainEdt();
 
-        CollectionTreeNode originalCollectionNode = collectionNode(requestTree(panel), "Untitled Collection");
         CollectionTreeNode newRequest = requestNode(requestTree(panel), "Untitled Request 2");
         assertThat(originalCollectionNode).isNotNull();
         assertThat(newRequest).isNotNull();
@@ -168,6 +167,64 @@ class ImporterPanelRequestTreeCreateFlowTest {
     }
 
     @Test
+    void selectingCollectionClearsStaleRequestEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        selectTreeNode(panel, collectionNode(requestTree(panel), "APIM"));
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+    }
+
+    @Test
+    void selectingFolderClearsStaleRequestEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        request.path = "Auth/Login";
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        selectTreeNode(panel, folderNodeByPath(requestTree(panel), "Auth"));
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+    }
+
+    @Test
+    void clearingTreeSelectionClearsStaleRequestEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        selectTreeNode(panel, requestNode(requestTree(panel), "req-1"));
+        JTree tree = requestTree(panel);
+        SwingUtilities.invokeAndWait(tree::clearSelection);
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+    }
+
+    @Test
     void newRequestUnderCollectionCreatesBlankGetRequestAndOpensEditor() throws Exception {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("APIM");
@@ -190,8 +247,49 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(createdRequest.request.auth).isNull();
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
         assertThat(collection.runtimeVars).isEmpty();
         assertThat(collection.runtimeOAuth2).isEmpty();
+    }
+
+    @Test
+    void createNewCollectionClearsStaleRequestEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        invokeOnEdt(panel, "createNewCollectionFromTree");
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+        assertThat(collectionNode(requestTree(panel), "Untitled Collection")).isNotNull();
+    }
+
+    @Test
+    void createNewFolderClearsStaleRequestEditor() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        request.path = "Auth/Login";
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        invokeOnEdt(panel, "createNewFolderFromTree", new Class<?>[]{CollectionTreeNode.class}, collectionNode(requestTree(panel), "APIM"));
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+        assertThat(folderNodeByPath(requestTree(panel), "Untitled Folder")).isNotNull();
     }
 
     @Test
@@ -213,6 +311,61 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(createdRequest.request.url).isEqualTo("");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+    }
+
+    @Test
+    void renameCollectionRejectsDuplicateNameAndLeavesModelUnchanged() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection apim = collection("APIM");
+        ApiCollection admin = collection("Admin");
+        panel.restoreWorkspaceCollections(List.of(apim, admin));
+        drainEdt();
+
+        CollectionTreeNode adminNode = collectionNode(requestTree(panel), "Admin");
+        treeModel(panel).valueForPathChanged(new TreePath(adminNode.getPath()), "APIM");
+        drainEdt();
+
+        assertThat(admin.name).isEqualTo("Admin");
+        assertThat(adminNode.getUserObject()).isEqualTo("Admin");
+        assertThat(loadedCollections(panel)).extracting(col -> col.name).containsExactly("APIM", "Admin");
+    }
+
+    @Test
+    void renameFolderRejectsSiblingRequestCollisionAndLeavesModelUnchanged() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.requests.add(request("req-1", "Login", "POST", "https://auth.example.test/login", 0));
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode folderNode = folderNodeByPath(requestTree(panel), "Auth");
+        treeModel(panel).valueForPathChanged(new TreePath(folderNode.getPath()), "Login");
+        drainEdt();
+
+        assertThat(collection.folderPaths).containsExactly("Auth");
+        assertThat(folderNode.folderPath).isEqualTo("Auth");
+        assertThat(folderNode.getUserObject()).isEqualTo("Auth");
+    }
+
+    @Test
+    void renameRequestRejectsSiblingFolderCollisionAndLeavesModelUnchanged() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode requestNode = requestNode(requestTree(panel), "req-1");
+        treeModel(panel).valueForPathChanged(new TreePath(requestNode.getPath()), "Auth");
+        drainEdt();
+
+        assertThat(request.name).isEqualTo("Login");
+        assertThat(request.path).isEqualTo("Login");
+        assertThat(requestNode.getUserObject()).isEqualTo("Login");
     }
 
     @Test
@@ -583,6 +736,14 @@ class ImporterPanelRequestTreeCreateFlowTest {
         RequestEditorPanel editor = (RequestEditorPanel) editorField.get(panel);
         editor.setCurrentCollection(collection);
         editor.loadRequest(request);
+    }
+
+    private static void selectTreeNode(ImporterPanel panel, CollectionTreeNode node) throws Exception {
+        if (node == null) {
+            return;
+        }
+        JTree tree = requestTree(panel);
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(node.getPath())));
     }
 
     private static void queueRunnerRequests(ImporterPanel panel, List<ApiRequest> selected) throws Exception {

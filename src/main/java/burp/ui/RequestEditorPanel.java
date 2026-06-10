@@ -131,6 +131,14 @@ public class RequestEditorPanel extends JPanel {
         sendDropdownBtn.setEnabled(enabled);
     }
 
+    public void setSendControlsEnabled(boolean enabled) {
+        setSendEnabled(enabled);
+    }
+
+    public boolean isSendEnabled() {
+        return sendBtn != null && sendBtn.isEnabled() && sendDropdownBtn != null && sendDropdownBtn.isEnabled();
+    }
+
     public String getSendModeLabel() {
         return sendBtn.getText();
     }
@@ -311,6 +319,21 @@ public class RequestEditorPanel extends JPanel {
         }
         captureMaterializedDefaultHeaders(req);
         refreshAll();
+    }
+
+    public void clearRequest() {
+        currentCollection = null;
+        currentRequest = null;
+        resetDerivedHeaderMaterializationState();
+        materializedAutoHeaders.clear();
+        loadingRequest = true;
+        try {
+            clearAll();
+        } finally {
+            loadingRequest = false;
+        }
+        refreshAll();
+        setSendControlsEnabled(false);
     }
 
     public ApiRequest getCurrentRequest() { return currentRequest; }
