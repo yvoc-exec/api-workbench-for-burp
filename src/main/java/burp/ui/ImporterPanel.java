@@ -4880,9 +4880,10 @@ public class ImporterPanel {
                     continue;
                 }
                 String requestName = request.name != null ? request.name : "";
+                boolean nameContainsPathSeparator = requestName.indexOf('/') >= 0 || requestName.indexOf('\\') >= 0;
                 boolean manualTreeRequest = request.isManualPreserveMode();
                 if (folderPath.isBlank()) {
-                    if (manualTreeRequest) {
+                    if (manualTreeRequest || nameContainsPathSeparator) {
                         request.path = "";
                     } else {
                         if (isNestedRequestPath(request.path, requestName)) {
@@ -4890,7 +4891,7 @@ public class ImporterPanel {
                         }
                         request.path = requestName;
                     }
-                } else if (manualTreeRequest || requestName.isBlank()) {
+                } else if (manualTreeRequest || requestName.isBlank() || nameContainsPathSeparator) {
                     request.path = folderPath;
                 } else {
                     request.path = RequestTreePathService.joinFolderPath(folderPath, requestName);

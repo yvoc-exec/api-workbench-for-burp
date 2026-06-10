@@ -257,7 +257,7 @@ public final class AuthInheritanceResolver {
             return "";
         }
         String normalized = normalizeFolderPath(rawPath);
-        String requestName = request.name != null ? request.name.trim() : "";
+        String requestName = request.name != null ? request.name.replace('\\', '/').trim() : "";
         if (!requestName.isEmpty()) {
             if (Objects.equals(rawPath, requestName)) {
                 return "";

@@ -129,6 +129,115 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void workspacePathRepairKeepsImportedSlashRequestAsLabel() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-imported-slash", "GET /users", "GET", "https://api.example.test/users", 0);
+        request.path = "Auth/GET/users";
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0),
+                "Auth"
+        );
+
+        ImporterPanel.applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth");
+
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+
+        assertThat(requestNames(authNode)).containsExactly("GET /users");
+        assertThat(folderNodeByPath(root, "Auth/GET")).isNull();
+        assertThat(folderNodeByPath(root, "Auth/users")).isNull();
+    }
+
+    @Test
+    void treeRebuildDoesNotCreatePhantomFoldersForImportedSlashRequest() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-imported-tree", "GET /users", "GET", "https://api.example.test/users", 0);
+        request.path = "Auth";
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+
+        assertThat(requestNames(authNode)).containsExactly("GET /users");
+        assertThat(folderNodeByPath(root, "Auth/GET")).isNull();
+        assertThat(folderNodeByPath(root, "Auth/users")).isNull();
+    }
+
+    @Test
+    void rootImportedSlashRequestStaysUnderCollectionRoot() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+
+        ApiRequest request = request("req-root-slash", "GET /users", "GET", "https://api.example.test/users", 0);
+        request.path = "";
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        assertThat(directRequestNames(apimNode)).containsExactly("GET /users");
+        assertThat(folderNodeByPath(root, "GET")).isNull();
+        assertThat(folderNodeByPath(root, "users")).isNull();
+    }
+
+    @Test
+    void backslashRequestLabelsResolveConsistentlyInTreeAndAuthHelpers() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-backslash", "users\\{id}", "GET", "https://api.example.test/users/123", 0);
+        request.path = "Auth/users\\{id}";
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.editorMaterialized = false;
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.requestTreePaths = new LinkedHashMap<>();
+        state.requestTreePaths.put(
+                ImporterPanel.workspaceRequestIdentityKey("APIM", state.collections.get(0).requests.get(0), 0),
+                "Auth"
+        );
+
+        assertThat(burp.utils.AuthInheritanceResolver.getRequestFolderPath(state.collections.get(0).requests.get(0))).isEqualTo("Auth");
+        assertThat(burp.ui.tree.RequestTreePathService.getRequestFolderPath(state.collections.get(0).requests.get(0))).isEqualTo("Auth");
+
+        ImporterPanel.applyWorkspaceRequestTreePathsToRequests(state.collections, state.requestTreePaths);
+
+        assertThat(state.collections.get(0).requests.get(0).path).isEqualTo("Auth");
+
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+
+        assertThat(requestNames(authNode)).containsExactly("users\\{id}");
+        assertThat(folderNodeByPath(root, "Auth/users")).isNull();
+        assertThat(folderNodeByPath(root, "Auth/{id}")).isNull();
+    }
+
+    @Test
     void jsonRoundTripRestoreKeepsNestedRequestPathsWhenTreePathOverlayIsEmpty() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -1013,6 +1122,22 @@ class ImporterPanelTreeRestoreTest {
             }
         }
         throw new AssertionError("Missing folder node: " + folderName);
+    }
+
+    private static CollectionTreeNode folderNodeByPath(DefaultMutableTreeNode node, String folderPath) {
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && folderPath.equals(ctn.folderPath)) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = folderNodeByPath((DefaultMutableTreeNode) node.getChildAt(i), folderPath);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     private static List<String> childFolderNames(CollectionTreeNode parent) {
