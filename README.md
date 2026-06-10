@@ -32,7 +32,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Collection-level / global variables (source depends on format; see Playbook 4)
 - Environment files (Postman environment JSON)
 - Request-level variables (Bruno `vars` block, Postman request vars)
-- Custom manual variables (Variables tab + OAuth2 tab)
+- Custom manual variables (Environment tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
 - Live effective headers in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
@@ -80,14 +80,14 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Client Credentials** - fully automated, no browser
 - **Password (ROPC)** - automated with username/password
 - **Authorization Code + PKCE** - opens browser and uses the configured `oauth2_redirect_uri` loopback callback listener; default remains `http://localhost:9876/callback`
-- **Refresh Token** - auto-refresh before expiry
+- **Refresh Token** - standard refresh-token grant support
 - Live token cache stored in-memory via `TokenStore`; workspace snapshots can still persist runtime OAuth2 values in Burp project data
 - Auto-injects `Authorization: Bearer <token>` into requests
 - Imported collection auth metadata is normalized at runtime into canonical `oauth2_*` variables
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 - For safety, Authorization Code callback handling only accepts HTTP loopback redirect URIs such as `http://localhost:9876/callback` or `http://127.0.0.1:9988/oauth/callback`
 
-> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use Export Runtime JSON only when you intentionally want a portable snapshot.
+> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use the Environment export or Burp project save only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -170,8 +170,8 @@ Use the delay spinner to pace live traffic and avoid rate-limiting.
 > // extract: auth_token = $.data.token
 > ```
 
-### Playbook 4: Variables Tab Usage
-Open the **Variables** tab, select a target collection from the dropdown, and enter variables in either format:
+### Playbook 4: Environment Tab Usage
+Open the **Environment** tab, create or import an environment, set it active, and enter variables in either format:
 
 **key=value lines:**
 ```
@@ -191,22 +191,21 @@ oauth2_client_id=my-client
 
 Precedence during runtime (highest to lowest):
 1. Request-level variables (`req.variables`)
-2. Extracted / runtime variables (Variables tab + script extraction + runner-extracted vars)
-3. Scoped OAuth2 runtime vars (`runtimeOAuth2`, incl. `oauth2_access_token`)
-4. Collection-level variables (`collection.variables`)
-5. Collection environment map (`collection.environment`)
-6. Default values in `{{var|default}}` syntax
+2. Active Environment variables
+3. Collection-level variables (`collection.variables`)
+4. Collection environment map (`collection.environment`)
+5. Default values in `{{var|default}}` syntax
 
-> **Note:** Because runtime vars (level 2) take precedence over OAuth2 vars (level 3), a script can intentionally override `oauth2_access_token` if needed.
+> **Note:** Request-level variables remain advanced overrides. Active Environment values are the normal runtime layer.
 
 **Collection-scoped isolation:**
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
 
 **Unresolved-variable preflight:**
-Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. Entered values are applied into the selected collection runtime variables before continuing.
+Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. When an Active Environment is selected, entered values can be applied into that Active Environment before continuing. Without an Active Environment, you can still continue intentionally without applying values.
 
-**Runtime JSON portability:**
-Use **Export Runtime JSON** and **Import Runtime JSON** in the Variables tab to save and reload a collection's runtime variables and OAuth2 runtime values. Import supports merge or replace.
+**Environment portability:**
+Use **Export** and **Import** in the Environment tab to save and reload an environment profile. OAuth2 token outputs are written into the active environment using the selected output binding.
 
 **Autosave behavior:**
 - Typing in the Variables editor autosaves to the selected collection after a short debounce.
@@ -248,7 +247,7 @@ If a request returns 400 or 401, check in order:
 - **Token URL and grant type** - verify `oauth2_token_url` resolves to the correct endpoint and `oauth2_grant` matches the server expectation.
 - **Required body params** - Password grant needs `oauth2_username` + `oauth2_password`; Refresh Token needs `oauth2_refresh_token`; Authorization Code needs `oauth2_code`.
 - **Client auth mode** - `oauth2_client_auth` can be `body`, `basic`, or `prefer_basic`. Try switching if the server rejects client credentials placement.
-- **Unresolved variables** - check that `{{variable}}` placeholders have values in the Variables tab or OAuth2 tab.
+- **Unresolved variables** - check that `{{variable}}` placeholders have values in the Active Environment or OAuth2 tab.
 - **Nested extraction paths** - ensure script paths like `jsonData.data.token` use dot notation correctly; the runner and script engine support nested dotted paths.
 
 ### Mode Selection Guide
@@ -318,7 +317,7 @@ src/main/java/burp/
     |-- RequestBuilder.java        # HTTP message builder + OAuth2 + file uploads
     |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
     |-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
-    |-- RuntimeVariablesJson.java  # Runtime vars/OAuth2 JSON import/export
+    |-- RuntimeVariablesJson.java  # Legacy runtime vars/OAuth2 JSON utility
     |-- SharedRequestPipeline.java # Shared build/send/script/OAuth pipeline
     `-- UnresolvedVariableAnalyzer.java # Preflight unresolved-variable scanner
 ```

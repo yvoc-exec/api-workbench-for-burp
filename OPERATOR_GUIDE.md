@@ -10,7 +10,7 @@ This guide is for operators using API Workbench during API testing, debugging, a
 2. [Mental Model](#mental-model)
 3. [Installation and Startup Checks](#installation-and-startup-checks)
 4. [Workbench Tab](#workbench-tab)
-5. [Variables Tab](#variables-tab)
+5. [Environment Tab](#environment-tab)
 6. [OAuth2 Tab](#oauth2-tab)
 7. [Collection Runner Tab](#collection-runner-tab)
 8. [Import Destinations](#import-destinations)
@@ -70,7 +70,7 @@ API Workbench has four operator surfaces:
 | Tab | Primary Job |
 |-----|-------------|
 | **Workbench** | Load collections, check requests, edit one request, send/import checked requests |
-| **Variables** | Manage collection-scoped runtime variables and runtime JSON files |
+| **Environment** | Manage active environment profiles and OAuth2-bound runtime values |
 | **OAuth2** | Configure/acquire OAuth2 tokens and bind bearer aliases |
 | **Collection Runner** | Execute checked requests sequentially with preview, retries, stop conditions, and timeline |
 
@@ -81,7 +81,7 @@ The extension keeps runtime state scoped per collection. If two loaded collectio
 When a request is built, values are resolved in this order, highest first:
 
 1. Request-level variables
-2. Runtime variables from Variables tab, unresolved-var preflight, scripts, or runner extraction
+2. Active Environment variables from the Environment tab, unresolved-var preflight, scripts, or runner extraction
 3. Scoped OAuth2 runtime values
 4. Collection variables
 5. Collection environment values
@@ -137,7 +137,7 @@ Controls:
 Notes:
 
 - Duplicate collection names are rejected to avoid ambiguous variable binding.
-- Removing a collection stops OAuth2 auto-refresh for that collection.
+- Removing a collection does not change the Active Environment.
 - Loaded collections can be restored from Burp project data when using a project on disk.
 
 ### Request Tree
@@ -200,17 +200,20 @@ The **Resolved** tab in the request editor shows the final effective request sta
 - **Resolved Headers (Effective)** — the exact headers that will be sent, including synthesized defaults, auth headers, body Content-Type, and computed Host. Disabled headers are listed separately as suppressed.
 - **Resolved Body** — body mode and resolved content
 
-### Environment Binding
+### Environment Tab
 
 Controls:
 
 | Control | Behavior |
 |---------|----------|
-| **Browse...** | Selects a Postman environment JSON file |
-| **Apply to Checked Requests** | Loads environment values into the checked requests' local variables |
-| **Apply to All Collections** | Loads environment values into all loaded collections |
+| **Import** | Imports environment profiles from Postman, Bruno, Insomnia, `.env`, or generic JSON |
+| **New** | Creates a new environment profile |
+| **Duplicate** | Copies the selected environment profile |
+| **Delete** | Removes the selected environment profile |
+| **Set Active** | Marks the selected environment as the active runtime layer |
+| **Export** | Exports the selected environment profile |
 
-Environment binding mutates runtime variables. It can override keys already present in the target runtime layer.
+The active environment is the normal runtime layer. Request-level variables remain advanced overrides.
 
 ### Options Pane and Actions Button
 
@@ -233,13 +236,13 @@ Buttons:
 | **Import Checked** | Imports checked requests to selected destinations |
 | **Run Checked** | Sends checked requests to the Collection Runner flow |
 
-Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into collection runtime variables.
+Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into the Active Environment when one is selected.
 
 ---
 
-## Variables Tab
+## Environment Tab
 
-The Variables tab manages collection-scoped runtime variables.
+The Environment tab manages active environment profiles and OAuth2-bound runtime values.
 
 ### Target Collection
 
@@ -272,13 +275,13 @@ or:
 
 ### Base Layers and Runtime Overrides
 
-The Variables tab can display read-only base sections:
+The Environment tab can display read-only base sections:
 
 - Collection environment
 - Collection definition variables
 - Scoped OAuth2 runtime
 
-Only the `# Runtime overrides (edits apply here)` section is intended for normal operator edits.
+Only the `# Environment variables` section is intended for normal operator edits.
 
 ### Autosave
 
@@ -289,16 +292,16 @@ Autosave behavior:
 - Add/remove row actions autosave.
 - Switching target collection cancels pending autosave.
 - Programmatic refreshes do not autosave.
-- **Clear** only clears the editor UI and does not wipe runtime vars unless you later click **Save Now**.
+- **Clear** only clears the editor UI and does not wipe environment values unless you later click **Save**.
 
 Controls:
 
 | Control | Behavior |
 |---------|----------|
-| **Save Now** | Immediately writes the current editor contents to selected collection runtime vars |
-| **Bind to All Collections** | Writes current editor runtime vars to every loaded collection after confirmation |
-| **Export Runtime JSON** | Saves runtime vars and OAuth2 runtime for selected collection to JSON |
-| **Import Runtime JSON** | Loads runtime JSON into selected collection with Merge or Replace |
+| **Save** | Immediately writes the current editor contents to the selected environment |
+| **Set Active** | Makes the selected environment the Active Environment |
+| **Export** | Saves the selected environment profile to JSON |
+| **Import Environment** | Loads environment values into the Environment tab |
 | **Clear** | Clears editor UI only; does not autosave an empty map |
 
 ### Unresolved Variables
@@ -316,7 +319,7 @@ Actions:
 
 | Action | Behavior |
 |--------|----------|
-| **Apply to Runtime Vars** | Saves entered values into the affected collection runtime vars and continues |
+| **Apply to Active Environment** | Saves entered values into the Active Environment and continues |
 | **Continue Without Applying** | Continues with unresolved placeholders intact |
 | **Cancel** | Stops the operation |
 
@@ -396,7 +399,7 @@ When **Acquire Token** succeeds:
    Bind them to the acquired access token?
    ```
 
-4. Selected aliases are written to that collection's runtime variables.
+4. Selected aliases are written to the Active Environment variables using the configured output bindings.
 
 The dialog only scans the captured collection from the moment **Acquire Token** was clicked. It does not scan or modify other loaded collections.
 
@@ -736,7 +739,7 @@ After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer t
 
 1. Check runner preview unresolved vars column.
 2. Use preflight quick-entry modal to apply values.
-3. Confirm values land in the correct collection in Variables tab.
+3. Confirm values land in the Active Environment.
 4. Run again.
 
 ### Scenario: Save Test State for Later
@@ -744,7 +747,7 @@ After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer t
 Options:
 
 - Use a Burp project on disk for automatic workspace restore.
-- Use **Export Runtime JSON** for portable runtime values.
+- Use the Environment export when you intentionally need a portable environment snapshot.
 - Avoid exporting secrets unless needed and approved.
 
 ---
@@ -764,7 +767,7 @@ Options:
 
 | Symptom | Likely Cause | Action |
 |---------|--------------|--------|
-| `{{var}}` appears in final request | Missing runtime value | Use unresolved-variable modal or Variables tab |
+| `{{var}}` appears in final request | Missing runtime value | Use unresolved-variable modal or Active Environment |
 | Value from wrong collection | Target dropdown points to another collection | Select the correct collection before editing |
 | Edited vars disappear after switching collection | Edits were in UI but target changed before autosave | Use Save Now before switching for critical edits |
 | Clear wiped editor only | Expected behavior | Click Save Now if you intentionally want to persist empty overrides |
@@ -841,7 +844,7 @@ Options:
 - [ ] Confirm client auth mode.
 - [ ] Acquire token.
 - [ ] Bind bearer aliases if prompted.
-- [ ] Verify Variables tab shows alias values when expected.
+- [ ] Verify Environment tab shows alias values when expected.
 
 ### Before Saving/Sharing State
 

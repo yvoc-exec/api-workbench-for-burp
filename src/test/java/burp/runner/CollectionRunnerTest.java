@@ -95,6 +95,115 @@ class CollectionRunnerTest {
     }
 
     @Test
+    void activeEnvironmentRunnerDoesNotMirrorExtractedVarsIntoCollectionRuntimeVars() throws Exception {
+        Map<String, String> activeEnvironment = new ConcurrentHashMap<>();
+        activeEnvironment.put("base_url", "https://active.example.test");
+
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req,
+                                           ApiCollection col,
+                                           boolean followRedirects,
+                                           Map<String, String> runtimeOverlay,
+                                           SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+                                           SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) {
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse();
+                exec.extractedVars.put("session", "from-active-env");
+                if (runtimeVariableSink != null) {
+                    runtimeVariableSink.apply(col, exec.extractedVars, Collections.emptySet());
+                }
+                return exec;
+            }
+        }, null);
+
+        runner.setRuntimeOverlayProvider(collection -> new HashMap<>(activeEnvironment));
+        runner.setRuntimeVariableSink((collection, changedVars, removedKeys) -> {
+            if (removedKeys != null) {
+                for (String key : removedKeys) {
+                    activeEnvironment.remove(key);
+                }
+            }
+            if (changedVars != null) {
+                activeEnvironment.putAll(changedVars);
+            }
+        });
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Active Env Collection";
+        collection.runtimeVars.put("collectionOnly", "keep");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Request";
+        request.url = "http://example.com/request";
+        request.sequenceOrder = 1;
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        runner.runCollections(List.of(collection), List.of(request));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(activeEnvironment).containsEntry("session", "from-active-env");
+        assertThat(collection.runtimeVars)
+                .containsEntry("collectionOnly", "keep")
+                .doesNotContainKey("session");
+
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).extractedVariables)
+                .containsEntry("session", "from-active-env");
+    }
+
+    @Test
+    void noActiveEnvironmentRunnerStillFeedsExtractedVarsIntoSameCollectionRuntimeVars() throws Exception {
+        CopyOnWriteArrayList<Map<String, String>> seenRuntimeVars = new CopyOnWriteArrayList<>();
+
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                seenRuntimeVars.add(col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>());
+
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = mockResponse();
+
+                if ("First".equals(req.name)) {
+                    exec.extractedVars.put("session", "legacy-session");
+                }
+
+                return exec;
+            }
+        }, null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Legacy Collection";
+
+        ApiRequest first = new ApiRequest();
+        first.name = "First";
+        first.url = "http://example.com/first";
+        first.sequenceOrder = 1;
+        first.sourceCollection = collection.name;
+        collection.requests.add(first);
+
+        ApiRequest second = new ApiRequest();
+        second.name = "Second";
+        second.url = "http://example.com/second";
+        second.sequenceOrder = 2;
+        second.sourceCollection = collection.name;
+        collection.requests.add(second);
+
+        runner.runCollections(List.of(collection), List.of(first, second));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(seenRuntimeVars).hasSize(2);
+        assertThat(seenRuntimeVars.get(0)).doesNotContainKey("session");
+        assertThat(seenRuntimeVars.get(1)).containsEntry("session", "legacy-session");
+        assertThat(collection.runtimeVars).containsEntry("session", "legacy-session");
+    }
+
+    @Test
     void runnerPreviewResolverMatchesPipelineForAuthMappedRuntimeVars() {
         CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, new burp.utils.ScriptEngine(null, burp.utils.ScriptMode.DISABLED), null), null);
 
@@ -117,6 +226,88 @@ class CollectionRunnerTest {
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).urlPreview).isEqualTo("http://example.com/preview-token");
         assertThat(rows.get(0).unresolvedVariables).isEmpty();
+    }
+
+    @Test
+    void runnerPreviewUsesActiveEnvironmentOverlay() {
+        CollectionRunner runner = new CollectionRunner(null);
+        runner.setRuntimeOverlayProvider(collection -> Map.of("apiHost", "https://active.example.test"));
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Active Env Request";
+        request.method = "GET";
+        request.url = "{{apiHost}}/preview";
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).urlPreview).isEqualTo("https://active.example.test/preview");
+        assertThat(rows.get(0).unresolvedVariables).isEmpty();
+    }
+
+    @Test
+    void runnerPreviewTreatsBlankLegacyRuntimeVariablesAsUnresolvedWhenUsed() {
+        CollectionRunner runner = new CollectionRunner(null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+        collection.runtimeVars.put("base_url", "");
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Legacy Runtime Request";
+        request.method = "GET";
+        request.url = "{{base_url}}/preview";
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        List<RunnerPreviewRow> rows = runner.buildRunPreview(List.of(collection), List.of(request));
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).urlPreview).isEqualTo("/preview");
+        assertThat(rows.get(0).unresolvedVariables).containsExactly("base_url");
+    }
+
+    @Test
+    void runnerWithNullPipelineReturnsFailedResultInsteadOfThrowing() throws Exception {
+        CopyOnWriteArrayList<String> debugMessages = new CopyOnWriteArrayList<>();
+        CollectionRunner runner = new CollectionRunner(null);
+        runner.setDelayMs(0);
+        runner.setMaxRetries(2);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onTimeline(RunnerTimelineRow row) { }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onDebug(String message) { debugMessages.add(message); }
+        });
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Null Pipeline Collection";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Request";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.sequenceOrder = 1;
+        request.sourceCollection = collection.name;
+        collection.requests.add(request);
+
+        runner.runCollections(List.of(collection), List.of(request));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(runner.getResults()).hasSize(1);
+        RunnerResult result = runner.getResults().get(0);
+        assertThat(result.success).isFalse();
+        assertThat(result.errorMessage).contains("Runner pipeline unavailable");
+        assertThat(debugMessages).noneMatch(message -> message.contains("Retrying in"));
     }
 
     @Test

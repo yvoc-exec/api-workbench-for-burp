@@ -16,12 +16,13 @@ import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
+import burp.utils.SharedRequestPipeline;
 
 import java.util.*;
 import java.util.concurrent.*;
 import javax.swing.SwingUtilities;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.*;
+import java.util.function.Function;
 
 /**
  * Collection Runner - executes API requests sequentially with variable extraction.
@@ -47,6 +48,9 @@ public class CollectionRunner {
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
+    private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
+    private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
+    private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
 
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
@@ -82,6 +86,15 @@ public class CollectionRunner {
     }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
+    public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
+        this.runtimeOverlayProvider = provider;
+    }
+    public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
+        this.oauth2TokenSink = oauth2TokenSink;
+    }
+    public void setRuntimeVariableSink(SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) {
+        this.runtimeVariableSink = runtimeVariableSink;
+    }
 
     public void pauseAfterCurrent() {
         synchronized (pauseLock) {
@@ -332,8 +345,16 @@ public class CollectionRunner {
         result.requestId = req.id;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
+        if (pipeline == null) {
+            result.success = false;
+            result.errorMessage = "Runner pipeline unavailable";
+            return new RequestExecutionOutcome(result, 0);
+        }
+
+        Map<String, String> initialOverlay = runtimeOverlayFor(col);
+        boolean activeEnvironmentMode = initialOverlay != null;
         Map<String, String> scopedExtractedVars = extractedVars;
-        if (col != null) {
+        if (col != null && !activeEnvironmentMode) {
             scopedExtractedVars = extractedVarsByCollection.computeIfAbsent(col, c -> new ConcurrentHashMap<>());
             // Merge previously extracted vars only for the current collection so pipeline sees them.
             if (!scopedExtractedVars.isEmpty()) {
@@ -346,7 +367,15 @@ public class CollectionRunner {
         while (attempts < maxAttempts && !cancelled) {
             attempts++;
             try {
-                ExecutionResult exec = pipeline.execute(req, col, followRedirects);
+                Map<String, String> overlay = runtimeOverlayFor(col);
+                ExecutionResult exec;
+                if (pipeline == null) {
+                    exec = null;
+                } else if (overlay == null && oauth2TokenSink == null) {
+                    exec = pipeline.execute(req, col, followRedirects);
+                } else {
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     return null;
@@ -396,7 +425,11 @@ public class CollectionRunner {
                     }
 
                     // Copy extracted vars and assertions for cross-request continuity
-                    mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
+                    if (activeEnvironmentMode) {
+                        copyExecutionVariablesToResultOnly(result, exec);
+                    } else {
+                        mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
+                    }
                     if (!exec.assertions.isEmpty()) {
                         result.assertions.addAll(exec.assertions);
                     }
@@ -443,98 +476,6 @@ public class CollectionRunner {
         return new RequestExecutionOutcome(result, attempts);
     }
 
-    private Map<String, String> extractVariablesFromResponse(ApiRequest req, RunnerResult result) {
-        Map<String, String> extracted = new HashMap<>();
-
-        // Parse post-response scripts for variable extraction patterns
-        // Support patterns like: pm.environment.set("token", jsonData.access_token)
-        // or: bru.setVar("token", res.body.access_token)
-        for (ApiRequest.Script script : req.postResponseScripts) {
-            if (script.exec == null) continue;
-
-            // Simple regex-based extraction for common patterns
-            // pm.environment.set("key", jsonData.path) or bru.setVar("key", res.body.path)
-            Pattern setVarPattern = Pattern.compile(
-                "(?:pm\\.environment\\.set|bru\\.setVar|pm\\.collectionVariables\\.set)\\s*\\(\\s*['\"]([^'\"]+)['\"]\\s*,\\s*(.+?)\\s*\\)"
-            );
-            Matcher matcher = setVarPattern.matcher(script.exec);
-            while (matcher.find()) {
-                String varName = matcher.group(1);
-                String expression = matcher.group(2).trim();
-
-                // Try to resolve simple expressions from response
-                String value = resolveExpression(expression, result);
-                if (value != null) {
-                    extracted.put(varName, value);
-                }
-            }
-
-            // Also support JSONPath-like extraction comments
-            // // extract: token = $.data.token
-            Pattern extractComment = Pattern.compile("//\\s*extract:\\s*(\\w+)\\s*=\\s*(.+?)$", Pattern.MULTILINE);
-            Matcher extractMatcher = extractComment.matcher(script.exec);
-            while (extractMatcher.find()) {
-                String varName = extractMatcher.group(1);
-                String jsonPath = extractMatcher.group(2).trim();
-                String value = extractJsonPath(result.responseBody != null ? result.responseBody : result.responseBodyPreview, jsonPath);
-                if (value != null) {
-                    extracted.put(varName, value);
-                }
-            }
-        }
-
-        return extracted;
-    }
-
-    private String resolveExpression(String expression, RunnerResult result) {
-        String sourceBody = result.responseBody != null ? result.responseBody : result.responseBodyPreview;
-        // Handle jsonData.xxx patterns
-        if (expression.startsWith("jsonData")) {
-            String path = expression;
-            if (path.startsWith("jsonData.")) path = path.substring("jsonData.".length());
-            else if (path.startsWith("jsonData")) path = path.substring("jsonData".length());
-            path = path.replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
-            return extractJsonPath(sourceBody, path);
-        }
-        // Handle res.body.xxx patterns
-        if (expression.startsWith("res.body")) {
-            String path = expression;
-            if (path.startsWith("res.body.")) path = path.substring("res.body.".length());
-            else if (path.startsWith("res.body")) path = path.substring("res.body".length());
-            path = path.replace("[", "").replace("]", "").replace("'", "").replace('"', ' ').trim();
-            return extractJsonPath(sourceBody, path);
-        }
-        // Direct string literal
-        if ((expression.startsWith("\"") && expression.endsWith("\"")) ||
-            (expression.startsWith("'") && expression.endsWith("'"))) {
-            return expression.substring(1, expression.length() - 1);
-        }
-        return null;
-    }
-
-    private String extractJsonPath(String json, String path) {
-        if (json == null || json.isEmpty()) return null;
-        try {
-            com.google.gson.JsonElement element = com.google.gson.JsonParser.parseString(json);
-            String[] parts = path.replace("$", "").split("\\.");
-            com.google.gson.JsonElement current = element;
-            for (String part : parts) {
-                if (part.isEmpty()) continue;
-                if (current.isJsonObject()) {
-                    current = current.getAsJsonObject().get(part);
-                } else {
-                    return null;
-                }
-            }
-            if (current != null && current.isJsonPrimitive()) {
-                return current.getAsString();
-            }
-        } catch (Exception e) {
-            return null;
-        }
-        return null;
-    }
-
     private String extractCleanError(Exception e) {
         String msg = e.getMessage();
         if (msg == null) return e.getClass().getSimpleName();
@@ -579,6 +520,20 @@ public class CollectionRunner {
         }
     }
 
+    static void copyExecutionVariablesToResultOnly(RunnerResult result, ExecutionResult exec) {
+        if (exec == null || result == null) {
+            return;
+        }
+        if (exec.removedVars != null && !exec.removedVars.isEmpty()) {
+            for (String key : exec.removedVars) {
+                result.extractedVariables.remove(key);
+            }
+        }
+        if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
+            result.extractedVariables.putAll(exec.extractedVars);
+        }
+    }
+
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {
         Set<String> unresolved = burp.utils.RequestBuilder.findUnresolvedTokens(rawRequest);
         if (!unresolved.isEmpty() && api != null) {
@@ -587,7 +542,21 @@ public class CollectionRunner {
     }
 
     private VariableResolver buildPreviewResolver(ApiRequest req, ApiCollection col) {
-        return burp.utils.RuntimeResolverFactory.build(col, req);
+        Map<String, String> overlay = runtimeOverlayFor(col);
+        return burp.utils.RuntimeResolverFactory.build(
+                col,
+                req,
+                overlay != null
+                        ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay)
+                        : burp.utils.RuntimeResolverFactory.Options.defaultOptions()
+        );
+    }
+
+    private Map<String, String> runtimeOverlayFor(ApiCollection col) {
+        if (runtimeOverlayProvider == null) {
+            return null;
+        }
+        return runtimeOverlayProvider.apply(col);
     }
 
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {

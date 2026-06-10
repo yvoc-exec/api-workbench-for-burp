@@ -9,7 +9,6 @@ import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.ArrayList;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,14 +25,34 @@ public class UnresolvedVariablesDialog extends JDialog {
     private final List<ApiCollection> collections;
     private final List<UnresolvedVariableIssue> issues;
     private final LinkedHashMap<String, JTextField> variableFields = new LinkedHashMap<>();
+    private final LinkedHashMap<String, String> enteredValues = new LinkedHashMap<>();
     private Action action = Action.CANCEL;
+    private final boolean canApplyToActiveEnvironment;
+    private final String applyButtonText;
+    private final String hintText;
+    private JButton applyButton;
+    private JLabel hintLabel;
 
     public UnresolvedVariablesDialog(Window owner,
                                      List<UnresolvedVariableIssue> issues,
                                      List<ApiCollection> collections) {
+        this(owner, issues, collections, true, "Apply to Active Environment", "");
+    }
+
+    public UnresolvedVariablesDialog(Window owner,
+                                     List<UnresolvedVariableIssue> issues,
+                                     List<ApiCollection> collections,
+                                     boolean canApplyToActiveEnvironment,
+                                     String applyButtonText,
+                                     String hintText) {
         super(owner, "Unresolved Variables", ModalityType.APPLICATION_MODAL);
         this.issues = issues != null ? new ArrayList<>(issues) : new ArrayList<>();
         this.collections = collections != null ? new ArrayList<>(collections) : new ArrayList<>();
+        this.canApplyToActiveEnvironment = canApplyToActiveEnvironment;
+        this.applyButtonText = applyButtonText != null && !applyButtonText.isBlank()
+                ? applyButtonText
+                : "Apply to Active Environment";
+        this.hintText = hintText != null ? hintText : "";
         buildUi();
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         addWindowListener(new WindowAdapter() {
@@ -52,45 +71,19 @@ public class UnresolvedVariablesDialog extends JDialog {
         return action;
     }
 
-    public static void applyEnteredValuesToCollections(List<ApiCollection> collections,
-                                                       List<UnresolvedVariableIssue> issues,
-                                                       Map<String, String> enteredValues) {
-        if (collections == null || collections.isEmpty() || issues == null || issues.isEmpty() ||
-            enteredValues == null || enteredValues.isEmpty()) {
-            return;
-        }
-
-        Map<ApiCollection, Map<String, String>> updatesByCollection = new IdentityHashMap<>();
-        for (UnresolvedVariableIssue issue : issues) {
-            if (issue == null || issue.collectionName == null || issue.variableName == null) {
-                continue;
-            }
-            String value = enteredValues.get(issue.variableName);
-            if (value == null || value.isBlank()) {
-                continue;
-            }
-            for (ApiCollection collection : collections) {
-                if (collection == null || collection.name == null) {
-                    continue;
-                }
-                if (!issue.collectionName.equals(collection.name)) {
-                    continue;
-                }
-                updatesByCollection
-                    .computeIfAbsent(collection, ignored -> new LinkedHashMap<>())
-                    .put(issue.variableName, value);
-            }
-        }
-
-        for (Map.Entry<ApiCollection, Map<String, String>> entry : updatesByCollection.entrySet()) {
-            entry.getKey().putAllRuntimeVars(entry.getValue());
-        }
+    public Map<String, String> getEnteredValues() {
+        return new LinkedHashMap<>(enteredValues);
     }
 
     private void buildUi() {
         JPanel root = new JPanel(new BorderLayout(10, 10));
         root.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
+        if (!hintText.isBlank()) {
+            hintLabel = new JLabel("<html><body style='width: 680px'>" + safeHtml(hintText) + "</body></html>");
+            hintLabel.setBorder(BorderFactory.createEmptyBorder(0, 0, 6, 0));
+            root.add(hintLabel, BorderLayout.NORTH);
+        }
         root.add(buildIssuesTable(), BorderLayout.CENTER);
         root.add(buildQuickEntryPanel(), BorderLayout.EAST);
         root.add(buildButtonRow(), BorderLayout.SOUTH);
@@ -99,7 +92,7 @@ public class UnresolvedVariablesDialog extends JDialog {
     }
 
     private JComponent buildIssuesTable() {
-        DefaultTableModel model = new DefaultTableModel(new Object[]{"Collection", "Request", "Variable", "Location"}, 0) {
+        DefaultTableModel model = new DefaultTableModel(new Object[]{"Collection", "Request", "Variable", "Location", "Details"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -113,7 +106,8 @@ public class UnresolvedVariablesDialog extends JDialog {
                     safe(issue.collectionName),
                     safe(issue.requestName),
                     safe(issue.variableName),
-                    safe(issue.location)
+                    safe(issue.location),
+                    safe(issue.message)
             });
         }
 
@@ -169,9 +163,14 @@ public class UnresolvedVariablesDialog extends JDialog {
     private JComponent buildButtonRow() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 
-        JButton applyButton = new JButton("Apply to Runtime Vars");
+        applyButton = new JButton(applyButtonText);
+        applyButton.setToolTipText(canApplyToActiveEnvironment
+                ? "Apply entered values to the Active Environment."
+                : "Select an Active Environment before applying values.");
+        applyButton.setEnabled(canApplyToActiveEnvironment);
         applyButton.addActionListener(e -> {
-            applyEnteredValuesToCollections(collections, issues, collectEnteredValues());
+            enteredValues.clear();
+            enteredValues.putAll(collectEnteredValues());
             action = Action.APPLY_AND_CONTINUE;
             dispose();
         });
@@ -210,5 +209,28 @@ public class UnresolvedVariablesDialog extends JDialog {
 
     private static String safe(String value) {
         return value != null ? value : "";
+    }
+
+    private static String safeHtml(String value) {
+        return safe(value)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+    }
+
+    String getApplyButtonText() {
+        return applyButton != null ? applyButton.getText() : applyButtonText;
+    }
+
+    boolean isApplyButtonEnabled() {
+        return applyButton != null && applyButton.isEnabled();
+    }
+
+    String getHintText() {
+        return hintText;
+    }
+
+    String getApplyButtonTooltip() {
+        return applyButton != null ? applyButton.getToolTipText() : null;
     }
 }

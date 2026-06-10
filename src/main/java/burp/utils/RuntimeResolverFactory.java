@@ -13,8 +13,12 @@ import java.util.regex.Pattern;
  * Centralized runtime resolver construction for execution and preview paths.
  *
  * Precedence mirrors SharedRequestPipeline execution resolution:
- * environment -> collection vars -> folder vars -> runtimeOAuth2 -> runtimeVars
- * -> optional runtime overlay -> request vars -> auth/runtime mapping.
+ * environment -> collection vars -> folder vars -> optional explicit runtime overlay
+ * -> request vars -> auth/runtime mapping.
+ *
+ * When an explicit runtime overlay is supplied, legacy scoped runtime sources
+ * (runtimeOAuth2/runtimeVars) are intentionally excluded so the active
+ * environment can fully own the runtime layer.
  */
 public final class RuntimeResolverFactory {
     private static final Pattern BARE_VARIABLE_REFERENCE = Pattern.compile("^\\s*\\{\\{[^}|]+(?:\\|[^}]+)?\\}\\}\\s*$");
@@ -34,11 +38,13 @@ public final class RuntimeResolverFactory {
             resolver.addEnvironmentVariables(collection);
             resolver.addCollectionVariables(collection);
             resolver.addFolderVariables(collection, request);
-            if (collection.runtimeOAuth2 != null && !collection.runtimeOAuth2.isEmpty()) {
-                resolver.addAll(collection.runtimeOAuth2);
-            }
-            if (collection.runtimeVars != null && !collection.runtimeVars.isEmpty()) {
-                resolver.addAll(collection.runtimeVars);
+            if (!effectiveOptions.explicitRuntimeOverlayProvided) {
+                if (collection.runtimeOAuth2 != null && !collection.runtimeOAuth2.isEmpty()) {
+                    resolver.addAll(collection.runtimeOAuth2);
+                }
+                if (collection.runtimeVars != null && !collection.runtimeVars.isEmpty()) {
+                    resolver.addAll(collection.runtimeVars);
+                }
             }
         }
 
@@ -67,28 +73,31 @@ public final class RuntimeResolverFactory {
     public static final class Options {
         final boolean mapAuthToRuntimeVars;
         final Map<String, String> runtimeVariableOverlay;
+        final boolean explicitRuntimeOverlayProvided;
 
-        private Options(boolean mapAuthToRuntimeVars, Map<String, String> runtimeVariableOverlay) {
+        private Options(boolean mapAuthToRuntimeVars, Map<String, String> runtimeVariableOverlay,
+                        boolean explicitRuntimeOverlayProvided) {
             this.mapAuthToRuntimeVars = mapAuthToRuntimeVars;
             this.runtimeVariableOverlay = runtimeVariableOverlay != null
                     ? new LinkedHashMap<>(runtimeVariableOverlay)
                     : Collections.emptyMap();
+            this.explicitRuntimeOverlayProvided = explicitRuntimeOverlayProvided;
         }
 
         public static Options defaultOptions() {
-            return new Options(true, Collections.emptyMap());
+            return new Options(true, Collections.emptyMap(), false);
         }
 
         public static Options withoutAuthRuntimeMapping() {
-            return new Options(false, Collections.emptyMap());
+            return new Options(false, Collections.emptyMap(), false);
         }
 
         public static Options withRuntimeVariableOverlay(Map<String, String> runtimeVariableOverlay) {
-            return new Options(true, runtimeVariableOverlay);
+            return new Options(true, runtimeVariableOverlay, true);
         }
 
         public Options withAuthRuntimeMapping(boolean enabled) {
-            return new Options(enabled, runtimeVariableOverlay);
+            return new Options(enabled, runtimeVariableOverlay, explicitRuntimeOverlayProvided);
         }
     }
 

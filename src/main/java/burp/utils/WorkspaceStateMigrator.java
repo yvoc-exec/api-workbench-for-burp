@@ -1,6 +1,10 @@
 package burp.utils;
 
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * Minimal workspace migration scaffold.
@@ -21,6 +25,45 @@ public final class WorkspaceStateMigrator {
         if (state.version <= 0) {
             state.version = CURRENT_VERSION;
         }
+        if (state.collections == null) {
+            state.collections = new java.util.ArrayList<>();
+        }
+        if (state.environments == null) {
+            state.environments = new java.util.ArrayList<>();
+        }
+        for (EnvironmentProfile profile : state.environments) {
+            if (profile != null) {
+                profile.ensureDefaults();
+            }
+        }
+        normalizeEnvironmentIds(state);
         return state;
+    }
+
+    private static void normalizeEnvironmentIds(WorkspaceState state) {
+        if (state == null || state.environments == null) {
+            return;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (int i = 0; i < state.environments.size(); i++) {
+            EnvironmentProfile profile = state.environments.get(i);
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            String id = profile.id;
+            if (id == null || id.isBlank() || seen.contains(id)) {
+                profile.ensureId();
+                while (profile.id != null && seen.contains(profile.id)) {
+                    profile.id = java.util.UUID.randomUUID().toString();
+                }
+            }
+            if (profile.id != null) {
+                seen.add(profile.id);
+            }
+        }
+        if (state.activeEnvironmentId != null && seen.stream().noneMatch(id -> id.equals(state.activeEnvironmentId))) {
+            state.activeEnvironmentId = null;
+        }
     }
 }
