@@ -190,7 +190,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
         ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
-        request.path = "Auth/Login";
+        request.path = "Auth";
         collection.requests.add(request);
         panel.restoreWorkspaceCollections(List.of(collection));
         drainEdt();
@@ -239,6 +239,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(createdRequest).isNotNull();
         assertThat(createdRequest.request.method).isEqualTo("GET");
         assertThat(createdRequest.request.url).isEqualTo("");
+        assertThat(createdRequest.request.path).isEqualTo("");
         assertThat(createdRequest.request.headers).isEmpty();
         assertThat(createdRequest.request.body).isNull();
         assertThat(createdRequest.request.editorMaterialized).isTrue();
@@ -248,6 +249,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
         assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        assertThat(folderPaths(requestTree(panel))).isEmpty();
         assertThat(collection.runtimeVars).isEmpty();
         assertThat(collection.runtimeOAuth2).isEmpty();
     }
@@ -277,7 +279,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
         ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
-        request.path = "Auth/Login";
+        request.path = "Auth";
         collection.requests.add(request);
         panel.restoreWorkspaceCollections(List.of(collection));
         drainEdt();
@@ -306,9 +308,11 @@ class ImporterPanelRequestTreeCreateFlowTest {
 
         CollectionTreeNode createdRequest = requestNode(requestTree(panel), "Untitled Request");
         assertThat(createdRequest).isNotNull();
-        assertThat(createdRequest.request.path).isEqualTo("Auth/Untitled Request");
+        assertThat(createdRequest.request.path).isEqualTo("Auth");
         assertThat(createdRequest.request.method).isEqualTo("GET");
         assertThat(createdRequest.request.url).isEqualTo("");
+        assertThat(((CollectionTreeNode) createdRequest.getParent()).folderPath).isEqualTo("Auth");
+        assertThat(folderPaths(requestTree(panel))).containsExactly("Auth");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
         assertThat(requestEditor(panel).isSendEnabled()).isTrue();
@@ -355,6 +359,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
         ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        request.path = "";
         collection.requests.add(request);
         panel.restoreWorkspaceCollections(List.of(collection));
         drainEdt();
@@ -364,7 +369,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         drainEdt();
 
         assertThat(request.name).isEqualTo("Login");
-        assertThat(request.path).isEqualTo("Login");
+        assertThat(request.path).isEqualTo("");
         assertThat(requestNode.getUserObject()).isEqualTo("Login");
     }
 
@@ -383,7 +388,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         drainEdt();
 
         assertThat(request.name).isEqualTo("Renamed Token");
-        assertThat(request.path).isEqualTo("Renamed Token");
+        assertThat(request.path).isEqualTo("");
         assertThat(requestNode.getUserObject()).isEqualTo("Renamed Token");
     }
 
@@ -414,7 +419,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
         ApiRequest request = request("req-1", "Get Token", "POST", "https://auth.example.test/token", 0);
-        request.path = "Auth/Get Token";
+        request.path = "Auth";
         collection.requests.add(request);
         panel.restoreWorkspaceCollections(List.of(collection));
         drainEdt();
@@ -424,7 +429,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         drainEdt();
 
         assertThat(collection.folderPaths).contains("OAuth");
-        assertThat(request.path).isEqualTo("OAuth/Get Token");
+        assertThat(request.path).isEqualTo("OAuth");
         assertThat(folderNode.folderPath).isEqualTo("OAuth");
         assertThat(dirtyCount.get()).isGreaterThan(0);
     }
@@ -456,10 +461,10 @@ class ImporterPanelRequestTreeCreateFlowTest {
         source.folderPaths.add("Auth");
         source.folderPaths.add("Auth/OAuth");
         ApiRequest token = request("req-token", "Get Token", "POST", "https://auth.example.test/token", 0);
-        token.path = "Auth/OAuth/Get Token";
+        token.path = "Auth/OAuth";
         token.headers.add(new ApiRequest.Header("X-Test", "1"));
         ApiRequest refresh = request("req-refresh", "Refresh Token", "POST", "https://auth.example.test/refresh", 1);
-        refresh.path = "Auth/OAuth/Refresh Token";
+        refresh.path = "Auth/OAuth";
         source.requests.add(token);
         source.requests.add(refresh);
         panel.restoreWorkspaceCollections(List.of(source));
@@ -476,7 +481,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(duplicate.requests).hasSize(2);
         assertThat(duplicate.requests.get(0).id).isNotEqualTo(token.id);
         assertThat(duplicate.requests.get(0).name).isEqualTo("Get Token");
-        assertThat(duplicate.requests.get(0).path).isEqualTo("Auth/OAuth/Get Token");
+        assertThat(duplicate.requests.get(0).path).isEqualTo("Auth/OAuth");
         assertThat(collectionNode(requestTree(panel), "APIM Copy")).isNotNull();
     }
 
@@ -487,9 +492,9 @@ class ImporterPanelRequestTreeCreateFlowTest {
         collection.folderPaths.add("Auth");
         collection.folderPaths.add("Auth/OAuth");
         ApiRequest token = request("req-token", "Get Token", "POST", "https://auth.example.test/token", 0);
-        token.path = "Auth/OAuth/Get Token";
+        token.path = "Auth/OAuth";
         ApiRequest refresh = request("req-refresh", "Refresh Token", "POST", "https://auth.example.test/refresh", 1);
-        refresh.path = "Auth/Refresh Token";
+        refresh.path = "Auth";
         collection.requests.add(token);
         collection.requests.add(refresh);
         panel.restoreWorkspaceCollections(List.of(collection));
@@ -539,6 +544,152 @@ class ImporterPanelRequestTreeCreateFlowTest {
     }
 
     @Test
+    void renamingRequestToSlashLabelDoesNotCreatePhantomFolders() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode collectionNode = collectionNode(requestTree(panel), "APIM");
+        invokeOnEdt(panel, "createNewRequestFromTree", new Class<?>[]{CollectionTreeNode.class}, collectionNode);
+        drainEdt();
+
+        CollectionTreeNode requestNode = requestNode(requestTree(panel), "Untitled Request");
+        treeModel(panel).valueForPathChanged(new TreePath(requestNode.getPath()), "GET /users");
+        drainEdt();
+
+        CollectionTreeNode renamed = requestNode(requestTree(panel), "GET /users");
+        assertThat(renamed).isNotNull();
+        assertThat(renamed.request.name).isEqualTo("GET /users");
+        assertThat(renamed.request.path).isEqualTo("");
+        assertThat(((CollectionTreeNode) renamed.getParent()).getNodeType())
+                .isEqualTo(CollectionTreeNode.Type.COLLECTION);
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(renamed.request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(folderPaths(requestTree(panel))).isEmpty();
+    }
+
+    @Test
+    void duplicatingRootSlashRequestDoesNotCreatePhantomFolders() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode collectionNode = collectionNode(requestTree(panel), "APIM");
+        invokeOnEdt(panel, "createNewRequestFromTree", new Class<?>[]{CollectionTreeNode.class}, collectionNode);
+        drainEdt();
+
+        CollectionTreeNode requestNode = requestNode(requestTree(panel), "Untitled Request");
+        treeModel(panel).valueForPathChanged(new TreePath(requestNode.getPath()), "GET /users");
+        drainEdt();
+
+        CollectionTreeNode slashRequestNode = requestNode(requestTree(panel), "GET /users");
+        invokeOnEdt(panel, "duplicateRequestNode", new Class<?>[]{CollectionTreeNode.class}, slashRequestNode);
+        drainEdt();
+
+        CollectionTreeNode duplicate = requestNode(requestTree(panel), "GET /users Copy");
+        assertThat(duplicate).isNotNull();
+        assertThat(duplicate.request.name).isEqualTo("GET /users Copy");
+        assertThat(duplicate.request.path).isEqualTo("");
+        assertThat(((CollectionTreeNode) duplicate.getParent()).getNodeType())
+                .isEqualTo(CollectionTreeNode.Type.COLLECTION);
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(duplicate.request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(folderPaths(requestTree(panel))).isEmpty();
+    }
+
+    @Test
+    void duplicatingFolderRequestWithSlashNameStaysInSameFolder() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "POST /token", "POST", "https://auth.example.test/token", 0);
+        request.path = "Auth";
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode requestNode = requestNode(requestTree(panel), "req-1");
+        invokeOnEdt(panel, "duplicateRequestNode", new Class<?>[]{CollectionTreeNode.class}, requestNode);
+        drainEdt();
+
+        CollectionTreeNode duplicate = requestNode(requestTree(panel), "POST /token Copy");
+        assertThat(duplicate).isNotNull();
+        assertThat(duplicate.request.name).isEqualTo("POST /token Copy");
+        assertThat(duplicate.request.path).isEqualTo("Auth");
+        assertThat(((CollectionTreeNode) duplicate.getParent()).folderPath).isEqualTo("Auth");
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(duplicate.request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(folderPaths(requestTree(panel))).containsExactly("Auth");
+    }
+
+    @Test
+    void renameFolderRejectsSlashAndBackslashLabels() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode folderNode = folderNodeByPath(requestTree(panel), "Auth");
+        treeModel(panel).valueForPathChanged(new TreePath(folderNode.getPath()), "Auth/OAuth");
+        drainEdt();
+        treeModel(panel).valueForPathChanged(new TreePath(folderNode.getPath()), "Auth\\OAuth");
+        drainEdt();
+
+        assertThat(collection.folderPaths).containsExactly("Auth");
+        assertThat(folderPaths(requestTree(panel))).containsExactly("Auth");
+        assertThat(folderNode.folderPath).isEqualTo("Auth");
+        assertThat(folderNode.getUserObject()).isEqualTo("Auth");
+    }
+
+    @Test
+    void requestRenameCollisionStillRejectsSlashLabels() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest slashRequest = request("req-1", "GET /users", "GET", "", 0);
+        slashRequest.path = "";
+        ApiRequest otherRequest = request("req-2", "Other", "GET", "", 1);
+        otherRequest.path = "";
+        collection.requests.add(slashRequest);
+        collection.requests.add(otherRequest);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode otherNode = requestNode(requestTree(panel), "req-2");
+        treeModel(panel).valueForPathChanged(new TreePath(otherNode.getPath()), "GET /users");
+        drainEdt();
+
+        assertThat(otherRequest.name).isEqualTo("Other");
+        assertThat(otherRequest.path).isEqualTo("");
+        assertThat(otherNode.getUserObject()).isEqualTo("Other");
+        assertThat(folderPaths(requestTree(panel))).isEmpty();
+    }
+
+    @Test
+    void sameSlashRequestNameAllowedInDifferentFolders() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Users");
+        ApiRequest authRequest = request("req-1", "GET /users", "GET", "", 0);
+        authRequest.path = "Auth";
+        ApiRequest usersRequest = request("req-2", "GET /users", "GET", "", 1);
+        usersRequest.path = "Users";
+        collection.requests.add(authRequest);
+        collection.requests.add(usersRequest);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        assertThat(requestNode(requestTree(panel), "req-1")).isNotNull();
+        assertThat(requestNode(requestTree(panel), "req-2")).isNotNull();
+        assertThat(leafRequestNames(folderNodeByPath(requestTree(panel), "Auth"))).containsExactly("GET /users");
+        assertThat(leafRequestNames(folderNodeByPath(requestTree(panel), "Users"))).containsExactly("GET /users");
+        assertThat(folderPaths(requestTree(panel))).containsExactly("Auth", "Users");
+    }
+
+    @Test
     void deleteCollectionRemovesCollectionMappingsAndQueuedRequests() throws Exception {
         ImporterPanel panel = newPanelWithDeleteDecision(null, true);
         ApiCollection collection = collection("APIM");
@@ -565,9 +716,9 @@ class ImporterPanelRequestTreeCreateFlowTest {
         collection.folderPaths.add("Auth");
         collection.folderPaths.add("Auth/OAuth");
         ApiRequest token = request("req-token", "Get Token", "POST", "https://auth.example.test/token", 0);
-        token.path = "Auth/OAuth/Get Token";
+        token.path = "Auth/OAuth";
         ApiRequest refresh = request("req-refresh", "Refresh Token", "POST", "https://auth.example.test/refresh", 1);
-        refresh.path = "Auth/Refresh Token";
+        refresh.path = "Auth";
         collection.requests.add(token);
         collection.requests.add(refresh);
         panel.restoreWorkspaceCollections(List.of(collection));
@@ -668,7 +819,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ApiCollection collection = loadedCollections(panel).get(0);
         collection.folderPaths.add("Auth");
         ApiRequest request = request("req-1", "Get Token", "GET", "", 0);
-        request.path = "Auth/Get Token";
+        request.path = "Auth";
         request.headers.add(new ApiRequest.Header("X-Test", "1"));
         collection.requests.add(request);
 
@@ -932,6 +1083,30 @@ class ImporterPanelRequestTreeCreateFlowTest {
                     collectRequestNames(ctn, names);
                 }
             }
+        }
+    }
+
+    private static List<String> folderPaths(JTree tree) {
+        List<String> paths = new ArrayList<>();
+        if (tree == null || tree.getModel() == null) {
+            return paths;
+        }
+        collectFolderPaths((DefaultMutableTreeNode) tree.getModel().getRoot(), paths);
+        return paths;
+    }
+
+    private static void collectFolderPaths(DefaultMutableTreeNode node, List<String> paths) {
+        if (node == null) {
+            return;
+        }
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && ctn.folderPath != null) {
+                paths.add(ctn.folderPath);
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectFolderPaths((DefaultMutableTreeNode) node.getChildAt(i), paths);
         }
     }
 

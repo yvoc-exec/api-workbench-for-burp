@@ -93,6 +93,22 @@ class RequestTreeNamingPolicyTest {
     }
 
     @Test
+    void folderRenameRejectsPathSeparators() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        RequestTreeNamingPolicy.RenameValidation slashValidation =
+                RequestTreeNamingPolicy.validateFolderRename(collection, "Auth", "Auth/OAuth");
+        RequestTreeNamingPolicy.RenameValidation backslashValidation =
+                RequestTreeNamingPolicy.validateFolderRename(collection, "Auth", "Auth\\OAuth");
+
+        assertThat(slashValidation.valid).isFalse();
+        assertThat(backslashValidation.valid).isFalse();
+        assertThat(slashValidation.message).isEqualTo("Folder names cannot contain '/' or '\\'. Create a nested folder instead.");
+        assertThat(backslashValidation.message).isEqualTo("Folder names cannot contain '/' or '\\'. Create a nested folder instead.");
+    }
+
+    @Test
     void requestRenameRejectsSiblingRequestCollision() {
         ApiCollection collection = collection("APIM");
         collection.requests.add(request("1", "Login", "Login"));
@@ -116,6 +132,19 @@ class RequestTreeNamingPolicyTest {
 
         assertThat(validation.valid).isFalse();
         assertThat(validation.message).isEqualTo("A request or folder named 'Auth' already exists in this location.");
+    }
+
+    @Test
+    void requestRenameAllowsSlashLabelWhenUnique() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.requests.add(request("1", "Login", "Auth"));
+
+        RequestTreeNamingPolicy.RenameValidation validation =
+                RequestTreeNamingPolicy.validateRequestRename(collection, collection.requests.get(0), "GET /users");
+
+        assertThat(validation.valid).isTrue();
+        assertThat(validation.normalizedName).isEqualTo("GET /users");
     }
 
     @Test
