@@ -83,17 +83,26 @@ public final class RequestTreePathService {
     }
 
     public static String folderPathFromRequestPath(String requestPath, String requestName) {
-        String normalized = normalizeFolderPath(requestPath);
-        if (normalized.isEmpty()) {
+        String rawPath = requestPath != null ? requestPath.replace('\\', '/').trim() : "";
+        if (rawPath.isEmpty()) {
             return "";
         }
-        String name = requestName != null ? requestName.trim() : "";
+        String normalized = normalizeFolderPath(rawPath);
+        String name = requestName != null ? requestName.replace('\\', '/').trim() : "";
         if (!name.isEmpty()) {
-            int lastSlash = normalized.lastIndexOf('/');
-            String lastSegment = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
-            if (Objects.equals(lastSegment, name)) {
-                return lastSlash >= 0 ? normalized.substring(0, lastSlash) : "";
+            if (Objects.equals(rawPath, name)) {
+                return "";
             }
+            String suffix = "/" + name;
+            if (rawPath.endsWith(suffix)) {
+                return normalizeFolderPath(rawPath.substring(0, rawPath.length() - suffix.length()));
+            }
+            if (Objects.equals(normalized, name)) {
+                return "";
+            }
+        }
+        if (!rawPath.contains("/")) {
+            return normalized;
         }
         return normalized;
     }

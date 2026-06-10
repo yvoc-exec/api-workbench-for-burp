@@ -56,7 +56,7 @@ public final class RequestTreeMutationService {
         ApiRequest request = new ApiRequest();
         request.id = UUID.randomUUID().toString();
         request.name = RequestTreeNamingPolicy.normalizeTreeLabel(requestName);
-        request.path = RequestTreePathService.joinFolderPath(normalizedParent, request.name);
+        request.path = normalizedParent;
         request.sourceCollection = collection.name;
         request.method = "GET";
         request.url = "";
@@ -119,8 +119,7 @@ public final class RequestTreeMutationService {
         }
         String parentFolderPath = RequestTreePathService.getRequestFolderPath(sourceRequest);
         String duplicateName = RequestTreeNamingPolicy.uniqueChildCopyName(collection, parentFolderPath, sourceRequest.name);
-        String duplicatePath = RequestTreePathService.joinFolderPath(parentFolderPath, duplicateName);
-        ApiRequest duplicate = copyRequestForDuplicate(sourceRequest, collection.name, duplicateName, duplicatePath);
+        ApiRequest duplicate = copyRequestForDuplicate(sourceRequest, collection.name, duplicateName, parentFolderPath);
         insertRequestForParentPath(collection, duplicate, parentFolderPath, sourceRequest);
         AuthInheritanceResolver.resolveRequestAuth(collection, duplicate);
         return duplicate;
@@ -158,6 +157,9 @@ public final class RequestTreeMutationService {
         if (normalizedOldPath.isBlank() || normalizedLeaf.isBlank()) {
             return normalizedOldPath;
         }
+        if (normalizedLeaf.indexOf('/') >= 0 || normalizedLeaf.indexOf('\\') >= 0) {
+            return normalizedOldPath;
+        }
         String parentPath = RequestTreePathService.getParentFolderPath(normalizedOldPath);
         String newPath = RequestTreePathService.joinFolderPath(parentPath, normalizedLeaf);
         if (Objects.equals(normalizedOldPath, newPath)) {
@@ -180,7 +182,9 @@ public final class RequestTreeMutationService {
         }
         String parentFolderPath = RequestTreePathService.getRequestFolderPath(request);
         request.name = normalizedName;
-        request.path = RequestTreePathService.joinFolderPath(parentFolderPath, normalizedName);
+        request.path = parentFolderPath;
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = true;
         AuthInheritanceResolver.resolveRequestAuth(collection, request);
         return normalizedName;
     }
@@ -265,9 +269,13 @@ public final class RequestTreeMutationService {
                 if (request == null || !isRequestInFolderSubtree(request, normalizedSource)) {
                     continue;
                 }
-                String targetPath = RequestTreePathService.rewriteFolderPathPrefix(request.path, normalizedSource, normalizedTarget);
+                String targetPath = RequestTreePathService.rewriteFolderPathPrefix(
+                        RequestTreePathService.getRequestFolderPath(request),
+                        normalizedSource,
+                        normalizedTarget
+                );
                 if (targetPath.isBlank()) {
-                    targetPath = RequestTreePathService.joinFolderPath(normalizedTarget, request.name);
+                    targetPath = normalizedTarget;
                 }
                 ApiRequest copy = copyRequestForDuplicate(request, collection.name, request.name, targetPath);
                 if (copy != null) {
@@ -352,10 +360,10 @@ public final class RequestTreeMutationService {
                     continue;
                 }
                 if (isRequestInFolderSubtree(request, normalizedSource)) {
-                    String requestPath = request.path != null ? request.path : "";
+                    String requestPath = RequestTreePathService.getRequestFolderPath(request);
                     request.path = RequestTreePathService.rewriteFolderPathPrefix(requestPath, normalizedSource, normalizedTarget);
                     if (request.path.isBlank() && request.name != null) {
-                        request.path = RequestTreePathService.joinFolderPath(normalizedTarget, request.name);
+                        request.path = normalizedTarget;
                     }
                 }
             }
@@ -599,6 +607,8 @@ public final class RequestTreeMutationService {
         copy.authSource = source.authSource;
         copy.authOverrideMode = source.authOverrideMode;
         copy.explicitAuth = AuthInheritanceResolver.copyAuth(source.explicitAuth);
+        copy.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        copy.editorMaterialized = true;
         return copy;
     }
 
@@ -624,7 +634,12 @@ public final class RequestTreeMutationService {
                 if (request == null) {
                     continue;
                 }
-                ApiRequest requestCopy = copyRequestForDuplicate(request, copy.name, request.name, request.path);
+                ApiRequest requestCopy = copyRequestForDuplicate(
+                        request,
+                        copy.name,
+                        request.name,
+                        RequestTreePathService.getRequestFolderPath(request)
+                );
                 if (requestCopy != null) {
                     copy.requests.add(requestCopy);
                 }

@@ -67,6 +67,9 @@ public final class RequestTreeNamingPolicy {
         if (normalizedOldPath.isBlank() || normalizedLeaf.isBlank()) {
             return RenameValidation.invalid("A folder name is required.");
         }
+        if (containsPathSeparator(normalizedLeaf)) {
+            return RenameValidation.invalid("Folder names cannot contain '/' or '\\'. Create a nested folder instead.");
+        }
         String parentPath = RequestTreePathService.getParentFolderPath(normalizedOldPath);
         String newPath = RequestTreePathService.joinFolderPath(parentPath, normalizedLeaf);
         if (hasSiblingFolderOrRequestNameConflict(collection, parentPath, normalizedLeaf, normalizedOldPath)) {
@@ -306,6 +309,10 @@ public final class RequestTreeNamingPolicy {
             }
         }
         return normalized + " Copy";
+    }
+
+    private static boolean containsPathSeparator(String value) {
+        return value != null && (value.indexOf('/') >= 0 || value.indexOf('\\') >= 0);
     }
 
     private static Set<String> normalizeKeys(Set<String> values) {

@@ -24,7 +24,7 @@ class RequestTreeMutationServiceTest {
 
         assertThat(created).isNotNull();
         assertThat(created.name).isEqualTo("Untitled Request");
-        assertThat(created.path).isEqualTo("Auth/Untitled Request");
+        assertThat(created.path).isEqualTo("Auth");
         assertThat(created.sourceCollection).isEqualTo("APIM");
         assertThat(created.method).isEqualTo("GET");
         assertThat(created.url).isEqualTo("");
@@ -60,7 +60,7 @@ class RequestTreeMutationServiceTest {
         source.runtimeVars.put("baseUrl", "https://runtime.example.test");
         source.runtimeOAuth2.put("oauth2_access_token", "runtime-access");
 
-        ApiRequest request = request("req-1", "Login", "Auth/Login");
+        ApiRequest request = request("req-1", "Login", "Auth");
         request.method = "POST";
         request.url = "https://api.example.test/login";
         request.headers.add(new ApiRequest.Header("X-Test", "one"));
@@ -94,7 +94,7 @@ class RequestTreeMutationServiceTest {
         ApiRequest copied = duplicate.requests.get(0);
         assertThat(copied.id).isNotEqualTo(request.id);
         assertThat(copied.name).isEqualTo("Login");
-        assertThat(copied.path).isEqualTo("Auth/Login");
+        assertThat(copied.path).isEqualTo("Auth");
         assertThat(copied.sourceCollection).isEqualTo("APIM Copy");
         assertThat(copied.method).isEqualTo("POST");
         assertThat(copied.url).isEqualTo("https://api.example.test/login");
@@ -119,7 +119,7 @@ class RequestTreeMutationServiceTest {
         collection.folderAuth.put("Auth", auth("bearer", "token", "{{collectionToken}}"));
         collection.folderVars.put("Auth", new LinkedHashMap<>(java.util.Map.of("role", "admin")));
 
-        ApiRequest request = request("req-1", "Login", "Auth/OAuth/Login");
+        ApiRequest request = request("req-1", "Login", "Auth/OAuth");
         request.method = "POST";
         request.url = "https://api.example.test/login";
         collection.requests.add(request);
@@ -135,7 +135,7 @@ class RequestTreeMutationServiceTest {
         ApiRequest copied = collection.requests.get(1);
         assertThat(copied.id).isNotEqualTo(request.id);
         assertThat(copied.name).isEqualTo("Login");
-        assertThat(copied.path).isEqualTo("Auth Copy 3/OAuth/Login");
+        assertThat(copied.path).isEqualTo("Auth Copy 3/OAuth");
         assertThat(copied.sourceCollection).isEqualTo("APIM");
     }
 
@@ -144,7 +144,7 @@ class RequestTreeMutationServiceTest {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
 
-        ApiRequest request = request("req-1", "Login", "Auth/Login");
+        ApiRequest request = request("req-1", "Login", "Auth");
         request.method = "POST";
         request.url = "https://api.example.test/login";
         request.headers.add(new ApiRequest.Header("X-Test", "one"));
@@ -162,7 +162,7 @@ class RequestTreeMutationServiceTest {
         assertThat(copy1.name).isEqualTo("Login Copy");
         assertThat(copy2.name).isEqualTo("Login Copy 2");
         assertThat(copy3.name).isEqualTo("Login Copy 3");
-        assertThat(copy1.path).isEqualTo("Auth/Login Copy");
+        assertThat(copy1.path).isEqualTo("Auth");
         assertThat(copy1.method).isEqualTo("POST");
         assertThat(copy1.url).isEqualTo("https://api.example.test/login");
         assertThat(copy1.headers).hasSize(1);
@@ -173,6 +173,44 @@ class RequestTreeMutationServiceTest {
         assertThat(copy1.id).isNotEqualTo(request.id);
         assertThat(collection.requests).extracting(req -> req.name)
                 .contains("Login", "Login Copy", "Login Copy 2", "Login Copy 3");
+    }
+
+    @Test
+    void duplicateRequestWithSlashNameKeepsParentFolderPathOnly() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-1", "GET /users", "Auth");
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+        collection.requests.add(request);
+
+        ApiRequest duplicate = service.duplicateRequest(collection, request);
+
+        assertThat(duplicate.name).isEqualTo("GET /users Copy");
+        assertThat(duplicate.path).isEqualTo("Auth");
+        assertThat(duplicate.sourceCollection).isEqualTo("APIM");
+        assertThat(collection.requests).extracting(req -> req.name)
+                .contains("GET /users", "GET /users Copy");
+    }
+
+    @Test
+    void duplicateRequestWithBackslashNameKeepsParentFolderPathOnly() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-1", "users\\{id}", "Auth");
+        request.method = "GET";
+        request.url = "https://api.example.test/users/123";
+        collection.requests.add(request);
+
+        ApiRequest duplicate = service.duplicateRequest(collection, request);
+
+        assertThat(duplicate.name).isEqualTo("users\\{id} Copy");
+        assertThat(duplicate.path).isEqualTo("Auth");
+        assertThat(duplicate.sourceCollection).isEqualTo("APIM");
+        assertThat(collection.requests).extracting(req -> req.name)
+                .contains("users\\{id}", "users\\{id} Copy");
     }
 
     @Test
@@ -189,6 +227,21 @@ class RequestTreeMutationServiceTest {
     }
 
     @Test
+    void renameRequestWithSlashNameKeepsParentFolderPathOnly() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Other", "Auth");
+        collection.requests.add(request);
+
+        String renamed = service.renameRequest(collection, request, "GET /users");
+
+        assertThat(renamed).isEqualTo("GET /users");
+        assertThat(request.name).isEqualTo("GET /users");
+        assertThat(request.path).isEqualTo("Auth");
+        assertThat(request.sourceCollection).isEqualTo("APIM");
+    }
+
+    @Test
     void renameFolderRewritesChildRequestPathsAndFolderMetadata() {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
@@ -197,7 +250,7 @@ class RequestTreeMutationServiceTest {
         collection.folderAuth.put("Auth", auth("bearer", "token", "{{collectionToken}}"));
         collection.folderVars.put("Auth", new LinkedHashMap<>(java.util.Map.of("role", "admin")));
 
-        ApiRequest request = request("req-1", "Login", "Auth/OAuth/Login");
+        ApiRequest request = request("req-1", "Login", "Auth/OAuth");
         request.method = "POST";
         collection.requests.add(request);
 
@@ -209,7 +262,7 @@ class RequestTreeMutationServiceTest {
         assertThat(collection.folderAuthModes).containsEntry("Security", "explicit");
         assertThat(collection.folderAuth).containsKey("Security");
         assertThat(collection.folderVars).containsKey("Security");
-        assertThat(request.path).isEqualTo("Security/OAuth/Login");
+        assertThat(request.path).isEqualTo("Security/OAuth");
     }
 
     @Test
@@ -222,8 +275,8 @@ class RequestTreeMutationServiceTest {
         collection.folderAuth.put("Auth", auth("bearer", "token", "{{collectionToken}}"));
         collection.folderVars.put("Auth", new LinkedHashMap<>(java.util.Map.of("role", "admin")));
 
-        ApiRequest removed = request("req-1", "Login", "Auth/OAuth/Login");
-        ApiRequest kept = request("req-2", "Ping", "Public/Ping");
+        ApiRequest removed = request("req-1", "Login", "Auth/OAuth");
+        ApiRequest kept = request("req-2", "Ping", "Public");
         collection.requests.add(removed);
         collection.requests.add(kept);
 

@@ -2835,7 +2835,7 @@ public class ImporterPanel {
         ApiRequest request = new ApiRequest();
         request.id = UUID.randomUUID().toString();
         request.name = normalizeTreeLabel(requestName);
-        request.path = joinFolderPath(parentFolderPath, request.name);
+        request.path = RequestTreePathService.normalizeFolderPath(parentFolderPath);
         request.sourceCollection = collection != null ? collection.name : null;
         request.method = "GET";
         request.url = "";
@@ -2939,6 +2939,8 @@ public class ImporterPanel {
         copy.authSource = source.authSource;
         copy.authOverrideMode = source.authOverrideMode;
         copy.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(source.explicitAuth);
+        copy.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        copy.editorMaterialized = true;
         return copy;
     }
 
@@ -2964,7 +2966,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                ApiRequest requestCopy = copyRequestForDuplicate(request, copy.name, request.name, request.path);
+                ApiRequest requestCopy = copyRequestForDuplicate(request, copy.name, request.name, RequestTreePathService.getRequestFolderPath(request));
                 if (requestCopy != null) {
                     copy.requests.add(requestCopy);
                 }
@@ -3067,7 +3069,7 @@ public class ImporterPanel {
                     String requestPath = request.path != null ? request.path : "";
                     request.path = rewriteFolderPathPrefix(requestPath, normalizedSource, normalizedTarget);
                     if (request.path.isBlank() && request.name != null) {
-                        request.path = joinFolderPath(normalizedTarget, request.name);
+                        request.path = normalizedTarget;
                     }
                 }
             }
@@ -3147,7 +3149,7 @@ public class ImporterPanel {
                 }
                 String targetPath = rewriteFolderPathPrefix(request.path, normalizedSource, normalizedTarget);
                 if (targetPath.isBlank()) {
-                    targetPath = joinFolderPath(normalizedTarget, request.name);
+                    targetPath = normalizedTarget;
                 }
                 ApiRequest copy = copyRequestForDuplicate(request, collection.name, request.name, targetPath);
                 if (copy != null) {
@@ -4878,12 +4880,17 @@ public class ImporterPanel {
                     continue;
                 }
                 String requestName = request.name != null ? request.name : "";
+                boolean manualTreeRequest = request.isManualPreserveMode();
                 if (folderPath.isBlank()) {
-                    if (isNestedRequestPath(request.path, requestName)) {
-                        continue;
+                    if (manualTreeRequest) {
+                        request.path = "";
+                    } else {
+                        if (isNestedRequestPath(request.path, requestName)) {
+                            continue;
+                        }
+                        request.path = requestName;
                     }
-                    request.path = requestName;
-                } else if (requestName.isBlank()) {
+                } else if (manualTreeRequest || requestName.isBlank()) {
                     request.path = folderPath;
                 } else {
                     request.path = RequestTreePathService.joinFolderPath(folderPath, requestName);
@@ -5091,31 +5098,7 @@ public class ImporterPanel {
     }
 
     private static String folderPathFromRequestPath(String requestPath, String requestName) {
-        if (requestPath == null) {
-            return "";
-        }
-        String normalizedPath = requestPath.replace('\\', '/').trim();
-        if (normalizedPath.isEmpty()) {
-            return "";
-        }
-        String normalizedName = requestName != null ? requestName.replace('\\', '/').trim() : "";
-        if (!normalizedName.isEmpty()) {
-            String suffix = "/" + normalizedName;
-            if (normalizedPath.equals(normalizedName)) {
-                return "";
-            }
-            if (normalizedPath.endsWith(suffix)) {
-                return normalizedPath.substring(0, normalizedPath.length() - suffix.length());
-            }
-        }
-        int lastSlash = normalizedPath.lastIndexOf('/');
-        if (lastSlash < 0) {
-            return "";
-        }
-        if (normalizedName.isEmpty()) {
-            return normalizedPath.substring(0, lastSlash);
-        }
-        return normalizedPath;
+        return RequestTreePathService.folderPathFromRequestPath(requestPath, requestName);
     }
 
     private static Map<String, String> mergeRequestTreePaths(Map<String, String> uiTreePaths, Map<String, String> modelTreePaths) {

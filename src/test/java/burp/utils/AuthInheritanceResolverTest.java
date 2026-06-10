@@ -139,4 +139,19 @@ class AuthInheritanceResolverTest {
         assertThat(request.authExplicitlyDisabled).isTrue();
         assertThat(request.authSource).isEqualTo("request: Public");
     }
+
+    @Test
+    void getRequestFolderPathTreatsSlashInRequestNameAsLabel() {
+        ApiRequest request = new ApiRequest();
+        request.name = "GET /users";
+        request.path = "Auth";
+
+        assertThat(AuthInheritanceResolver.getRequestFolderPath(request)).isEqualTo("Auth");
+
+        request.path = "Auth/GET /users";
+        assertThat(AuthInheritanceResolver.getRequestFolderPath(request)).isEqualTo("Auth");
+
+        request.path = "";
+        assertThat(AuthInheritanceResolver.getRequestFolderPath(request)).isEqualTo("");
+    }
 }
