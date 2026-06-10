@@ -116,6 +116,7 @@ public class WorkspaceState {
         copy.format = src.format;
         copy.version = src.version;
         copy.auth = copyAuth(src.auth);
+        copy.folderPaths = src.folderPaths != null ? new ArrayList<>(src.folderPaths) : new ArrayList<>();
         copy.folderAuthModes = src.folderAuthModes != null ? new LinkedHashMap<>(src.folderAuthModes) : new LinkedHashMap<>();
         copy.folderAuth = copyAuthMap(src.folderAuth);
         copy.requests = copyRequests(src.requests);

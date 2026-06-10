@@ -16,6 +16,8 @@ public class ApiCollection {
     public String format;         // postman, bruno, openapi, insomnia, har
     public String version;
     public List<ApiRequest> requests = new ArrayList<>();
+    /** Explicit folder paths preserved for empty/manual folders in the workbench tree. */
+    public List<String> folderPaths = new ArrayList<>();
     public List<ApiRequest.Variable> variables = new ArrayList<>();
     /** Bruno folder-scoped variables keyed by normalized folder path. */
     public Map<String, Map<String, String>> folderVars = new LinkedHashMap<>();
