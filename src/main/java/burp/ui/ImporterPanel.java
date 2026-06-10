@@ -2845,8 +2845,8 @@ public class ImporterPanel {
         request.variables = new ArrayList<>();
         request.preRequestScripts = new ArrayList<>();
         request.postResponseScripts = new ArrayList<>();
-        request.editorMaterialized = true;
-        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = false;
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
         request.suppressedAutoHeaders = new LinkedHashSet<>();
         request.authOverrideMode = "inherit";
         request.explicitAuth = null;
@@ -2939,8 +2939,6 @@ public class ImporterPanel {
         copy.authSource = source.authSource;
         copy.authOverrideMode = source.authOverrideMode;
         copy.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(source.explicitAuth);
-        copy.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
-        copy.editorMaterialized = true;
         return copy;
     }
 

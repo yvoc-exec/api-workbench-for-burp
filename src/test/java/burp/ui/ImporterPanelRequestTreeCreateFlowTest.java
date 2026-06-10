@@ -14,6 +14,7 @@ import javax.swing.*;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
+import javax.swing.table.DefaultTableModel;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -242,10 +243,15 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(createdRequest.request.path).isEqualTo("");
         assertThat(createdRequest.request.headers).isEmpty();
         assertThat(createdRequest.request.body).isNull();
-        assertThat(createdRequest.request.editorMaterialized).isTrue();
-        assertThat(createdRequest.request.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(createdRequest.request.editorMaterialized).isFalse();
+        assertThat(createdRequest.request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(createdRequest.request.suppressedAutoHeaders).isEmpty();
         assertThat(createdRequest.request.authOverrideMode).isEqualTo("inherit");
         assertThat(createdRequest.request.auth).isNull();
+        assertThat(headerValues(headersModel(requestEditor(panel))))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
         assertThat(requestEditor(panel).isSendEnabled()).isTrue();
@@ -312,6 +318,10 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(createdRequest.request.method).isEqualTo("GET");
         assertThat(createdRequest.request.url).isEqualTo("");
         assertThat(((CollectionTreeNode) createdRequest.getParent()).folderPath).isEqualTo("Auth");
+        assertThat(headerValues(headersModel(requestEditor(panel))))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
         assertThat(folderPaths(requestTree(panel))).containsExactly("Auth");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(createdRequest.request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
@@ -952,6 +962,22 @@ class ImporterPanelRequestTreeCreateFlowTest {
 
     private static RequestEditorPanel requestEditor(ImporterPanel panel) throws Exception {
         return privateField(panel, "requestEditor");
+    }
+
+    private static DefaultTableModel headersModel(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "headersModel");
+    }
+
+    private static Map<String, String> headerValues(DefaultTableModel model) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            String value = (String) model.getValueAt(i, 1);
+            if (key != null && !key.isBlank()) {
+                out.put(key, value);
+            }
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

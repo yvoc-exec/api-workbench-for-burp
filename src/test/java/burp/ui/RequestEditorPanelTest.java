@@ -49,6 +49,47 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void autoCompatibleRequestDefaultHeadersCanBeEditedRemovedAndReloaded() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.editorMaterialized = false;
+
+        panel.loadRequest(req);
+
+        DefaultTableModel model = headersModel(panel);
+        assertThat(headerValues(model))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
+
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            if ("User-Agent".equalsIgnoreCase(key)) {
+                model.setValueAt("MyCustomAgent/1.0", i, 1);
+                break;
+            }
+        }
+        removeHeaderRow(panel, "Accept");
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.headers)
+                .anySatisfy(header -> {
+                    assertThat(header.key).isEqualTo("User-Agent");
+                    assertThat(header.value).isEqualTo("MyCustomAgent/1.0");
+                });
+        assertThat(built.headers).extracting(h -> h.key).doesNotContain("Accept");
+        assertThat(built.suppressedAutoHeaders).contains("accept");
+
+        panel.loadRequest(built);
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("User-Agent", "MyCustomAgent/1.0")
+                .doesNotContainKey("Accept");
+    }
+
+    @Test
     void loadingRequestMaterializesAuthAndBodyHeadersButNotTransportHeaders() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
