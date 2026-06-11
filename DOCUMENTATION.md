@@ -532,7 +532,7 @@ The **Workbench Resolved tab** shows the effective header set after all layers a
 
 **Header materialization and suppressions**: The editor loads materialized headers such as `Accept`, `User-Agent`, `Cache-Control`, `Authorization`, and `Content-Type` as editable key/value rows when they apply. Editing a materialized row makes the value explicit. Removing a materialized row suppresses the matching synthesized header on future rebuilds until it is re-added. Transport headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are computed by the builder rather than treated as normal persisted rows.
 
-Runtime variables and OAuth2 runtime values can be exported/imported as JSON from the Variables tab. Import supports merge or replace, which makes repeat testing easier without persisting token data automatically.
+Collection and environment exports are explicit user actions. Runtime variables and OAuth2 runtime values are persisted in workspace state for Burp projects, but they are not automatically included in collection or environment exports.
 
 ### 6.3 Implementation
 
@@ -952,8 +952,8 @@ All per-collection runtime mutations (variables, OAuth2, extracted vars) flow th
 - **Variables tab** automatically refreshes when a script (Workbench or Runner) extracts new variables into `collection.runtimeVars`.
 - **OAuth2 tab** refreshes when a token is acquired during pipeline execution and persisted into `collection.runtimeOAuth2`.
 - **Workbench** uses the same shared pipeline as the Runner, so variable extraction behavior is identical.
-- **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution.
-- **Runtime JSON import/export** uses the same collection helper methods so merge/replace operations refresh dependent UI.
+- **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution, and the collection export flow can reuse the same unresolved-variable modal with export-only values when variable resolution is enabled.
+- **Collection/environment export** uses the shared collection/environment model and resolver helpers, but does not mutate runtime maps during export.
 
 ### 10.1 Workspace State Persistence
 
@@ -993,7 +993,7 @@ Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohi
 ### 11.1 Token Storage
 - **Live `TokenStore` cache** uses `ConcurrentHashMap` and remains in-memory only.
 - **Workspace snapshots are persistent**: API Workbench stores runtime OAuth2 and runtime variable state in Burp project extension data.
-- **Manual Runtime JSON export** can write runtime OAuth2 values, including access/refresh tokens, to a user-selected file.
+- **Collection and environment export files** may contain secrets if you choose to resolve variables or export secret-bearing environment values. Treat exported files as sensitive.
 - **No encryption at rest** in the workspace layer; Burp project files should be treated as sensitive.
 - Cleared on extension unload or `OAuth2Manager.clearTokens()`.
 
@@ -1031,7 +1031,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 | Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | Security risk |
 | Token storage "never persisted" | Live `ConcurrentHashMap` cache is in-memory only, but workspace snapshots can mirror OAuth2/runtime secrets into Burp project data | Accurate with caveat |
 | File upload MIME detection | `Files.probeContentType()` is called for explicit file uploads | Implemented |
-| Automated test suite | JUnit 5 + Mockito + AssertJ across parsers, request building, runner behavior, variables, and runtime JSON | Present |
+| Automated test suite | JUnit 5 + Mockito + AssertJ across parsers, request building, runner behavior, variables, and collection/environment export | Present |
 
 ### 12.2 Architectural Limitations
 
@@ -1039,7 +1039,7 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 - **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
 - **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
 - **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
-- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and runtime JSON.
+- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and collection/environment export.
 - **Loopback callback requirement**: Authorization Code callback must use an HTTP loopback redirect URI. If the configured loopback port is occupied, the flow fails.
 - **Project-scoped state**: Montoya extension data is scoped to the Burp project/session. Disk-backed projects carry the saved workspace into the next session; temporary projects do not.
 

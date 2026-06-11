@@ -16,7 +16,7 @@ This guide is for operators using API Workbench during API testing, debugging, a
 8. [Import Destinations](#import-destinations)
 9. [Auth Inheritance](#auth-inheritance)
 10. [Workspace Persistence](#workspace-persistence)
-11. [Runtime JSON Export and Import](#runtime-json-export-and-import)
+11. [Collection and Environment Export](#collection-and-environment-export)
 12. [Scripts and Assertions](#scripts-and-assertions)
 13. [Supported Collection Formats](#supported-collection-formats)
 14. [Common Testing Scenarios](#common-testing-scenarios)
@@ -156,7 +156,7 @@ Right-click the tree to create and manage items directly:
 | Right-click target | Menu actions |
 |--------------------|--------------|
 | Empty/root area | **New Collection** |
-| Collection | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
+| Collection | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Export...**, **Auth Settings...** |
 | Folder | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
 | Request | **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
 
@@ -230,7 +230,7 @@ Controls:
 | **Duplicate** | Copies the selected environment profile |
 | **Delete** | Removes the selected environment profile |
 | **Set Active** | Marks the selected environment as the active runtime layer |
-| **Export** | Exports the selected environment profile |
+| **Export** | Exports the selected environment profile in API Workbench, Postman, dotenv, generic JSON, Insomnia, or Bruno format |
 
 The active environment is the normal runtime layer. Request-level variables remain advanced overrides.
 
@@ -319,7 +319,7 @@ Controls:
 |---------|----------|
 | **Save** | Immediately writes the current editor contents to the selected environment |
 | **Set Active** | Makes the selected environment the Active Environment |
-| **Export** | Saves the selected environment profile to JSON |
+| **Export** | Saves the selected environment profile in the selected export format |
 | **Import Environment** | Loads environment values into the Environment tab |
 | **Clear** | Clears editor UI only; does not autosave an empty map |
 
@@ -595,39 +595,48 @@ API Workbench saves its full workspace state through Burp project extension data
 
 ---
 
-## Runtime JSON Export and Import
+## Collection and Environment Export
 
-Runtime JSON is explicit and operator-controlled.
+### Collection export
 
-Use it when:
+Right-click a **collection** node in the Workbench tree and choose **Export...**.
 
-- You want repeatable test setup.
-- You want to move runtime values between Burp projects.
-- You want to save OAuth2/runtime state intentionally.
+Supported formats:
 
-Export shape:
+- API Workbench Collection JSON
+- Postman Collection v2.1 JSON
+- OpenAPI 3.0 JSON
+- OpenAPI 3.0 YAML
+- Insomnia JSON
+- Bruno ZIP
+- HAR 1.2 JSON
 
-```json
-{
-  "version": 1,
-  "collection": "Collection Name",
-  "runtimeVars": {
-    "base_url": "https://api.example.test"
-  },
-  "runtimeOAuth2": {
-    "oauth2_token_url": "https://auth.example.test/token"
-  }
-}
-```
+The collection export dialog includes one user-facing resolution option:
 
-Import modes:
+- **Resolve variables using active environment**
 
-| Mode | Behavior |
-|------|----------|
-| Merge | Adds imported keys and overwrites matching keys, keeps unrelated existing keys |
-| Replace | Clears current runtime vars and runtime OAuth2 values, then applies imported maps |
+Behavior:
 
-Treat exported runtime JSON as sensitive if it includes tokens, secrets, or credentials.
+- Unchecked: preserves `{{vars}}` exactly as written and does not open the unresolved-variable modal.
+- Checked: resolves variables using the active environment and existing safe resolver inputs. If unresolved variables remain, the existing unresolved-variable modal / quick-entry flow appears.
+- Canceling unresolved-variable handling aborts the export and does not write the file.
+
+Collection exports are explicit snapshots. They do **not** automatically include `runtimeVars` or `runtimeOAuth2`.
+
+### Environment export
+
+Use the **Environment** tab **Export** button to save the selected environment profile.
+
+Supported formats:
+
+- API Workbench Environment JSON
+- Postman Environment JSON
+- dotenv `.env`
+- Generic JSON Object
+- Insomnia Environment JSON
+- Bruno Environment `.bru`
+
+Environment export writes the selected environment profile only. Runtime execution maps are not automatically included unless they were already stored as normal environment variables.
 
 ---
 
@@ -766,7 +775,7 @@ After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer t
 Options:
 
 - Use a Burp project on disk for automatic workspace restore.
-- Use the Environment export when you intentionally need a portable environment snapshot.
+- Use collection export for a portable collection snapshot and the Environment export when you intentionally need a portable environment snapshot.
 - Avoid exporting secrets unless needed and approved.
 
 ---
@@ -836,7 +845,7 @@ Options:
 - **Sitemap and Runner send live traffic.** Use delay and stop conditions when testing production-like systems.
 - **Scripts are not sandboxed.** Collection scripts can access Java classes through Nashorn. Only run trusted scripts.
 - **Project snapshots can contain tokens and secrets.** Live token cache is memory-only, but Burp project data can store OAuth access/refresh tokens and other secret values.
-- **Runtime JSON can contain secrets.** Treat exported files as sensitive.
+- **Collection and environment exports can contain secrets.** Treat exported files as sensitive, especially when variable resolution is enabled.
 - **Authorization Code callback uses the configured HTTP loopback redirect URI.** The default remains `http://localhost:9876/callback`. Loopback examples include `http://localhost:9876/callback` and `http://127.0.0.1:9988/oauth/callback`.
 - **File uploads are explicit only.** Path-like text values are not read as files unless the field is marked as a file upload.
 - **Autosave follows selected collection.** Check the Target dropdown before editing Variables or OAuth2 settings.
@@ -868,9 +877,9 @@ Options:
 ### Before Saving/Sharing State
 
 - [ ] Decide whether Burp project persistence is enough.
-- [ ] Use Runtime JSON only when portable state is needed.
-- [ ] Review exported JSON for secrets/tokens.
-- [ ] Store exported runtime files securely.
+- [ ] Use collection or environment export only when portable state is needed.
+- [ ] Review exported files for secrets/tokens.
+- [ ] Store exported files securely.
 
 ### Before Reporting a Tool Issue
 

@@ -25,7 +25,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Workbench Request Tree Create Flow
 - Right-click the request tree to create and manage collections, folders, and requests directly in place.
 - Empty tree/root area: **New Collection**
-- Collection node: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Collection node: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Export...**, **Auth Settings...**
 - Folder node: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
 - Request node: **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
 - Selecting a collection, folder, or clearing the tree selection clears the request editor and disables Send until a request node is selected again.
@@ -38,6 +38,13 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Delete actions prompt for confirmation and remove the selected collection, folder subtree, or request; related queued runner entries are cleaned up when applicable.
 - Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy `runtimeVars` or `runtimeOAuth2` execution state.
 
+### Export Flow
+- Right-click a **collection** node and choose **Export...** to export that collection.
+- Collection export formats: API Workbench Collection JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON/YAML, Insomnia JSON, Bruno ZIP, and HAR 1.2 JSON.
+- Collection export can optionally **Resolve variables using active environment**. When enabled, unresolved placeholders use the existing unresolved-variable modal/quick-entry flow; canceling aborts the export and does not write the file.
+- The Environment tab **Export...** button exports the selected environment profile as API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, generic JSON, Insomnia Environment JSON, or Bruno `.bru`.
+- Collection and environment exports are explicit snapshots and do **not** automatically include `runtimeVars` or `runtimeOAuth2`.
+
 ### Import Destinations
 - **Repeater** - creates tabs for manual testing (no live requests)
 - **Sitemap** - sends live requests, populates Target/Sitemap with real responses
@@ -46,17 +53,17 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 
 ### Variable Resolution
 - Collection-level / global variables (source depends on format; see Playbook 4)
-- Environment files (Postman environment JSON)
+- Environment profiles / imported environment files
 - Request-level variables (Bruno `vars` block, Postman request vars)
 - Custom manual variables (Environment tab + OAuth2 tab)
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
 - The Workbench request tree also supports manual collection/folder/request creation, inline rename, duplicate, and delete actions from the right-click context menu
 - Editable header rows in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized defaults, auth/body-derived headers, and computed transport headers like Host)
-- Unresolved-variable preflight modal before Workbench send, import, and runner start
+- Unresolved-variable preflight modal before Workbench send, import, runner start, and collection export when variable resolution is enabled
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
-- Runtime variable/OAuth2 export and import as JSON for repeat testing
+- Collection and environment exports are explicit snapshots; they do not automatically include runtime variable/OAuth2 execution state
 - Default values: `{{var|default}}`
 - Defaulted placeholders are treated as resolved by preview, preflight, and stop-on-missing-variable checks
 - Nested variable resolution
@@ -104,7 +111,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - **Token endpoint strict mode** (default): OAuth token requests automatically use `Content-Type: application/x-www-form-urlencoded` and a canonical form body built from `oauth2_*` vars, overriding imported multipart bodies. Disable with variable `oauth2_token_force_urlencoded=false`. Allow multipart passthrough with `oauth2_token_allow_multipart=true`
 - For safety, Authorization Code callback handling only accepts HTTP loopback redirect URIs such as `http://localhost:9876/callback` or `http://127.0.0.1:9988/oauth/callback`
 
-> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use the Environment export or Burp project save only when you intentionally want a portable snapshot.
+> **Security note:** API Workbench saves its full workspace state in Burp project extension data. On a disk-backed project, that state is restored with the project next session; on a temporary project, it lives only for the current in-memory session. The saved workspace can include secrets such as access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys, so treat Burp project files as sensitive. Use collection export, environment export, or Burp project save only when you intentionally want a portable snapshot.
 
 ### OpenAPI Example Generation
 - Recursive schema traversal with full type support
@@ -219,10 +226,10 @@ Precedence during runtime (highest to lowest):
 Each collection resolves variables in its own context. Collection1 and Collection2 can both define `base_url` or `client_id` without collision.
 
 **Unresolved-variable preflight:**
-Before Workbench send, import, or runner start, unresolved `{{vars}}` are shown in a modal grouped by request and collection. When an Active Environment is selected, entered values can be applied into that Active Environment before continuing. Without an Active Environment, you can still continue intentionally without applying values.
+Before Workbench send, import, runner start, or collection export with variable resolution enabled, unresolved `{{vars}}` are shown in a modal grouped by request and collection. When an Active Environment is selected, entered values can be applied into that Active Environment before continuing for send/import/runner flows; in collection export, entered values are used as export-only quick-entry values. Without an Active Environment, you can still continue intentionally without applying values.
 
 **Environment portability:**
-Use **Export** and **Import** in the Environment tab to save and reload an environment profile. OAuth2 token outputs are written into the active environment using the selected output binding.
+Use **Export** and **Import** in the Environment tab to save and reload an environment profile. Export formats include API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, generic JSON, Insomnia Environment JSON, and Bruno `.bru`. OAuth2 token outputs are written into the active environment using the selected output binding, but collection/environment exports do not automatically include `runtimeVars` or `runtimeOAuth2`.
 
 **Autosave behavior:**
 - Typing in the Variables editor autosaves to the selected collection after a short debounce.
@@ -343,8 +350,8 @@ src/main/java/burp/
 
 ## Security Notes
 
-- **Tokens**: Live cache is stored in-memory via `TokenStore` (static `ConcurrentHashMap`) and is cleared on extension unload or via OAuth2 panel. Workspace snapshots and manual runtime JSON export can still persist OAuth2/runtime values, so treat Burp project files and exported runtime JSON as sensitive.
-- **Runtime JSON exports**: Manual exports can include runtime OAuth2 values such as access/refresh tokens. Treat exported JSON files as sensitive.
+- **Tokens**: Live cache is stored in-memory via `TokenStore` (static `ConcurrentHashMap`) and is cleared on extension unload or via OAuth2 panel. Workspace snapshots can still persist OAuth2/runtime values, and collection/environment exports can include secrets if you resolve variables or export secret-bearing environment values, so treat Burp project files and exported files as sensitive.
+- **Collection/environment exports**: Treat exported files as sensitive when they include secrets, resolved tokens, or resolved environment values.
 - **Client secrets**: Passed as variables (`{{client_secret}}`), never hardcoded. UI uses `JPasswordField` for secret fields.
 - **PKCE**: Used for Authorization Code flow (S256 method).
 - **Loopback listener**: Binds to the configured `oauth2_redirect_uri` host, port, and path, validates `state`, and only accepts HTTP loopback redirect URIs. The default remains `http://localhost:9876/callback`.
@@ -355,7 +362,7 @@ src/main/java/burp/
 - **No script timeout**: Infinite loops in pre/post-request scripts will hang the runner thread.
 - **File uploads**: Multipart file reading is supported only when a field is explicitly marked as a file upload with file metadata. Plain path-looking values are treated as text.
 - **Loopback-only OAuth2 callback**: Authorization Code callback requires an HTTP loopback redirect URI. If the configured loopback port is occupied, the flow fails until the redirect URI is adjusted or the port is freed.
-- **Test suite**: Automated tests cover parsers, request building, shared pipeline behavior, runner controls/stop conditions/timeline, variable preflight, and runtime JSON import/export. Run with `mvn test`.
+- **Test suite**: Automated tests cover parsers, request building, shared pipeline behavior, runner controls/stop conditions/timeline, variable preflight, and collection/environment export. Run with `mvn test`.
 - **Parser encoding**: All JSON/YAML/HAR parsers and Bruno request decoding use explicit UTF-8.
 
 ---

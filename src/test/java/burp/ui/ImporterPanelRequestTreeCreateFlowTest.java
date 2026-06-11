@@ -61,6 +61,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
                 "Rename",
                 "Duplicate",
                 "Delete",
+                "Export...",
                 "Auth Settings..."
         );
     }
