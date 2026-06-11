@@ -18,18 +18,24 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Workbench
 - **Collection tree** - checkbox tree with Collection > Folder > Request hierarchy
 - **Env binding** - bind environment files to specific collections (or all) explicitly
-- **Request editor** - edit method, URL, headers, body, auth, and scripts inline; Params and body form tables stay directly editable when empty, while the Headers tab shows the live effective header set plus a quick-entry blank row
+- **Request editor** - edit method, URL, headers, body, auth, and scripts inline; Params and body form tables stay directly editable when empty, while the Headers tab shows editable key/value rows, including materialized defaults, plus the live effective header set in the Resolved view
 - **Direct send** - execute edited request immediately and inspect response (Pretty/Raw/Hex); pre/post scripts run automatically (respecting script mode)
 - **Import destinations** - Repeater, Sitemap, Intruder
 
 ### Workbench Request Tree Create Flow
 - Right-click the request tree to create and manage collections, folders, and requests directly in place.
 - Empty tree/root area: **New Collection**
-- Collection or folder nodes: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
-- Request nodes: **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
-- Selecting a collection or folder clears the request editor and disables Send until a request node is selected again.
-- New Request starts as a blank `GET` request with an empty URL; fill the URL before sending, importing, or running.
+- Collection node: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Folder node: **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Request node: **Rename**, **Duplicate**, **Delete**, **Auth Settings...**
+- Selecting a collection, folder, or clearing the tree selection clears the request editor and disables Send until a request node is selected again.
+- New Collection and New Folder clear stale request editor state before the tree is rebuilt.
+- New Request opens immediately in the editor as a blank `GET` draft with an empty URL and inherited auth; fill the URL before sending, importing, or running. There is no separate blank-URL preflight blocker in this release, so a blank URL fails later through the normal request build/send path.
+- Request labels are independent from folder paths: labels such as `GET /users`, `POST /api/v1/token`, and `users\{id}` stay labels and do not create folders. Folder names cannot contain `/` or `\`, and a request may share the same name as its parent folder while still remaining nested there.
 - Duplicate names are prevented within the same parent scope, and duplicate actions generate incremental names such as `Login Copy`, `Login Copy 2`, and `Login Copy 3`.
+- Duplicate Folder copies the selected folder subtree and contained requests, preserving folder-scoped metadata.
+- Duplicate Request copies the selected request into the same parent folder and opens the duplicate in the editor.
+- Delete actions prompt for confirmation and remove the selected collection, folder subtree, or request; related queued runner entries are cleaned up when applicable.
 - Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy `runtimeVars` or `runtimeOAuth2` execution state.
 
 ### Import Destinations
@@ -46,7 +52,7 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 - Postman-style auth inheritance from collection, folder, and request auth, including explicit no-auth overrides
 - Workbench tree nodes expose Auth Settings for collection, folder, and request scopes
 - The Workbench request tree also supports manual collection/folder/request creation, inline rename, duplicate, and delete actions from the right-click context menu
-- Live effective headers in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized headers like Accept, User-Agent, Authorization, Content-Type, Host, and operator suppressions)
+- Editable header rows in the Request Editor Headers tab, plus a Resolved-tab mirror of the final effective request view (including synthesized defaults, auth/body-derived headers, and computed transport headers like Host)
 - Unresolved-variable preflight modal before Workbench send, import, and runner start
 - Full workspace state can be restored from Burp project data, including loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime values
 - Variables and OAuth2 edits autosave to the selected collection; use Save Now for an explicit commit
