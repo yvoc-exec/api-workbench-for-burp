@@ -12,9 +12,12 @@ import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
+import burp.ui.tree.RequestTreeDragPayload;
 import burp.ui.tree.RequestTreeMutationService;
 import burp.ui.tree.RequestTreeNamingPolicy;
 import burp.ui.tree.RequestTreePathService;
+import burp.ui.tree.RequestTreeTransferHandler;
+import burp.ui.tree.TreeDropRequest;
 import burp.utils.RequestPathResolver;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -148,6 +151,13 @@ public class ImporterPanel {
             this.sendModeLabel = sendModeLabel;
             this.timestampMillis = timestampMillis;
         }
+    }
+
+    static final class DropImportResult {
+        final List<ApiCollection> importedCollections = new ArrayList<>();
+        final List<String> messages = new ArrayList<>();
+        int importedCount;
+        int failedCount;
     }
 
     // Environment tab
@@ -364,6 +374,7 @@ public class ImporterPanel {
         requestTree = tree;
         if (requestTreeScrollPane != null) {
             requestTreeScrollPane.setViewportView(tree);
+            installRequestTreeTransferSupport(tree);
             requestTreeScrollPane.revalidate();
             requestTreeScrollPane.repaint();
         }
@@ -396,7 +407,36 @@ public class ImporterPanel {
             handleRequestTreeSelectionChanged();
             updateScopeControlState();
         });
+        installRequestTreeTransferSupport(tree);
         return tree;
+    }
+
+    private void installRequestTreeTransferSupport(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        RequestTreeTransferHandler handler = new RequestTreeTransferHandler(
+                tree,
+                this::importCollectionFilesDroppedOnRequestTreeAsync,
+                this::canAcceptRequestTreeDrop,
+                this::handleRequestTreeDrop,
+                this::appendImportLog);
+        tree.setTransferHandler(handler);
+        tree.setDropMode(DropMode.ON_OR_INSERT);
+        if (!GraphicsEnvironment.isHeadless()) {
+            try {
+                tree.setDragEnabled(true);
+            } catch (HeadlessException ignored) {
+                // headless tests may still construct the tree; drag is best-effort.
+            }
+        }
+        if (requestTreeScrollPane != null) {
+            requestTreeScrollPane.setTransferHandler(handler);
+            JViewport viewport = requestTreeScrollPane.getViewport();
+            if (viewport != null) {
+                viewport.setTransferHandler(handler);
+            }
+        }
     }
 
     private JComponent createRightWorkbenchPanel() {
@@ -2775,6 +2815,18 @@ public class ImporterPanel {
         return RequestTreeNamingPolicy.uniqueCollectionName(loadedCollections, baseName);
     }
 
+    private boolean isLoadedCollectionNameInUse(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection != null && collection.name != null && collection.name.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String uniqueRequestName(String baseName) {
         return uniqueName(collectRequestNames(), baseName);
     }
@@ -2962,6 +3014,158 @@ public class ImporterPanel {
                 updateFolderTreeNodePaths((CollectionTreeNode) child, sourcePrefix, targetPrefix);
             }
         }
+    }
+
+    boolean moveCollection(ApiCollection collection, int targetIndex) {
+        if (collection == null) {
+            return false;
+        }
+        int sourceIndex = loadedCollections.indexOf(collection);
+        if (sourceIndex < 0) {
+            return false;
+        }
+        ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
+        if (sourceIndex == targetIndex) {
+            return true;
+        }
+        loadedCollections.remove(sourceIndex);
+        if (targetIndex < 0 || targetIndex > loadedCollections.size()) {
+            targetIndex = loadedCollections.size();
+        } else if (sourceIndex < targetIndex) {
+            targetIndex--;
+        }
+        loadedCollections.add(targetIndex, collection);
+        refreshRequestTreeAfterMutation(() -> {
+            if (currentRequest != null) {
+                TreePath path = findRequestTreePathByRequest(currentRequest);
+                if (path != null) {
+                    selectTreePath(path);
+                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
+                    openRequestInEditor(currentRequest, currentCollection);
+                    return;
+                }
+            }
+            TreePath path = findCollectionTreePath(collection);
+            if (path != null) {
+                selectTreePath(path);
+            }
+        });
+        appendImportLog("Reordered collection: " + normalizeTreeLabel(collection.name));
+        return true;
+    }
+
+    boolean canAcceptRequestTreeDrop(TreeDropRequest dropRequest) {
+        if (dropRequest == null || dropRequest.payload == null) {
+            return false;
+        }
+        RequestTreeDragPayload payload = dropRequest.payload;
+        if (payload.isCollection()) {
+            return dropRequest.targetCollection == null
+                    && (dropRequest.targetNode == null
+                    || dropRequest.targetNode.getNodeType() != CollectionTreeNode.Type.COLLECTION
+                    || dropRequest.targetNode.collection != payload.collection);
+        }
+        if (dropRequest.targetCollection == null) {
+            return false;
+        }
+        if (payload.isFolder()) {
+            if (payload.folderPath == null || payload.folderPath.isBlank()) {
+                return false;
+            }
+            if (dropRequest.targetNode != null
+                    && dropRequest.targetNode.getNodeType() == CollectionTreeNode.Type.FOLDER
+                    && dropRequest.targetNode.collection == payload.collection
+                    && RequestTreePathService.normalizeFolderPath(dropRequest.targetNode.folderPath).equals(payload.folderPath)) {
+                return false;
+            }
+            if (RequestTreePathService.isFolderPathInSubtree(dropRequest.targetFolderPath, payload.folderPath)) {
+                return false;
+            }
+            return true;
+        }
+        if (payload.isRequest()) {
+            if (dropRequest.targetNode != null
+                    && dropRequest.targetNode.getNodeType() == CollectionTreeNode.Type.REQUEST
+                    && dropRequest.targetNode.request == payload.request) {
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    boolean handleRequestTreeDrop(TreeDropRequest dropRequest) {
+        if (!canAcceptRequestTreeDrop(dropRequest)) {
+            return false;
+        }
+        persistCurrentRequestEditorState();
+
+        RequestTreeDragPayload payload = dropRequest.payload;
+        if (payload.isCollection()) {
+            return moveCollection(payload.collection, dropRequest.targetIndex);
+        }
+
+        ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
+        boolean currentRequestAffected = false;
+        if (payload.isFolder() && currentRequest != null) {
+            ApiCollection currentCollection = findCollectionByRequest(currentRequest);
+            currentRequestAffected = currentCollection == payload.collection
+                    && isRequestInFolderSubtree(currentCollection, currentRequest, payload.folderPath);
+        } else if (payload.isRequest()) {
+            currentRequestAffected = currentRequest == payload.request;
+        }
+        final boolean affectedSelection = currentRequestAffected;
+
+        if (payload.isRequest()) {
+            ApiRequest moved = requestTreeMutationService.moveRequest(
+                    payload.collection,
+                    payload.request,
+                    dropRequest.targetCollection,
+                    dropRequest.targetFolderPath,
+                    dropRequest.targetIndex);
+            if (moved == null) {
+                return false;
+            }
+            refreshRequestTreeAfterMutation(() -> {
+                TreePath path = findRequestTreePathByRequest(moved);
+                if (path != null) {
+                    selectTreePath(path);
+                    ApiCollection movedCollection = findCollectionByRequest(moved);
+                    openRequestInEditor(moved, movedCollection);
+                }
+            });
+            appendImportLog("Moved request \"" + normalizeTreeLabel(moved.name) + "\" to \"" + dropRequest.targetFolderPath + "\"");
+            return true;
+        }
+
+        List<ApiRequest> movedRequests = requestTreeMutationService.moveFolder(
+                payload.collection,
+                payload.folderPath,
+                dropRequest.targetCollection,
+                dropRequest.targetFolderPath,
+                dropRequest.targetIndex);
+        if (movedRequests == null) {
+            return false;
+        }
+        String newFolderPath = RequestTreePathService.joinFolderPath(dropRequest.targetFolderPath, RequestTreePathService.leafFolderName(payload.folderPath));
+        refreshRequestTreeAfterMutation(() -> {
+            if (affectedSelection && currentRequest != null) {
+                TreePath path = findRequestTreePathByRequest(currentRequest);
+                if (path != null) {
+                    selectTreePath(path);
+                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
+                    openRequestInEditor(currentRequest, currentCollection);
+                    return;
+                }
+            }
+            TreePath path = findFolderTreePath(dropRequest.targetCollection, newFolderPath);
+            if (path != null) {
+                selectTreePath(path);
+            }
+        });
+        appendImportLog("Moved folder \"" + normalizeTreeLabel(RequestTreePathService.leafFolderName(payload.folderPath))
+                + "\" to \"" + newFolderPath + "\"");
+        return true;
     }
 
 
@@ -4166,10 +4370,9 @@ public class ImporterPanel {
             @Override
             protected ApiCollection doInBackground() throws Exception {
                 publish("Detecting format...");
-                ParserRegistry registry = new ParserRegistry();
-                CollectionParser parser = registry.detectParser(file);
+                CollectionParser parser = detectCollectionParser(file);
                 if (parser == null) {
-                    throw new Exception("Unknown collection format. Supported: Postman, Bruno, OpenAPI, Insomnia, HAR");
+                    throw new Exception("Unknown collection format. Supported: API Workbench, Postman, Bruno, OpenAPI, Insomnia, HAR");
                 }
                 publish("Detected: " + parser.getFormatName());
                 publish("Parsing...");
@@ -4218,6 +4421,121 @@ public class ImporterPanel {
             }
         };
         worker.execute();
+    }
+
+    private CollectionParser detectCollectionParser(File file) {
+        ParserRegistry registry = new ParserRegistry();
+        return registry.detectParser(file);
+    }
+
+    DropImportResult importCollectionFilesDroppedOnRequestTree(List<File> files) {
+        DropImportResult result = parseCollectionFilesForDrop(files);
+        applyCollectionDropImportResult(result);
+        return result;
+    }
+
+    private void importCollectionFilesDroppedOnRequestTreeAsync(List<File> files) {
+        SwingWorker<DropImportResult, String> worker = new SwingWorker<>() {
+            @Override
+            protected DropImportResult doInBackground() {
+                return parseCollectionFilesForDrop(files);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    applyCollectionDropImportResult(get());
+                } catch (Exception e) {
+                    appendImportLog("Drop import failed: " + e.getMessage());
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private DropImportResult parseCollectionFilesForDrop(List<File> files) {
+        DropImportResult result = new DropImportResult();
+        if (files == null || files.isEmpty()) {
+            result.messages.add("No files were dropped.");
+            return result;
+        }
+
+        for (File file : files) {
+            if (file == null) {
+                result.failedCount++;
+                result.messages.add("Skipped dropped file: null");
+                continue;
+            }
+            try {
+                CollectionParser parser = detectCollectionParser(file);
+                if (parser == null) {
+                    result.failedCount++;
+                    result.messages.add("Skipped unsupported file: " + file.getName());
+                    continue;
+                }
+                ApiCollection collection = parser.parse(file);
+                if (collection == null) {
+                    result.failedCount++;
+                    result.messages.add("Failed to import " + file.getName() + ": parser returned no collection.");
+                    continue;
+                }
+                result.importedCollections.add(collection);
+                result.messages.add("Imported collection candidate from " + file.getName() + ": " + collection.name);
+            } catch (Exception e) {
+                result.failedCount++;
+                result.messages.add("Failed to import " + file.getName() + ": " + e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    private void applyCollectionDropImportResult(DropImportResult result) {
+        if (result == null) {
+            return;
+        }
+
+        for (String message : result.messages) {
+            appendImportLog(message);
+        }
+
+        if (result.importedCollections.isEmpty()) {
+            result.importedCount = 0;
+            appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        List<ApiCollection> appended = new ArrayList<>();
+        for (ApiCollection collection : result.importedCollections) {
+            if (collection == null) {
+                continue;
+            }
+            if (collection.name == null || collection.name.isBlank()) {
+                collection.name = "Imported Collection";
+            }
+            if (isLoadedCollectionNameInUse(collection.name)) {
+                collection.name = RequestTreeNamingPolicy.uniqueCollectionCopyName(loadedCollections, collection.name);
+            }
+            registerCollectionRuntimeListener(collection);
+            loadedCollections.add(collection);
+            appended.add(collection);
+            appendImportLog("Imported collection: " + collection.name);
+        }
+
+        if (appended.isEmpty()) {
+            result.importedCount = 0;
+            appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        ApiCollection firstImported = appended.get(0);
+        result.importedCount = appended.size();
+        refreshRequestTreeAfterMutation(() -> {
+            TreePath path = findCollectionTreePath(firstImported);
+            if (path != null) {
+                selectTreePath(path);
+            }
+        });
+        appendImportLog("Drop import complete: " + appended.size() + " imported, " + result.failedCount + " failed.");
     }
 
     private void showRemoveCollectionsDialog() {
@@ -7753,10 +8071,11 @@ public class ImporterPanel {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         if (activeEnvironment == null) {
             String message = "Create or select an Active Environment before populating OAuth2 settings.";
-            if (GraphicsEnvironment.isHeadless()) {
+            Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+            if (GraphicsEnvironment.isHeadless() || owner == null || !owner.isDisplayable()) {
                 appendImportLog(message);
             } else {
-                JOptionPane.showMessageDialog(mainPanel,
+                JOptionPane.showMessageDialog(owner,
                         message,
                         "Active Environment Required",
                         JOptionPane.WARNING_MESSAGE);
