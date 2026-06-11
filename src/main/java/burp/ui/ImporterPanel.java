@@ -91,6 +91,7 @@ public class ImporterPanel {
     private HttpRequestEditor workbenchRequestEditor;
     private HttpResponseEditor workbenchResponseEditor;
     private JTextArea workbenchMetaText;
+    private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
 
@@ -125,6 +126,29 @@ public class ImporterPanel {
     private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
     private JButton workbenchEnvironmentImportBtn;
     private boolean suppressWorkbenchEnvironmentEvents = false;
+
+    static final class WorkbenchSendSnapshot {
+        final HttpRequest builtRequest;
+        final HttpResponse response;
+        final String metaText;
+        final String failureReason;
+        final String sendModeLabel;
+        final long timestampMillis;
+
+        WorkbenchSendSnapshot(HttpRequest builtRequest,
+                              HttpResponse response,
+                              String metaText,
+                              String failureReason,
+                              String sendModeLabel,
+                              long timestampMillis) {
+            this.builtRequest = builtRequest;
+            this.response = response;
+            this.metaText = metaText;
+            this.failureReason = failureReason;
+            this.sendModeLabel = sendModeLabel;
+            this.timestampMillis = timestampMillis;
+        }
+    }
 
     // Environment tab
     private JComboBox<EnvironmentRef> environmentCombo;
@@ -525,10 +549,11 @@ public class ImporterPanel {
                                     ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
                     var rr = result.response;
 
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, resolvedCol, result, sendModeLabel));
+
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
                         byte[] bodyBytes = resp.body().getBytes();
-                        SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, result, sendModeLabel));
                         publish("Response: " + resp.statusCode() + " (" + bodyBytes.length + " bytes, " + result.elapsedMs + " ms)");
                     } else {
                         publish("No response received.");
@@ -542,7 +567,7 @@ public class ImporterPanel {
                     }
                 } catch (Exception e) {
                     String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, failureReason, sendModeLabel));
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failureReason, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 }
                 return null;
@@ -681,20 +706,120 @@ public class ImporterPanel {
         return out;
     }
 
-    private void updateWorkbenchDetailPaneSuccess(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel) {
+    private void updateWorkbenchDetailPaneSuccess(ApiRequest sentRequest,
+                                                  ApiCollection sentCollection,
+                                                  UniversalImporter.SingleSendResult result,
+                                                  String sendModeLabel) {
+        WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
+                result != null ? result.builtRequest : null,
+                result != null && result.response != null ? result.response.response() : null,
+                buildWorkbenchMetaText(sentRequest, result, sendModeLabel, null),
+                null,
+                sendModeLabel,
+                System.currentTimeMillis());
+        applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
+    }
+
+    private void updateWorkbenchDetailPaneFailure(ApiRequest sentRequest,
+                                                  ApiCollection sentCollection,
+                                                  String reason,
+                                                  String sendModeLabel) {
+        WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
+                null,
+                null,
+                buildWorkbenchMetaText(sentRequest, null, sendModeLabel, reason),
+                reason,
+                sendModeLabel,
+                System.currentTimeMillis());
+        applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
+    }
+
+    void applyWorkbenchSendSnapshot(ApiRequest sentRequest, ApiCollection sentCollection, WorkbenchSendSnapshot snapshot) {
+        if (sentRequest == null || snapshot == null) {
+            return;
+        }
+        if (findCollectionByRequest(sentRequest) == null) {
+            return;
+        }
+        workbenchSendSnapshots.put(sentRequest, snapshot);
+        if (isWorkbenchRequestSelection(sentRequest, sentCollection)) {
+            displayWorkbenchSendSnapshot(snapshot);
+        }
+    }
+
+    WorkbenchSendSnapshot getWorkbenchSendSnapshot(ApiRequest request) {
+        return request != null ? workbenchSendSnapshots.get(request) : null;
+    }
+
+    void removeWorkbenchSendSnapshot(ApiRequest request) {
+        if (request != null) {
+            workbenchSendSnapshots.remove(request);
+        }
+    }
+
+    void removeWorkbenchSendSnapshotsForRequests(Collection<ApiRequest> requests) {
+        if (requests == null || requests.isEmpty()) {
+            return;
+        }
+        for (ApiRequest request : requests) {
+            removeWorkbenchSendSnapshot(request);
+        }
+    }
+
+    String getWorkbenchDetailMetaTextForTest() {
+        return workbenchMetaText != null ? workbenchMetaText.getText() : "";
+    }
+
+    private boolean isWorkbenchRequestSelection(ApiRequest sentRequest, ApiCollection sentCollection) {
+        if (requestEditor == null || sentRequest == null) {
+            return false;
+        }
+        ApiRequest currentRequest = requestEditor.getCurrentRequest();
+        ApiCollection currentCollection = requestEditor.getCurrentCollection();
+        if (currentRequest == null || currentCollection == null) {
+            return false;
+        }
+        if (currentRequest != sentRequest) {
+            return false;
+        }
+        return sentCollection == null || currentCollection == sentCollection;
+    }
+
+    void showWorkbenchSendSnapshotForSelection(ApiRequest request) {
+        WorkbenchSendSnapshot snapshot = request != null ? workbenchSendSnapshots.get(request) : null;
+        if (snapshot == null) {
+            clearWorkbenchDetailPane();
+            return;
+        }
+        displayWorkbenchSendSnapshot(snapshot);
+    }
+
+    private void displayWorkbenchSendSnapshot(WorkbenchSendSnapshot snapshot) {
+        if (snapshot == null) {
+            clearWorkbenchDetailPane();
+            return;
+        }
         if (workbenchRequestEditor != null) {
-            workbenchRequestEditor.setRequest(result.builtRequest != null ? result.builtRequest : HttpRequest.httpRequest());
+            try {
+                workbenchRequestEditor.setRequest(snapshot.builtRequest != null ? snapshot.builtRequest : HttpRequest.httpRequest());
+            } catch (RuntimeException ignored) {
+                // Tests may construct the panel without a Montoya object factory.
+            }
         }
         if (workbenchResponseEditor != null) {
-            workbenchResponseEditor.setResponse(result.response != null ? result.response.response() : HttpResponse.httpResponse());
+            try {
+                workbenchResponseEditor.setResponse(snapshot.response != null ? snapshot.response : HttpResponse.httpResponse());
+            } catch (RuntimeException ignored) {
+                // Tests may construct the panel without a Montoya object factory.
+            }
         }
         if (workbenchMetaText != null) {
-            workbenchMetaText.setText(buildWorkbenchMetaText(edited, result, sendModeLabel, null));
+            workbenchMetaText.setText(snapshot.metaText != null ? snapshot.metaText : "");
             workbenchMetaText.setCaretPosition(0);
         }
     }
 
-    private void updateWorkbenchDetailPaneFailure(ApiRequest edited, String reason, String sendModeLabel) {
+    private void clearWorkbenchDetailPane() {
         if (workbenchRequestEditor != null) {
             try {
                 workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
@@ -710,7 +835,7 @@ public class ImporterPanel {
             }
         }
         if (workbenchMetaText != null) {
-            workbenchMetaText.setText(buildWorkbenchMetaText(edited, null, sendModeLabel, reason));
+            workbenchMetaText.setText("");
             workbenchMetaText.setCaretPosition(0);
         }
     }
@@ -2393,7 +2518,7 @@ public class ImporterPanel {
         requestTree.scrollPathToVisible(path);
     }
 
-    private void openRequestInEditor(ApiRequest request, ApiCollection collection) {
+    void openRequestInEditor(ApiRequest request, ApiCollection collection) {
         if (requestEditor == null) {
             return;
         }
@@ -2401,6 +2526,7 @@ public class ImporterPanel {
         syncRequestEditorRuntimeContext(request, collection);
         requestEditor.loadRequest(request);
         requestEditor.setSendControlsEnabled(true);
+        showWorkbenchSendSnapshotForSelection(request);
     }
 
     private void handleRequestTreeSelectionChanged() {
@@ -2414,11 +2540,12 @@ public class ImporterPanel {
         clearRequestEditorForNonRequestSelection();
     }
 
-    private void clearRequestEditorForNonRequestSelection() {
+    void clearRequestEditorForNonRequestSelection() {
         clearRequestEditorSafely();
         if (requestEditor != null) {
             requestEditor.setSendControlsEnabled(false);
         }
+        clearWorkbenchDetailPane();
     }
 
     private void refreshRequestTreeAfterMutation(Runnable afterRefresh) {
@@ -2916,6 +3043,10 @@ public class ImporterPanel {
             if (requestEditor != null) {
                 requestEditor.setSendControlsEnabled(false);
             }
+            clearWorkbenchDetailPane();
+        }
+        if (collection.requests != null) {
+            removeWorkbenchSendSnapshotsForRequests(collection.requests);
         }
         removeCollections(List.of(collection));
         if (!currentRequestRemoved && currentRequest != null) {
@@ -2958,9 +3089,11 @@ public class ImporterPanel {
             if (requestEditor != null) {
                 requestEditor.setSendControlsEnabled(false);
             }
+            clearWorkbenchDetailPane();
         }
         List<ApiRequest> removedRequests = requestTreeMutationService.removeFolderSubtree(collection, sourcePrefix);
         removeRequestsFromRunnerQueue(removedRequests);
+        removeWorkbenchSendSnapshotsForRequests(removedRequests);
         refreshRequestTreeAfterMutation(() -> {
             if (!currentRequestRemoved && currentRequest != null) {
                 TreePath path = findRequestTreePathByRequest(currentRequest);
@@ -3004,9 +3137,11 @@ public class ImporterPanel {
             if (requestEditor != null) {
                 requestEditor.setSendControlsEnabled(false);
             }
+            clearWorkbenchDetailPane();
         }
         List<ApiRequest> removedRequests = requestTreeMutationService.removeRequest(collection, node.request);
         removeRequestsFromRunnerQueue(removedRequests);
+        removeWorkbenchSendSnapshotsForRequests(removedRequests);
         refreshRequestTreeAfterMutation(() -> {
             if (!currentRequestRemoved && currentRequest != null) {
                 TreePath path = findRequestTreePathByRequest(currentRequest);
@@ -4138,7 +4273,18 @@ public class ImporterPanel {
         if (targets == null || targets.isEmpty()) {
             return;
         }
+        ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
+        ApiCollection currentCollection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+        boolean currentRequestRemoved = currentRequest != null && currentCollection != null && targets.contains(currentCollection);
+        if (currentRequestRemoved) {
+            clearRequestEditorSafely();
+            if (requestEditor != null) {
+                requestEditor.setSendControlsEnabled(false);
+            }
+            clearWorkbenchDetailPane();
+        }
         for (ApiCollection target : targets) {
+            removeWorkbenchSendSnapshotsForRequests(target.requests);
             target.clearChangeListeners();
             requestToCollectionMap.entrySet().removeIf(entry -> entry.getValue() == target);
             loadedCollections.remove(target);
