@@ -226,6 +226,68 @@ class ImporterPanelRequestTreeCreateFlowTest {
     }
 
     @Test
+    void sameSelectedRequestReenablesSendAfterCompletion() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        requestEditor(panel).setSendEnabled(false);
+
+        panel.applyWorkbenchSendCompletionState(request, collection);
+
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+    }
+
+    @Test
+    void clearedEditorStaysDisabledAfterCompletion() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest request = request("req-1", "Login", "POST", "https://auth.example.test/login", 0);
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, request);
+        selectTreeNode(panel, collectionNode(requestTree(panel), "APIM"));
+        drainEdt();
+
+        panel.applyWorkbenchSendCompletionState(request, collection);
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+    }
+
+    @Test
+    void oldSendCompletionDoesNotOverrideDifferentSelectedRequest() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        ApiRequest requestA = request("req-a", "Login", "POST", "https://auth.example.test/login", 0);
+        ApiRequest requestB = request("req-b", "Refresh", "POST", "https://auth.example.test/refresh", 1);
+        collection.requests.add(requestA);
+        collection.requests.add(requestB);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        openRequestInEditor(panel, collection, requestA);
+        requestEditor(panel).setSendEnabled(false);
+        selectTreeNode(panel, requestNode(requestTree(panel), "req-b"));
+        drainEdt();
+
+        panel.applyWorkbenchSendCompletionState(requestA, collection);
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(requestB);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+    }
+
+    @Test
     void newRequestUnderCollectionCreatesBlankGetRequestAndOpensEditor() throws Exception {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("APIM");
@@ -277,6 +339,47 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(requestEditor(panel).getCurrentCollection()).isNull();
         assertThat(requestEditor(panel).isSendEnabled()).isFalse();
         assertThat(collectionNode(requestTree(panel), "Untitled Collection")).isNotNull();
+    }
+
+    @Test
+    void sameNameRequestStaysNestedUnderMatchingFolder() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Auth", "POST", "https://auth.example.test/auth", 0);
+        request.path = "Auth";
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode apimNode = collectionNode(requestTree(panel), "APIM");
+        CollectionTreeNode authNode = folderNodeByPath(requestTree(panel), "Auth");
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(leafRequestNames(authNode)).containsExactly("Auth");
+        assertThat(requestNode(requestTree(panel), "req-1")).isNotNull();
+    }
+
+    @Test
+    void nestedSameLeafRequestStaysNestedUnderMatchingFolder() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Auth/OAuth");
+        ApiRequest request = request("req-1", "OAuth", "POST", "https://auth.example.test/oauth", 0);
+        request.path = "Auth/OAuth";
+        collection.requests.add(request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode apimNode = collectionNode(requestTree(panel), "APIM");
+        CollectionTreeNode authNode = folderNodeByPath(requestTree(panel), "Auth");
+        CollectionTreeNode oauthNode = folderNodeByPath(requestTree(panel), "Auth/OAuth");
+
+        assertThat(directRequestNames(apimNode)).isEmpty();
+        assertThat(directRequestNames(authNode)).isEmpty();
+        assertThat(leafRequestNames(oauthNode)).containsExactly("OAuth");
+        assertThat(requestNode(requestTree(panel), "req-1")).isNotNull();
     }
 
     @Test
@@ -1092,6 +1195,23 @@ class ImporterPanelRequestTreeCreateFlowTest {
             return names;
         }
         collectRequestNames(node, names);
+        return names;
+    }
+
+    private static List<String> directRequestNames(CollectionTreeNode node) {
+        List<String> names = new ArrayList<>();
+        if (node == null) {
+            return names;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            Object child = node.getChildAt(i);
+            if (child instanceof CollectionTreeNode) {
+                CollectionTreeNode ctn = (CollectionTreeNode) child;
+                if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST && ctn.request != null) {
+                    names.add(ctn.request.name);
+                }
+            }
+        }
         return names;
     }
 

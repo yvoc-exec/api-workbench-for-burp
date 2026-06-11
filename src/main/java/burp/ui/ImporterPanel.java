@@ -14,6 +14,7 @@ import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.RequestTreeMutationService;
 import burp.ui.tree.RequestTreeNamingPolicy;
 import burp.ui.tree.RequestTreePathService;
+import burp.utils.RequestPathResolver;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -550,10 +551,37 @@ public class ImporterPanel {
 
             @Override
             protected void done() {
-                requestEditor.setSendEnabled(true);
+                applyWorkbenchSendCompletionState(requestToSend, resolvedCol);
             }
         };
         worker.execute();
+    }
+
+    static boolean shouldEnableSendAfterWorkbenchSend(RequestEditorPanel editor,
+                                                      ApiRequest sentRequest,
+                                                      ApiCollection sentCollection) {
+        if (editor == null || sentRequest == null || sentCollection == null) {
+            return false;
+        }
+        ApiRequest currentRequest = editor.getCurrentRequest();
+        ApiCollection currentCollection = editor.getCurrentCollection();
+        return currentRequest != null
+                && currentCollection != null
+                && currentRequest == sentRequest
+                && currentCollection == sentCollection;
+    }
+
+    void applyWorkbenchSendCompletionState(ApiRequest sentRequest, ApiCollection sentCollection) {
+        if (requestEditor == null) {
+            return;
+        }
+        if (shouldEnableSendAfterWorkbenchSend(requestEditor, sentRequest, sentCollection)) {
+            requestEditor.setSendControlsEnabled(true);
+            return;
+        }
+        if (requestEditor.getCurrentRequest() == null || requestEditor.getCurrentCollection() == null) {
+            requestEditor.setSendControlsEnabled(false);
+        }
     }
 
     static void applyEditedRequestToLiveRequest(ApiCollection collection, ApiRequest liveRequest, ApiRequest edited) {
@@ -1447,30 +1475,29 @@ public class ImporterPanel {
                     requestToCollectionMap.put(req, col);
                 }
                 String path = lookupWorkspaceRequestTreeFolderPath(requestTreePaths, collectionIndex, col, req, requestIndex);
+                String folderPath;
                 if (path == null) {
-                    path = req.path != null ? req.path : "";
-                } else if (path.isBlank() && isNestedRequestPath(req.path, req.name)) {
-                    path = req.path;
-                }
-                path = RequestTreePathService.normalizeFolderPath(path);
-                String[] parts = path.split("/");
-                java.util.List<String> segments = new java.util.ArrayList<>();
-                for (String p : parts) {
-                    if (!p.isEmpty()) {
-                        segments.add(p);
+                    folderPath = RequestPathResolver.getRequestFolderPath(col, req);
+                } else {
+                    folderPath = RequestTreePathService.normalizeFolderPath(path);
+                    if (folderPath.isBlank()) {
+                        folderPath = RequestPathResolver.getRequestFolderPath(col, req);
                     }
                 }
-                boolean lastIsRequestName = !segments.isEmpty() && segments.get(segments.size() - 1).equals(req.name);
-                int folderCount = lastIsRequestName ? segments.size() - 1 : segments.size();
 
                 CollectionTreeNode parent = colNode;
                 StringBuilder cumulative = new StringBuilder();
-                for (int i = 0; i < folderCount; i++) {
-                    if (cumulative.length() > 0) {
-                        cumulative.append("/");
+                if (!folderPath.isBlank()) {
+                    for (String segment : folderPath.split("/")) {
+                        if (segment == null || segment.isBlank()) {
+                            continue;
+                        }
+                        if (cumulative.length() > 0) {
+                            cumulative.append("/");
+                        }
+                        cumulative.append(segment);
+                        parent = getOrCreateFolderNode(parent, cumulative.toString());
                     }
-                    cumulative.append(segments.get(i));
-                    parent = getOrCreateFolderNode(parent, cumulative.toString());
                 }
                 parent.add(new CollectionTreeNode(req));
             }
@@ -2694,7 +2721,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                String requestParent = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
+                String requestParent = RequestPathResolver.getRequestFolderPath(collection, request);
                 if (!Objects.equals(requestParent, normalizedParent)) {
                     continue;
                 }
@@ -2788,7 +2815,7 @@ public class ImporterPanel {
             if (request == null) {
                 continue;
             }
-            if (Objects.equals(burp.utils.AuthInheritanceResolver.getRequestFolderPath(request), normalizedParent)) {
+            if (Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
                 lastIndex = i;
             }
         }
@@ -2964,7 +2991,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                ApiRequest requestCopy = copyRequestForDuplicate(request, copy.name, request.name, RequestTreePathService.getRequestFolderPath(request));
+                ApiRequest requestCopy = copyRequestForDuplicate(request, copy.name, request.name, RequestPathResolver.getRequestFolderPath(source, request));
                 if (requestCopy != null) {
                     copy.requests.add(requestCopy);
                 }
@@ -3000,7 +3027,7 @@ public class ImporterPanel {
         return JOptionPane.showConfirmDialog(mainPanel, message, "Confirm Delete", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) == JOptionPane.YES_OPTION;
     }
 
-    private boolean isRequestInFolderSubtree(ApiRequest request, String folderPrefix) {
+    private boolean isRequestInFolderSubtree(ApiCollection collection, ApiRequest request, String folderPrefix) {
         if (request == null) {
             return false;
         }
@@ -3008,7 +3035,7 @@ public class ImporterPanel {
         if (normalizedPrefix.isEmpty()) {
             return true;
         }
-        String requestFolderPath = RequestTreePathService.getRequestFolderPath(request);
+        String requestFolderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         return RequestTreePathService.isFolderPathInSubtree(requestFolderPath, normalizedPrefix);
     }
 
@@ -3063,7 +3090,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                if (isRequestInFolderSubtree(request, normalizedSource)) {
+                if (isRequestInFolderSubtree(collection, request, normalizedSource)) {
                     String requestPath = request.path != null ? request.path : "";
                     request.path = rewriteFolderPathPrefix(requestPath, normalizedSource, normalizedTarget);
                     if (request.path.isBlank() && request.name != null) {
@@ -3142,7 +3169,7 @@ public class ImporterPanel {
         List<ApiRequest> copiedRequests = new ArrayList<>();
         if (collection.requests != null) {
             for (ApiRequest request : collection.requests) {
-                if (request == null || !isRequestInFolderSubtree(request, normalizedSource)) {
+                if (request == null || !isRequestInFolderSubtree(collection, request, normalizedSource)) {
                     continue;
                 }
                 String targetPath = rewriteFolderPathPrefix(request.path, normalizedSource, normalizedTarget);
@@ -3210,7 +3237,7 @@ public class ImporterPanel {
             collection.folderPaths.removeIf(path -> isFolderPathInSubtree(path, normalizedSource));
         }
         if (collection.requests != null) {
-            collection.requests.removeIf(request -> request != null && isRequestInFolderSubtree(request, normalizedSource));
+            collection.requests.removeIf(request -> request != null && isRequestInFolderSubtree(collection, request, normalizedSource));
         }
         if (collection.folderAuthModes != null) {
             collection.folderAuthModes.keySet().removeIf(key -> isFolderPathInSubtree(key, normalizedSource));
@@ -3338,7 +3365,7 @@ public class ImporterPanel {
             return;
         }
         ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
-        boolean currentRequestRemoved = currentRequest != null && isRequestInFolderSubtree(currentRequest, sourcePrefix);
+        boolean currentRequestRemoved = currentRequest != null && isRequestInFolderSubtree(findCollectionByRequest(currentRequest), currentRequest, sourcePrefix);
         if (currentRequestRemoved) {
             clearRequestEditorSafely();
             if (requestEditor != null) {
@@ -5079,11 +5106,7 @@ public class ImporterPanel {
                 if (request == null) {
                     continue;
                 }
-                String folderPath = folderPathFromRequestPath(request.path, request.name);
-                if (folderPath == null) {
-                    continue;
-                }
-                folderPath = folderPath.trim();
+                String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
                 if (folderPath.isBlank()) {
                     continue;
                 }
@@ -5097,7 +5120,7 @@ public class ImporterPanel {
     }
 
     private static String folderPathFromRequestPath(String requestPath, String requestName) {
-        return RequestTreePathService.folderPathFromRequestPath(requestPath, requestName);
+        return RequestPathResolver.getRequestFolderPath(requestPath, requestName, true);
     }
 
     private static Map<String, String> mergeRequestTreePaths(Map<String, String> uiTreePaths, Map<String, String> modelTreePaths) {
@@ -7702,7 +7725,7 @@ public class ImporterPanel {
             }
         }
         if (collection != null && request != null) {
-            String folderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
+            String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
             if (folderPath != null && !folderPath.isBlank() && collection.folderVars != null) {
                 String[] parts = folderPath.split("/");
                 StringBuilder current = new StringBuilder();

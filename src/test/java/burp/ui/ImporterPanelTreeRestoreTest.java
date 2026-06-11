@@ -323,6 +323,27 @@ class ImporterPanelTreeRestoreTest {
     }
 
     @Test
+    void legacyFullRequestPathStillRestoresUnderParentFolder() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-legacy-full-path", "Login", "POST", "https://auth.example.test/login", 1);
+        request.path = "Auth/Login";
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        DefaultMutableTreeNode root = ImporterPanel.buildRequestTreeRoot(state.collections, state.requestTreePaths);
+
+        CollectionTreeNode apimNode = (CollectionTreeNode) root.getChildAt(0);
+        CollectionTreeNode authNode = childFolder(apimNode, "Auth");
+
+        assertThat(childFolderNames(apimNode)).containsExactly("Auth");
+        assertThat(requestNames(authNode)).containsExactly("Login");
+        assertThat(folderNodeByPath(root, "Auth/Login")).isNull();
+    }
+
+    @Test
     void identityKeyWorkspaceTreePathWinsOverLegacyWorkspaceRequestKey() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

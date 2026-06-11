@@ -1,7 +1,7 @@
 package burp.ui.tree;
 
 import burp.models.ApiRequest;
-import burp.utils.AuthInheritanceResolver;
+import burp.utils.RequestPathResolver;
 
 import java.util.Objects;
 
@@ -13,10 +13,7 @@ public final class RequestTreePathService {
     }
 
     public static String normalizeFolderPath(String path) {
-        if (path == null || path.isBlank()) {
-            return "";
-        }
-        return AuthInheritanceResolver.normalizeFolderPath(path.replace('\\', '/'));
+        return RequestPathResolver.normalizeFolderPath(path);
     }
 
     public static String joinFolderPath(String parentPath, String leafName) {
@@ -76,35 +73,11 @@ public final class RequestTreePathService {
     }
 
     public static String getRequestFolderPath(ApiRequest request) {
-        if (request == null) {
-            return "";
-        }
-        return folderPathFromRequestPath(request.path, request.name);
+        return RequestPathResolver.getRequestFolderPath(request);
     }
 
     public static String folderPathFromRequestPath(String requestPath, String requestName) {
-        String rawPath = requestPath != null ? requestPath.replace('\\', '/').trim() : "";
-        if (rawPath.isEmpty()) {
-            return "";
-        }
-        String normalized = normalizeFolderPath(rawPath);
-        String name = requestName != null ? requestName.replace('\\', '/').trim() : "";
-        if (!name.isEmpty()) {
-            if (Objects.equals(rawPath, name)) {
-                return "";
-            }
-            String suffix = "/" + name;
-            if (rawPath.endsWith(suffix)) {
-                return normalizeFolderPath(rawPath.substring(0, rawPath.length() - suffix.length()));
-            }
-            if (Objects.equals(normalized, name)) {
-                return "";
-            }
-        }
-        if (!rawPath.contains("/")) {
-            return normalized;
-        }
-        return normalized;
+        return RequestPathResolver.getRequestFolderPath(requestPath, requestName, true);
     }
 
     public static boolean isNestedRequestPath(String requestPath, String requestName) {

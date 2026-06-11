@@ -3,6 +3,7 @@ package burp.ui.tree;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.utils.AuthInheritanceResolver;
+import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -117,7 +118,7 @@ public final class RequestTreeMutationService {
         if (collection == null || sourceRequest == null) {
             return null;
         }
-        String parentFolderPath = RequestTreePathService.getRequestFolderPath(sourceRequest);
+        String parentFolderPath = RequestPathResolver.getRequestFolderPath(collection, sourceRequest);
         String duplicateName = RequestTreeNamingPolicy.uniqueChildCopyName(collection, parentFolderPath, sourceRequest.name);
         ApiRequest duplicate = copyRequestForDuplicate(sourceRequest, collection.name, duplicateName, parentFolderPath);
         insertRequestForParentPath(collection, duplicate, parentFolderPath, sourceRequest);
@@ -180,7 +181,7 @@ public final class RequestTreeMutationService {
         if (Objects.equals(request.name, normalizedName)) {
             return normalizedName;
         }
-        String parentFolderPath = RequestTreePathService.getRequestFolderPath(request);
+        String parentFolderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         request.name = normalizedName;
         request.path = parentFolderPath;
         AuthInheritanceResolver.resolveRequestAuth(collection, request);
@@ -204,7 +205,7 @@ public final class RequestTreeMutationService {
         if (collection.requests != null) {
             List<ApiRequest> remaining = new ArrayList<>();
             for (ApiRequest request : collection.requests) {
-                if (request != null && isRequestInFolderSubtree(request, normalizedSource)) {
+                if (request != null && isRequestInFolderSubtree(collection, request, normalizedSource)) {
                     removedRequests.add(request);
                 } else {
                     remaining.add(request);
@@ -264,11 +265,11 @@ public final class RequestTreeMutationService {
         int insertRequestIndex = findRequestInsertionIndexAfterSubtree(collection, normalizedSource);
         if (collection.requests != null) {
             for (ApiRequest request : collection.requests) {
-                if (request == null || !isRequestInFolderSubtree(request, normalizedSource)) {
+                if (request == null || !isRequestInFolderSubtree(collection, request, normalizedSource)) {
                     continue;
                 }
                 String targetPath = RequestTreePathService.rewriteFolderPathPrefix(
-                        RequestTreePathService.getRequestFolderPath(request),
+                        RequestPathResolver.getRequestFolderPath(collection, request),
                         normalizedSource,
                         normalizedTarget
                 );
@@ -357,8 +358,8 @@ public final class RequestTreeMutationService {
                 if (request == null) {
                     continue;
                 }
-                if (isRequestInFolderSubtree(request, normalizedSource)) {
-                    String requestPath = RequestTreePathService.getRequestFolderPath(request);
+                if (isRequestInFolderSubtree(collection, request, normalizedSource)) {
+                    String requestPath = RequestPathResolver.getRequestFolderPath(collection, request);
                     request.path = RequestTreePathService.rewriteFolderPathPrefix(requestPath, normalizedSource, normalizedTarget);
                     if (request.path.isBlank() && request.name != null) {
                         request.path = normalizedTarget;
@@ -410,7 +411,7 @@ public final class RequestTreeMutationService {
         AuthInheritanceResolver.recomputeCollectionAuth(collection);
     }
 
-    private static boolean isRequestInFolderSubtree(ApiRequest request, String folderPrefix) {
+    private static boolean isRequestInFolderSubtree(ApiCollection collection, ApiRequest request, String folderPrefix) {
         if (request == null) {
             return false;
         }
@@ -418,7 +419,7 @@ public final class RequestTreeMutationService {
         if (normalizedPrefix.isEmpty()) {
             return true;
         }
-        String requestFolderPath = RequestTreePathService.getRequestFolderPath(request);
+        String requestFolderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         return RequestTreePathService.isFolderPathInSubtree(requestFolderPath, normalizedPrefix);
     }
 
@@ -538,7 +539,7 @@ public final class RequestTreeMutationService {
             if (request == null) {
                 continue;
             }
-            if (Objects.equals(RequestTreePathService.getRequestFolderPath(request), normalizedParent)) {
+            if (Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
                 lastIndex = i;
             }
         }
@@ -553,7 +554,7 @@ public final class RequestTreeMutationService {
         int lastIndex = -1;
         for (int i = 0; i < collection.requests.size(); i++) {
             ApiRequest request = collection.requests.get(i);
-            if (request != null && isRequestInFolderSubtree(request, normalizedSource)) {
+            if (request != null && isRequestInFolderSubtree(collection, request, normalizedSource)) {
                 lastIndex = i;
             }
         }
@@ -634,7 +635,7 @@ public final class RequestTreeMutationService {
                         request,
                         copy.name,
                         request.name,
-                        RequestTreePathService.getRequestFolderPath(request)
+                        RequestPathResolver.getRequestFolderPath(source, request)
                 );
                 if (requestCopy != null) {
                     copy.requests.add(requestCopy);

@@ -141,6 +141,31 @@ class AuthInheritanceResolverTest {
     }
 
     @Test
+    void sameNameRequestInsideFolderStillInheritsFolderAuth() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Auth Demo";
+
+        collection.folderAuthModes.put("Auth", "explicit");
+        ApiRequest.Auth folderAuth = new ApiRequest.Auth();
+        folderAuth.type = "bearer";
+        folderAuth.properties.put("token", "{{authToken}}");
+        collection.folderAuth.put("Auth", folderAuth);
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Auth";
+        request.path = "Auth";
+        request.authOverrideMode = "inherit";
+
+        AuthInheritanceResolver.resolveRequestAuth(collection, request);
+
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "{{authToken}}");
+        assertThat(request.authInherited).isTrue();
+        assertThat(request.authSource).isEqualTo("folder: Auth");
+    }
+
+    @Test
     void getRequestFolderPathTreatsSlashInRequestNameAsLabel() {
         ApiRequest request = new ApiRequest();
         request.name = "GET /users";
