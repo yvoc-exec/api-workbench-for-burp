@@ -601,6 +601,8 @@ API Workbench saves its full workspace state through Burp project extension data
 
 Right-click a **collection** node in the Workbench tree and choose **Export...**.
 
+The export dialogs use **Save As** / **Cancel** only; pick the output file in the save dialog.
+
 Supported formats:
 
 - API Workbench Collection JSON
@@ -622,11 +624,13 @@ Behavior:
 - Canceling unresolved-variable handling aborts the export and does not write the file.
 
 Collection exports are explicit snapshots. They do **not** automatically include `runtimeVars` or `runtimeOAuth2`.
-API Workbench Collection JSON is the full-fidelity native export; external formats are lossy where their schemas cannot represent every Workbench field.
+API Workbench Collection JSON is the full-fidelity native export and round-trips through the native collection import path; external formats are lossy where their schemas cannot represent every Workbench field.
 
 ### Environment export
 
 Use the **Environment** tab **Export** button to save the selected environment profile.
+
+The export dialog uses **Save As** / **Cancel** only; pick the output file in the save dialog.
 
 Supported formats:
 

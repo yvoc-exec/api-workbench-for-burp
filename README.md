@@ -41,7 +41,8 @@ A Burp Suite Professional/Community extension that imports **Postman**, **Bruno*
 ### Export Flow
 - Right-click a **collection** node and choose **Export...** to export that collection.
 - Collection export formats: API Workbench Collection JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON/YAML, Insomnia JSON, Bruno ZIP, and HAR 1.2 JSON.
-- API Workbench Collection JSON is the full-fidelity native export; external formats are lossy where their schemas cannot represent every Workbench field.
+- The export dialogs use **Save As** / **Cancel** only; choose the destination file in the save dialog.
+- API Workbench Collection JSON is the full-fidelity native export and round-trips through the native collection import path; external formats are lossy where their schemas cannot represent every Workbench field.
 - Collection export can optionally **Resolve variables using active environment**. When enabled, unresolved placeholders use the existing unresolved-variable modal/quick-entry flow; the **Use for Export** quick-entry applies values only to that export, and canceling aborts the export without writing the file or mutating the active environment. Collection export resolution does not automatically use `runtimeVars` or `runtimeOAuth2`.
 - The Environment tab **Export...** button exports the selected environment profile as API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, generic JSON, Insomnia Environment JSON, or Bruno `.bru`. API Workbench Environment JSON round-trips through the built-in Environment Import flow.
 - Collection and environment exports are explicit snapshots and do **not** automatically include `runtimeVars` or `runtimeOAuth2`.

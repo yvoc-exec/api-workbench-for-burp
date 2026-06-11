@@ -10,6 +10,7 @@ public class ParserRegistry {
     private final List<CollectionParser> parsers = new ArrayList<>();
 
     public ParserRegistry() {
+        parsers.add(new ApiWorkbenchCollectionParser());
         parsers.add(new PostmanParser());
         parsers.add(new BrunoParser());
         parsers.add(new OpenApiParser());
