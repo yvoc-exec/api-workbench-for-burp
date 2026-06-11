@@ -5926,6 +5926,24 @@ public class ImporterPanel {
         );
     }
 
+    ExportResult performEnvironmentExport(EnvironmentProfile profile,
+                                          EnvironmentExportFormat format,
+                                          Path outputPath,
+                                          boolean cancelled) throws ExportException {
+        if (cancelled) {
+            return null;
+        }
+        EnvironmentProfile copy = profile != null ? profile.copy() : null;
+        if (copy == null) {
+            throw new ExportException("Environment profile is required.");
+        }
+        copy.ensureDefaults();
+        return environmentExportService.exportEnvironment(
+                copy,
+                new EnvironmentExportOptions(format, outputPath)
+        );
+    }
+
     private void handleEnvironmentExport() {
         EnvironmentProfile selected = getSelectedEnvironmentProfile();
         if (selected == null) {
@@ -5936,14 +5954,9 @@ public class ImporterPanel {
             return;
         }
         try {
-            EnvironmentProfile copy = selected.copy();
-            copy.ensureDefaults();
-            ExportResult result = environmentExportService.exportEnvironment(
-                    copy,
-                    new EnvironmentExportOptions(selection.format, selection.outputPath)
-            );
+            ExportResult result = performEnvironmentExport(selected, selection.format, selection.outputPath, false);
             StringBuilder message = new StringBuilder();
-            message.append("Exported environment \"").append(copy.displayName()).append("\" to ").append(selection.outputPath.getFileName()).append(".");
+            message.append("Exported environment \"").append(selected.displayName()).append("\" to ").append(selection.outputPath.getFileName()).append(".");
             if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
                 message.append(" Warnings: ").append(String.join(" | ", result.warnings));
             }
@@ -5971,26 +5984,74 @@ public class ImporterPanel {
     }
 
     private CollectionExportSelection showCollectionExportDialog(ApiCollection collection) {
+        CollectionExportDialogConfig config = buildCollectionExportDialogConfig(collection);
+        JDialog dialog = createExportDialog("Export Collection", config.panel);
+        final Path[] output = new Path[1];
+        config.saveAsButton.addActionListener(e -> {
+            CollectionExportFormat selectedFormat = (CollectionExportFormat) config.formatCombo.getSelectedItem();
+            Path chosen = chooseExportPath(
+                    "Export Collection",
+                    buildSuggestedCollectionExportFileName(collection, selectedFormat),
+                    selectedFormat != null ? selectedFormat.defaultExtension() : null
+            );
+            if (chosen == null) {
+                return;
+            }
+            if (!confirmOverwrite(chosen, "Export Collection")) {
+                return;
+            }
+            output[0] = chosen;
+            dialog.dispose();
+        });
+        config.cancelButton.addActionListener(e -> dialog.dispose());
+        dialog.setVisible(true);
+        if (output[0] == null) {
+            return null;
+        }
+        return new CollectionExportSelection(
+                (CollectionExportFormat) config.formatCombo.getSelectedItem(),
+                output[0],
+                config.resolveVariablesCheckbox.isSelected()
+        );
+    }
+
+    private EnvironmentExportSelection showEnvironmentExportDialog(EnvironmentProfile selected) {
+        EnvironmentExportDialogConfig config = buildEnvironmentExportDialogConfig(selected);
+        JDialog dialog = createExportDialog("Export Environment", config.panel);
+        final Path[] output = new Path[1];
+        config.saveAsButton.addActionListener(e -> {
+            EnvironmentExportFormat selectedFormat = (EnvironmentExportFormat) config.formatCombo.getSelectedItem();
+            Path chosen = chooseExportPath(
+                    "Export Environment",
+                    buildSuggestedEnvironmentExportFileName(selected, selectedFormat),
+                    selectedFormat != null ? selectedFormat.defaultExtension() : null
+            );
+            if (chosen == null) {
+                return;
+            }
+            if (!confirmOverwrite(chosen, "Export Environment")) {
+                return;
+            }
+            output[0] = chosen;
+            dialog.dispose();
+        });
+        config.cancelButton.addActionListener(e -> dialog.dispose());
+        dialog.setVisible(true);
+        if (output[0] == null) {
+            return null;
+        }
+        return new EnvironmentExportSelection((EnvironmentExportFormat) config.formatCombo.getSelectedItem(), output[0]);
+    }
+
+    CollectionExportDialogConfig buildCollectionExportDialogConfig(ApiCollection collection) {
         CollectionExportFormat[] formats = CollectionExportFormat.values();
         JComboBox<CollectionExportFormat> formatCombo = new JComboBox<>(formats);
         formatCombo.setSelectedItem(CollectionExportFormat.API_WORKBENCH_JSON);
-        JCheckBox resolveCheckbox = new JCheckBox("Resolve variables using active environment");
-        resolveCheckbox.setSelected(false);
+        JCheckBox resolveVariablesCheckbox = new JCheckBox("Resolve variables using active environment");
+        resolveVariablesCheckbox.setSelected(false);
 
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         JLabel activeEnvironmentValue = new JLabel(activeEnvironment != null ? activeEnvironment.displayName() : "No active environment selected");
-        JTextField outputField = new JTextField(38);
-        String[] suggestedFile = new String[]{buildSuggestedCollectionExportFileName(collection, (CollectionExportFormat) formatCombo.getSelectedItem())};
-        outputField.setText(suggestedFile[0]);
-
-        formatCombo.addActionListener(e -> {
-            CollectionExportFormat selectedFormat = (CollectionExportFormat) formatCombo.getSelectedItem();
-            String nextSuggestion = buildSuggestedCollectionExportFileName(collection, selectedFormat);
-            updateSuggestedExportPath(outputField, suggestedFile, nextSuggestion);
-        });
-
-        JButton browseButton = new JButton("Save As...");
-        browseButton.addActionListener(e -> chooseExportPath(outputField, "Export Collection", (CollectionExportFormat) formatCombo.getSelectedItem(), collection != null ? collectionDisplayName(collection) : null));
 
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -6025,60 +6086,30 @@ public class ImporterPanel {
         gbc.gridy++;
         gbc.gridx = 0;
         gbc.gridwidth = 2;
-        panel.add(resolveCheckbox, gbc);
+        panel.add(resolveVariablesCheckbox, gbc);
         gbc.gridwidth = 1;
+
+        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JButton saveAsButton = new JButton("Save As");
+        JButton cancelButton = new JButton("Cancel");
+        buttonRow.add(cancelButton);
+        buttonRow.add(saveAsButton);
 
         gbc.gridy++;
         gbc.gridx = 0;
-        gbc.weightx = 0;
-        panel.add(new JLabel("Save as:"), gbc);
-        gbc.gridx = 1;
+        gbc.gridwidth = 2;
         gbc.weightx = 1;
-        JPanel fileRow = new JPanel(new BorderLayout(6, 0));
-        fileRow.add(outputField, BorderLayout.CENTER);
-        fileRow.add(browseButton, BorderLayout.EAST);
-        panel.add(fileRow, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+        gbc.anchor = GridBagConstraints.EAST;
+        panel.add(buttonRow, gbc);
 
-        int result = JOptionPane.showConfirmDialog(
-                mainPanel,
-                panel,
-                "Export Collection",
-                JOptionPane.OK_CANCEL_OPTION,
-                JOptionPane.PLAIN_MESSAGE
-        );
-        if (result != JOptionPane.OK_OPTION) {
-            return null;
-        }
-
-        CollectionExportFormat selectedFormat = (CollectionExportFormat) formatCombo.getSelectedItem();
-        Path output = resolveExportPath(outputField.getText(), selectedFormat != null ? selectedFormat.defaultExtension() : null);
-        if (output == null) {
-            JOptionPane.showMessageDialog(mainPanel, "Please choose a valid export file.", "Export Collection", JOptionPane.WARNING_MESSAGE);
-            return null;
-        }
-        if (!confirmOverwrite(output, "Export Collection")) {
-            return null;
-        }
-        return new CollectionExportSelection(selectedFormat, output, resolveCheckbox.isSelected());
+        return new CollectionExportDialogConfig(panel, formatCombo, resolveVariablesCheckbox, saveAsButton, cancelButton);
     }
 
-    private EnvironmentExportSelection showEnvironmentExportDialog(EnvironmentProfile selected) {
+    EnvironmentExportDialogConfig buildEnvironmentExportDialogConfig(EnvironmentProfile selected) {
         EnvironmentExportFormat[] formats = EnvironmentExportFormat.values();
         JComboBox<EnvironmentExportFormat> formatCombo = new JComboBox<>(formats);
         formatCombo.setSelectedItem(EnvironmentExportFormat.API_WORKBENCH_JSON);
-
-        JTextField outputField = new JTextField(38);
-        String[] suggestedFile = new String[]{buildSuggestedEnvironmentExportFileName(selected, (EnvironmentExportFormat) formatCombo.getSelectedItem())};
-        outputField.setText(suggestedFile[0]);
-
-        formatCombo.addActionListener(e -> {
-            EnvironmentExportFormat selectedFormat = (EnvironmentExportFormat) formatCombo.getSelectedItem();
-            String nextSuggestion = buildSuggestedEnvironmentExportFileName(selected, selectedFormat);
-            updateSuggestedExportPath(outputField, suggestedFile, nextSuggestion);
-        });
-
-        JButton browseButton = new JButton("Save As...");
-        browseButton.addActionListener(e -> chooseExportPath(outputField, "Export Environment", (EnvironmentExportFormat) formatCombo.getSelectedItem(), selected != null ? selected.displayName() : null));
 
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -6102,38 +6133,21 @@ public class ImporterPanel {
         gbc.weightx = 1;
         panel.add(formatCombo, gbc);
 
+        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        JButton saveAsButton = new JButton("Save As");
+        JButton cancelButton = new JButton("Cancel");
+        buttonRow.add(cancelButton);
+        buttonRow.add(saveAsButton);
+
         gbc.gridy++;
         gbc.gridx = 0;
-        gbc.weightx = 0;
-        panel.add(new JLabel("Save as:"), gbc);
-        gbc.gridx = 1;
+        gbc.gridwidth = 2;
         gbc.weightx = 1;
-        JPanel fileRow = new JPanel(new BorderLayout(6, 0));
-        fileRow.add(outputField, BorderLayout.CENTER);
-        fileRow.add(browseButton, BorderLayout.EAST);
-        panel.add(fileRow, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+        gbc.anchor = GridBagConstraints.EAST;
+        panel.add(buttonRow, gbc);
 
-        int result = JOptionPane.showConfirmDialog(
-                mainPanel,
-                panel,
-                "Export Environment",
-                JOptionPane.OK_CANCEL_OPTION,
-                JOptionPane.PLAIN_MESSAGE
-        );
-        if (result != JOptionPane.OK_OPTION) {
-            return null;
-        }
-
-        EnvironmentExportFormat selectedFormat = (EnvironmentExportFormat) formatCombo.getSelectedItem();
-        Path output = resolveExportPath(outputField.getText(), selectedFormat != null ? selectedFormat.defaultExtension() : null);
-        if (output == null) {
-            JOptionPane.showMessageDialog(mainPanel, "Please choose a valid export file.", "Export Environment", JOptionPane.WARNING_MESSAGE);
-            return null;
-        }
-        if (!confirmOverwrite(output, "Export Environment")) {
-            return null;
-        }
-        return new EnvironmentExportSelection(selectedFormat, output);
+        return new EnvironmentExportDialogConfig(panel, formatCombo, saveAsButton, cancelButton);
     }
 
     private String buildSuggestedCollectionExportFileName(ApiCollection collection, CollectionExportFormat format) {
@@ -6155,33 +6169,20 @@ public class ImporterPanel {
         return ExportFileNamePolicy.defaultFileName(baseName, extension);
     }
 
-    private void chooseExportPath(JTextField outputField, String title, Enum<?> format, String baseName) {
+    private Path chooseExportPath(String title, String suggestedFileName, String defaultExtension) {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle(title);
-        if (outputField != null && outputField.getText() != null && !outputField.getText().isBlank()) {
-            chooser.setSelectedFile(new File(outputField.getText().trim()));
-        } else if (baseName != null && format != null) {
-            chooser.setSelectedFile(new File(baseName.replaceAll("[^a-zA-Z0-9._-]+", "_")));
+        if (suggestedFileName != null && !suggestedFileName.isBlank()) {
+            chooser.setSelectedFile(new File(suggestedFileName));
         }
         if (chooser.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
-            return;
+            return null;
         }
         File file = chooser.getSelectedFile();
         if (file == null) {
-            return;
+            return null;
         }
-        outputField.setText(file.getPath());
-    }
-
-    private void updateSuggestedExportPath(JTextField outputField, String[] suggestedFile, String nextSuggestion) {
-        if (outputField == null || suggestedFile == null || suggestedFile.length == 0) {
-            return;
-        }
-        String current = outputField.getText() != null ? outputField.getText().trim() : "";
-        if (current.isBlank() || current.equals(suggestedFile[0])) {
-            outputField.setText(nextSuggestion);
-        }
-        suggestedFile[0] = nextSuggestion;
+        return resolveExportPath(file.getPath(), defaultExtension);
     }
 
     private Path resolveExportPath(String text, String defaultExtension) {
@@ -6207,6 +6208,53 @@ public class ImporterPanel {
                 JOptionPane.YES_NO_OPTION
         );
         return confirm == JOptionPane.YES_OPTION;
+    }
+
+    private JDialog createExportDialog(String title, JComponent content) {
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        JDialog dialog = new JDialog(owner, title, Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        dialog.setContentPane(content);
+        dialog.pack();
+        dialog.setLocationRelativeTo(mainPanel);
+        return dialog;
+    }
+
+    static final class CollectionExportDialogConfig {
+        final JPanel panel;
+        final JComboBox<CollectionExportFormat> formatCombo;
+        final JCheckBox resolveVariablesCheckbox;
+        final JButton saveAsButton;
+        final JButton cancelButton;
+
+        CollectionExportDialogConfig(JPanel panel,
+                                     JComboBox<CollectionExportFormat> formatCombo,
+                                     JCheckBox resolveVariablesCheckbox,
+                                     JButton saveAsButton,
+                                     JButton cancelButton) {
+            this.panel = panel;
+            this.formatCombo = formatCombo;
+            this.resolveVariablesCheckbox = resolveVariablesCheckbox;
+            this.saveAsButton = saveAsButton;
+            this.cancelButton = cancelButton;
+        }
+    }
+
+    static final class EnvironmentExportDialogConfig {
+        final JPanel panel;
+        final JComboBox<EnvironmentExportFormat> formatCombo;
+        final JButton saveAsButton;
+        final JButton cancelButton;
+
+        EnvironmentExportDialogConfig(JPanel panel,
+                                      JComboBox<EnvironmentExportFormat> formatCombo,
+                                      JButton saveAsButton,
+                                      JButton cancelButton) {
+            this.panel = panel;
+            this.formatCombo = formatCombo;
+            this.saveAsButton = saveAsButton;
+            this.cancelButton = cancelButton;
+        }
     }
 
     private static final class CollectionExportSelection {

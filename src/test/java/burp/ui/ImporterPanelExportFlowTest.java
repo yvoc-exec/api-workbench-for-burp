@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import java.awt.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -83,6 +84,32 @@ class ImporterPanelExportFlowTest {
     }
 
     @Test
+    void collectionExportDialogUsesSaveAsAndCancelWithoutPathField() {
+        ImporterPanel panel = newPanel();
+        ImporterPanel.CollectionExportDialogConfig config = panel.buildCollectionExportDialogConfig(collection("APIM"));
+
+        assertThat(findTextFields(config.panel)).isEmpty();
+        assertThat(buttonTexts(config.panel)).containsExactly("Cancel", "Save As");
+        assertThat(checkboxTexts(config.panel)).containsExactly("Resolve variables using active environment");
+        assertThat(checkboxTexts(config.panel)).doesNotContain(
+                "Include runtime variables",
+                "Include OAuth2 runtime tokens",
+                "Pretty print JSON",
+                "Include disabled/suppressed headers metadata"
+        );
+    }
+
+    @Test
+    void environmentExportDialogUsesSaveAsAndCancelWithoutPathField() {
+        ImporterPanel panel = newPanel();
+        ImporterPanel.EnvironmentExportDialogConfig config = panel.buildEnvironmentExportDialogConfig(environment("UAT"));
+
+        assertThat(findTextFields(config.panel)).isEmpty();
+        assertThat(buttonTexts(config.panel)).containsExactly("Cancel", "Save As");
+        assertThat(checkboxTexts(config.panel)).isEmpty();
+    }
+
+    @Test
     void cancelledCollectionExportDoesNotWriteOutputFile() throws Exception {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("APIM");
@@ -95,6 +122,23 @@ class ImporterPanelExportFlowTest {
                 false,
                 null,
                 Map.of(),
+                true
+        );
+
+        assertThat(result).isNull();
+        assertThat(Files.exists(output)).isFalse();
+    }
+
+    @Test
+    void cancelledEnvironmentExportDoesNotWriteOutputFile() throws Exception {
+        ImporterPanel panel = newPanel();
+        var profile = environment("UAT");
+        Path output = tempDir.resolve("cancelled.api-workbench.environment.json");
+
+        var result = panel.performEnvironmentExport(
+                profile,
+                burp.exporter.EnvironmentExportFormat.API_WORKBENCH_JSON,
+                output,
                 true
         );
 
@@ -125,6 +169,14 @@ class ImporterPanelExportFlowTest {
         return collection;
     }
 
+    private static burp.models.EnvironmentProfile environment(String name) {
+        burp.models.EnvironmentProfile profile = new burp.models.EnvironmentProfile();
+        profile.name = name;
+        profile.ensureId();
+        profile.ensureDefaults();
+        return profile;
+    }
+
     private static ApiRequest request(String id, String name, String method, String url) {
         ApiRequest request = new ApiRequest();
         request.id = id;
@@ -147,5 +199,45 @@ class ImporterPanelExportFlowTest {
             }
         }
         return labels;
+    }
+
+    private static List<JTextField> findTextFields(Container container) {
+        return findComponents(container, JTextField.class);
+    }
+
+    private static List<String> buttonTexts(Container container) {
+        List<String> texts = new ArrayList<>();
+        for (JButton button : findComponents(container, JButton.class)) {
+            if (button.getText() != null && !button.getText().isBlank()) {
+                texts.add(button.getText());
+            }
+        }
+        return texts;
+    }
+
+    private static List<String> checkboxTexts(Container container) {
+        List<String> texts = new ArrayList<>();
+        for (JCheckBox box : findComponents(container, JCheckBox.class)) {
+            if (box.getText() != null && !box.getText().isBlank()) {
+                texts.add(box.getText());
+            }
+        }
+        return texts;
+    }
+
+    private static <T extends Component> List<T> findComponents(Container container, Class<T> type) {
+        List<T> found = new ArrayList<>();
+        if (container == null) {
+            return found;
+        }
+        for (Component component : container.getComponents()) {
+            if (type.isInstance(component)) {
+                found.add(type.cast(component));
+            }
+            if (component instanceof Container child) {
+                found.addAll(findComponents(child, type));
+            }
+        }
+        return found;
     }
 }

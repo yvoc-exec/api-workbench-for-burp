@@ -4,6 +4,9 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.UnresolvedVariableIssue;
+import burp.parser.ApiWorkbenchCollectionParser;
+import burp.parser.CollectionParser;
+import burp.parser.ParserRegistry;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -54,6 +57,118 @@ class CollectionExportServiceTest {
                 .contains("accept");
         assertThat(login.getAsJsonObject("body").get("raw").getAsString()).contains("{{missing_password}}");
         assertThat(login.getAsJsonObject("auth").get("type").getAsString()).isEqualTo("bearer");
+    }
+
+    @Test
+    void roundTripsNativeCollectionThroughParserRegistry() throws Exception {
+        ApiCollection collection = ExportTestFixtures.sampleCollection();
+        Path output = tempDir.resolve("apim.api-workbench.collection.json");
+
+        service.exportCollection(
+                collection,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, output, false, null, Map.of())
+        );
+
+        ParserRegistry registry = new ParserRegistry();
+        CollectionParser parser = registry.detectParser(output.toFile());
+        assertThat(parser).isInstanceOf(ApiWorkbenchCollectionParser.class);
+
+        ApiCollection imported = parser.parse(output.toFile());
+        assertThat(imported.name).isEqualTo("APIM");
+        assertThat(imported.description).isEqualTo("API collection for exports");
+        assertThat(imported.format).isEqualTo("api-workbench");
+        assertThat(imported.version).isEqualTo("1.2.3");
+        assertThat(imported.folderPaths).containsExactly("Auth", "Auth/OAuth", "Users");
+        assertThat(imported.variables).extracting("key", "value")
+                .contains(
+                        org.assertj.core.groups.Tuple.tuple("base_url", "https://api.example.test"),
+                        org.assertj.core.groups.Tuple.tuple("role", "admin"),
+                        org.assertj.core.groups.Tuple.tuple("client_id", "client-123"),
+                        org.assertj.core.groups.Tuple.tuple("collection_token", "collection-token")
+                );
+        assertThat(imported.environment).containsEntry("env_mode", "uat");
+        assertThat(imported.auth.type).isEqualTo("basic");
+        assertThat(imported.auth.properties).containsEntry("username", "collection-user");
+        assertThat(imported.folderAuthModes).containsEntry("Auth", "explicit");
+        assertThat(imported.folderAuth.get("Auth").type).isEqualTo("bearer");
+        assertThat(imported.folderVars.get("Auth")).containsEntry("folder_var", "folder-value");
+        assertThat(imported.requests).hasSize(collection.requests.size());
+        assertThat(imported.runtimeVars).isEmpty();
+        assertThat(imported.runtimeOAuth2).isEmpty();
+
+        ApiRequest login = requestById(imported.requests, "req-login");
+        assertThat(login.name).isEqualTo("Auth");
+        assertThat(login.path).isEqualTo("Auth");
+        assertThat(login.sourceCollection).isEqualTo("APIM");
+        assertThat(login.method).isEqualTo("POST");
+        assertThat(login.url).isEqualTo("{{base_url}}/login");
+        assertThat(login.description).isEqualTo("Login request");
+        assertThat(login.editorMaterialized).isTrue();
+        assertThat(login.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(login.suppressedAutoHeaders).contains("accept");
+        assertThat(login.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualTo("X-Test");
+            assertThat(header.value).isEqualTo("workflow");
+        });
+        assertThat(login.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualTo("Accept");
+            assertThat(header.value).isEqualTo("application/json");
+        });
+        assertThat(login.body.mode).isEqualTo("raw");
+        assertThat(login.body.raw).contains("{{missing_password}}");
+        assertThat(login.auth.type).isEqualTo("bearer");
+        assertThat(login.explicitAuth.type).isEqualTo("bearer");
+        assertThat(login.authOverrideMode).isEqualTo("explicit");
+        assertThat(login.authInherited).isFalse();
+        assertThat(login.authExplicitlyDisabled).isFalse();
+        assertThat(login.authSource).isEqualTo("request:Auth");
+        assertThat(login.variables).extracting("key", "value")
+                .contains(org.assertj.core.groups.Tuple.tuple("request_var", "request-value"));
+        assertThat(login.preRequestScripts).hasSize(1);
+        assertThat(login.postResponseScripts).hasSize(1);
+        assertThat(login.disabled).isFalse();
+        assertThat(login.sequenceOrder).isEqualTo(1);
+
+        ApiRequest oauth = requestById(imported.requests, "req-oauth");
+        assertThat(oauth.name).isEqualTo("OAuth");
+        assertThat(oauth.path).isEqualTo("Auth/OAuth");
+        assertThat(oauth.method).isEqualTo("POST");
+        assertThat(oauth.url).isEqualTo("{{base_url}}/oauth/token");
+        assertThat(oauth.body.mode).isEqualTo("urlencoded");
+        assertThat(oauth.body.urlencoded).hasSize(3);
+        assertThat(oauth.auth.type).isEqualTo("none");
+        assertThat(oauth.authOverrideMode).isEqualTo("none");
+        assertThat(oauth.authExplicitlyDisabled).isTrue();
+
+        ApiRequest usersRoot = requestById(imported.requests, "req-users-root");
+        assertThat(usersRoot.name).isEqualTo("GET /users");
+        assertThat(usersRoot.path).isBlank();
+        assertThat(usersRoot.url).contains("role={{role}}");
+        assertThat(usersRoot.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualTo("Cookie");
+            assertThat(header.value).contains("session={{session_cookie}}");
+        });
+
+        ApiRequest usersFolder = requestById(imported.requests, "req-users-folder");
+        assertThat(usersFolder.name).isEqualTo("users\\{id}");
+        assertThat(usersFolder.path).isEqualTo("Users");
+        assertThat(usersFolder.url).isEqualTo("{{base_url}}/users/{{user_id}}");
+
+        ApiRequest graphql = requestById(imported.requests, "req-graphql");
+        assertThat(graphql.path).isEqualTo("Auth");
+        assertThat(graphql.body.mode).isEqualTo("graphql");
+        assertThat(graphql.body.graphql.query).contains("GetUser");
+        assertThat(graphql.auth.type).isEqualTo("bearer");
+        assertThat(graphql.authInherited).isTrue();
+
+        ApiRequest upload = requestById(imported.requests, "req-upload");
+        assertThat(upload.path).isEqualTo("Users");
+        assertThat(upload.body.mode).isEqualTo("formdata");
+        assertThat(upload.body.formdata).anySatisfy(field -> {
+            assertThat(field.key).isEqualTo("file");
+            assertThat(field.fileUpload).isTrue();
+            assertThat(field.filePath).isEqualTo("{{upload_path}}");
+        });
     }
 
     @Test
@@ -198,6 +313,15 @@ class CollectionExportServiceTest {
             }
         }
         throw new AssertionError("Postman item not found: " + name);
+    }
+
+    private static ApiRequest requestById(List<ApiRequest> requests, String id) {
+        for (ApiRequest request : requests) {
+            if (request != null && id.equals(request.id)) {
+                return request;
+            }
+        }
+        throw new AssertionError("Request not found: " + id);
     }
 
     private static List<String> jsonArrayStrings(JsonArray array) {
