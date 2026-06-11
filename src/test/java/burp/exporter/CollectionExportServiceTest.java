@@ -1,6 +1,7 @@
 package burp.exporter;
 
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.UnresolvedVariableIssue;
 import com.google.gson.JsonArray;
@@ -46,6 +47,7 @@ class CollectionExportServiceTest {
 
         JsonObject login = requestByName(exported.getAsJsonArray("requests"), "Auth");
         assertThat(login.get("path").getAsString()).isEqualTo("Auth");
+        assertThat(login.get("url").getAsString()).contains("{{base_url}}");
         assertThat(login.get("editorMaterialized").getAsBoolean()).isTrue();
         assertThat(login.get("buildMode").getAsString()).isEqualTo("MANUAL_PRESERVE");
         assertThat(jsonArrayStrings(login.getAsJsonArray("suppressedAutoHeaders")))
@@ -72,12 +74,44 @@ class CollectionExportServiceTest {
         );
 
         assertThat(result.unresolvedVariableCount).isEqualTo(0);
+        assertThat(collection.requests.get(0).url).contains("{{base_url}}");
+        assertThat(collection.requests.get(0).body.raw).contains("{{missing_password}}");
         JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
         JsonObject login = postmanRequestByName(root.getAsJsonArray("item"), "Auth");
         assertThat(login.getAsJsonObject("request").getAsJsonPrimitive("url").getAsString())
                 .isEqualTo("https://api.example.test/login");
         assertThat(login.getAsJsonObject("request").getAsJsonObject("body").getAsJsonPrimitive("raw").getAsString())
                 .contains("quick-entry-password");
+    }
+
+    @Test
+    void collectionExportResolutionExcludesRuntimeVarsAndRuntimeOauth2() throws Exception {
+        ApiCollection collection = runtimeSensitiveCollection();
+        EnvironmentProfile activeEnvironment = ExportTestFixtures.activeEnvironmentWithoutMissingPassword();
+        Path output = tempDir.resolve("runtime.postman_collection.json");
+
+        ExportResult result = service.exportCollection(
+                collection,
+                new CollectionExportOptions(
+                        CollectionExportFormat.POSTMAN_JSON,
+                        output,
+                        true,
+                        activeEnvironment,
+                        Map.of("missing_password", "export-only-password")
+                )
+        );
+
+        assertThat(result.unresolvedVariableCount).isEqualTo(2);
+        String exported = Files.readString(output);
+        assertThat(exported).contains("https://api.example.test/");
+        assertThat(exported).contains("export-only-password");
+        assertThat(exported).contains("{{runtime_only}}");
+        assertThat(exported).contains("{{accessToken}}");
+        assertThat(collection.requests.get(0).url).isEqualTo("{{base_url}}/{{runtime_only}}/{{accessToken}}");
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("{\"password\":\"{{missing_password}}\"}");
+        assertThat(activeEnvironment.variables).doesNotContainEntry("missing_password", "export-only-password");
+        assertThat(collection.runtimeVars).containsEntry("runtime_only", "should-not-export");
+        assertThat(collection.runtimeOAuth2).containsEntry("accessToken", "runtime-token");
     }
 
     @Test
@@ -89,6 +123,54 @@ class CollectionExportServiceTest {
 
         assertThat(issues).isNotEmpty();
         assertThat(issues).anySatisfy(issue -> assertThat(issue.variableName).isEqualTo("missing_password"));
+    }
+
+    @Test
+    void scriptUnresolvedScanUsesActiveAndExportOverlay() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Scripts";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-script";
+        request.name = "Scripted";
+        request.method = "GET";
+        request.url = "https://api.example.test";
+        request.preRequestScripts = new java.util.ArrayList<>();
+        request.preRequestScripts.add(new ApiRequest.Script("js", "pm.environment.get(\"{{token}}\");"));
+        request.postResponseScripts = new java.util.ArrayList<>();
+        request.postResponseScripts.add(new ApiRequest.Script("js", "console.log(\"{{token}}\");"));
+        collection.requests = new java.util.ArrayList<>(List.of(request));
+
+        List<UnresolvedVariableIssue> unresolvedWithoutOverlay = ExportVariableResolutionService.collectUnresolvedIssues(collection, null);
+        assertThat(unresolvedWithoutOverlay).anySatisfy(issue -> {
+            assertThat(issue.variableName).isEqualTo("token");
+            assertThat(issue.location).startsWith("script:");
+        });
+
+        EnvironmentProfile activeEnvironment = new EnvironmentProfile();
+        activeEnvironment.name = "UAT";
+        activeEnvironment.variables.put("token", "active-token");
+        assertThat(ExportVariableResolutionService.collectUnresolvedIssues(collection, activeEnvironment)).isEmpty();
+        assertThat(ExportVariableResolutionService.collectUnresolvedIssues(collection, null, Map.of("token", "export-token"))).isEmpty();
+    }
+
+    private static ApiCollection runtimeSensitiveCollection() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Runtime";
+        collection.runtimeVars.put("runtime_only", "should-not-export");
+        collection.runtimeOAuth2.put("accessToken", "runtime-token");
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-runtime";
+        request.name = "Runtime";
+        request.path = "";
+        request.sourceCollection = "Runtime";
+        request.method = "POST";
+        request.url = "{{base_url}}/{{runtime_only}}/{{accessToken}}";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"password\":\"{{missing_password}}\"}";
+        collection.requests = new java.util.ArrayList<>(List.of(request));
+        return collection;
     }
 
     private static JsonObject requestByName(JsonArray requests, String name) {

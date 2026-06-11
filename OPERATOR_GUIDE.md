@@ -618,10 +618,11 @@ The collection export dialog includes one user-facing resolution option:
 Behavior:
 
 - Unchecked: preserves `{{vars}}` exactly as written and does not open the unresolved-variable modal.
-- Checked: resolves variables using the active environment and existing safe resolver inputs. If unresolved variables remain, the existing unresolved-variable modal / quick-entry flow appears.
+- Checked: resolves variables using the active environment and existing safe resolver inputs. If unresolved variables remain, the existing unresolved-variable modal / quick-entry flow appears; **Use for Export** applies values only to that export and does not mutate the Active Environment. Collection export resolution does not automatically use `runtimeVars` or `runtimeOAuth2`.
 - Canceling unresolved-variable handling aborts the export and does not write the file.
 
 Collection exports are explicit snapshots. They do **not** automatically include `runtimeVars` or `runtimeOAuth2`.
+API Workbench Collection JSON is the full-fidelity native export; external formats are lossy where their schemas cannot represent every Workbench field.
 
 ### Environment export
 
@@ -635,6 +636,8 @@ Supported formats:
 - Generic JSON Object
 - Insomnia Environment JSON
 - Bruno Environment `.bru`
+
+API Workbench Environment JSON is import-compatible with the built-in Environment Import flow and round-trips the saved variables plus OAuth2 config/output bindings.
 
 Environment export writes the selected environment profile only. Runtime execution maps are not automatically included unless they were already stored as normal environment variables.
 

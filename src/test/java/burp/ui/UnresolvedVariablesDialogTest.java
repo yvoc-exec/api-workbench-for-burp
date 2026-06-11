@@ -43,6 +43,18 @@ class UnresolvedVariablesDialogTest {
         assertThat(config.hintText).contains("Active Environment: UAT");
     }
 
+    @Test
+    void exportUnresolvedDialogEnablesExportOnlyQuickEntry() throws Exception {
+        ImporterPanel panel = newPanel();
+
+        ImporterPanel.UnresolvedDialogConfig config = panel.buildExportUnresolvedDialogConfig();
+
+        assertThat(config.applyButtonText).isEqualTo("Use for Export");
+        assertThat(config.applyButtonEnabled).isTrue();
+        assertThat(config.canApply).isFalse();
+        assertThat(config.hintText).contains("apply only to this export");
+    }
+
     private static ImporterPanel newPanel() throws Exception {
         burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);

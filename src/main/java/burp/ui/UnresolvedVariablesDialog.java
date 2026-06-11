@@ -28,6 +28,7 @@ public class UnresolvedVariablesDialog extends JDialog {
     private final LinkedHashMap<String, String> enteredValues = new LinkedHashMap<>();
     private Action action = Action.CANCEL;
     private final boolean canApplyToActiveEnvironment;
+    private final boolean applyButtonEnabled;
     private final String applyButtonText;
     private final String hintText;
     private JButton applyButton;
@@ -36,7 +37,7 @@ public class UnresolvedVariablesDialog extends JDialog {
     public UnresolvedVariablesDialog(Window owner,
                                      List<UnresolvedVariableIssue> issues,
                                      List<ApiCollection> collections) {
-        this(owner, issues, collections, true, "Apply to Active Environment", "");
+        this(owner, issues, collections, true, true, "Apply to Active Environment", "");
     }
 
     public UnresolvedVariablesDialog(Window owner,
@@ -45,10 +46,21 @@ public class UnresolvedVariablesDialog extends JDialog {
                                      boolean canApplyToActiveEnvironment,
                                      String applyButtonText,
                                      String hintText) {
+        this(owner, issues, collections, canApplyToActiveEnvironment, canApplyToActiveEnvironment, applyButtonText, hintText);
+    }
+
+    public UnresolvedVariablesDialog(Window owner,
+                                     List<UnresolvedVariableIssue> issues,
+                                     List<ApiCollection> collections,
+                                     boolean canApplyToActiveEnvironment,
+                                     boolean applyButtonEnabled,
+                                     String applyButtonText,
+                                     String hintText) {
         super(owner, "Unresolved Variables", ModalityType.APPLICATION_MODAL);
         this.issues = issues != null ? new ArrayList<>(issues) : new ArrayList<>();
         this.collections = collections != null ? new ArrayList<>(collections) : new ArrayList<>();
         this.canApplyToActiveEnvironment = canApplyToActiveEnvironment;
+        this.applyButtonEnabled = applyButtonEnabled;
         this.applyButtonText = applyButtonText != null && !applyButtonText.isBlank()
                 ? applyButtonText
                 : "Apply to Active Environment";
@@ -166,8 +178,10 @@ public class UnresolvedVariablesDialog extends JDialog {
         applyButton = new JButton(applyButtonText);
         applyButton.setToolTipText(canApplyToActiveEnvironment
                 ? "Apply entered values to the Active Environment."
-                : "Select an Active Environment before applying values.");
-        applyButton.setEnabled(canApplyToActiveEnvironment);
+                : applyButtonEnabled
+                    ? "Apply entered values only for export."
+                    : "Select an Active Environment before applying values.");
+        applyButton.setEnabled(applyButtonEnabled);
         applyButton.addActionListener(e -> {
             enteredValues.clear();
             enteredValues.putAll(collectEnteredValues());

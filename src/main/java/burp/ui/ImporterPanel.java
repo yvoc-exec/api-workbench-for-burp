@@ -3434,11 +3434,13 @@ public class ImporterPanel {
 
     static final class UnresolvedDialogConfig {
         final boolean canApply;
+        final boolean applyButtonEnabled;
         final String applyButtonText;
         final String hintText;
 
-        UnresolvedDialogConfig(boolean canApply, String applyButtonText, String hintText) {
+        UnresolvedDialogConfig(boolean canApply, boolean applyButtonEnabled, String applyButtonText, String hintText) {
             this.canApply = canApply;
+            this.applyButtonEnabled = applyButtonEnabled;
             this.applyButtonText = applyButtonText;
             this.hintText = hintText;
         }
@@ -3452,8 +3454,18 @@ public class ImporterPanel {
                 : "No Active Environment selected. You may continue without applying, or cancel and create/import an environment.";
         return new UnresolvedDialogConfig(
                 canApply,
+                canApply,
                 "Apply to Active Environment",
                 hintText);
+    }
+
+    UnresolvedDialogConfig buildExportUnresolvedDialogConfig() {
+        return new UnresolvedDialogConfig(
+                false,
+                true,
+                "Use for Export",
+                "Entered values apply only to this export. Continue without applying to export unresolved values as-is."
+        );
     }
 
     UnresolvedVariablesDialog createUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
@@ -3465,6 +3477,7 @@ public class ImporterPanel {
                 issues,
                 targetCollections,
                 config.canApply,
+                config.applyButtonEnabled,
                 config.applyButtonText,
                 config.hintText);
     }
@@ -5869,15 +5882,14 @@ public class ImporterPanel {
             }
         }
         try {
-            ExportResult result = collectionExportService.exportCollection(
+            ExportResult result = performCollectionExport(
                     collection,
-                    new CollectionExportOptions(
-                            selection.format,
-                            selection.outputPath,
-                            selection.resolveVariables,
-                            activeEnvironment,
-                            exportOnlyVariables
-                    )
+                    selection.format,
+                    selection.outputPath,
+                    selection.resolveVariables,
+                    activeEnvironment,
+                    exportOnlyVariables,
+                    false
             );
             StringBuilder message = new StringBuilder();
             message.append("Exported collection \"").append(collectionDisplayName(collection)).append("\" to ").append(selection.outputPath.getFileName()).append(".");
@@ -5890,6 +5902,28 @@ public class ImporterPanel {
             appendImportLog("Collection export failed: " + reason);
             JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    ExportResult performCollectionExport(ApiCollection collection,
+                                         CollectionExportFormat format,
+                                         Path outputPath,
+                                         boolean resolveVariables,
+                                         EnvironmentProfile activeEnvironment,
+                                         Map<String, String> exportOnlyVariables,
+                                         boolean cancelled) throws ExportException {
+        if (cancelled) {
+            return null;
+        }
+        return collectionExportService.exportCollection(
+                collection,
+                new CollectionExportOptions(
+                        format,
+                        outputPath,
+                        resolveVariables,
+                        activeEnvironment,
+                        exportOnlyVariables
+                )
+        );
     }
 
     private void handleEnvironmentExport() {
@@ -5923,14 +5957,16 @@ public class ImporterPanel {
 
     private UnresolvedVariablesDialog createExportUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
                                                                             List<ApiCollection> targetCollections) {
+        UnresolvedDialogConfig config = buildExportUnresolvedDialogConfig();
         Window owner = SwingUtilities.getWindowAncestor(mainPanel);
         return new UnresolvedVariablesDialog(
                 owner,
                 issues,
                 targetCollections,
-                false,
-                "Use for Export",
-                "Entered values apply only to this export. Continue without applying to export unresolved values as-is."
+                config.canApply,
+                config.applyButtonEnabled,
+                config.applyButtonText,
+                config.hintText
         );
     }
 

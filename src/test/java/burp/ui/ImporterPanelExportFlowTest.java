@@ -12,16 +12,22 @@ import burp.runner.CollectionRunner;
 import burp.ui.tree.CollectionTreeNode;
 import burp.utils.ScriptMode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 class ImporterPanelExportFlowTest {
+    @TempDir
+    Path tempDir;
 
     @Test
     void collectionContextMenuIncludesExportOnlyForCollectionNodes() {
@@ -63,6 +69,37 @@ class ImporterPanelExportFlowTest {
 
         JPopupMenu rootMenu = panel.buildRequestTreeContextMenu(null);
         assertThat(labels(rootMenu)).containsExactly("New Collection");
+    }
+
+    @Test
+    void exportUnresolvedDialogUsesExportOnlyQuickEntryConfig() {
+        ImporterPanel panel = newPanel();
+        ImporterPanel.UnresolvedDialogConfig config = panel.buildExportUnresolvedDialogConfig();
+
+        assertThat(config.canApply).isFalse();
+        assertThat(config.applyButtonEnabled).isTrue();
+        assertThat(config.applyButtonText).isEqualTo("Use for Export");
+        assertThat(config.hintText).contains("apply only to this export");
+    }
+
+    @Test
+    void cancelledCollectionExportDoesNotWriteOutputFile() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        Path output = tempDir.resolve("cancelled.api-workbench.collection.json");
+
+        var result = panel.performCollectionExport(
+                collection,
+                burp.exporter.CollectionExportFormat.API_WORKBENCH_JSON,
+                output,
+                false,
+                null,
+                Map.of(),
+                true
+        );
+
+        assertThat(result).isNull();
+        assertThat(Files.exists(output)).isFalse();
     }
 
     private static ImporterPanel newPanel() {
