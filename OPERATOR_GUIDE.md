@@ -163,8 +163,13 @@ Right-click the tree to create and manage items directly:
 Notes:
 
 - Duplicate names are prevented within the same parent scope, and duplicate actions generate incremental names such as `Login Copy`, `Login Copy 2`, and `Login Copy 3`.
-- Selecting a collection or folder clears the request editor and disables Send until you click a request again.
-- New Request starts as a blank `GET` request with an empty URL. Set the URL before sending, importing, or running; if left blank, the existing request build/send path will fail naturally.
+- Request labels are independent from folder paths: labels such as `GET /users`, `POST /api/v1/token`, and `users\{id}` stay labels and do not create folders. Folder names cannot contain `/` or `\`, and a request may share the same name as its parent folder while still remaining nested there.
+- Selecting a collection, folder, the root area, or clearing the selection clears the request editor and disables Send until you click a request node again.
+- New Collection and New Folder clear stale request editor state before the tree is rebuilt.
+- New Request opens immediately in the request editor as a blank `GET` draft with an empty URL and inherited auth. Set the URL before sending, importing, or running; there is no separate blank-URL preflight blocker in this release, so blank requests fail later through the normal request build/send path.
+- Duplicate Folder copies the selected folder subtree and contained requests, preserving folder-scoped metadata.
+- Duplicate Request copies the selected request into the same parent folder and opens the duplicate in the editor.
+- Delete actions prompt for confirmation and remove the selected collection, folder subtree, or request; related queued runner entries are cleaned up when applicable.
 - Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy runtime execution state such as `runtimeVars` or `runtimeOAuth2`.
 
 ### Request Editor
@@ -174,7 +179,7 @@ Editable request areas:
 | Area | What You Can Change |
 ------|---------------------|
 | Method / URL | HTTP method, URL, query parameters |
-| Headers | Add, remove, enable, disable headers. Effective headers (Accept, User-Agent, Cache-Control, Host, auth, and body-derived Content-Type) are synthesized into the table automatically. Uncheck a synthesized header to suppress it; edit its value to override it permanently. If you disable `Content-Type`, synthesized body-mode `Content-Type` headers stay suppressed until you re-enable or add one explicitly. |
+| Headers | Key/value rows with add/remove controls. The table shows editable materialized headers such as Accept, User-Agent, Cache-Control, Authorization, and Content-Type when they apply. Edit a row to make it explicit; remove a row to suppress that synthesized header on future rebuilds. Host, Content-Length, and Transfer-Encoding are computed by the builder and are not normal persisted rows. |
 | Auth | Select inherit or an auth type, then edit auth properties |
 | Body | Raw, URL-encoded, form-data, GraphQL, file-like modes where supported |
 | Scripts | Pre-request and post-response scripts |
@@ -192,10 +197,10 @@ Workbench send uses the same shared execution pipeline as the Collection Runner.
 Table-based editor tabs always keep one blank starter row available when empty (params, body form) or after effective headers (headers):
 
 - **Params** can be edited immediately without pressing `+`
-- **Headers** shows effective headers plus a blank starter row for quick entry
+- **Headers** shows explicit/materialized header rows plus a blank starter row for quick entry
 - **form-data** and **x-www-form-urlencoded** body modes can be edited immediately without pressing `+`
 - Blank starter rows are ignored when requests are built, so they do not serialize unless you enter a key
-- Unmodified synthesized headers are not persisted into the request; only explicit, edited, or disabled headers are saved
+- Visible materialized header rows are serialized like normal headers when you save or send. Removing a materialized row suppresses that header in future rebuilds, while transport headers are still computed by the builder rather than treated as normal persisted rows.
 
 ### Workbench Detail Tabs
 

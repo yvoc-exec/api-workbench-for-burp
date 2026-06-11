@@ -530,7 +530,7 @@ Before Workbench send, import, and runner start, `UnresolvedVariableAnalyzer` sc
 
 The **Workbench Resolved tab** shows the effective header set after all layers are applied, plus a separate list of disabled (suppressed) headers.
 
-**Operator suppressions**: When an operator unchecks a header row in the editor, `RequestBuilder` suppresses any synthesized header with the same name. For example, unchecking an `Accept` row disables both the explicit value and the compatibility default. The suppression is persisted as a disabled header in the request.
+**Header materialization and suppressions**: The editor loads materialized headers such as `Accept`, `User-Agent`, `Cache-Control`, `Authorization`, and `Content-Type` as editable key/value rows when they apply. Editing a materialized row makes the value explicit. Removing a materialized row suppresses the matching synthesized header on future rebuilds until it is re-added. Transport headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are computed by the builder rather than treated as normal persisted rows.
 
 Runtime variables and OAuth2 runtime values can be exported/imported as JSON from the Variables tab. Import supports merge or replace, which makes repeat testing easier without persisting token data automatically.
 
@@ -1046,9 +1046,9 @@ Multipart file reading is only attempted when a form field is explicitly marked 
 ### 12.3 Request Editor Empty-State Behavior
 
 - `RequestEditorPanel` seeds a single blank starter row into empty **Params** and shared body form tables so operators can type immediately without pressing `+`.
-- **Headers** table shows effective headers (Accept, User-Agent, Cache-Control, Host, auth, body-derived Content-Type) synthesized from `RequestBuilder`, plus a trailing blank row for quick entry.
+- **Headers** table shows editable key/value rows, including materialized defaults and auth/body-derived headers when they apply, plus a trailing blank row for quick entry. Transport headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are computed by the builder and are not normal persisted rows.
 - The same starter-row behavior is restored after loading a request with no entries, clearing the editor, deleting the last remaining row, or switching into `form-data` / `x-www-form-urlencoded` body modes.
-- Blank starter rows and unmodified synthesized headers are UI affordances only. Request building skips blank-key rows and unmodified synthesized rows, so they do not serialize into explicit headers unless edited or disabled.
+- Blank starter rows are UI affordances only. Visible materialized header rows are serialized like normal headers when the request is saved or sent. Removing a materialized row suppresses that header on future rebuilds, while transport headers are still computed by the builder rather than treated as normal persisted rows.
 
 ### 12.4 Parser Limitations
 
