@@ -4,9 +4,13 @@ import burp.UniversalImporter;
 import burp.auth.OAuth2Manager;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import burp.ui.tree.CollectionTreeNode;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.parser.VariableResolver;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -15,15 +19,21 @@ import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableModel;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.awt.Container;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -962,6 +972,340 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(menuLabels(panel.buildRequestTreeContextMenu(requestNode))).contains("Auth Settings...");
     }
 
+    @Test
+    void manualRequestEditsPersistAfterSelectingAwayAndBack() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        String requestId = request.id;
+        selectTreeNode(panel, requestNode(requestTree(panel), requestId));
+        drainEdt();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+
+        populateManualRequestEditor(
+                requestEditor(panel),
+                "POST",
+                "https://api.example.test/login",
+                "X-Test",
+                "workflow",
+                "{\"username\":\"demo\",\"password\":\"pass\"}",
+                "{{token}}"
+        );
+
+        selectTreeNode(panel, collectionNode(requestTree(panel), "APIM"));
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isNull();
+        assertThat(requestEditor(panel).getCurrentCollection()).isNull();
+        assertThat(requestEditor(panel).isSendEnabled()).isFalse();
+
+        selectTreeNode(panel, requestNode(requestTree(panel), requestId));
+        drainEdt();
+
+        ApiRequest persisted = requestNode(requestTree(panel), requestId).request;
+        assertThat(persisted.path).isEqualTo("Auth");
+        assertThat(persisted.method).isEqualTo("POST");
+        assertThat(persisted.url).isEqualTo("https://api.example.test/login");
+        assertThat(persisted.headers).extracting(header -> ((ApiRequest.Header) header).key)
+                .contains("X-Test");
+        assertThat(persisted.body).isNotNull();
+        assertThat(persisted.body.mode).isEqualTo("raw");
+        assertThat(persisted.body.raw).contains("\"username\":\"demo\"");
+        assertThat(persisted.auth).isNotNull();
+        assertThat(persisted.auth.type).isEqualTo("bearer");
+        assertThat(persisted.auth.properties).containsEntry("token", "{{token}}");
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(persisted);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+    }
+
+    @Test
+    void manualWorkbenchSendBuildsExpectedEditedRequest() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile env = environment("UAT", Map.of("token", "live-token"));
+        edt(() -> {
+            panel.replaceEnvironmentProfiles(List.of(env));
+            panel.setActiveEnvironmentId(env.id);
+        });
+        drainEdt();
+
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        selectTreeNode(panel, requestNode(requestTree(panel), request.id));
+        drainEdt();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        populateManualRequestEditor(
+                requestEditor(panel),
+                "POST",
+                "https://api.example.test/login",
+                "X-Test",
+                "workflow",
+                "{\"login\":true}",
+                "{{token}}"
+        );
+
+        UniversalImporter importer = importer(panel);
+        AtomicReference<String> rawRequestText = new AtomicReference<>();
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            Map<String, String> runtimeOverlay = invocation.getArgument(3);
+            return buildWorkbenchSendResult(panel, requestArg, runtimeOverlay, new AtomicInteger(), rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean(),
+                Mockito.anyMap(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            return buildWorkbenchSendResult(panel, requestArg, activeEnvironmentOverlay(panel), new AtomicInteger(), rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean()
+        );
+
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("workbench send invocation", () -> rawRequestText.get() != null);
+        awaitCondition("workbench send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        assertThat(rawRequestText.get()).contains("POST /login HTTP/1.1");
+        assertThat(rawRequestText.get()).contains("Host: api.example.test");
+        assertThat(rawRequestText.get()).contains("X-Test: workflow");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer live-token");
+        assertThat(rawRequestText.get()).contains("Content-Type: application/json");
+        assertThat(rawRequestText.get()).contains("{\"login\":true}");
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        Mockito.verify(importer, Mockito.times(1)).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean(),
+                Mockito.anyMap(),
+                Mockito.any(),
+                Mockito.any()
+        );
+    }
+
+    @Test
+    void manualWorkbenchSendPlusRepeaterBuildsExpectedRequestAndTabName() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile env = environment("UAT", Map.of("token", "live-token"));
+        edt(() -> {
+            panel.replaceEnvironmentProfiles(List.of(env));
+            panel.setActiveEnvironmentId(env.id);
+        });
+        drainEdt();
+
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        selectTreeNode(panel, requestNode(requestTree(panel), request.id));
+        drainEdt();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        populateManualRequestEditor(
+                requestEditor(panel),
+                "POST",
+                "https://api.example.test/login",
+                "X-Test",
+                "workflow",
+                "{\"login\":true}",
+                "{{token}}"
+        );
+        edt(() -> requestEditor(panel).setSendModeLabel("Send + Repeater"));
+
+        UniversalImporter importer = importer(panel);
+        AtomicReference<String> rawRequestText = new AtomicReference<>();
+        AtomicInteger sendAttempts = new AtomicInteger();
+        AtomicReference<HttpRequest> repeaterRequest = new AtomicReference<>();
+        AtomicReference<String> repeaterTabName = new AtomicReference<>();
+        Mockito.when(importer.generateRepeaterTabName(Mockito.anyString(), Mockito.anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            Map<String, String> runtimeOverlay = invocation.getArgument(3);
+            return buildWorkbenchSendResult(panel, requestArg, runtimeOverlay, sendAttempts, rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean(),
+                Mockito.anyMap(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            return buildWorkbenchSendResult(panel, requestArg, activeEnvironmentOverlay(panel), sendAttempts, rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean()
+        );
+        Mockito.doAnswer(invocation -> {
+            repeaterRequest.set(invocation.getArgument(0));
+            repeaterTabName.set(invocation.getArgument(1));
+            return null;
+        }).when(importer).sendToRepeater(Mockito.any(HttpRequest.class), Mockito.anyString());
+
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("send + repeater started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("send + repeater invocation", () -> repeaterRequest.get() != null);
+        awaitCondition("send + repeater completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        assertThat(rawRequestText.get()).contains("POST /login HTTP/1.1");
+        assertThat(rawRequestText.get()).contains("Host: api.example.test");
+        assertThat(rawRequestText.get()).contains("X-Test: workflow");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer live-token");
+        assertThat(rawRequestText.get()).contains("Content-Type: application/json");
+        assertThat(rawRequestText.get()).contains("{\"login\":true}");
+        assertThat(repeaterRequest.get()).isNotNull();
+        assertThat(repeaterTabName.get()).isEqualTo(request.name);
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        Mockito.verify(importer, Mockito.times(1)).generateRepeaterTabName(request.name, "APIM");
+        Mockito.verify(importer, Mockito.times(1)).sendToRepeater(Mockito.any(HttpRequest.class), Mockito.eq(request.name));
+    }
+
+    @Test
+    void blankUrlWorkbenchSendFailsSafelyWithoutCorruptingEditorState() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        selectTreeNode(panel, requestNode(requestTree(panel), request.id));
+        drainEdt();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+        edt(() -> {
+            requestEditor(panel).getMethodBox().setSelectedItem("GET");
+            requestEditor(panel).getUrlField().setText("");
+        });
+
+        UniversalImporter importer = importer(panel);
+        AtomicInteger sendAttempts = new AtomicInteger();
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            Map<String, String> runtimeOverlay = invocation.getArgument(3);
+            return buildWorkbenchSendResult(panel, requestArg, runtimeOverlay, sendAttempts, new AtomicReference<>());
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean(),
+                Mockito.anyMap(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            return buildWorkbenchSendResult(panel, requestArg, activeEnvironmentOverlay(panel), sendAttempts, new AtomicReference<>());
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean()
+        );
+
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("blank url send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("blank url send invocation", () -> sendAttempts.get() > 0);
+        awaitCondition("blank url send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        assertThat(requestEditor(panel).getCurrentRequest().method).isEqualTo("GET");
+        assertThat(requestEditor(panel).getCurrentRequest().url).isEmpty();
+        assertThat(requestEditor(panel).getCurrentRequest().path).isEqualTo("Auth");
+        assertThat(importLog(panel).getText()).contains("Send failed");
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+    }
+
+    @Test
+    void workspaceRoundTripAfterFullManualEditPreservesSuppressedHeadersAuthAndBody() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        String requestId = request.id;
+        selectTreeNode(panel, requestNode(requestTree(panel), requestId));
+        drainEdt();
+        assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(collection);
+        assertThat(requestEditor(panel).isSendEnabled()).isTrue();
+
+        populateManualRequestEditor(
+                requestEditor(panel),
+                "POST",
+                "https://api.example.test/login",
+                "X-Test",
+                "workflow",
+                "{\"login\":true}",
+                "{{token}}"
+        );
+        removeHeaderRow(requestEditor(panel), "Accept");
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        String json = burp.utils.WorkspaceStateJson.toJson(snapshot);
+        WorkspaceState restored = burp.utils.WorkspaceStateJson.fromJson(json);
+
+        ImporterPanel restoredPanel = newPanel();
+        restoredPanel.restoreWorkspaceState(restored);
+        awaitCondition("workspace restore tree", () -> requestNode(requestTreeUnchecked(restoredPanel), requestId) != null);
+        drainEdt();
+
+        CollectionTreeNode restoredCollection = collectionNode(requestTree(restoredPanel), "APIM");
+        CollectionTreeNode restoredFolder = folderNodeByPath(requestTree(restoredPanel), "Auth");
+        CollectionTreeNode restoredRequestNode = requestNode(requestTree(restoredPanel), requestId);
+        RequestEditorPanel restoredEditor = requestEditor(restoredPanel);
+
+        selectTreeNode(restoredPanel, restoredRequestNode);
+        drainEdt();
+
+        assertThat(restoredCollection).isNotNull();
+        assertThat(restoredFolder).isNotNull();
+        assertThat(restoredRequestNode).isNotNull();
+        assertThat(restoredRequestNode.request.name).isEqualTo(request.name);
+        assertThat(restoredRequestNode.request.path).isEqualTo("Auth");
+        assertThat(restoredRequestNode.request.method).isEqualTo("POST");
+        assertThat(restoredRequestNode.request.url).isEqualTo("https://api.example.test/login");
+        assertThat(restoredRequestNode.request.body).isNotNull();
+        assertThat(restoredRequestNode.request.body.mode).isEqualTo("raw");
+        assertThat(restoredRequestNode.request.body.raw).contains("\"login\":true");
+        assertThat(restoredRequestNode.request.auth).isNotNull();
+        assertThat(restoredRequestNode.request.auth.type).isEqualTo("bearer");
+        assertThat(restoredRequestNode.request.auth.properties).containsEntry("token", "{{token}}");
+        assertThat(restoredRequestNode.request.suppressedAutoHeaders).contains("accept");
+        assertThat(restoredEditor.getCurrentRequest()).isSameAs(restoredRequestNode.request);
+        assertThat(restoredEditor.getCurrentCollection()).isSameAs(restoredCollection.collection);
+        assertThat(restoredEditor.isSendEnabled()).isTrue();
+        assertThat(headerValues(headersModel(restoredEditor))).containsEntry("X-Test", "workflow");
+        assertThat(headerValues(headersModel(restoredEditor))).containsEntry("Authorization", "Bearer {{token}}");
+        assertThat(headerValues(headersModel(restoredEditor))).doesNotContainKey("Accept");
+        assertThat(headersModel(restoredEditor).getRowCount()).isGreaterThan(1);
+    }
+
     private static ImporterPanel newPanel() {
         UniversalImporter importer = Mockito.mock(UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         Mockito.when(importer.getApi().userInterface().createHttpRequestEditor(Mockito.any())).thenReturn(Mockito.mock(burp.api.montoya.ui.editor.HttpRequestEditor.class, Mockito.RETURNS_DEEP_STUBS));
@@ -1059,12 +1403,28 @@ class ImporterPanelRequestTreeCreateFlowTest {
         return privateField(panel, "requestTree");
     }
 
+    private static JTree requestTreeUnchecked(ImporterPanel panel) {
+        try {
+            return requestTree(panel);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private static DefaultTreeModel treeModel(ImporterPanel panel) throws Exception {
         return privateField(panel, "treeModel");
     }
 
     private static RequestEditorPanel requestEditor(ImporterPanel panel) throws Exception {
         return privateField(panel, "requestEditor");
+    }
+
+    private static RequestEditorPanel requestEditorUnchecked(ImporterPanel panel) {
+        try {
+            return requestEditor(panel);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static DefaultTableModel headersModel(RequestEditorPanel editor) throws Exception {
@@ -1081,6 +1441,200 @@ class ImporterPanelRequestTreeCreateFlowTest {
             }
         }
         return out;
+    }
+
+    private static ApiRequest createManualRequest(ImporterPanel panel, ApiCollection collection, String folderPath, String requestName) throws Exception {
+        panel.restoreWorkspaceCollections(List.of(collection));
+        drainEdt();
+
+        CollectionTreeNode folderNode = folderPath == null || folderPath.isBlank()
+                ? collectionNode(requestTree(panel), collection.name)
+                : folderNodeByPath(requestTree(panel), folderPath);
+        assertThat(folderNode).isNotNull();
+
+        invokeOnEdt(panel, "createNewRequestFromTree", new Class<?>[]{CollectionTreeNode.class}, folderNode);
+        drainEdt();
+
+        CollectionTreeNode created = requestNode(requestTree(panel), "Untitled Request");
+        assertThat(created).isNotNull();
+        assertThat(created.request).isNotNull();
+        return created.request;
+    }
+
+    private static void populateManualRequestEditor(RequestEditorPanel editor,
+                                                    String method,
+                                                    String url,
+                                                    String headerKey,
+                                                    String headerValue,
+                                                    String bodyRaw,
+                                                    String authToken) throws Exception {
+        edt(() -> {
+            editor.getMethodBox().setSelectedItem(method);
+            editor.getUrlField().setText(url);
+        });
+
+        if (headerKey != null && headerValue != null) {
+            edt(() -> headersModel(editor).addRow(new Object[]{headerKey, headerValue}));
+        }
+
+        if (bodyRaw != null) {
+            edt(() -> {
+                setBodyMode(editor, "raw");
+                bodyRawArea(editor).setText(bodyRaw);
+            });
+        }
+
+        if (authToken != null) {
+            edt(() -> authTypeBox(editor).setSelectedItem("bearer"));
+            JTextField tokenField = authField(editor, "token");
+            assertThat(tokenField).isNotNull();
+            edt(() -> tokenField.setText(authToken));
+        }
+    }
+
+    private static UniversalImporter importer(ImporterPanel panel) throws Exception {
+        return privateField(panel, "importer");
+    }
+
+    private static Map<String, String> activeEnvironmentOverlay(ImporterPanel panel) throws Exception {
+        String activeId = privateField(panel, "activeEnvironmentId");
+        @SuppressWarnings("unchecked")
+        List<EnvironmentProfile> profiles = privateField(panel, "environmentProfiles");
+        for (EnvironmentProfile profile : profiles) {
+            if (profile != null && Objects.equals(profile.id, activeId)) {
+                return profile.toRuntimeOverlay();
+            }
+        }
+        return Collections.emptyMap();
+    }
+
+    private static UniversalImporter.SingleSendResult buildWorkbenchSendResult(ImporterPanel panel,
+                                                                               ApiRequest requestArg,
+                                                                               Map<String, String> runtimeOverlay,
+                                                                               AtomicInteger sendAttempts,
+                                                                               AtomicReference<String> rawRequestText) throws Exception {
+        sendAttempts.incrementAndGet();
+        Map<String, String> overlay = runtimeOverlay != null ? runtimeOverlay : activeEnvironmentOverlay(panel);
+        VariableResolver resolver = new VariableResolver();
+        if (overlay != null) {
+            resolver.addAll(overlay);
+        }
+        byte[] raw = new RequestBuilder(null).buildRequest(requestArg, resolver);
+        String text = new String(raw, StandardCharsets.UTF_8);
+        if (rawRequestText != null) {
+            rawRequestText.set(text);
+        }
+        HttpRequest builtRequest = Mockito.mock(HttpRequest.class, Mockito.RETURNS_DEEP_STUBS);
+        return new UniversalImporter.SingleSendResult(null, builtRequest);
+    }
+
+    private static JTextArea importLog(ImporterPanel panel) throws Exception {
+        return privateField(panel, "importLog");
+    }
+
+    private static JButton sendButton(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "sendBtn");
+    }
+
+    private static JTable headersTable(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "headersTable");
+    }
+
+    private static JTabbedPane tabs(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "tabs");
+    }
+
+    private static JTextArea bodyRawArea(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "bodyRawArea");
+    }
+
+    private static JComboBox<String> authTypeBox(RequestEditorPanel editor) throws Exception {
+        return privateField(editor, "authTypeBox");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static JTextField authField(RequestEditorPanel editor, String name) throws Exception {
+        Object authUi = privateField(editor, "authUi");
+        Field authFieldsField = authUi.getClass().getDeclaredField("authFields");
+        authFieldsField.setAccessible(true);
+        Map<String, JTextField> authFields = (Map<String, JTextField>) authFieldsField.get(authUi);
+        return authFields.get(name);
+    }
+
+    private static void setBodyMode(RequestEditorPanel editor, String mode) {
+        try {
+            Method method = RequestEditorPanel.class.getDeclaredMethod("setBodyModeInternal", String.class);
+            method.setAccessible(true);
+            method.invoke(editor, mode);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void removeHeaderRow(RequestEditorPanel editor, String headerName) throws Exception {
+        DefaultTableModel model = headersModel(editor);
+        for (int i = 0; i < model.getRowCount(); i++) {
+            if (headerName.equalsIgnoreCase((String) model.getValueAt(i, 0))) {
+                JTable table = headersTable(editor);
+                final int rowIndex = i;
+                edt(() -> {
+                    table.setRowSelectionInterval(rowIndex, rowIndex);
+                    JButton deleteButton = findButton((Container) tabs(editor).getComponentAt(2), "-");
+                    assertThat(deleteButton).isNotNull();
+                    deleteButton.doClick();
+                });
+                return;
+            }
+        }
+        throw new AssertionError("Header row not found: " + headerName);
+    }
+
+    private static EnvironmentProfile environment(String name, Map<String, String> variables) {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = name;
+        profile.ensureId();
+        profile.ensureDefaults();
+        if (variables != null) {
+            profile.variables.putAll(variables);
+        }
+        return profile;
+    }
+
+    private static void edt(ThrowingRunnable action) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                action.run();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    private static void awaitCondition(String description, BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            drainEdt();
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Timed out waiting for " + description);
+    }
+
+    private static JButton findButton(Container root, String text) {
+        for (java.awt.Component component : root.getComponents()) {
+            if (component instanceof JButton && text.equals(((JButton) component).getText())) {
+                return (JButton) component;
+            }
+            if (component instanceof Container) {
+                JButton found = findButton((Container) component, text);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -1100,6 +1654,11 @@ class ImporterPanelRequestTreeCreateFlowTest {
         }
         field.setAccessible(true);
         return (T) field.get(target);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     private static ApiCollection collection(String name) {
