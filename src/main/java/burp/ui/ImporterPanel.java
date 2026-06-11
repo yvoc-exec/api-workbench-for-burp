@@ -1,6 +1,7 @@
 package burp.ui;
 
 import burp.models.*;
+import burp.exporter.*;
 import burp.parser.*;
 import burp.runner.CollectionRunner;
 import burp.auth.OAuth2Manager;
@@ -34,6 +35,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -62,6 +64,8 @@ public class ImporterPanel {
     private final OAuth2Manager oauth2Manager;
     private final burp.utils.RequestBuilder requestBuilder;
     private final RequestTreeMutationService requestTreeMutationService = new RequestTreeMutationService();
+    private final CollectionExportService collectionExportService = new CollectionExportService();
+    private final EnvironmentExportService environmentExportService = new EnvironmentExportService();
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -1142,7 +1146,12 @@ public class ImporterPanel {
                 menu.add(menuItem("Rename", e -> renameNodeFromTree(treeNode)));
                 menu.add(menuItem("Duplicate", e -> duplicateNodeFromTree(treeNode)));
                 menu.add(menuItem("Delete", e -> deleteNodeFromTree(treeNode)));
-                menu.addSeparator();
+                if (treeNode.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                    menu.add(menuItem("Export...", e -> handleCollectionExport(treeNode)));
+                    menu.addSeparator();
+                } else {
+                    menu.addSeparator();
+                }
                 menu.add(menuItem("Auth Settings...", e -> editAuthForNode(treeNode)));
                 break;
             case REQUEST:
@@ -5833,14 +5842,291 @@ public class ImporterPanel {
         appendImportLog("Active environment set to \"" + selected.displayName() + "\".");
     }
 
+    private void handleCollectionExport(CollectionTreeNode node) {
+        ApiCollection collection = findCollectionForNode(node);
+        if (collection == null) {
+            return;
+        }
+        persistCurrentRequestEditorState();
+        CollectionExportSelection selection = showCollectionExportDialog(collection);
+        if (selection == null) {
+            return;
+        }
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        Map<String, String> exportOnlyVariables = Collections.emptyMap();
+        if (selection.resolveVariables && collection.requests != null && !collection.requests.isEmpty()) {
+            List<UnresolvedVariableIssue> issues = ExportVariableResolutionService.collectUnresolvedIssues(collection, activeEnvironment);
+            if (!issues.isEmpty()) {
+                UnresolvedVariablesDialog dialog = createExportUnresolvedVariablesDialog(issues, List.of(collection));
+                UnresolvedVariablesDialog.Action action = dialog.showDialog();
+                if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                    appendImportLog("Collection export cancelled due to unresolved variables.");
+                    return;
+                }
+                if (action == UnresolvedVariablesDialog.Action.APPLY_AND_CONTINUE) {
+                    exportOnlyVariables = dialog.getEnteredValues();
+                }
+            }
+        }
+        try {
+            ExportResult result = collectionExportService.exportCollection(
+                    collection,
+                    new CollectionExportOptions(
+                            selection.format,
+                            selection.outputPath,
+                            selection.resolveVariables,
+                            activeEnvironment,
+                            exportOnlyVariables
+                    )
+            );
+            StringBuilder message = new StringBuilder();
+            message.append("Exported collection \"").append(collectionDisplayName(collection)).append("\" to ").append(selection.outputPath.getFileName()).append(".");
+            if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
+                message.append(" Warnings: ").append(String.join(" | ", result.warnings));
+            }
+            appendImportLog(message.toString());
+        } catch (ExportException e) {
+            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            appendImportLog("Collection export failed: " + reason);
+            JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private void handleEnvironmentExport() {
         EnvironmentProfile selected = getSelectedEnvironmentProfile();
         if (selected == null) {
             return;
         }
+        EnvironmentExportSelection selection = showEnvironmentExportDialog(selected);
+        if (selection == null) {
+            return;
+        }
+        try {
+            EnvironmentProfile copy = selected.copy();
+            copy.ensureDefaults();
+            ExportResult result = environmentExportService.exportEnvironment(
+                    copy,
+                    new EnvironmentExportOptions(selection.format, selection.outputPath)
+            );
+            StringBuilder message = new StringBuilder();
+            message.append("Exported environment \"").append(copy.displayName()).append("\" to ").append(selection.outputPath.getFileName()).append(".");
+            if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
+                message.append(" Warnings: ").append(String.join(" | ", result.warnings));
+            }
+            appendImportLog(message.toString());
+        } catch (ExportException e) {
+            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            appendImportLog("Environment export failed: " + reason);
+            JOptionPane.showMessageDialog(mainPanel, "Environment export failed: " + reason, "Export Environment", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private UnresolvedVariablesDialog createExportUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
+                                                                            List<ApiCollection> targetCollections) {
+        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        return new UnresolvedVariablesDialog(
+                owner,
+                issues,
+                targetCollections,
+                false,
+                "Use for Export",
+                "Entered values apply only to this export. Continue without applying to export unresolved values as-is."
+        );
+    }
+
+    private CollectionExportSelection showCollectionExportDialog(ApiCollection collection) {
+        CollectionExportFormat[] formats = CollectionExportFormat.values();
+        JComboBox<CollectionExportFormat> formatCombo = new JComboBox<>(formats);
+        formatCombo.setSelectedItem(CollectionExportFormat.API_WORKBENCH_JSON);
+        JCheckBox resolveCheckbox = new JCheckBox("Resolve variables using active environment");
+        resolveCheckbox.setSelected(false);
+
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        JLabel activeEnvironmentValue = new JLabel(activeEnvironment != null ? activeEnvironment.displayName() : "No active environment selected");
+        JTextField outputField = new JTextField(38);
+        String[] suggestedFile = new String[]{buildSuggestedCollectionExportFileName(collection, (CollectionExportFormat) formatCombo.getSelectedItem())};
+        outputField.setText(suggestedFile[0]);
+
+        formatCombo.addActionListener(e -> {
+            CollectionExportFormat selectedFormat = (CollectionExportFormat) formatCombo.getSelectedItem();
+            String nextSuggestion = buildSuggestedCollectionExportFileName(collection, selectedFormat);
+            updateSuggestedExportPath(outputField, suggestedFile, nextSuggestion);
+        });
+
+        JButton browseButton = new JButton("Save As...");
+        browseButton.addActionListener(e -> chooseExportPath(outputField, "Export Collection", (CollectionExportFormat) formatCombo.getSelectedItem(), collection != null ? collectionDisplayName(collection) : null));
+
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Collection:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(new JLabel(collectionDisplayName(collection)), gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Active environment:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(activeEnvironmentValue, gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Format:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(formatCombo, gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.gridwidth = 2;
+        panel.add(resolveCheckbox, gbc);
+        gbc.gridwidth = 1;
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Save as:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        JPanel fileRow = new JPanel(new BorderLayout(6, 0));
+        fileRow.add(outputField, BorderLayout.CENTER);
+        fileRow.add(browseButton, BorderLayout.EAST);
+        panel.add(fileRow, gbc);
+
+        int result = JOptionPane.showConfirmDialog(
+                mainPanel,
+                panel,
+                "Export Collection",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE
+        );
+        if (result != JOptionPane.OK_OPTION) {
+            return null;
+        }
+
+        CollectionExportFormat selectedFormat = (CollectionExportFormat) formatCombo.getSelectedItem();
+        Path output = resolveExportPath(outputField.getText(), selectedFormat != null ? selectedFormat.defaultExtension() : null);
+        if (output == null) {
+            JOptionPane.showMessageDialog(mainPanel, "Please choose a valid export file.", "Export Collection", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (!confirmOverwrite(output, "Export Collection")) {
+            return null;
+        }
+        return new CollectionExportSelection(selectedFormat, output, resolveCheckbox.isSelected());
+    }
+
+    private EnvironmentExportSelection showEnvironmentExportDialog(EnvironmentProfile selected) {
+        EnvironmentExportFormat[] formats = EnvironmentExportFormat.values();
+        JComboBox<EnvironmentExportFormat> formatCombo = new JComboBox<>(formats);
+        formatCombo.setSelectedItem(EnvironmentExportFormat.API_WORKBENCH_JSON);
+
+        JTextField outputField = new JTextField(38);
+        String[] suggestedFile = new String[]{buildSuggestedEnvironmentExportFileName(selected, (EnvironmentExportFormat) formatCombo.getSelectedItem())};
+        outputField.setText(suggestedFile[0]);
+
+        formatCombo.addActionListener(e -> {
+            EnvironmentExportFormat selectedFormat = (EnvironmentExportFormat) formatCombo.getSelectedItem();
+            String nextSuggestion = buildSuggestedEnvironmentExportFileName(selected, selectedFormat);
+            updateSuggestedExportPath(outputField, suggestedFile, nextSuggestion);
+        });
+
+        JButton browseButton = new JButton("Save As...");
+        browseButton.addActionListener(e -> chooseExportPath(outputField, "Export Environment", (EnvironmentExportFormat) formatCombo.getSelectedItem(), selected != null ? selected.displayName() : null));
+
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Environment:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(new JLabel(selected != null && selected.displayName() != null ? selected.displayName() : "Untitled Environment"), gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Format:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        panel.add(formatCombo, gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Save as:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        JPanel fileRow = new JPanel(new BorderLayout(6, 0));
+        fileRow.add(outputField, BorderLayout.CENTER);
+        fileRow.add(browseButton, BorderLayout.EAST);
+        panel.add(fileRow, gbc);
+
+        int result = JOptionPane.showConfirmDialog(
+                mainPanel,
+                panel,
+                "Export Environment",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE
+        );
+        if (result != JOptionPane.OK_OPTION) {
+            return null;
+        }
+
+        EnvironmentExportFormat selectedFormat = (EnvironmentExportFormat) formatCombo.getSelectedItem();
+        Path output = resolveExportPath(outputField.getText(), selectedFormat != null ? selectedFormat.defaultExtension() : null);
+        if (output == null) {
+            JOptionPane.showMessageDialog(mainPanel, "Please choose a valid export file.", "Export Environment", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        if (!confirmOverwrite(output, "Export Environment")) {
+            return null;
+        }
+        return new EnvironmentExportSelection(selectedFormat, output);
+    }
+
+    private String buildSuggestedCollectionExportFileName(ApiCollection collection, CollectionExportFormat format) {
+        String baseName = collectionDisplayName(collection);
+        String extension = format != null ? format.defaultExtension() : ".json";
+        return ExportFileNamePolicy.defaultFileName(baseName, extension);
+    }
+
+    private String collectionDisplayName(ApiCollection collection) {
+        if (collection == null || collection.name == null || collection.name.isBlank()) {
+            return "Untitled Collection";
+        }
+        return collection.name;
+    }
+
+    private String buildSuggestedEnvironmentExportFileName(EnvironmentProfile profile, EnvironmentExportFormat format) {
+        String baseName = profile != null ? profile.displayName() : "Environment";
+        String extension = format != null ? format.defaultExtension() : ".json";
+        return ExportFileNamePolicy.defaultFileName(baseName, extension);
+    }
+
+    private void chooseExportPath(JTextField outputField, String title, Enum<?> format, String baseName) {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Export Environment");
-        chooser.setSelectedFile(new File(selected.displayName().replaceAll("[^a-zA-Z0-9._-]+", "_") + ".json"));
+        chooser.setDialogTitle(title);
+        if (outputField != null && outputField.getText() != null && !outputField.getText().isBlank()) {
+            chooser.setSelectedFile(new File(outputField.getText().trim()));
+        } else if (baseName != null && format != null) {
+            chooser.setSelectedFile(new File(baseName.replaceAll("[^a-zA-Z0-9._-]+", "_")));
+        }
         if (chooser.showSaveDialog(mainPanel) != JFileChooser.APPROVE_OPTION) {
             return;
         }
@@ -5848,32 +6134,64 @@ public class ImporterPanel {
         if (file == null) {
             return;
         }
-        try {
-            EnvironmentProfile copy = selected.copy();
-            copy.ensureDefaults();
-            com.google.gson.JsonObject root = new com.google.gson.JsonObject();
-            root.addProperty("name", copy.displayName());
-            com.google.gson.JsonObject values = new com.google.gson.JsonObject();
-            for (Map.Entry<String, String> entry : copy.variables.entrySet()) {
-                values.addProperty(entry.getKey(), entry.getValue());
-            }
-            root.add("variables", values);
-            com.google.gson.JsonObject oauth2 = new com.google.gson.JsonObject();
-            com.google.gson.JsonObject config = new com.google.gson.JsonObject();
-            for (Map.Entry<String, String> entry : copy.oauth2.config.entrySet()) {
-                config.addProperty(entry.getKey(), entry.getValue());
-            }
-            oauth2.add("config", config);
-            com.google.gson.JsonObject bindings = new com.google.gson.JsonObject();
-            for (Map.Entry<String, String> entry : copy.oauth2.outputBindings.entrySet()) {
-                bindings.addProperty(entry.getKey(), entry.getValue());
-            }
-            oauth2.add("outputBindings", bindings);
-            root.add("oauth2", oauth2);
-            Files.writeString(file.toPath(), new com.google.gson.GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(root), StandardCharsets.UTF_8);
-            appendImportLog("Exported environment \"" + copy.displayName() + "\" to " + file.getName() + ".");
-        } catch (Exception e) {
-            appendImportLog("Environment export failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        outputField.setText(file.getPath());
+    }
+
+    private void updateSuggestedExportPath(JTextField outputField, String[] suggestedFile, String nextSuggestion) {
+        if (outputField == null || suggestedFile == null || suggestedFile.length == 0) {
+            return;
+        }
+        String current = outputField.getText() != null ? outputField.getText().trim() : "";
+        if (current.isBlank() || current.equals(suggestedFile[0])) {
+            outputField.setText(nextSuggestion);
+        }
+        suggestedFile[0] = nextSuggestion;
+    }
+
+    private Path resolveExportPath(String text, String defaultExtension) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Path path = Path.of(text.trim());
+        path = ExportFileNamePolicy.ensureExtension(path, defaultExtension);
+        return path.toAbsolutePath().normalize();
+    }
+
+    private boolean confirmOverwrite(Path output, String title) {
+        if (output == null) {
+            return false;
+        }
+        if (!Files.exists(output)) {
+            return true;
+        }
+        int confirm = JOptionPane.showConfirmDialog(
+                mainPanel,
+                "Overwrite existing file?\n" + output,
+                title,
+                JOptionPane.YES_NO_OPTION
+        );
+        return confirm == JOptionPane.YES_OPTION;
+    }
+
+    private static final class CollectionExportSelection {
+        final CollectionExportFormat format;
+        final Path outputPath;
+        final boolean resolveVariables;
+
+        CollectionExportSelection(CollectionExportFormat format, Path outputPath, boolean resolveVariables) {
+            this.format = format;
+            this.outputPath = outputPath;
+            this.resolveVariables = resolveVariables;
+        }
+    }
+
+    private static final class EnvironmentExportSelection {
+        final EnvironmentExportFormat format;
+        final Path outputPath;
+
+        EnvironmentExportSelection(EnvironmentExportFormat format, Path outputPath) {
+            this.format = format;
+            this.outputPath = outputPath;
         }
     }
 

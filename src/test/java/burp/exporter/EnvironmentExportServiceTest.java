@@ -1,0 +1,119 @@
+package burp.exporter;
+
+import burp.models.EnvironmentProfile;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.yaml.snakeyaml.Yaml;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class EnvironmentExportServiceTest {
+    @TempDir
+    Path tempDir;
+
+    private final EnvironmentExportService service = new EnvironmentExportService();
+
+    @Test
+    void exportsNativeEnvironmentJsonWithOauth2MetadataAndWarnings() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        Path output = tempDir.resolve("uat.api-workbench.environment.json");
+
+        ExportResult result = service.exportEnvironment(
+                profile,
+                new EnvironmentExportOptions(EnvironmentExportFormat.API_WORKBENCH_JSON, output)
+        );
+
+        assertThat(result.outputPath).isEqualTo(output.toAbsolutePath().normalize());
+        assertThat(result.variableCount).isEqualTo(profile.variables.size());
+        assertThat(result.warnings).anyMatch(message -> message.contains("blank environment variable key"));
+
+        JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
+        assertThat(root.get("format").getAsString()).isEqualTo("api-workbench-environment");
+        JsonObject env = root.getAsJsonObject("environment");
+        assertThat(env.get("name").getAsString()).isEqualTo("UAT");
+        assertThat(env.getAsJsonObject("variables").get("base_url").getAsString()).isEqualTo("https://api.example.test");
+        assertThat(env.getAsJsonObject("oauth2").getAsJsonObject("config").get("accessTokenUrl").getAsString())
+                .isEqualTo("https://auth.example.test/token");
+        assertThat(env.getAsJsonObject("oauth2").getAsJsonObject("outputBindings").get("accessToken").getAsString())
+                .isEqualTo("env_access_token");
+    }
+
+    @Test
+    void exportsPostmanEnvironmentValuesArray() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        Path output = tempDir.resolve("uat.postman_environment.json");
+
+        service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.POSTMAN_JSON, output));
+
+        JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
+        assertThat(root.get("_postman_variable_scope").getAsString()).isEqualTo("environment");
+        assertThat(root.getAsJsonArray("values")).hasSizeGreaterThan(0);
+        JsonObject first = root.getAsJsonArray("values").get(0).getAsJsonObject();
+        assertThat(first.get("key").getAsString()).isEqualTo("base_url");
+        assertThat(first.get("value").getAsString()).isEqualTo("https://api.example.test");
+        assertThat(first.get("type").getAsString()).isEqualTo("default");
+        assertThat(first.get("enabled").getAsBoolean()).isTrue();
+    }
+
+    @Test
+    void exportsDotEnvWithEscapingAndDeterministicOrder() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        profile.variables.put("quoted", "hello world");
+        profile.variables.put("path_value", "C:\\temp\\file");
+        Path output = tempDir.resolve("uat.env");
+
+        service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.DOTENV, output));
+
+        List<String> lines = Files.readAllLines(output);
+        assertThat(lines.get(0)).isEqualTo("base_url=https://api.example.test");
+        assertThat(String.join("\n", lines)).contains("quoted=\"hello world\"");
+        assertThat(String.join("\n", lines)).contains("path_value=\"C:\\\\temp\\\\file\"");
+    }
+
+    @Test
+    void exportsGenericJsonObject() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        Path output = tempDir.resolve("uat.env.json");
+
+        service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.JSON_OBJECT, output));
+
+        JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
+        assertThat(root.get("base_url").getAsString()).isEqualTo("https://api.example.test");
+        assertThat(root.has("")).isFalse();
+    }
+
+    @Test
+    void exportsInsomniaEnvironmentResources() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        Path output = tempDir.resolve("uat.insomnia.environment.json");
+
+        service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.INSOMNIA_JSON, output));
+
+        JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
+        assertThat(root.getAsJsonArray("resources")).hasSize(1);
+        JsonObject env = root.getAsJsonArray("resources").get(0).getAsJsonObject();
+        assertThat(env.get("_type").getAsString()).isEqualTo("environment");
+        assertThat(env.getAsJsonObject("data").get("base_url").getAsString()).isEqualTo("https://api.example.test");
+    }
+
+    @Test
+    void exportsBrunoEnvironmentVarsBlock() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        profile.variables.put("quoted", "hello world");
+        Path output = tempDir.resolve("uat.bru");
+
+        service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.BRUNO_BRU, output));
+
+        String text = Files.readString(output);
+        assertThat(text).contains("vars {");
+        assertThat(text).contains("base_url: \"https://api.example.test\"");
+        assertThat(text).contains("quoted: \"hello world\"");
+    }
+}

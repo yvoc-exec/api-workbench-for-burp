@@ -1,0 +1,114 @@
+package burp.ui;
+
+import burp.UniversalImporter;
+import burp.auth.OAuth2Manager;
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.ui.UserInterface;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
+import burp.models.ApiCollection;
+import burp.models.ApiRequest;
+import burp.runner.CollectionRunner;
+import burp.ui.tree.CollectionTreeNode;
+import burp.utils.ScriptMode;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import javax.swing.*;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
+
+class ImporterPanelExportFlowTest {
+
+    @Test
+    void collectionContextMenuIncludesExportOnlyForCollectionNodes() {
+        ImporterPanel panel = newPanel();
+
+        JPopupMenu collectionMenu = panel.buildRequestTreeContextMenu(new CollectionTreeNode(collection("APIM")));
+        assertThat(labels(collectionMenu)).containsExactly(
+                "New Folder",
+                "New Request",
+                "Rename",
+                "Duplicate",
+                "Delete",
+                "Export...",
+                "Auth Settings..."
+        );
+
+        CollectionTreeNode folderNode = new CollectionTreeNode("Auth");
+        folderNode.folderPath = "Auth";
+        JPopupMenu folderMenu = panel.buildRequestTreeContextMenu(folderNode);
+        assertThat(labels(folderMenu)).containsExactly(
+                "New Folder",
+                "New Request",
+                "Rename",
+                "Duplicate",
+                "Delete",
+                "Auth Settings..."
+        );
+        assertThat(labels(folderMenu)).doesNotContain("Export...");
+
+        CollectionTreeNode requestNode = new CollectionTreeNode(request("req-1", "Login", "POST", "https://api.example.test/login"));
+        JPopupMenu requestMenu = panel.buildRequestTreeContextMenu(requestNode);
+        assertThat(labels(requestMenu)).containsExactly(
+                "Rename",
+                "Duplicate",
+                "Delete",
+                "Auth Settings..."
+        );
+        assertThat(labels(requestMenu)).doesNotContain("Export...");
+
+        JPopupMenu rootMenu = panel.buildRequestTreeContextMenu(null);
+        assertThat(labels(rootMenu)).containsExactly("New Collection");
+    }
+
+    private static ImporterPanel newPanel() {
+        UniversalImporter importer = Mockito.mock(UniversalImporter.class);
+        MontoyaApi api = Mockito.mock(MontoyaApi.class);
+        UserInterface userInterface = Mockito.mock(UserInterface.class);
+        HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
+        HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
+        when(requestEditor.uiComponent()).thenReturn(new JPanel());
+        when(responseEditor.uiComponent()).thenReturn(new JPanel());
+        when(userInterface.createHttpRequestEditor(Mockito.any())).thenReturn(requestEditor);
+        when(userInterface.createHttpResponseEditor(Mockito.any())).thenReturn(responseEditor);
+        when(api.userInterface()).thenReturn(userInterface);
+        when(importer.getApi()).thenReturn(api);
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class);
+        OAuth2Manager oauth2Manager = Mockito.mock(OAuth2Manager.class);
+        return new ImporterPanel(importer, runner, oauth2Manager, ScriptMode.FULL_JS);
+    }
+
+    private static ApiCollection collection(String name) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = name;
+        return collection;
+    }
+
+    private static ApiRequest request(String id, String name, String method, String url) {
+        ApiRequest request = new ApiRequest();
+        request.id = id;
+        request.name = name;
+        request.method = method;
+        request.url = url;
+        request.path = "";
+        request.sourceCollection = "APIM";
+        return request;
+    }
+
+    private static List<String> labels(JPopupMenu menu) {
+        List<String> labels = new ArrayList<>();
+        if (menu == null) {
+            return labels;
+        }
+        for (int i = 0; i < menu.getComponentCount(); i++) {
+            if (menu.getComponent(i) instanceof JMenuItem item) {
+                labels.add(item.getText());
+            }
+        }
+        return labels;
+    }
+}
