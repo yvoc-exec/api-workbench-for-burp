@@ -1,5 +1,10 @@
 package burp.ui;
 
+import burp.UniversalImporter;
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.RequestOptions;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
@@ -7,17 +12,41 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerPreviewRow;
+import burp.models.RunnerResult;
 import burp.runner.CollectionRunner;
+import burp.utils.ScriptMode;
+import burp.utils.WorkspaceStateService;
+import burp.ui.tree.CollectionTreeNode;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import javax.swing.JButton;
+import javax.swing.JDialog;
 import javax.swing.JPanel;
 import javax.swing.JTextArea;
+import javax.swing.JTree;
+import javax.swing.SwingUtilities;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreePath;
+import java.awt.HeadlessException;
+import java.awt.Window;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,6 +143,160 @@ class ImporterPanelRunnerQueueTest {
         assertThat(oauth2Panel(panel).getAutoBindCheckBox().isSelected()).isFalse();
     }
 
+    @Test
+    void runnerStartUsesActiveEnvironmentOverlayAndSelectedRequest() throws Exception {
+        AtomicReference<Function<ApiCollection, Map<String, String>>> overlayProvider = new AtomicReference<>();
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        Mockito.doAnswer(inv -> {
+            overlayProvider.set(inv.getArgument(0));
+            return null;
+        }).when(runner).setRuntimeOverlayProvider(Mockito.any());
+        Mockito.when(runner.isRunning()).thenReturn(false);
+        RunnerPreviewRow previewRow = previewRow("Login");
+        previewRow.authStatus = "bearer";
+        Mockito.when(runner.buildRunPreview(Mockito.anyList(), Mockito.anyList())).thenReturn(List.of(previewRow));
+        ImporterPanel panel = newPanel(runner);
+
+        EnvironmentProfile active = environment("UAT");
+        active.variables.put("base_url", "https://uat.example.test");
+        active.variables.put("token", "uat-token");
+
+        ApiRequest request = request("Login");
+        request.method = "POST";
+        request.url = "{{base_url}}/users";
+        request.path = "Auth";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"login\":true}";
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        request.auth.properties.put("token", "{{token}}");
+        ApiCollection collection = collection("APIM", request);
+
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+        edt(() -> {
+            panel.replaceEnvironmentProfiles(List.of(active));
+            panel.setActiveEnvironmentId(active.id);
+        });
+        drainEdt();
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(active.id);
+        assertThat(activeEnvironmentOverlay(panel)).containsEntry("base_url", "https://uat.example.test");
+        assertThat(activeEnvironmentOverlay(panel)).containsEntry("token", "uat-token");
+
+        invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(request));
+        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class}, false);
+
+        ArgumentCaptor<List<ApiCollection>> collectionsCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<List<ApiRequest>> requestsCaptor = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(runner).runCollections(collectionsCaptor.capture(), requestsCaptor.capture());
+        assertThat(requestsCaptor.getValue()).containsExactly(request);
+        assertThat(collectionsCaptor.getValue()).containsExactly(collection);
+        assertThat(overlayProvider.get()).isNotNull();
+        assertThat(overlayProvider.get().apply(collection)).containsEntry("base_url", "https://uat.example.test");
+        assertThat(overlayProvider.get().apply(collection)).containsEntry("token", "uat-token");
+    }
+
+    @Test
+    void blankUrlRunnerFailsSafelyWithoutCorruptingState() throws Exception {
+        MontoyaApi api = mockApi(true);
+        ImporterPanel panel = newRealPanel(api);
+
+        ApiRequest request = request("Blank");
+        request.url = "";
+        request.path = "Auth";
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        ApiCollection collection = collection("APIM", request);
+
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+        invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(request));
+        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class}, false);
+
+        awaitCondition("blank-url runner result", () -> {
+            try {
+                return resultModel(panel).getRowCount() == 1;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        drainEdt();
+
+        RunnerResult result = resultModel(panel).getResultAt(0);
+        assertThat(result.success).isFalse();
+        assertThat(result.errorMessage).contains("Request URL cannot be null or empty");
+        assertThat(runnerLog(panel).getText()).contains("FAIL").contains("Request URL cannot be null or empty");
+        assertThat(request.url).isEmpty();
+        assertThat(request.method).isEqualTo("GET");
+        assertThat(requestNode(requestTree(panel), "Blank")).isNotNull();
+        assertThat(queue(panel)).containsExactly(request);
+    }
+
+    @Test
+    void blankUrlImportCheckedFailsSafelyWithoutCorruptingState() throws Exception {
+        MontoyaApi api = mockApi(true);
+        ImporterPanel panel = newRealPanel(api);
+
+        ApiRequest request = request("Blank");
+        request.url = "";
+        request.path = "Auth";
+        ApiCollection collection = collection("APIM", request);
+
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+        invokeOnEdt(panel, "startImport", new Class<?>[]{List.class, List.class, int.class},
+                List.of(request), List.of("sitemap"), 0);
+
+        awaitCondition("blank-url import failure log", () -> {
+            try {
+                return importLog(panel).getText().contains("[FAIL]")
+                        || importLog(panel).getText().contains("Request URL cannot be null or empty");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        drainEdt();
+
+        assertThat(importLog(panel).getText()).contains("Request URL cannot be null or empty");
+        assertThat(request.url).isEmpty();
+        assertThat(request.method).isEqualTo("GET");
+        assertThat(folderNodeByPath(requestTree(panel), "Auth")).isNotNull();
+        assertThat(requestNode(requestTree(panel), "Blank")).isNotNull();
+    }
+
+    @Test
+    void deleteOperationsAreRejectedWhileRunnerIsRunning() throws Exception {
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        Mockito.when(runner.isRunning()).thenReturn(true);
+        ImporterPanel panel = newPanel(runner);
+
+        ApiRequest request = request("Login");
+        request.path = "Auth";
+        ApiCollection collection = collection("APIM", request);
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+
+        JTree tree = requestTree(panel);
+        CollectionTreeNode collectionNode = collectionNode(tree, "APIM");
+        CollectionTreeNode folderNode = folderNodeByPath(tree, "Auth");
+        CollectionTreeNode requestNode = requestNode(tree, "Login");
+
+        assertThat(collectionNode).isNotNull();
+        assertThat(folderNode).isNotNull();
+        assertThat(requestNode).isNotNull();
+
+        invokeDeleteWhileWarningDialogOpen(panel, "deleteRequestNode", requestNode);
+        invokeDeleteWhileWarningDialogOpen(panel, "deleteFolderNode", folderNode);
+        invokeDeleteWhileWarningDialogOpen(panel, "deleteCollectionNode", collectionNode);
+        drainEdt();
+
+        assertThat(collectionNode(requestTree(panel), "APIM")).isNotNull();
+        assertThat(folderNodeByPath(requestTree(panel), "Auth")).isNotNull();
+        assertThat(requestNode(requestTree(panel), "Login")).isNotNull();
+        assertThat(queue(panel)).isEmpty();
+    }
+
     private static ImporterPanel newPanel() {
         return newPanel(Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS));
     }
@@ -127,6 +310,26 @@ class ImporterPanelRunnerQueueTest {
         Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
         Mockito.when(importer.getApi().userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
         return new ImporterPanel(importer, runner, Mockito.mock(burp.auth.OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS), burp.utils.ScriptMode.DISABLED);
+    }
+
+    private static ImporterPanel newRealPanel(MontoyaApi api) {
+        return new UniversalImporter(api, ScriptMode.DISABLED, new WorkspaceStateService(Mockito.mock(PersistedObject.class))).getUI();
+    }
+
+    private static MontoyaApi mockApi(boolean stubSendRequest) {
+        MontoyaApi api = Mockito.mock(MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS);
+        HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
+        Mockito.when(requestEditor.uiComponent()).thenReturn(new JPanel());
+        Mockito.when(api.userInterface().createHttpRequestEditor(Mockito.any(EditorOptions.class))).thenReturn(requestEditor);
+        HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
+        Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
+        Mockito.when(api.userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
+        if (stubSendRequest) {
+            HttpRequestResponse response = Mockito.mock(HttpRequestResponse.class, Mockito.RETURNS_DEEP_STUBS);
+            Mockito.when(response.response().bodyToString()).thenReturn("");
+            Mockito.when(api.http().sendRequest(Mockito.any(), Mockito.any(RequestOptions.class))).thenReturn(response);
+        }
+        return api;
     }
 
     private static ApiCollection collection(String name, ApiRequest... requests) {
@@ -192,12 +395,98 @@ class ImporterPanelRunnerQueueTest {
         return (OAuth2Panel) privateField(panel, "oauth2Panel");
     }
 
+    private static JTextArea importLog(ImporterPanel panel) throws Exception {
+        return (JTextArea) privateField(panel, "importLog");
+    }
+
+    private static JTree requestTree(ImporterPanel panel) throws Exception {
+        return (JTree) privateField(panel, "requestTree");
+    }
+
+    private static CollectionTreeNode collectionNode(JTree tree, String collectionName) {
+        return collectionNode((DefaultMutableTreeNode) tree.getModel().getRoot(), collectionName);
+    }
+
+    private static CollectionTreeNode collectionNode(DefaultMutableTreeNode node, String collectionName) {
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.COLLECTION
+                    && ctn.collection != null
+                    && collectionName.equals(ctn.collection.name)) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = collectionNode((DefaultMutableTreeNode) node.getChildAt(i), collectionName);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static CollectionTreeNode folderNodeByPath(JTree tree, String folderPath) {
+        return folderNodeByPath((DefaultMutableTreeNode) tree.getModel().getRoot(), folderPath);
+    }
+
+    private static CollectionTreeNode folderNodeByPath(DefaultMutableTreeNode node, String folderPath) {
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.FOLDER && folderPath.equals(ctn.folderPath)) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = folderNodeByPath((DefaultMutableTreeNode) node.getChildAt(i), folderPath);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static CollectionTreeNode requestNode(JTree tree, String requestId) {
+        return requestNode((DefaultMutableTreeNode) tree.getModel().getRoot(), requestId);
+    }
+
+    private static CollectionTreeNode requestNode(DefaultMutableTreeNode node, String requestId) {
+        if (node instanceof CollectionTreeNode) {
+            CollectionTreeNode ctn = (CollectionTreeNode) node;
+            if (ctn.getNodeType() == CollectionTreeNode.Type.REQUEST
+                    && ctn.request != null
+                    && (requestId.equals(ctn.request.id)
+                    || requestId.equals(ctn.request.name)
+                    || requestId.equals(ctn.request.path))) {
+                return ctn;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            CollectionTreeNode found = requestNode((DefaultMutableTreeNode) node.getChildAt(i), requestId);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
     private static EnvironmentProfile environment(String name) {
         EnvironmentProfile profile = new EnvironmentProfile();
         profile.name = name;
         profile.ensureId();
         profile.ensureDefaults();
         return profile;
+    }
+
+    private static Map<String, String> activeEnvironmentOverlay(ImporterPanel panel) throws Exception {
+        String activeId = (String) privateField(panel, "activeEnvironmentId");
+        @SuppressWarnings("unchecked")
+        List<EnvironmentProfile> profiles = (List<EnvironmentProfile>) privateField(panel, "environmentProfiles");
+        for (EnvironmentProfile profile : profiles) {
+            if (profile != null && Objects.equals(profile.id, activeId)) {
+                return profile.toRuntimeOverlay();
+            }
+        }
+        return Collections.emptyMap();
     }
 
     private static void invokePrivate(ImporterPanel panel, String methodName) throws Exception {
@@ -212,10 +501,89 @@ class ImporterPanelRunnerQueueTest {
         method.invoke(panel, arg);
     }
 
+    private static void invokePrivateArgs(ImporterPanel panel, String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, args);
+    }
+
+    private static void invokeOnEdt(ImporterPanel panel, String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                invokePrivateArgs(panel, methodName, parameterTypes, args);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    private static void edt(ThrowingRunnable action) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                action.run();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
     private static Object privateField(Object target, String name) throws Exception {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.get(target);
+    }
+
+    private static void invokeDeleteWhileWarningDialogOpen(ImporterPanel panel, String methodName, CollectionTreeNode node) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> future = executor.submit(() -> {
+                try {
+                    invokePrivateArgs(panel, methodName, new Class<?>[]{CollectionTreeNode.class}, node);
+                } catch (InvocationTargetException e) {
+                    Throwable cause = e.getCause();
+                    if (!(cause instanceof HeadlessException)) {
+                        throw new RuntimeException(cause != null ? cause : e);
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            awaitCondition("runner warning dialog or delete completion", () -> future.isDone() || findRunnerWarningDialog() != null);
+            JDialog dialog = findRunnerWarningDialog();
+            if (dialog != null) {
+                edt(dialog::dispose);
+            }
+            future.get(5, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static JDialog findRunnerWarningDialog() {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof JDialog dialog && dialog.isShowing() && "Runner Running".equals(dialog.getTitle())) {
+                return dialog;
+            }
+        }
+        return null;
+    }
+
+    private static void awaitCondition(String description, BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            drainEdt();
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Timed out waiting for " + description);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     private static void drainEdt() throws Exception {

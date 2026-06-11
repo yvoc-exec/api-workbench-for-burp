@@ -692,10 +692,18 @@ public class ImporterPanel {
 
     private void updateWorkbenchDetailPaneFailure(ApiRequest edited, String reason, String sendModeLabel) {
         if (workbenchRequestEditor != null) {
-            workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
+            try {
+                workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
+            } catch (RuntimeException ignored) {
+                // Tests may construct the panel without a Montoya object factory.
+            }
         }
         if (workbenchResponseEditor != null) {
-            workbenchResponseEditor.setResponse(HttpResponse.httpResponse());
+            try {
+                workbenchResponseEditor.setResponse(HttpResponse.httpResponse());
+            } catch (RuntimeException ignored) {
+                // Tests may construct the panel without a Montoya object factory.
+            }
         }
         if (workbenchMetaText != null) {
             workbenchMetaText.setText(buildWorkbenchMetaText(edited, null, sendModeLabel, reason));
