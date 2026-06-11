@@ -1,16 +1,15 @@
 package burp.exporter;
 
 import burp.models.EnvironmentProfile;
+import burp.utils.EnvironmentImportService;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.yaml.snakeyaml.Yaml;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,13 +35,35 @@ class EnvironmentExportServiceTest {
 
         JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
         assertThat(root.get("format").getAsString()).isEqualTo("api-workbench-environment");
-        JsonObject env = root.getAsJsonObject("environment");
-        assertThat(env.get("name").getAsString()).isEqualTo("UAT");
-        assertThat(env.getAsJsonObject("variables").get("base_url").getAsString()).isEqualTo("https://api.example.test");
-        assertThat(env.getAsJsonObject("oauth2").getAsJsonObject("config").get("accessTokenUrl").getAsString())
+        assertThat(root.get("name").getAsString()).isEqualTo("UAT");
+        assertThat(root.get("sourceFormat").getAsString()).isEqualTo("api-workbench");
+        assertThat(root.get("sourceFileName").getAsString()).isEqualTo("uat.env");
+        assertThat(root.getAsJsonObject("variables").get("base_url").getAsString()).isEqualTo("https://api.example.test");
+        assertThat(root.getAsJsonObject("oauth2").getAsJsonObject("config").get("accessTokenUrl").getAsString())
                 .isEqualTo("https://auth.example.test/token");
-        assertThat(env.getAsJsonObject("oauth2").getAsJsonObject("outputBindings").get("accessToken").getAsString())
+        assertThat(root.getAsJsonObject("oauth2").getAsJsonObject("outputBindings").get("accessToken").getAsString())
                 .isEqualTo("env_access_token");
+    }
+
+    @Test
+    void roundTripsApiWorkbenchEnvironmentThroughImporter() throws Exception {
+        EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        Path output = tempDir.resolve("uat.api-workbench.environment.json");
+
+        service.exportEnvironment(
+                profile,
+                new EnvironmentExportOptions(EnvironmentExportFormat.API_WORKBENCH_JSON, output)
+        );
+
+        List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(output.toFile());
+        assertThat(imported).hasSize(1);
+        EnvironmentProfile roundTrip = imported.get(0);
+        assertThat(roundTrip.name).isEqualTo("UAT");
+        assertThat(roundTrip.sourceFormat).isEqualTo("api-workbench");
+        assertThat(roundTrip.sourceFileName).isEqualTo("uat.env");
+        assertThat(roundTrip.variables).containsEntry("base_url", "https://api.example.test");
+        assertThat(roundTrip.oauth2.config).containsEntry("accessTokenUrl", "https://auth.example.test/token");
+        assertThat(roundTrip.oauth2.outputBindings).containsEntry("accessToken", "env_access_token");
     }
 
     @Test

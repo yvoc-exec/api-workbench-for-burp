@@ -1,8 +1,6 @@
 package burp.exporter;
 
 import burp.models.ApiCollection;
-import burp.models.ApiRequest;
-import burp.models.EnvironmentProfile;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
@@ -32,29 +30,30 @@ public final class CollectionExportService {
         List<String> warnings = new ArrayList<>();
         try {
             Path output = ExportSupport.prepareOutputPath(options.outputPath);
-            Files.createDirectories(output.getParent() != null ? output.getParent() : output.toAbsolutePath().getParent());
-            switch (options.format) {
-                case API_WORKBENCH_JSON -> writeText(output, GSON.toJson(ApiWorkbenchCollectionExporter.build(collection, options, warnings)));
-                case POSTMAN_JSON -> writeText(output, GSON.toJson(PostmanCollectionExporter.build(collection, options, warnings)));
-                case OPENAPI_JSON -> {
-                    try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
-                        OpenApiCollectionExporter.writeJson(collection, options, writer, warnings);
+            ExportSupport.writeAtomically(output, temp -> {
+                switch (options.format) {
+                    case API_WORKBENCH_JSON -> writeText(temp, GSON.toJson(ApiWorkbenchCollectionExporter.build(collection, options, warnings)));
+                    case POSTMAN_JSON -> writeText(temp, GSON.toJson(PostmanCollectionExporter.build(collection, options, warnings)));
+                    case OPENAPI_JSON -> {
+                        try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                            OpenApiCollectionExporter.writeJson(collection, options, writer, warnings);
+                        }
                     }
-                }
-                case OPENAPI_YAML -> {
-                    try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
-                        OpenApiCollectionExporter.writeYaml(collection, options, writer, warnings);
+                    case OPENAPI_YAML -> {
+                        try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                            OpenApiCollectionExporter.writeYaml(collection, options, writer, warnings);
+                        }
                     }
-                }
-                case INSOMNIA_JSON -> writeText(output, GSON.toJson(InsomniaCollectionExporter.build(collection, options, warnings)));
-                case HAR_JSON -> writeText(output, GSON.toJson(HarCollectionExporter.build(collection, options, warnings)));
-                case BRUNO_ZIP -> {
-                    try (OutputStream out = Files.newOutputStream(output)) {
-                        BrunoCollectionExporter.write(collection, options, out, warnings);
+                    case INSOMNIA_JSON -> writeText(temp, GSON.toJson(InsomniaCollectionExporter.build(collection, options, warnings)));
+                    case HAR_JSON -> writeText(temp, GSON.toJson(HarCollectionExporter.build(collection, options, warnings)));
+                    case BRUNO_ZIP -> {
+                        try (OutputStream out = Files.newOutputStream(temp)) {
+                            BrunoCollectionExporter.write(collection, options, out, warnings);
+                        }
                     }
+                    default -> throw new IOException("Unsupported collection export format: " + options.format);
                 }
-                default -> throw new IOException("Unsupported collection export format: " + options.format);
-            }
+            });
             int unresolved = options.resolveVariablesUsingActiveEnvironment
                     ? ExportVariableResolutionService.collectUnresolvedIssues(collection, options.activeEnvironment, options.exportOnlyVariables).size()
                     : 0;

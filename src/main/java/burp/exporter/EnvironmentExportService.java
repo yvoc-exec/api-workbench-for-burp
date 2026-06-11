@@ -9,15 +9,11 @@ import org.yaml.snakeyaml.Yaml;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 
 public final class EnvironmentExportService {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create();
@@ -45,24 +41,25 @@ public final class EnvironmentExportService {
 
     private void write(EnvironmentProfile profile, EnvironmentExportOptions options, List<String> warnings) throws IOException {
         Path output = ExportSupport.prepareOutputPath(options.outputPath);
-        Files.createDirectories(output.getParent() != null ? output.getParent() : output.toAbsolutePath().getParent());
-        switch (options.format) {
-            case API_WORKBENCH_JSON -> writeText(output, GSON.toJson(ApiWorkbenchEnvironmentExporter.build(profile, warnings)));
-            case POSTMAN_JSON -> writeText(output, GSON.toJson(PostmanEnvironmentExporter.build(profile, warnings)));
-            case DOTENV -> {
-                try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
-                    DotEnvEnvironmentExporter.write(profile, writer, warnings);
+        ExportSupport.writeAtomically(output, temp -> {
+            switch (options.format) {
+                case API_WORKBENCH_JSON -> writeText(temp, GSON.toJson(ApiWorkbenchEnvironmentExporter.build(profile, warnings)));
+                case POSTMAN_JSON -> writeText(temp, GSON.toJson(PostmanEnvironmentExporter.build(profile, warnings)));
+                case DOTENV -> {
+                    try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                        DotEnvEnvironmentExporter.write(profile, writer, warnings);
+                    }
                 }
-            }
-            case JSON_OBJECT -> writeText(output, GSON.toJson(GenericJsonEnvironmentExporter.build(profile, warnings)));
-            case INSOMNIA_JSON -> writeText(output, GSON.toJson(InsomniaEnvironmentExporter.build(profile, warnings)));
-            case BRUNO_BRU -> {
-                try (BufferedWriter writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
-                    BrunoEnvironmentExporter.write(profile, writer, warnings);
+                case JSON_OBJECT -> writeText(temp, GSON.toJson(GenericJsonEnvironmentExporter.build(profile, warnings)));
+                case INSOMNIA_JSON -> writeText(temp, GSON.toJson(InsomniaEnvironmentExporter.build(profile, warnings)));
+                case BRUNO_BRU -> {
+                    try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                        BrunoEnvironmentExporter.write(profile, writer, warnings);
+                    }
                 }
+                default -> throw new IOException("Unsupported environment export format: " + options.format);
             }
-            default -> throw new IOException("Unsupported environment export format: " + options.format);
-        }
+        });
     }
 
     private static void writeText(Path output, String text) throws IOException {

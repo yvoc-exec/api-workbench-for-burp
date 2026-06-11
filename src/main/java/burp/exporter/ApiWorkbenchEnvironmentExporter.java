@@ -13,12 +13,10 @@ public final class ApiWorkbenchEnvironmentExporter {
         JsonObject root = new JsonObject();
         root.addProperty("format", "api-workbench-environment");
         root.addProperty("schemaVersion", 1);
-
-        JsonObject env = new JsonObject();
-        env.addProperty("id", profile != null && profile.id != null ? profile.id : "");
-        env.addProperty("name", profile != null && profile.name != null ? profile.name : "");
-        env.addProperty("sourceFormat", profile != null && profile.sourceFormat != null ? profile.sourceFormat : "");
-        env.addProperty("sourceFileName", profile != null && profile.sourceFileName != null ? profile.sourceFileName : "");
+        root.addProperty("id", profile != null && profile.id != null ? profile.id : "");
+        root.addProperty("name", profile != null && profile.name != null ? profile.name : "");
+        root.addProperty("sourceFormat", profile != null && profile.sourceFormat != null ? profile.sourceFormat : "");
+        root.addProperty("sourceFileName", profile != null && profile.sourceFileName != null ? profile.sourceFileName : "");
 
         JsonObject vars = new JsonObject();
         if (profile != null && profile.variables != null) {
@@ -32,7 +30,7 @@ public final class ApiWorkbenchEnvironmentExporter {
                 vars.addProperty(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
             }
         }
-        env.add("variables", vars);
+        root.add("variables", vars);
 
         JsonObject oauth2 = new JsonObject();
         JsonObject config = new JsonObject();
@@ -57,8 +55,7 @@ public final class ApiWorkbenchEnvironmentExporter {
         }
         oauth2.add("config", config);
         oauth2.add("outputBindings", bindings);
-        env.add("oauth2", oauth2);
-        root.add("environment", env);
+        root.add("oauth2", oauth2);
         return root;
     }
 }

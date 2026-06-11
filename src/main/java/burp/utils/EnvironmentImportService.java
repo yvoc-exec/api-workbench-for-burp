@@ -279,8 +279,12 @@ public final class EnvironmentImportService {
     private static EnvironmentProfile fromApiWorkbenchExport(String fileName, JsonObject root) {
         EnvironmentProfile profile = new EnvironmentProfile();
         profile.name = firstNonBlank(getString(root, "name"), stripExtension(fileName), "Environment");
-        profile.sourceFormat = "api-workbench";
-        profile.sourceFileName = fileName;
+        profile.sourceFormat = firstNonBlank(getString(root, "sourceFormat"), "api-workbench");
+        profile.sourceFileName = firstNonBlank(getString(root, "sourceFileName"), fileName);
+        String explicitId = getString(root, "id");
+        if (explicitId != null && !explicitId.isBlank()) {
+            profile.id = explicitId;
+        }
         profile.variables.clear();
         if (root.has("variables") && root.get("variables").isJsonObject()) {
             JsonObject values = root.getAsJsonObject("variables");

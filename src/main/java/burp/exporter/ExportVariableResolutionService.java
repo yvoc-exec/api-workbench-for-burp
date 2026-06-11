@@ -35,9 +35,6 @@ public final class ExportVariableResolutionService {
         if (exportOnlyVariables != null && !exportOnlyVariables.isEmpty()) {
             overlay.putAll(exportOnlyVariables);
         }
-        if (overlay.isEmpty()) {
-            return RuntimeResolverFactory.build(collection, request, RuntimeResolverFactory.Options.defaultOptions());
-        }
         return RuntimeResolverFactory.build(collection, request, RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay));
     }
 
@@ -65,8 +62,8 @@ public final class ExportVariableResolutionService {
                 continue;
             }
             issues.addAll(ANALYZER.analyze(collection, request, overlay));
-            scanValues(issues, collection.name, request.name, "script:pre-request", request.preRequestScripts != null ? request.preRequestScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of());
-            scanValues(issues, collection.name, request.name, "script:post-response", request.postResponseScripts != null ? request.postResponseScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of());
+            scanValues(issues, collection.name, request.name, "script:pre-request", request.preRequestScripts != null ? request.preRequestScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
+            scanValues(issues, collection.name, request.name, "script:post-response", request.postResponseScripts != null ? request.postResponseScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
         }
         scanCollectionLevelValues(issues, collection, overlay);
         return dedupe(issues);
@@ -124,12 +121,13 @@ public final class ExportVariableResolutionService {
                                    String collectionName,
                                    String requestName,
                                    String location,
-                                   List<String> values) {
+                                   List<String> values,
+                                   Map<String, String> overlay) {
         if (values == null || values.isEmpty()) {
             return;
         }
         for (String value : values) {
-            scanValue(issues, collectionName, requestName, location, value, Map.of());
+            scanValue(issues, collectionName, requestName, location, value, overlay);
         }
     }
 
