@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * Resolves effective auth from collection -> folder -> request override metadata.
@@ -43,17 +42,7 @@ public final class AuthInheritanceResolver {
     }
 
     public static String normalizeFolderPath(String path) {
-        if (path == null || path.isBlank()) {
-            return "";
-        }
-        String[] parts = path.split("/");
-        List<String> normalized = new ArrayList<>();
-        for (String part : parts) {
-            if (part != null && !part.isBlank()) {
-                normalized.add(part.trim());
-            }
-        }
-        return String.join("/", normalized);
+        return RequestPathResolver.normalizeFolderPath(path);
     }
 
     public static String normalizeAuthOverrideMode(String mode, ApiRequest request) {
@@ -249,31 +238,7 @@ public final class AuthInheritanceResolver {
     }
 
     public static String getRequestFolderPath(ApiRequest request) {
-        if (request == null) {
-            return "";
-        }
-        String rawPath = request.path != null ? request.path.replace('\\', '/').trim() : "";
-        if (rawPath.isEmpty()) {
-            return "";
-        }
-        String normalized = normalizeFolderPath(rawPath);
-        String requestName = request.name != null ? request.name.replace('\\', '/').trim() : "";
-        if (!requestName.isEmpty()) {
-            if (Objects.equals(rawPath, requestName)) {
-                return "";
-            }
-            String suffix = "/" + requestName;
-            if (rawPath.endsWith(suffix)) {
-                return normalizeFolderPath(rawPath.substring(0, rawPath.length() - suffix.length()));
-            }
-            if (Objects.equals(normalized, requestName)) {
-                return "";
-            }
-        }
-        if (!rawPath.contains("/")) {
-            return normalized;
-        }
-        return normalized;
+        return RequestPathResolver.getRequestFolderPath(request);
     }
 
     private static ResolvedAuth resolveInheritedAuth(ApiCollection collection, ApiRequest request) {
@@ -284,7 +249,7 @@ public final class AuthInheritanceResolver {
         }
 
         if (collection != null) {
-            for (String folderPath : getFolderPathChain(request)) {
+            for (String folderPath : getFolderPathChain(collection, request)) {
                 String normalizedPath = normalizeFolderPath(folderPath);
                 if (normalizedPath.isEmpty()) {
                     continue;
@@ -316,9 +281,9 @@ public final class AuthInheritanceResolver {
         return resolved;
     }
 
-    private static List<String> getFolderPathChain(ApiRequest request) {
+    private static List<String> getFolderPathChain(ApiCollection collection, ApiRequest request) {
         List<String> chain = new ArrayList<>();
-        String folderPath = getRequestFolderPath(request);
+        String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         if (folderPath.isEmpty()) {
             return chain;
         }

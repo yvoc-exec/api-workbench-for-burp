@@ -135,6 +135,19 @@ class RequestTreeNamingPolicyTest {
     }
 
     @Test
+    void requestRenameAllowsParentFolderNameWhenRequestIsInsideThatFolder() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.requests.add(request("1", "Login", "Auth"));
+
+        RequestTreeNamingPolicy.RenameValidation validation =
+                RequestTreeNamingPolicy.validateRequestRename(collection, collection.requests.get(0), "Auth");
+
+        assertThat(validation.valid).isTrue();
+        assertThat(validation.normalizedName).isEqualTo("Auth");
+    }
+
+    @Test
     void requestRenameAllowsSlashLabelWhenUnique() {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");

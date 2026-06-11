@@ -2,6 +2,7 @@ package burp.ui.tree;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -92,7 +93,7 @@ public final class RequestTreeNamingPolicy {
         if (Objects.equals(currentName, normalizedName)) {
             return RenameValidation.ok(normalizedName);
         }
-        String parentPath = RequestTreePathService.getRequestFolderPath(target);
+        String parentPath = RequestPathResolver.getRequestFolderPath(collection, target);
         if (hasSiblingFolderOrRequestNameConflict(collection, parentPath, normalizedName, null)) {
             return RenameValidation.invalid("A request or folder named '" + normalizedName + "' already exists in this location.");
         }
@@ -132,7 +133,7 @@ public final class RequestTreeNamingPolicy {
             if (request == null) {
                 continue;
             }
-            if (!Objects.equals(RequestTreePathService.getRequestFolderPath(request), normalizedParent)) {
+            if (!Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
                 continue;
             }
             if (normalizeKey(request.name).equals(candidateKey)) {
@@ -209,7 +210,7 @@ public final class RequestTreeNamingPolicy {
                 if (request == null) {
                     continue;
                 }
-                addFolderPathWithAncestors(paths, RequestTreePathService.getRequestFolderPath(request));
+                addFolderPathWithAncestors(paths, RequestPathResolver.getRequestFolderPath(collection, request));
             }
         }
         return paths;
@@ -263,7 +264,7 @@ public final class RequestTreeNamingPolicy {
                 if (request == null) {
                     continue;
                 }
-                if (!Objects.equals(RequestTreePathService.getRequestFolderPath(request), normalizedParent)) {
+                if (!Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
                     continue;
                 }
                 String name = normalizeTreeLabel(request.name);

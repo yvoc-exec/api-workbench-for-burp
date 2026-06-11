@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.RequestPathResolver;
 import java.util.*;
 import java.util.regex.*;
 
@@ -31,7 +32,7 @@ public class VariableResolver {
         if (collection == null || request == null || collection.folderVars == null || collection.folderVars.isEmpty()) {
             return;
         }
-        String folderPath = burp.utils.AuthInheritanceResolver.getRequestFolderPath(request);
+        String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         if (folderPath == null || folderPath.isBlank()) {
             return;
         }

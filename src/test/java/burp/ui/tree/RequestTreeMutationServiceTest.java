@@ -219,6 +219,40 @@ class RequestTreeMutationServiceTest {
     }
 
     @Test
+    void duplicateRequestWithSameNameAsParentFolderStaysInParentFolder() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-1", "Auth", "Auth");
+        request.method = "GET";
+        request.url = "https://api.example.test/auth";
+        collection.requests.add(request);
+
+        ApiRequest duplicate = service.duplicateRequest(collection, request);
+
+        assertThat(duplicate.name).isEqualTo("Auth Copy");
+        assertThat(duplicate.path).isEqualTo("Auth");
+        assertThat(collection.requests).extracting(req -> req.name)
+                .contains("Auth", "Auth Copy");
+    }
+
+    @Test
+    void renameRequestToMatchingFolderNameStaysInParentFolder() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest request = request("req-1", "Login", "Auth");
+        collection.requests.add(request);
+
+        String renamed = service.renameRequest(collection, request, "Auth");
+
+        assertThat(renamed).isEqualTo("Auth");
+        assertThat(request.name).isEqualTo("Auth");
+        assertThat(request.path).isEqualTo("Auth");
+        assertThat(collection.requests).containsExactly(request);
+    }
+
+    @Test
     void renameRequestPreservesAutoCompatibleBuildModeAndEditorMaterializedState() {
         ApiCollection collection = collection("APIM");
         collection.folderPaths.add("Auth");
