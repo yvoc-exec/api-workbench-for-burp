@@ -15,6 +15,7 @@ import burp.models.RunnerPreviewRow;
 import burp.models.RunnerResult;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.ui.dnd.EnvironmentDragPayload;
 import burp.utils.ScriptMode;
 import burp.utils.WorkspaceStateService;
 import burp.ui.tree.CollectionTreeNode;
@@ -34,9 +35,13 @@ import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import java.awt.HeadlessException;
 import java.awt.Window;
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -338,6 +343,121 @@ class ImporterPanelRunnerQueueTest {
     }
 
     @Test
+    void runnerQueueRestoreSkipsMissingRequestIdentityKeysSafely() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two)));
+        queue(panel, one, two);
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        ApiRequest missing = request("Missing");
+        missing.id = "missing-request";
+        snapshot.runnerQueuedRequestIdentityKeys = new ArrayList<>(snapshot.runnerQueuedRequestIdentityKeys);
+        snapshot.runnerQueuedRequestIdentityKeys.add(ImporterPanel.workspaceRequestIdentityKey("Checkout", missing, 99));
+
+        ImporterPanel restored = newPanel();
+        restored.restoreWorkspaceState(snapshot);
+        drainEdt();
+
+        assertThat(queue(restored)).extracting(req -> req.name).containsExactly("One", "Two");
+        assertThat(((JButton) privateField(restored, "startRunnerBtn")).isEnabled()).isTrue();
+    }
+
+    @Test
+    void runnerQueueRestoreWithOnlyMissingRequestIdentityKeysLeavesStartDisabled() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one)));
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        ApiRequest missing = request("Missing");
+        missing.id = "missing-request";
+        snapshot.runnerQueuedRequestIdentityKeys = List.of(
+                ImporterPanel.workspaceRequestIdentityKey("Checkout", missing, 0)
+        );
+
+        ImporterPanel restored = newPanel();
+        restored.restoreWorkspaceState(snapshot);
+        drainEdt();
+
+        assertThat(queue(restored)).isEmpty();
+        assertThat(((JButton) privateField(restored, "startRunnerBtn")).isEnabled()).isFalse();
+    }
+
+    @Test
+    void environmentDropActiveEnvironmentAndRunnerReorderWorkflowUsesExpectedQueueAndOverlay() throws Exception {
+        AtomicReference<Function<ApiCollection, Map<String, String>>> overlayProvider = new AtomicReference<>();
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        Mockito.doAnswer(invocation -> {
+            overlayProvider.set(invocation.getArgument(0));
+            return null;
+        }).when(runner).setRuntimeOverlayProvider(Mockito.any());
+        Mockito.when(runner.isRunning()).thenReturn(false);
+        Mockito.when(runner.buildRunPreview(Mockito.anyList(), Mockito.anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<ApiRequest> selected = invocation.getArgument(1);
+            List<RunnerPreviewRow> previewRows = new ArrayList<>();
+            for (ApiRequest request : selected) {
+                RunnerPreviewRow row = new RunnerPreviewRow();
+                row.requestName = request.name;
+                row.collectionName = request.sourceCollection;
+                row.method = request.method;
+                row.urlPreview = request.url;
+                row.authStatus = "bearer";
+                previewRows.add(row);
+            }
+            return previewRows;
+        });
+        ImporterPanel panel = newPanel(runner);
+
+        ApiRequest one = request("One");
+        one.url = "{{base_url}}/one";
+        ApiRequest two = request("Two");
+        two.url = "{{base_url}}/two";
+        ApiRequest three = request("Three");
+        three.url = "{{base_url}}/three";
+        ApiCollection collection = collection("Checkout", one, two, three);
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+
+        Path envFile = tempFile("UAT.env", """
+                base_url=https://uat.example.test
+                token=uat-token
+                """);
+        panel.importEnvironmentFilesDropped(List.of(envFile.toFile()));
+        drainEdt();
+
+        assertThat(panel.getEnvironmentProfilesSnapshot()).hasSize(1);
+        EnvironmentProfile imported = panel.getEnvironmentProfilesSnapshot().get(0);
+        boolean activated = panel.activateEnvironmentFromDrop(new EnvironmentDragPayload(imported.id, imported.displayName()));
+        drainEdt();
+
+        assertThat(activated).isTrue();
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(imported.id);
+        assertThat(panel.getEnvironmentProfilesSnapshot()).hasSize(1);
+
+        queue(panel, one, two, three);
+        assertThat(panel.reorderRunnerQueue(0, 3)).isTrue();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+
+        invokePrivate(panel, "startRunner", new Class<?>[]{boolean.class}, false);
+
+        ArgumentCaptor<List<ApiCollection>> collectionsCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<List<ApiRequest>> requestsCaptor = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(runner).runCollections(collectionsCaptor.capture(), requestsCaptor.capture());
+        assertThat(collectionsCaptor.getValue()).containsExactly(collection);
+        assertThat(requestsCaptor.getValue()).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+
+        assertThat(overlayProvider.get()).isNotNull();
+        assertThat(overlayProvider.get().apply(collection))
+                .containsEntry("base_url", "https://uat.example.test")
+                .containsEntry("token", "uat-token");
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(imported.id);
+    }
+
+    @Test
     void blankUrlRunnerFailsSafelyWithoutCorruptingState() throws Exception {
         MontoyaApi api = mockApi(true);
         ImporterPanel panel = newRealPanel(api);
@@ -490,6 +610,15 @@ class ImporterPanelRunnerQueueTest {
         request.method = "GET";
         request.url = "https://example.test/" + name.toLowerCase();
         return request;
+    }
+
+    private static Path tempFile(String fileName, String content) throws IOException {
+        Path dir = Files.createTempDirectory("runner-dnd-");
+        Path file = dir.resolve(fileName);
+        Files.writeString(file, content, StandardCharsets.UTF_8);
+        file.toFile().deleteOnExit();
+        dir.toFile().deleteOnExit();
+        return file;
     }
 
     private static RunnerPreviewRow previewRow(String name) {
