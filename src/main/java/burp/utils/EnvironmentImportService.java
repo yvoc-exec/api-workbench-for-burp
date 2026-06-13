@@ -40,7 +40,7 @@ public final class EnvironmentImportService {
             throw new IOException("Environment file not found: " + file.getAbsolutePath());
         }
 
-        String raw = Files.readString(file.toPath(), StandardCharsets.UTF_8);
+        String raw = stripBom(Files.readString(file.toPath(), StandardCharsets.UTF_8));
         if (raw == null || raw.isBlank()) {
             throw new IOException("Environment file is empty: " + file.getName());
         }
@@ -455,6 +455,16 @@ public final class EnvironmentImportService {
     private static boolean looksLikeJson(String raw) {
         String trimmed = raw.trim();
         return trimmed.startsWith("{") || trimmed.startsWith("[");
+    }
+
+    private static String stripBom(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return raw;
+        }
+        if (raw.charAt(0) == '\uFEFF') {
+            return raw.substring(1);
+        }
+        return raw;
     }
 
     private static String getString(JsonObject object, String key) {
