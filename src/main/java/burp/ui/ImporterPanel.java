@@ -18,7 +18,14 @@ import burp.ui.tree.RequestTreeNamingPolicy;
 import burp.ui.tree.RequestTreePathService;
 import burp.ui.tree.RequestTreeTransferHandler;
 import burp.ui.tree.TreeDropRequest;
+import burp.ui.dnd.ActiveEnvironmentDropTransferHandler;
+import burp.ui.dnd.EnvironmentDragPayload;
+import burp.ui.dnd.EnvironmentProfileDragSourceTransferHandler;
+import burp.ui.dnd.EnvironmentTransferHandler;
+import burp.ui.dnd.RunnerQueueDragPayload;
+import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.utils.RequestPathResolver;
+import burp.utils.EnvironmentImportService;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -36,6 +43,7 @@ import java.awt.*;
 import java.awt.event.*;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,6 +113,9 @@ public class ImporterPanel {
     private RunnerResultTableModel resultModel;
     private JTable timelineTable;
     private RunnerTimelineTableModel timelineModel;
+    private JList<ApiRequest> runnerQueueList;
+    private DefaultListModel<ApiRequest> runnerQueueListModel;
+    private JScrollPane runnerQueueScrollPane;
     private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
@@ -119,6 +130,7 @@ public class ImporterPanel {
     private RunnerPreviewTableModel runnerPreviewModel;
     private javax.swing.Timer runnerCancelPollTimer;
     private CollectionRunner.RunnerListener activeRunnerListener;
+    private RunnerQueueTransferHandler runnerQueueTransferHandler;
 
     // Runner detail pane
     private HttpRequestEditor detailRequestEditor;
@@ -160,12 +172,20 @@ public class ImporterPanel {
         int failedCount;
     }
 
+    static final class EnvironmentDropImportResult {
+        final List<EnvironmentProfile> importedProfiles = new ArrayList<>();
+        final List<String> messages = new ArrayList<>();
+        int importedCount;
+        int failedCount;
+    }
+
     // Environment tab
     private JComboBox<EnvironmentRef> environmentCombo;
     private JButton environmentImportBtn, environmentNewBtn, environmentDuplicateBtn,
             environmentDeleteBtn, environmentSetActiveBtn, environmentExportBtn, environmentSaveBtn;
     private JLabel environmentHintLabel;
     private JLabel environmentStatusLabel;
+    private JPanel environmentTopBarPanel;
     private JTextArea environmentRawArea;
     private JTable environmentTable;
     private DefaultTableModel environmentTableModel;
@@ -175,6 +195,9 @@ public class ImporterPanel {
     private boolean environmentDirty = false;
     private String renderedEnvironmentEditorProfileId = null;
     private boolean suppressEnvironmentEditorEvents = false;
+    private EnvironmentTransferHandler environmentFileDropHandler;
+    private EnvironmentProfileDragSourceTransferHandler environmentProfileDragSourceHandler;
+    private ActiveEnvironmentDropTransferHandler activeEnvironmentDropHandler;
 
     // Legacy scoped variables UI state retained for internal compatibility only.
     private JTextArea envVarsArea;
@@ -978,7 +1001,7 @@ public class ImporterPanel {
         environmentRawViewBtn.addActionListener(e -> switchEnvironmentView(false));
         environmentTableViewBtn.addActionListener(e -> switchEnvironmentView(true));
 
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        environmentTopBarPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         environmentCombo = new JComboBox<>();
         environmentCombo.setPrototypeDisplayValue(new EnvironmentRef(null, "No Environment"));
         environmentCombo.addActionListener(e -> handleEnvironmentSelectionChanged());
@@ -997,15 +1020,15 @@ public class ImporterPanel {
         environmentSaveBtn = new JButton("Save");
         environmentSaveBtn.addActionListener(e -> commitEnvironmentEditorToSelectedProfile());
 
-        topBar.add(new JLabel("Active Environment:"));
-        topBar.add(environmentCombo);
-        topBar.add(environmentImportBtn);
-        topBar.add(environmentNewBtn);
-        topBar.add(environmentDuplicateBtn);
-        topBar.add(environmentDeleteBtn);
-        topBar.add(environmentSetActiveBtn);
-        topBar.add(environmentExportBtn);
-        topBar.add(environmentSaveBtn);
+        environmentTopBarPanel.add(new JLabel("Active Environment:"));
+        environmentTopBarPanel.add(environmentCombo);
+        environmentTopBarPanel.add(environmentImportBtn);
+        environmentTopBarPanel.add(environmentNewBtn);
+        environmentTopBarPanel.add(environmentDuplicateBtn);
+        environmentTopBarPanel.add(environmentDeleteBtn);
+        environmentTopBarPanel.add(environmentSetActiveBtn);
+        environmentTopBarPanel.add(environmentExportBtn);
+        environmentTopBarPanel.add(environmentSaveBtn);
 
         JPanel centerWrap = new JPanel(new BorderLayout(5, 5));
         JPanel toggleBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
@@ -1025,10 +1048,11 @@ public class ImporterPanel {
 
         initializeLegacyVariablesCompatibilityComponents();
 
-        panel.add(topBar, BorderLayout.NORTH);
+        panel.add(environmentTopBarPanel, BorderLayout.NORTH);
         panel.add(centerWrap, BorderLayout.CENTER);
         panel.add(statusPanel, BorderLayout.SOUTH);
 
+        installEnvironmentTransferSupport();
         installEnvironmentSaveShortcut(panel);
         installEnvironmentSaveShortcut(environmentEditorCardPanel);
         updateEnvironmentComboModel();
@@ -1101,6 +1125,7 @@ public class ImporterPanel {
 
         panel.add(oauth2Panel, BorderLayout.CENTER);
 
+        installEnvironmentTransferSupport();
         syncOAuth2UiState();
         return panel;
     }
@@ -1181,6 +1206,30 @@ public class ImporterPanel {
         timelineScroll.setPreferredSize(new Dimension(350, 180));
         timelineScroll.setMinimumSize(new Dimension(200, 120));
 
+        runnerQueueListModel = new DefaultListModel<>();
+        runnerQueueList = new JList<>(runnerQueueListModel);
+        runnerQueueList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        runnerQueueList.setCellRenderer((list, value, index, isSelected, cellHasFocus) -> {
+            JLabel label = (JLabel) new DefaultListCellRenderer().getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            ApiRequest request = value;
+            if (request != null) {
+                StringBuilder text = new StringBuilder();
+                text.append(request.name != null && !request.name.isBlank() ? request.name : "Request");
+                if (request.sourceCollection != null && !request.sourceCollection.isBlank()) {
+                    text.append(" [").append(request.sourceCollection).append("]");
+                }
+                if (request.path != null && !request.path.isBlank()) {
+                    text.append(" - ").append(request.path);
+                }
+                label.setText(text.toString());
+            }
+            return label;
+        });
+        runnerQueueScrollPane = new JScrollPane(runnerQueueList);
+        runnerQueueScrollPane.setBorder(BorderFactory.createTitledBorder("Runner Queue"));
+        runnerQueueScrollPane.setPreferredSize(new Dimension(320, 360));
+        runnerQueueScrollPane.setMinimumSize(new Dimension(220, 180));
+
         runnerDetailTabs = new JTabbedPane();
         detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         runnerDetailTabs.addTab("Request", detailRequestEditor.uiComponent());
@@ -1198,12 +1247,18 @@ public class ImporterPanel {
         resultsSplit.setOneTouchExpandable(true);
         resultsSplit.setContinuousLayout(true);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, resultsSplit, runnerDetailTabs);
+        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, resultsSplit);
+        queueSplit.setResizeWeight(0.30);
+        queueSplit.setOneTouchExpandable(true);
+        queueSplit.setContinuousLayout(true);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, queueSplit, runnerDetailTabs);
         splitPane.setResizeWeight(0.5);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
         panel.add(splitPane, BorderLayout.CENTER);
 
+        installRunnerQueueTransferSupport();
         resultTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
                 RunnerResult r = resultModel.getResultAt(resultTable.getSelectedRow());
@@ -4670,6 +4725,7 @@ public class ImporterPanel {
         state.checkedRequestKeys = collectCheckedRequestKeys();
         captureWorkbenchSettings(state);
         captureRunnerSettings(state);
+        captureRunnerQueueState(state);
         captureRunnerDetailState(state);
         return state;
     }
@@ -4695,6 +4751,7 @@ public class ImporterPanel {
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
                 restoreWorkbenchSettings(state);
                 restoreRunnerSettings(state);
+                restoreRunnerQueueState(state);
                 restoreRunnerDetailState(state);
                 syncOAuth2UiState();
                 renderSelectedEnvironmentIntoEditor(true);
@@ -5629,6 +5686,19 @@ public class ImporterPanel {
         state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
     }
 
+    private void captureRunnerQueueState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        state.runnerQueuedRequestIdentityKeys = new ArrayList<>();
+        for (ApiRequest request : runnerQueuedRequests) {
+            ApiCollection collection = requestToCollectionMap.get(request);
+            String collectionName = collection != null ? collection.name : (request != null ? request.sourceCollection : null);
+            int requestIndex = findRequestIndexInCollection(collection, request);
+            state.runnerQueuedRequestIdentityKeys.add(workspaceRequestIdentityKey(collectionName, request, requestIndex));
+        }
+    }
+
     private void restoreWorkbenchSettings(WorkspaceState state) {
         if (state == null) {
             return;
@@ -5661,6 +5731,75 @@ public class ImporterPanel {
             return;
         }
         applyTabIndex(runnerDetailTabs, state.runnerDetailTabIndex);
+    }
+
+    private void restoreRunnerQueueState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        List<ApiRequest> restoredQueue = restoreRunnerQueueFromIdentityKeys(state.runnerQueuedRequestIdentityKeys);
+        runnerQueuedRequests.clear();
+        runnerQueuedRequests.addAll(restoredQueue);
+        refreshRunnerQueueList(restoredQueue.isEmpty() ? -1 : 0);
+        updateRunnerQueueUiState();
+    }
+
+    private List<ApiRequest> restoreRunnerQueueFromIdentityKeys(List<String> identityKeys) {
+        List<ApiRequest> restored = new ArrayList<>();
+        if (identityKeys == null || identityKeys.isEmpty()) {
+            return restored;
+        }
+        for (String identityKey : identityKeys) {
+            ApiRequest request = findRequestByIdentityKey(identityKey);
+            if (request != null && !restored.contains(request)) {
+                restored.add(request);
+            }
+        }
+        return restored;
+    }
+
+    private ApiRequest findRequestByIdentityKey(String identityKey) {
+        if (identityKey == null || identityKey.isBlank()) {
+            return null;
+        }
+        String[] parts = identityKey.split(String.valueOf(WORKSPACE_KEY_DELIMITER), -1);
+        String collectionName = parts.length > 0 ? parts[0] : null;
+        String requestToken = parts.length > 1 ? parts[1] : null;
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || !Objects.equals(collectionName, collection.name) || collection.requests == null) {
+                continue;
+            }
+            for (int i = 0; i < collection.requests.size(); i++) {
+                ApiRequest request = collection.requests.get(i);
+                if (request == null) {
+                    continue;
+                }
+                String candidate = workspaceRequestIdentityKey(collection.name, request, i);
+                if (Objects.equals(candidate, identityKey)) {
+                    return request;
+                }
+                String fallback = workspaceRequestIdentityKey(collection.name, request);
+                if (Objects.equals(fallback, identityKey)) {
+                    return request;
+                }
+                if (requestToken != null && request.id != null && requestToken.startsWith("id=") && Objects.equals(requestToken, "id=" + request.id.trim())) {
+                    return request;
+                }
+            }
+        }
+        return null;
+    }
+
+    private int findRequestIndexInCollection(ApiCollection collection, ApiRequest request) {
+        if (collection == null || request == null || collection.requests == null) {
+            return -1;
+        }
+        for (int i = 0; i < collection.requests.size(); i++) {
+            if (collection.requests.get(i) == request) {
+                return i;
+            }
+        }
+        return request.sequenceOrder;
     }
 
 
@@ -6152,6 +6291,115 @@ public class ImporterPanel {
         return labelsById;
     }
 
+    private void installEnvironmentTransferSupport() {
+        environmentFileDropHandler = new EnvironmentTransferHandler(this::importEnvironmentFilesDroppedAsync, this::appendImportLog);
+        environmentProfileDragSourceHandler = new EnvironmentProfileDragSourceTransferHandler(this::getSelectedEnvironmentProfileForDrag, this::appendImportLog);
+        activeEnvironmentDropHandler = new ActiveEnvironmentDropTransferHandler(this::activateEnvironmentFromDrop, this::appendImportLog);
+
+        if (environmentEditorCardPanel != null) {
+            environmentEditorCardPanel.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentRawArea != null) {
+            environmentRawArea.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentTable != null) {
+            environmentTable.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentTopBarPanel != null) {
+            environmentTopBarPanel.setTransferHandler(activeEnvironmentDropHandler);
+        }
+        if (environmentStatusLabel != null) {
+            environmentStatusLabel.setTransferHandler(activeEnvironmentDropHandler);
+        }
+        if (environmentCombo != null) {
+            environmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (workbenchEnvironmentCombo != null) {
+            workbenchEnvironmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (oauth2EnvironmentCombo != null) {
+            oauth2EnvironmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (!GraphicsEnvironment.isHeadless()) {
+            installComboDragGesture(environmentCombo);
+            installComboDragGesture(workbenchEnvironmentCombo);
+            installComboDragGesture(oauth2EnvironmentCombo);
+        }
+    }
+
+    private void installComboDragGesture(JComboBox<EnvironmentRef> combo) {
+        if (combo == null || combo.getClientProperty("environmentDragGestureInstalled") != null) {
+            return;
+        }
+        combo.putClientProperty("environmentDragGestureInstalled", Boolean.TRUE);
+        final Point[] pressPoint = new Point[1];
+        combo.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                pressPoint[0] = e != null ? e.getPoint() : null;
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                pressPoint[0] = null;
+            }
+        });
+        combo.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (pressPoint[0] == null || combo.getTransferHandler() == null) {
+                    return;
+                }
+                if (Math.abs(e.getX() - pressPoint[0].x) < 4 && Math.abs(e.getY() - pressPoint[0].y) < 4) {
+                    return;
+                }
+                combo.getTransferHandler().exportAsDrag(combo, e, TransferHandler.COPY);
+                pressPoint[0] = null;
+            }
+        });
+    }
+
+    private EnvironmentProfile getSelectedEnvironmentProfileForDrag() {
+        EnvironmentProfile profile = getSelectedEnvironmentProfile();
+        if (profile != null) {
+            return profile;
+        }
+        if (environmentCombo != null) {
+            Object selected = environmentCombo.getSelectedItem();
+            if (selected instanceof EnvironmentRef ref) {
+                return ref.environment;
+            }
+        }
+        return null;
+    }
+
+    boolean activateEnvironmentFromDrop(EnvironmentDragPayload payload) {
+        if (payload == null || payload.environmentId == null || payload.environmentId.isBlank()) {
+            appendImportLog("Active environment drop rejected: missing environment id.");
+            return false;
+        }
+        EnvironmentProfile profile = findEnvironmentProfileById(payload.environmentId);
+        if (profile == null) {
+            appendImportLog("Active environment drop rejected: environment not found.");
+            return false;
+        }
+        setActiveEnvironmentId(profile.id);
+        appendImportLog("Active environment set to: " + profile.displayName());
+        return true;
+    }
+
+    private EnvironmentProfile findEnvironmentProfileById(String environmentId) {
+        if (environmentId == null || environmentId.isBlank()) {
+            return null;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null && Objects.equals(environmentId, profile.id)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
     private void handleEnvironmentImport() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Import Environment");
@@ -6164,7 +6412,7 @@ public class ImporterPanel {
             return;
         }
         try {
-            List<EnvironmentProfile> imported = burp.utils.EnvironmentImportService.importEnvironment(file);
+            List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
             if (imported == null || imported.isEmpty()) {
                 appendImportLog("No environment profiles found in " + file.getName() + ".");
                 return;
@@ -6180,6 +6428,171 @@ public class ImporterPanel {
                         JOptionPane.ERROR_MESSAGE);
             }
         }
+    }
+
+    void importEnvironmentFilesDropped(List<File> files) {
+        EnvironmentDropImportResult result = parseEnvironmentFilesForDrop(files);
+        applyEnvironmentDropImportResult(result);
+    }
+
+    private void importEnvironmentFilesDroppedAsync(List<File> files) {
+        SwingWorker<EnvironmentDropImportResult, String> worker = new SwingWorker<>() {
+            @Override
+            protected EnvironmentDropImportResult doInBackground() {
+                return parseEnvironmentFilesForDrop(files);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    applyEnvironmentDropImportResult(get());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    appendImportLog("Environment drop import interrupted.");
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    String message = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+                    appendImportLog("Environment drop import failed: " + message);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private EnvironmentDropImportResult parseEnvironmentFilesForDrop(List<File> files) {
+        EnvironmentDropImportResult result = new EnvironmentDropImportResult();
+        if (files == null || files.isEmpty()) {
+            result.failedCount++;
+            result.messages.add("Skipped dropped file list: empty");
+            return result;
+        }
+        for (File file : files) {
+            if (file == null) {
+                result.failedCount++;
+                result.messages.add("Skipped dropped file: null");
+                continue;
+            }
+            if (!file.exists() || !file.isFile() || !file.canRead()) {
+                result.failedCount++;
+                result.messages.add("Failed to import " + file.getName() + ": file not readable");
+                continue;
+            }
+            try {
+                List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
+                if (imported == null || imported.isEmpty()) {
+                    result.failedCount++;
+                    result.messages.add("Skipped unsupported environment file: " + file.getName());
+                    continue;
+                }
+                for (EnvironmentProfile profile : imported) {
+                    if (profile == null) {
+                        continue;
+                    }
+                    result.importedProfiles.add(profile);
+                    result.importedCount++;
+                    result.messages.add("Imported environment candidate from " + file.getName() + ": " + profile.displayName());
+                }
+            } catch (Exception e) {
+                result.failedCount++;
+                String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                String lowerMessage = message.toLowerCase(Locale.ROOT);
+                if (lowerMessage.contains("unsupported")
+                        || lowerMessage.contains("no environment variables found")
+                        || lowerMessage.contains("no insomnia environment resources found")) {
+                    result.messages.add("Skipped unsupported environment file: " + file.getName());
+                } else {
+                    result.messages.add("Failed to import " + file.getName() + ": " + message);
+                }
+            }
+        }
+        return result;
+    }
+
+    private void applyEnvironmentDropImportResult(EnvironmentDropImportResult result) {
+        if (result == null) {
+            appendImportLog("Environment drop import complete: 0 imported, 0 failed.");
+            return;
+        }
+        for (String message : result.messages) {
+            appendImportLog(message);
+        }
+        if (result.importedProfiles.isEmpty()) {
+            appendImportLog("Environment drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        boolean hasActive = activeEnvironmentId != null && environmentProfiles.stream().anyMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId));
+        String firstImportedId = null;
+        Set<String> usedNames = new LinkedHashSet<>();
+        for (EnvironmentProfile existing : environmentProfiles) {
+            if (existing != null) {
+                usedNames.add(existing.displayName());
+            }
+        }
+        for (EnvironmentProfile profile : result.importedProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            profile.name = uniqueEnvironmentNameForDrop(profile.displayName(), usedNames);
+            usedNames.add(profile.displayName());
+            if (firstImportedId == null) {
+                firstImportedId = profile.id;
+            }
+            environmentProfiles.add(profile);
+        }
+
+        updateEnvironmentComboModel();
+        if (!hasActive && firstImportedId != null) {
+            suppressEnvironmentEditorEvents = true;
+            try {
+                selectEnvironmentById(firstImportedId);
+            } finally {
+                suppressEnvironmentEditorEvents = false;
+            }
+        }
+        renderSelectedEnvironmentIntoEditor(true);
+        updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Environment drop import complete: " + result.importedCount + " imported, " + result.failedCount + " failed.");
+    }
+
+    private String uniqueEnvironmentNameForDrop(String desiredName,
+                                                Set<String> usedNames) {
+        String baseName = desiredName != null && !desiredName.isBlank() ? desiredName.trim() : "Imported Environment";
+        if (!environmentNameExists(baseName, usedNames)) {
+            return baseName;
+        }
+        String root = stripEnvironmentCopySuffix(baseName);
+        int copyIndex = 1;
+        while (true) {
+            String candidate = copyIndex == 1 ? root + " Copy" : root + " Copy " + copyIndex;
+            if (!environmentNameExists(candidate, usedNames)) {
+                return candidate;
+            }
+            copyIndex++;
+        }
+    }
+
+    private static String stripEnvironmentCopySuffix(String name) {
+        if (name == null || name.isBlank()) {
+            return "Imported Environment";
+        }
+        String trimmed = name.trim();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^(.*?)(?: Copy(?: \\d+)?)?$").matcher(trimmed);
+        if (matcher.matches()) {
+            String root = matcher.group(1);
+            return root == null || root.isBlank() ? trimmed : root;
+        }
+        return trimmed;
+    }
+
+    private boolean environmentNameExists(String candidate, Set<String> usedNames) {
+        return candidate != null && usedNames != null && usedNames.contains(candidate);
     }
 
     void addImportedEnvironmentProfiles(List<EnvironmentProfile> imported, String sourceName) {
@@ -7612,15 +8025,144 @@ public class ImporterPanel {
         }
         if (selected.isEmpty()) {
             runnerQueuedRequests.clear();
+            refreshRunnerQueueList(-1);
             updateRunnerQueueUiState();
             appendImportLog("No requests selected to run.");
             return;
         }
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(selected);
+        refreshRunnerQueueList(0);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
         updateRunnerQueueUiState();
+    }
+
+    private void installRunnerQueueTransferSupport() {
+        runnerQueueTransferHandler = new RunnerQueueTransferHandler(
+                () -> runnerQueuedRequests,
+                this::reorderRunnerQueue,
+                this::appendRunnerLog);
+        if (runnerQueueList != null) {
+            runnerQueueList.setTransferHandler(runnerQueueTransferHandler);
+            runnerQueueList.setDropMode(DropMode.INSERT);
+            if (!GraphicsEnvironment.isHeadless()) {
+                try {
+                    runnerQueueList.setDragEnabled(true);
+                } catch (HeadlessException ignored) {
+                    // best effort only
+                }
+            }
+        }
+        if (runnerQueueScrollPane != null) {
+            runnerQueueScrollPane.setTransferHandler(runnerQueueTransferHandler);
+            JViewport viewport = runnerQueueScrollPane.getViewport();
+            if (viewport != null) {
+                viewport.setTransferHandler(runnerQueueTransferHandler);
+            }
+        }
+    }
+
+    private void refreshRunnerQueueList(int preferredSelectionIndex) {
+        if (runnerQueueListModel == null) {
+            return;
+        }
+        Runnable update = () -> {
+            ApiRequest selected = runnerQueueList != null ? runnerQueueList.getSelectedValue() : null;
+            if (runnerQueueList != null) {
+                runnerQueueList.clearSelection();
+            }
+            runnerQueueListModel.clear();
+            for (ApiRequest request : runnerQueuedRequests) {
+                runnerQueueListModel.addElement(request);
+            }
+            int indexToSelect = -1;
+            if (selected != null) {
+                indexToSelect = indexOfRunnerQueueRequest(selected);
+            }
+            if (indexToSelect < 0 && preferredSelectionIndex >= 0 && !runnerQueuedRequests.isEmpty()) {
+                indexToSelect = Math.min(preferredSelectionIndex, runnerQueuedRequests.size() - 1);
+            }
+            if (indexToSelect >= 0) {
+                selectRunnerQueueIndex(indexToSelect);
+            }
+        };
+        runOnEdtSync(update);
+    }
+
+    boolean reorderRunnerQueue(int sourceIndex, int targetIndex) {
+        if (runner == null) {
+            // queue editing is still allowed without a runner instance
+        } else if (runner.isRunning()) {
+            appendRunnerLog("Runner queue cannot be reordered while running.");
+            return false;
+        }
+        if (sourceIndex < 0 || sourceIndex >= runnerQueuedRequests.size()) {
+            return false;
+        }
+        int clampedTarget = Math.max(0, Math.min(targetIndex, runnerQueuedRequests.size()));
+        if (sourceIndex == clampedTarget || sourceIndex + 1 == clampedTarget) {
+            refreshRunnerQueueList(sourceIndex);
+            return true;
+        }
+        ApiRequest moved = runnerQueuedRequests.remove(sourceIndex);
+        if (sourceIndex < clampedTarget) {
+            clampedTarget--;
+        }
+        clampedTarget = Math.max(0, Math.min(clampedTarget, runnerQueuedRequests.size()));
+        runnerQueuedRequests.add(clampedTarget, moved);
+        refreshRunnerQueueList(clampedTarget);
+        updateRunnerQueueUiState();
+        final int selectedIndex = clampedTarget;
+        runOnEdtSync(() -> selectRunnerQueueIndex(selectedIndex));
+        notifyWorkspaceChangedImmediately();
+        appendRunnerLog("Reordered runner queue: " + (moved != null && moved.name != null ? moved.name : "Request") + " -> position " + (clampedTarget + 1));
+        return true;
+    }
+
+    private void selectRunnerQueueIndex(int index) {
+        if (runnerQueueList == null) {
+            return;
+        }
+        if (index < 0 || index >= runnerQueueListModel.getSize()) {
+            runnerQueueList.clearSelection();
+            return;
+        }
+        runnerQueueList.setSelectedIndex(index);
+        runnerQueueList.ensureIndexIsVisible(index);
+    }
+
+    private void runOnEdtSync(Runnable action) {
+        if (action == null) {
+            return;
+        }
+        if (SwingUtilities.isEventDispatchThread()) {
+            action.run();
+            return;
+        }
+        try {
+            SwingUtilities.invokeAndWait(action);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException(cause != null ? cause : e);
+        }
+    }
+
+    private int indexOfRunnerQueueRequest(ApiRequest request) {
+        if (request == null) {
+            return -1;
+        }
+        for (int i = 0; i < runnerQueuedRequests.size(); i++) {
+            if (runnerQueuedRequests.get(i) == request) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void switchToTabByName(String name) {
@@ -7852,6 +8394,7 @@ public class ImporterPanel {
             runnerLog.setText("");
         }
         runnerQueuedRequests.clear();
+        refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
         }
@@ -7864,6 +8407,9 @@ public class ImporterPanel {
         boolean running = runner != null && runner.isRunning();
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(!running && hasQueue);
+        }
+        if (runnerQueueListModel != null) {
+            refreshRunnerQueueList(runnerQueueList != null ? runnerQueueList.getSelectedIndex() : -1);
         }
     }
 

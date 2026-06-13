@@ -137,6 +137,10 @@ public final class EnvironmentImportService {
             return profiles;
         }
 
+        if (looksLikeCollectionExport(root)) {
+            throw new IOException("Unsupported environment JSON: collection export in " + fileName);
+        }
+
         if (root.has("variables") && root.get("variables").isJsonObject()) {
             EnvironmentProfile profile = fromApiWorkbenchExport(fileName, root);
             return List.of(profile);
@@ -199,6 +203,14 @@ public final class EnvironmentImportService {
                 (obj.has("variable") && obj.get("variable").isJsonArray()) ||
                 (obj.has("variables") && obj.get("variables").isJsonArray())
         );
+    }
+
+    private static boolean looksLikeCollectionExport(JsonObject obj) {
+        return obj != null
+                && obj.has("info")
+                && obj.get("info").isJsonObject()
+                && obj.has("item")
+                && obj.get("item").isJsonArray();
     }
 
     private static Map<String, String> parseVariableArray(JsonArray arr) {

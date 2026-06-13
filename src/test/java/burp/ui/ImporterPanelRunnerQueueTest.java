@@ -13,6 +13,7 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerPreviewRow;
 import burp.models.RunnerResult;
+import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import burp.utils.ScriptMode;
 import burp.utils.WorkspaceStateService;
@@ -23,6 +24,7 @@ import org.mockito.Mockito;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
+import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JTextArea;
 import javax.swing.JTree;
@@ -195,6 +197,144 @@ class ImporterPanelRunnerQueueTest {
         assertThat(overlayProvider.get()).isNotNull();
         assertThat(overlayProvider.get().apply(collection)).containsEntry("base_url", "https://uat.example.test");
         assertThat(overlayProvider.get().apply(collection)).containsEntry("token", "uat-token");
+    }
+
+    @Test
+    void reorderRunnerQueueMovesFirstItemToLastAndPreservesIdentity() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+        ApiRequest moved = queue(panel).get(0);
+
+        boolean reordered = panel.reorderRunnerQueue(0, 3);
+        drainEdt();
+
+        assertThat(reordered).isTrue();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+        assertThat(queue(panel).get(2)).isSameAs(moved);
+        assertThat(queueList(panel).getSelectedValue()).isSameAs(moved);
+    }
+
+    @Test
+    void reorderRunnerQueueMovesLastItemToFirst() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+        ApiRequest moved = queue(panel).get(2);
+
+        boolean reordered = panel.reorderRunnerQueue(2, 0);
+        drainEdt();
+
+        assertThat(reordered).isTrue();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Three", "One", "Two");
+        assertThat(queue(panel).get(0).name).isEqualTo(moved.name);
+        assertThat(((ApiRequest) queueList(panel).getSelectedValue()).name).isEqualTo(moved.name);
+    }
+
+    @Test
+    void reorderRunnerQueueMovesMiddleItemUpAndDown() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+
+        ApiRequest movedUp = queue(panel).get(1);
+        assertThat(panel.reorderRunnerQueue(1, 0)).isTrue();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Two", "One", "Three");
+        assertThat(queue(panel).get(0)).isSameAs(movedUp);
+
+        ApiRequest movedDown = queue(panel).get(1);
+        assertThat(panel.reorderRunnerQueue(1, 3)).isTrue();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+        assertThat(queue(panel).get(2)).isSameAs(movedDown);
+    }
+
+    @Test
+    void reorderRunnerQueueNoOpKeepsQueueUnchanged() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+
+        assertThat(panel.reorderRunnerQueue(1, 2)).isTrue();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("One", "Two", "Three");
+    }
+
+    @Test
+    void reorderRunnerQueueRejectsInvalidSourceIndex() throws Exception {
+        ImporterPanel panel = newPanel();
+        queue(panel, request("One"), request("Two"));
+
+        assertThat(panel.reorderRunnerQueue(-1, 1)).isFalse();
+        assertThat(panel.reorderRunnerQueue(5, 0)).isFalse();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("One", "Two");
+    }
+
+    @Test
+    void reorderRunnerQueueClampsLargeTargetIndexToEnd() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+
+        assertThat(panel.reorderRunnerQueue(0, 99)).isTrue();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+    }
+
+    @Test
+    void reorderRunnerQueueRejectedWhileRunnerRunning() throws Exception {
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        Mockito.when(runner.isRunning()).thenReturn(true);
+        ImporterPanel panel = newPanel(runner);
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two)));
+        queue(panel, one, two);
+
+        assertThat(panel.reorderRunnerQueue(0, 1)).isFalse();
+        drainEdt();
+        assertThat(queue(panel)).extracting(req -> req.name).containsExactly("One", "Two");
+        assertThat(runnerLog(panel).getText()).contains("Runner queue cannot be reordered while running.");
+    }
+
+    @Test
+    void runnerQueueOrderPersistsInWorkspaceStateSnapshotAndRestore() throws Exception {
+        ImporterPanel panel = newPanel();
+        ApiRequest one = request("One");
+        ApiRequest two = request("Two");
+        ApiRequest three = request("Three");
+        panel.restoreWorkspaceCollections(List.of(collection("Checkout", one, two, three)));
+        queue(panel, one, two, three);
+        panel.reorderRunnerQueue(0, 3);
+        drainEdt();
+
+        WorkspaceState snapshot = panel.getWorkspaceStateSnapshot();
+        assertThat(snapshot.runnerQueuedRequestIdentityKeys).hasSize(3);
+        assertThat(snapshot.runnerQueuedRequestIdentityKeys.get(0)).contains("Two");
+        assertThat(snapshot.runnerQueuedRequestIdentityKeys.get(2)).contains("One");
+
+        ImporterPanel restored = newPanel();
+        restored.restoreWorkspaceState(snapshot);
+        drainEdt();
+
+        assertThat(queue(restored)).extracting(req -> req.name).containsExactly("Two", "Three", "One");
+        assertThat(queueList(restored).getSelectedValue()).isSameAs(queue(restored).get(0));
     }
 
     @Test
@@ -377,6 +517,10 @@ class ImporterPanelRunnerQueueTest {
     @SuppressWarnings("unchecked")
     private static List<ApiRequest> queue(ImporterPanel panel) throws Exception {
         return (List<ApiRequest>) privateField(panel, "runnerQueuedRequests");
+    }
+
+    private static JList<?> queueList(ImporterPanel panel) throws Exception {
+        return (JList<?>) privateField(panel, "runnerQueueList");
     }
 
     private static RunnerResultTableModel resultModel(ImporterPanel panel) throws Exception {
