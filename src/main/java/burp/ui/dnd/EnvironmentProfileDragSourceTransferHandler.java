@@ -18,12 +18,9 @@ public final class EnvironmentProfileDragSourceTransferHandler extends TransferH
     public static final DataFlavor ENVIRONMENT_PAYLOAD_FLAVOR;
 
     static {
-        try {
-            ENVIRONMENT_PAYLOAD_FLAVOR = new DataFlavor(DataFlavor.javaJVMLocalObjectMimeType
-                    + ";class=" + EnvironmentDragPayload.class.getName());
-        } catch (ClassNotFoundException e) {
-            throw new ExceptionInInitializerError(e);
-        }
+        ENVIRONMENT_PAYLOAD_FLAVOR = new DataFlavor(
+                EnvironmentDragPayload.class,
+                "API Workbench Environment Drag Payload");
     }
 
     private final Supplier<EnvironmentProfile> selectedProfileSupplier;
