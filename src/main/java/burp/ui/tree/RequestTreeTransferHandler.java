@@ -27,12 +27,9 @@ public final class RequestTreeTransferHandler extends TransferHandler {
     public static final DataFlavor TREE_PAYLOAD_FLAVOR;
 
     static {
-        try {
-            TREE_PAYLOAD_FLAVOR = new DataFlavor(DataFlavor.javaJVMLocalObjectMimeType
-                    + ";class=" + RequestTreeDragPayload.class.getName());
-        } catch (ClassNotFoundException e) {
-            throw new ExceptionInInitializerError(e);
-        }
+        TREE_PAYLOAD_FLAVOR = new DataFlavor(
+                RequestTreeDragPayload.class,
+                "API Workbench Request Tree Drag Payload");
     }
 
     private final JTree tree;

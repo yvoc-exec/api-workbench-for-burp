@@ -20,12 +20,9 @@ public final class RunnerQueueTransferHandler extends TransferHandler {
     public static final DataFlavor RUNNER_QUEUE_PAYLOAD_FLAVOR;
 
     static {
-        try {
-            RUNNER_QUEUE_PAYLOAD_FLAVOR = new DataFlavor(DataFlavor.javaJVMLocalObjectMimeType
-                    + ";class=" + RunnerQueueDragPayload.class.getName());
-        } catch (ClassNotFoundException e) {
-            throw new ExceptionInInitializerError(e);
-        }
+        RUNNER_QUEUE_PAYLOAD_FLAVOR = new DataFlavor(
+                RunnerQueueDragPayload.class,
+                "API Workbench Runner Queue Drag Payload");
     }
 
     private final Supplier<List<ApiRequest>> queueSupplier;
