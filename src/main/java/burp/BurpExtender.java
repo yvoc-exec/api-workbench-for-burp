@@ -77,12 +77,16 @@ public class BurpExtender implements BurpExtension {
         api.logging().logToOutput("Extension core initialized; scheduling API Workbench UI registration...");
 
         writeSmokeLifecycleMarker("bootstrap-schedule-start");
-        startRuntimeSmokeBootstrapIfConfigured(api, scriptResult);
+        if (smokeRequested) {
+            startRuntimeSmokeBootstrapIfConfigured(api, scriptResult);
+        }
         writeSmokeLifecycleMarker("bootstrap-schedule-complete");
 
-        writeSmokeLifecycleMarker("initialize-ui-call-start");
-        initializeUi(api, scriptResult);
-        writeSmokeLifecycleMarker("initialize-ui-call-complete");
+        SwingUtilities.invokeLater(() -> {
+            writeSmokeLifecycleMarker("initialize-ui-call-start");
+            initializeUi(api, scriptResult);
+            writeSmokeLifecycleMarker("initialize-ui-call-complete");
+        });
 
         api.extension().registerUnloadingHandler(() -> {
             if (importer != null) {
