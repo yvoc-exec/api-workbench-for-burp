@@ -118,8 +118,6 @@ public class BurpExtender implements BurpExtension {
             api.userInterface().registerSuiteTab("API Workbench", mainPanel);
             writeSmokeLifecycleMarker("suite-tab-registered");
 
-            startRuntimeSmokeIfConfigured(api, scriptResult);
-
             api.logging().logToOutput("Restoring API Workbench workspace state...");
             importer.restoreWorkspaceStateAfterUiRegistration();
             writeSmokeLifecycleMarker("workspace-restored");

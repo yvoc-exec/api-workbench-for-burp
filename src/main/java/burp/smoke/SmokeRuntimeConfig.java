@@ -21,6 +21,7 @@ public final class SmokeRuntimeConfig {
     public String runId;
     public String apiWorkbenchRepo;
     public String testerRepo;
+    public String fixturesRoot;
     public String extensionJar;
     public String burpPath;
     public String javaExe;
@@ -28,6 +29,10 @@ public final class SmokeRuntimeConfig {
     public int localApiPort;
     public String localApiUrl;
     public int maxWaitSeconds = 120;
+    public boolean includeLiveEndpointTests = true;
+    public boolean requireLiveEndpointTests = false;
+    public boolean surgicalCoverage = true;
+    public int largeCollectionRequestCount = 250;
     public String resultJsonPath;
     public String reportPath;
     public String logPath;
@@ -121,6 +126,25 @@ public final class SmokeRuntimeConfig {
         return resolvePath(environmentExportPath);
     }
 
+    public Path getFixturesRootPath() {
+        return resolvePath(fixturesRoot);
+    }
+
+    public Path resolveFixturePath(String relativeOrAbsolutePath) {
+        if (relativeOrAbsolutePath == null || relativeOrAbsolutePath.isBlank()) {
+            return null;
+        }
+        Path candidate = Path.of(relativeOrAbsolutePath);
+        if (candidate.isAbsolute()) {
+            return candidate.toAbsolutePath().normalize();
+        }
+        Path root = getFixturesRootPath();
+        if (root != null) {
+            return root.resolve(candidate).toAbsolutePath().normalize();
+        }
+        return candidate.toAbsolutePath().normalize();
+    }
+
     public Path getFixturePath(String kind) {
         if (fixtures == null || kind == null) {
             return null;
@@ -152,6 +176,9 @@ public final class SmokeRuntimeConfig {
         }
         if (maxWaitSeconds <= 0) {
             maxWaitSeconds = 120;
+        }
+        if (largeCollectionRequestCount <= 0) {
+            largeCollectionRequestCount = 250;
         }
         if (localApiUrl == null || localApiUrl.isBlank()) {
             localApiUrl = getResolvedLocalApiUrl();

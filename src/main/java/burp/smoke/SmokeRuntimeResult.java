@@ -34,21 +34,42 @@ public final class SmokeRuntimeResult {
     private transient Consumer<String> logConsumer;
 
     public static final class CheckResult {
+        public String group;
         public String name;
         public String status;
         public String details;
+        public String format;
+        public String artifactPath;
+        public String endpointType;
 
         public CheckResult(String name, String status, String details) {
+            this(null, name, status, details, null, null, null);
+        }
+
+        public CheckResult(String group, String name, String status, String details, String format, String artifactPath, String endpointType) {
+            this.group = group;
             this.name = name;
             this.status = status;
             this.details = details;
+            this.format = format;
+            this.artifactPath = artifactPath;
+            this.endpointType = endpointType;
         }
     }
 
     public void addCheck(String name, String status, String details) {
-        checks.add(new CheckResult(name, status, details));
+        addCheck(null, name, status, details, null, null, null);
+    }
+
+    public void addCheck(String group, String name, String status, String details) {
+        addCheck(group, name, status, details, null, null, null);
+    }
+
+    public void addCheck(String group, String name, String status, String details, String format, String artifactPath, String endpointType) {
+        checks.add(new CheckResult(group, name, status, details, format, artifactPath, endpointType));
         if (logConsumer != null) {
-            logConsumer.accept("[" + (status != null ? status.toUpperCase() : "UNKNOWN") + "] " + name + " - " + (details != null ? details : ""));
+            String prefix = group != null && !group.isBlank() ? group + "." + name : name;
+            logConsumer.accept("[" + (status != null ? status.toUpperCase() : "UNKNOWN") + "] " + prefix + " - " + (details != null ? details : ""));
         }
     }
 
@@ -56,16 +77,32 @@ public final class SmokeRuntimeResult {
         addCheck(name, "pass", details);
     }
 
+    public void pass(String group, String name, String details) {
+        addCheck(group, name, "pass", details, null, null, null);
+    }
+
     public void fail(String name, String details) {
         addCheck(name, "fail", details);
+    }
+
+    public void fail(String group, String name, String details) {
+        addCheck(group, name, "fail", details, null, null, null);
     }
 
     public void skipped(String name, String details) {
         addCheck(name, "skipped", details);
     }
 
+    public void skipped(String group, String name, String details) {
+        addCheck(group, name, "skipped", details, null, null, null);
+    }
+
     public void manual(String name, String details) {
         addCheck(name, "manual", details);
+    }
+
+    public void manual(String group, String name, String details) {
+        addCheck(group, name, "manual", details, null, null, null);
     }
 
     public void addArtifact(String path) {
