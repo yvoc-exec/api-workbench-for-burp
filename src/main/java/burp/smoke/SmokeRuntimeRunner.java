@@ -20,17 +20,20 @@ import burp.parser.ParserRegistry;
 import burp.runner.CollectionRunner;
 import burp.ui.ImporterPanel;
 import burp.ui.RequestEditorPanel;
+import burp.ui.RunnerPreviewTableModel;
 import burp.ui.dnd.EnvironmentDragPayload;
 import burp.ui.dnd.EnvironmentTransferHandler;
 import burp.ui.dnd.RunnerQueueDragPayload;
 import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.ui.tree.RequestTreeDragPayload;
 import burp.ui.tree.RequestTreeMutationService;
+import burp.ui.tree.RequestTreePathService;
 import burp.ui.tree.RequestTreeTransferHandler;
 import burp.ui.tree.TreeDropRequest;
 import burp.utils.EnvironmentImportService;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestBuilder;
+import burp.utils.RequestPathResolver;
 import burp.utils.RuntimeResolverFactory;
 import burp.utils.ScriptEngine;
 import burp.utils.ScriptMode;
@@ -106,15 +109,32 @@ public final class SmokeRuntimeRunner {
         result.workspaceSnapshotPath = config.workspaceSnapshotPath;
         result.collectionExportPath = config.collectionExportPath;
         result.environmentExportPath = config.environmentExportPath;
+        result.evidenceDirPath = config.getEvidenceDirPath() != null ? config.getEvidenceDirPath().toString() : config.evidenceDir;
+        result.logScanPath = config.getLogScanPath() != null ? config.getLogScanPath().toString() : config.logScanPath;
+        result.manualChecklistPath = config.getManualChecklistPath() != null ? config.getManualChecklistPath().toString() : config.manualChecklistPath;
+        result.captureUiEvidence = config.isCaptureUiEvidence();
+        result.scanLogsForErrors = config.isScanLogsForErrors();
+        result.generateManualChecklist = config.isGenerateManualChecklist();
+        result.visualDebug = config.isVisualDebug();
+        result.pauseAfterMajorStepsMs = config.getPauseAfterMajorStepsMs();
         result.extensionJar = config.extensionJar;
         result.burpPath = config.burpPath;
         result.localApi = config.getResolvedLocalApiUrl();
+        ImporterPanel ui = null;
         result.setLogConsumer(this::appendLog);
         result.metadata.put("scriptMode", scriptMode != null ? scriptMode.name() : "unknown");
         result.metadata.put("scriptModeLabel", scriptMode != null ? scriptMode.label : "unknown");
         result.metadata.put("configPath", config.configPath);
         result.metadata.put("apiWorkbenchRepo", config.apiWorkbenchRepo);
         result.metadata.put("testerRepo", config.testerRepo);
+        result.metadata.put("evidenceDirPath", result.evidenceDirPath != null ? result.evidenceDirPath : "");
+        result.metadata.put("logScanPath", result.logScanPath != null ? result.logScanPath : "");
+        result.metadata.put("manualChecklistPath", result.manualChecklistPath != null ? result.manualChecklistPath : "");
+        result.metadata.put("captureUiEvidence", String.valueOf(result.captureUiEvidence));
+        result.metadata.put("scanLogsForErrors", String.valueOf(result.scanLogsForErrors));
+        result.metadata.put("generateManualChecklist", String.valueOf(result.generateManualChecklist));
+        result.metadata.put("visualDebug", String.valueOf(result.visualDebug));
+        result.metadata.put("pauseAfterMajorStepsMs", String.valueOf(result.pauseAfterMajorStepsMs));
         result.addNote("Manual-only behavior that remains out of scope: mouse-driven drag/drop in the live Burp UI and interactive dialog confirmation flows.");
 
         addArtifacts(result, config.configPath, config.logPath, config.burpLogPath, config.localApiLogPath,
@@ -128,7 +148,7 @@ public final class SmokeRuntimeRunner {
             appendLog("Local API: " + result.localApi);
             appendLog("Script mode: " + result.metadata.get("scriptModeLabel"));
 
-            ImporterPanel ui = importer != null ? importer.getUI() : null;
+            ui = importer != null ? importer.getUI() : null;
             if (importer != null && ui != null && ui.getPanel() != null) {
                 result.pass("startup.extension.initialized", "Importer panel and main panel are available.");
             } else {
@@ -190,7 +210,10 @@ public final class SmokeRuntimeRunner {
             baseState.environments = new ArrayList<>(importedEnvironments);
             baseState.activeEnvironmentId = activeEnvironment != null ? activeEnvironment.id : null;
 
-            WorkspaceState uiState = WorkspaceState.copyOf(baseState);
+            String editorCollectionName = postmanCollection != null
+                    ? postmanCollection.name
+                    : (openApiCollection != null ? openApiCollection.name : null);
+            WorkspaceState uiState = buildUiSmokeWorkspaceState(baseState, editorCollectionName, activeEnvironment);
             WorkspaceState sendState = WorkspaceState.copyOf(baseState);
             WorkspaceState treeState = WorkspaceState.copyOf(baseState);
             WorkspaceState runnerState = WorkspaceState.copyOf(baseState);
@@ -204,6 +227,11 @@ public final class SmokeRuntimeRunner {
                     "restore.workspace.snapshot",
                     "Workspace/project restore testing is intentionally skipped in this Community-compatible surgical smoke phase."
             );
+
+            WorkspaceState uiTemplateState = runUiEvidencePhase(result, ui, uiState);
+            if (uiTemplateState == null) {
+                uiTemplateState = WorkspaceState.copyOf(uiState);
+            }
 
             if (activeEnvironment != null && localApiReady) {
                 sendCollection = postmanCollection;
@@ -247,6 +275,7 @@ public final class SmokeRuntimeRunner {
 
             if (sendCollection != null && activeEnvironment != null) {
                 runExportChecks(result, sendCollection, activeEnvironment);
+                maybeVisualDebugPause(result, "Visual debug pause after export");
             } else {
                 result.skipped("export.collection", "Collection export was skipped because a collection and active environment were not available.");
                 result.skipped("export.environment", "Environment export was skipped because a collection and active environment were not available.");
@@ -260,11 +289,19 @@ public final class SmokeRuntimeRunner {
             }
 
             runCollectionRoundTripChecks(result, activeEnvironment);
+            captureAndRecordEvidenceSnapshot(result, ui, "tree-after-roundtrip", "tree-after-roundtrip.json", "Tree state after roundtrip checks");
             runEnvironmentRoundTripChecks(result);
             runAuthInheritanceChecks(result, activeEnvironment);
+            captureAndRecordEvidenceSnapshot(result, ui, "tree-after-auth-inheritance", "tree-after-auth-inheritance.json", "Tree state after auth inheritance checks");
+            runVariableResolutionChecks(result, activeEnvironment);
+            captureAndRecordEvidenceSnapshot(result, ui, "tree-after-variable-tests", "tree-after-variable-tests.json", "Tree state after variable checks");
             runNegativeFixtureChecks(result);
             runRunnerSurgicalChecks(result, runnerState.collections, activeEnvironment, localApiReady);
+            captureAndRecordEvidenceSnapshot(result, ui, "tree-after-runner-tests", "tree-after-runner-tests.json", "Tree state after runner checks");
             runLiveEndpointChecks(result);
+            runUiTreeStateChecks(result, ui, uiTemplateState);
+            runUiRunnerStateChecks(result, ui, uiTemplateState, activeEnvironment);
+            captureAndRecordEvidenceSnapshot(result, ui, "final-ui-state", "final-ui-state.json", "Final UI state");
 
             if (!result.hasFailures() && result.errors.isEmpty()) {
                 result.status = "pass";
@@ -795,7 +832,8 @@ public final class SmokeRuntimeRunner {
     private List<RunnerPreviewRow> buildPreview(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
         CollectionRunner runner = createRunner();
         runner.setRuntimeOverlayProvider(collection -> Collections.emptyMap());
-        List<RunnerPreviewRow> preview = runner.buildRunPreview(sourceCollections, selectedRequests);
+        List<ApiRequest> previewRequests = selectedRequests != null ? new ArrayList<>(selectedRequests) : Collections.emptyList();
+        List<RunnerPreviewRow> preview = runner.buildRunPreview(sourceCollections, previewRequests);
         return preview != null ? preview : new ArrayList<>();
     }
 
@@ -1944,6 +1982,619 @@ public final class SmokeRuntimeRunner {
         runRunnerFailureScenario(result, activeEnvironment);
     }
 
+    private WorkspaceState runUiEvidencePhase(SmokeRuntimeResult result, ImporterPanel ui, WorkspaceState uiState) throws Exception {
+        SmokeUiEvidenceSnapshot startupSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "startup-ui-state",
+                "startup-ui-state.json",
+                "Startup UI state"
+        );
+        if (startupSnapshot != null) {
+            recordStartupUiProbeChecks(result, startupSnapshot, snapshotArtifactPath("startup-ui-state.json"));
+        }
+
+        if (ui == null || uiState == null) {
+            return null;
+        }
+
+        restoreWorkspaceStateOnEdt(ui, uiState);
+        try {
+            ui.appendImportLog("Smoke runtime restored loaded collections and environments into the UI for evidence capture.");
+        } catch (Exception ignored) {
+            // Best-effort only.
+        }
+
+        captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "tree-before-import",
+                "tree-before-import.json",
+                "Tree state before refresh"
+        );
+
+        refreshRequestTreeAfterMutationOnEdt(ui);
+
+        SmokeUiEvidenceSnapshot treeAfterImport = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "tree-after-import",
+                "tree-after-import.json",
+                "Tree state after refresh"
+        );
+        if (treeAfterImport != null) {
+            recordImportUiProbeChecks(result, treeAfterImport, snapshotArtifactPath("tree-after-import.json"));
+        }
+
+        captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "environment-state",
+                "environment-state.json",
+                "Environment state"
+        );
+
+        SmokeUiEvidenceSnapshot requestEditorSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "request-editor-state",
+                "request-editor-state.json",
+                "Request editor state"
+        );
+        if (requestEditorSnapshot != null) {
+            recordRequestEditorUiProbeChecks(result, requestEditorSnapshot, snapshotArtifactPath("request-editor-state.json"));
+        }
+
+        maybeVisualDebugPause(result, "Visual debug pause after import");
+        return captureWorkspaceStateOnEdt(ui);
+    }
+
+    private void runUiTreeStateChecks(SmokeRuntimeResult result, ImporterPanel ui, WorkspaceState templateState) throws Exception {
+        if (ui == null || templateState == null || templateState.collections == null || templateState.collections.isEmpty()) {
+            recordTreeStateCheck(result, "collapsed_collection_preserved_after_import", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            recordTreeStateCheck(result, "collapsed_folder_preserved_after_refresh", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            recordTreeStateCheck(result, "expanded_nested_folder_preserved_after_move", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            recordTreeStateCheck(result, "selection_preserved_after_reorder_or_move", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            recordTreeStateCheck(result, "selection_cleared_when_deleted", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            recordTreeStateCheck(result, "unrelated_collapsed_nodes_preserved", "skipped", "Importer panel or workspace state unavailable for tree state checks.", null);
+            return;
+        }
+
+        WorkspaceState collapsedCollectionState = WorkspaceState.copyOf(templateState);
+        ApiCollection selectedCollection = collapsedCollectionState.selectedRequestCollectionName != null
+                ? findCollectionByName(collapsedCollectionState.collections, collapsedCollectionState.selectedRequestCollectionName)
+                : null;
+        if (selectedCollection == null) {
+            selectedCollection = firstNonNullCollection(collapsedCollectionState.collections);
+        }
+        ApiCollection collapsedCollection = findAlternateCollection(collapsedCollectionState.collections, selectedCollection != null ? selectedCollection.name : null);
+        if (collapsedCollection == null && !collapsedCollectionState.collections.isEmpty()) {
+            collapsedCollection = collapsedCollectionState.collections.get(0);
+        }
+        if (collapsedCollection == null) {
+            recordTreeStateCheck(result, "collapsed_collection_preserved_after_import", "skipped", "Could not identify a collection to collapse for the import-refresh check.", null);
+        } else {
+            String collapsedKey = workspaceTreePathKey(collapsedCollection.name, "");
+            collapsedCollectionState.expandedTreePathKeys.removeIf(collapsedKey::equals);
+            if (selectedCollection != null && !Objects.equals(selectedCollection.name, collapsedCollection.name)) {
+                ApiRequest selectedRequest = firstRequestOutsideFolder(selectedCollection, "", null);
+                if (selectedRequest == null) {
+                    selectedRequest = firstRequestInCollection(selectedCollection);
+                }
+                if (selectedRequest != null) {
+                    setSelectedRequestState(collapsedCollectionState, selectedCollection, selectedRequest);
+                } else {
+                    collapsedCollectionState.selectedRequestCollectionName = null;
+                    collapsedCollectionState.selectedRequestIdentityKey = null;
+                    collapsedCollectionState.selectedRequestName = null;
+                    collapsedCollectionState.selectedRequestPath = null;
+                }
+            } else {
+                collapsedCollectionState.selectedRequestCollectionName = null;
+                collapsedCollectionState.selectedRequestIdentityKey = null;
+                collapsedCollectionState.selectedRequestName = null;
+                collapsedCollectionState.selectedRequestPath = null;
+            }
+            restoreWorkspaceStateOnEdt(ui, collapsedCollectionState);
+            refreshRequestTreeAfterMutationOnEdt(ui);
+            SmokeUiEvidenceSnapshot snapshot = captureAndRecordEvidenceSnapshot(
+                    result,
+                    ui,
+                    "tree-state-collapsed-collection",
+                    "tree-state-collapsed-collection.json",
+                    "Collapsed collection preserved after refresh"
+            );
+            boolean passed = snapshot != null
+                    && snapshot.requestTree != null
+                    && snapshot.requestTree.collapsedTopLevelCollections.contains(collapsedCollection.name);
+            recordTreeStateCheck(
+                    result,
+                    "collapsed_collection_preserved_after_import",
+                    passed,
+                    passed
+                            ? "Collapsed collection '" + collapsedCollection.name + "' remained collapsed after refresh. Collapsed roots=" + snapshot.requestTree.collapsedTopLevelCollections
+                            : "Collapsed collection '" + collapsedCollection.name + "' was unexpectedly expanded after refresh.",
+                    snapshotArtifactPath("tree-state-collapsed-collection.json")
+            );
+        }
+
+        WorkspaceState collapsedFolderState = WorkspaceState.copyOf(templateState);
+        ApiCollection nestedCollection = findCollectionWithNestedFolder(collapsedFolderState.collections);
+        if (nestedCollection == null) {
+            recordTreeStateCheck(result, "collapsed_folder_preserved_after_refresh", "skipped", "No nested folder was available for the folder-collapse check.", null);
+        } else {
+            String nestedFolderPath = firstNestedFolderPath(nestedCollection);
+            ApiRequest selectedRequest = firstRequestOutsideFolder(nestedCollection, nestedFolderPath, null);
+            ApiCollection selectionCollection = nestedCollection;
+            if (selectedRequest == null) {
+                ApiCollection alternate = findAlternateCollection(collapsedFolderState.collections, nestedCollection.name);
+                if (alternate != null && !Objects.equals(alternate.name, nestedCollection.name)) {
+                    selectionCollection = alternate;
+                    selectedRequest = firstRequestInCollection(alternate);
+                }
+            }
+            String nestedKey = workspaceTreePathKey(nestedCollection.name, nestedFolderPath);
+            collapsedFolderState.expandedTreePathKeys.removeIf(nestedKey::equals);
+            if (selectedRequest != null && selectionCollection != null) {
+                setSelectedRequestState(collapsedFolderState, selectionCollection, selectedRequest);
+            }
+            restoreWorkspaceStateOnEdt(ui, collapsedFolderState);
+            refreshRequestTreeAfterMutationOnEdt(ui);
+            SmokeUiEvidenceSnapshot snapshot = captureAndRecordEvidenceSnapshot(
+                    result,
+                    ui,
+                    "tree-state-collapsed-folder",
+                    "tree-state-collapsed-folder.json",
+                    "Collapsed folder preserved after refresh"
+            );
+            boolean passed = snapshot != null
+                    && snapshot.requestTree != null
+                    && !snapshot.requestTree.expandedTreePathKeys.contains(nestedKey);
+            recordTreeStateCheck(
+                    result,
+                    "collapsed_folder_preserved_after_refresh",
+                    passed,
+                    passed
+                            ? "Nested folder '" + nestedFolderPath + "' remained collapsed after refresh. Expanded keys=" + snapshot.requestTree.expandedTreePathKeys
+                            : "Nested folder '" + nestedFolderPath + "' unexpectedly expanded after refresh.",
+                    snapshotArtifactPath("tree-state-collapsed-folder.json")
+            );
+        }
+
+        WorkspaceState moveState = WorkspaceState.copyOf(templateState);
+        nestedCollection = findCollectionWithNestedFolder(moveState.collections);
+        if (nestedCollection == null) {
+            recordTreeStateCheck(result, "expanded_nested_folder_preserved_after_move", "skipped", "No nested folder was available for the move check.", null);
+            recordTreeStateCheck(result, "selection_preserved_after_reorder_or_move", "skipped", "No nested folder was available for the move check.", null);
+            recordTreeStateCheck(result, "unrelated_collapsed_nodes_preserved", "skipped", "No nested folder was available for the move check.", null);
+        } else {
+            String nestedFolderPath = firstNestedFolderPath(nestedCollection);
+            ApiRequest selectedRequest = firstRequestInFolder(nestedCollection, nestedFolderPath);
+            if (selectedRequest == null) {
+                selectedRequest = firstRequestInCollection(nestedCollection);
+            }
+            if (selectedRequest != null) {
+                setSelectedRequestState(moveState, nestedCollection, selectedRequest);
+            }
+
+            ApiCollection collapsedTargetCollection = findAlternateCollection(moveState.collections, nestedCollection.name);
+            if (collapsedTargetCollection == null || Objects.equals(collapsedTargetCollection.name, nestedCollection.name)) {
+                collapsedTargetCollection = requestTreeMutationService.createCollection(moveState.collections);
+            }
+            String collapsedTargetKey = workspaceTreePathKey(collapsedTargetCollection.name, "");
+            moveState.expandedTreePathKeys.removeIf(collapsedTargetKey::equals);
+            String nestedKey = workspaceTreePathKey(nestedCollection.name, nestedFolderPath);
+            moveState.expandedTreePathKeys.add(nestedKey);
+
+            ApiRequest moveCandidate = firstRequestOutsideFolder(nestedCollection, nestedFolderPath, selectedRequest);
+            if (moveCandidate == null) {
+                moveCandidate = firstRequestOutsideFolder(nestedCollection, "", selectedRequest);
+            }
+            if (moveCandidate == null) {
+                moveCandidate = requestTreeMutationService.createBlankManualRequest(nestedCollection, "");
+            }
+            if (moveCandidate != null) {
+                String targetFolderPath = requestTreeMutationService.createFolder(collapsedTargetCollection, "");
+                requestTreeMutationService.moveRequest(nestedCollection, moveCandidate, collapsedTargetCollection, targetFolderPath, 0);
+            }
+
+            restoreWorkspaceStateOnEdt(ui, moveState);
+            refreshRequestTreeAfterMutationOnEdt(ui);
+            SmokeUiEvidenceSnapshot snapshot = captureAndRecordEvidenceSnapshot(
+                    result,
+                    ui,
+                    "tree-state-expanded-nested-folder",
+                    "tree-state-expanded-nested-folder.json",
+                    "Expanded nested folder preserved after move"
+            );
+            boolean nestedExpandedPass = snapshot != null
+                    && snapshot.requestTree != null
+                    && snapshot.requestTree.expandedTreePathKeys.contains(nestedKey);
+            boolean selectionPreservedPass = snapshot != null
+                    && snapshot.requestTree != null
+                    && Objects.equals(snapshot.requestTree.selectedRequestName, selectedRequest != null ? selectedRequest.name : null)
+                    && (selectedRequest == null || Objects.equals(snapshot.requestTree.selectedRequestId, selectedRequest.id));
+            boolean collapsedTargetPreservedPass = snapshot != null
+                    && snapshot.requestTree != null
+                    && snapshot.requestTree.collapsedTopLevelCollections.contains(collapsedTargetCollection.name);
+            recordTreeStateCheck(
+                    result,
+                    "expanded_nested_folder_preserved_after_move",
+                    nestedExpandedPass,
+                    nestedExpandedPass
+                            ? "Nested folder '" + nestedFolderPath + "' remained expanded after move. Expanded keys=" + snapshot.requestTree.expandedTreePathKeys
+                            : "Nested folder '" + nestedFolderPath + "' was unexpectedly collapsed after move.",
+                    snapshotArtifactPath("tree-state-expanded-nested-folder.json")
+            );
+            recordTreeStateCheck(
+                    result,
+                    "selection_preserved_after_reorder_or_move",
+                    selectionPreservedPass,
+                    selectionPreservedPass
+                            ? "Selected request remained on '" + selectedRequest.name + "' after the move."
+                            : "Selected request was not preserved after the move. Selected now=" + (snapshot != null && snapshot.requestTree != null ? snapshot.requestTree.selectedRequestName : "none"),
+                    snapshotArtifactPath("tree-state-expanded-nested-folder.json")
+            );
+            recordTreeStateCheck(
+                    result,
+                    "unrelated_collapsed_nodes_preserved",
+                    collapsedTargetPreservedPass,
+                    collapsedTargetPreservedPass
+                            ? "Collapsed collection '" + collapsedTargetCollection.name + "' remained collapsed while an unrelated request moved elsewhere."
+                            : "Collapsed collection '" + collapsedTargetCollection.name + "' was unexpectedly expanded by the move.",
+                    snapshotArtifactPath("tree-state-expanded-nested-folder.json")
+            );
+        }
+
+        WorkspaceState deleteState = WorkspaceState.copyOf(templateState);
+        nestedCollection = findCollectionWithNestedFolder(deleteState.collections);
+        if (nestedCollection == null) {
+            recordTreeStateCheck(result, "selection_cleared_when_deleted", "skipped", "No nested folder was available for the delete-selection check.", null);
+        } else {
+            String nestedFolderPath = firstNestedFolderPath(nestedCollection);
+            ApiRequest selectedRequest = firstRequestInFolder(nestedCollection, nestedFolderPath);
+            if (selectedRequest == null) {
+                selectedRequest = firstRequestInCollection(nestedCollection);
+            }
+            if (selectedRequest == null) {
+                recordTreeStateCheck(result, "selection_cleared_when_deleted", "skipped", "No request was available to delete from the nested folder collection.", null);
+            } else {
+                setSelectedRequestState(deleteState, nestedCollection, selectedRequest);
+                List<ApiRequest> removed = requestTreeMutationService.removeRequest(nestedCollection, selectedRequest);
+                if (removed == null || removed.isEmpty()) {
+                    recordTreeStateCheck(result, "selection_cleared_when_deleted", false, "The selected request could not be removed from the collection.", null);
+                } else {
+                    restoreWorkspaceStateOnEdt(ui, deleteState);
+                    refreshRequestTreeAfterMutationOnEdt(ui);
+                    SmokeUiEvidenceSnapshot snapshot = captureAndRecordEvidenceSnapshot(
+                            result,
+                            ui,
+                            "tree-state-selection-cleared",
+                            "tree-state-selection-cleared.json",
+                            "Selected request cleared after deletion"
+                    );
+                    boolean clearedPass = snapshot != null
+                            && snapshot.requestTree != null
+                            && snapshot.requestTree.selectedRow < 0
+                            && (snapshot.requestTree.selectedRequestName == null || "none".equalsIgnoreCase(snapshot.requestTree.selectedRequestName))
+                            && (snapshot.requestTree.selectedPath == null || snapshot.requestTree.selectedPath.isBlank() || "none".equalsIgnoreCase(snapshot.requestTree.selectedPath) || "absent".equalsIgnoreCase(snapshot.requestTree.selectedPath));
+                    recordTreeStateCheck(
+                            result,
+                            "selection_cleared_when_deleted",
+                            clearedPass,
+                            clearedPass
+                                    ? "Selection was cleared after deleting '" + selectedRequest.name + "'."
+                                    : "Selection was not cleared after deletion. Selected now=" + (snapshot != null && snapshot.requestTree != null ? snapshot.requestTree.selectedRequestName : "none"),
+                            snapshotArtifactPath("tree-state-selection-cleared.json")
+                    );
+                }
+            }
+        }
+    }
+
+    private void runUiRunnerStateChecks(SmokeRuntimeResult result,
+                                        ImporterPanel ui,
+                                        WorkspaceState templateState,
+                                        EnvironmentProfile activeEnvironment) throws Exception {
+        if (ui == null || templateState == null || templateState.collections == null || templateState.collections.isEmpty() || activeEnvironment == null) {
+            recordRunnerStateCheck(result, "queue_size_before_run", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "queue_order_before_run", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "queue_order_after_reorder", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "queue_size_after_remove", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "queue_size_after_clear", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "start_disabled_when_queue_empty", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "locked_while_running", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "result_count_after_run", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "mixed_200_404_recorded", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            recordRunnerStateCheck(result, "extraction_visible_or_recorded", false, "Importer panel, workspace state, or active environment was unavailable for runner UI checks.", null);
+            return;
+        }
+
+        WorkspaceState runnerTemplate = WorkspaceState.copyOf(templateState);
+        materialiseRuntimeRequestUrls(runnerTemplate, activeEnvironment);
+        ApiCollection runnerCollection = selectRunnerCollection(runnerTemplate.collections);
+        if (runnerCollection == null || runnerCollection.requests == null || runnerCollection.requests.isEmpty()) {
+            recordRunnerStateCheck(result, "queue_size_before_run", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "queue_order_before_run", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "queue_order_after_reorder", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "queue_size_after_remove", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "queue_size_after_clear", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "start_disabled_when_queue_empty", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "locked_while_running", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "result_count_after_run", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "mixed_200_404_recorded", false, "No collection with runner requests was available.", null);
+            recordRunnerStateCheck(result, "extraction_visible_or_recorded", false, "No collection with runner requests was available.", null);
+            return;
+        }
+
+        List<ApiRequest> originalQueue = new ArrayList<>(selectRunnerUiQueueRequests(runnerCollection));
+        if (originalQueue.isEmpty()) {
+            for (ApiRequest request : runnerCollection.requests) {
+                if (request != null) {
+                    originalQueue.add(request);
+                }
+                if (originalQueue.size() >= 4) {
+                    break;
+                }
+            }
+        }
+        if (originalQueue.isEmpty()) {
+            recordRunnerStateCheck(result, "queue_size_before_run", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "queue_order_before_run", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "queue_order_after_reorder", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "queue_size_after_remove", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "queue_size_after_clear", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "start_disabled_when_queue_empty", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "locked_while_running", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "result_count_after_run", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "mixed_200_404_recorded", false, "Runner queue could not be assembled from the selected collection.", null);
+            recordRunnerStateCheck(result, "extraction_visible_or_recorded", false, "Runner queue could not be assembled from the selected collection.", null);
+            return;
+        }
+
+        ApiRequest delayRequest = null;
+        for (ApiRequest request : originalQueue) {
+            if (request != null && request.url != null && request.url.toLowerCase(Locale.ROOT).contains("/delay")) {
+                delayRequest = request;
+                break;
+            }
+        }
+        if (delayRequest == null && !originalQueue.isEmpty() && config.getResolvedLocalApiUrl() != null) {
+            ApiRequest first = originalQueue.get(0);
+            if (first != null) {
+                first.url = config.getResolvedLocalApiUrl() + "/delay?ms=1000";
+            }
+        } else if (delayRequest != null && config.getResolvedLocalApiUrl() != null) {
+            delayRequest.url = config.getResolvedLocalApiUrl() + "/delay?ms=1000";
+        }
+
+        List<ApiRequest> queueForRun = new ArrayList<>(originalQueue);
+        WorkspaceState beforeState = WorkspaceState.copyOf(runnerTemplate);
+        setRunnerQueueState(beforeState, queueForRun);
+        restoreWorkspaceStateOnEdt(ui, beforeState);
+        setRunnerPreviewRowsOnEdt(ui, buildUiRunnerPreview(beforeState.collections, queueForRun));
+        SmokeUiEvidenceSnapshot beforeSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "runner-queue-prep",
+                "runner-queue-prep.json",
+                "Runner queue prep"
+        );
+        if (queueForRun.size() > 1) {
+            boolean reordered = reorderRunnerQueueOnEdt(ui, 0, queueForRun.size());
+            if (reordered) {
+                ApiRequest moved = queueForRun.remove(0);
+                queueForRun.add(moved);
+            }
+            setRunnerPreviewRowsOnEdt(ui, buildUiRunnerPreview(beforeState.collections, queueForRun));
+            SmokeUiEvidenceSnapshot reorderSnapshot = captureAndRecordEvidenceSnapshot(
+                    result,
+                    ui,
+                    "runner-queue-after-reorder",
+                    "runner-queue-after-reorder.json",
+                    "Runner queue after reorder"
+            );
+            if (reorderSnapshot != null) {
+                boolean orderMatches = reorderSnapshot.runner != null && reorderSnapshot.runner.queueRequestNames.equals(requestNames(queueForRun));
+                recordRunnerStateCheck(
+                        result,
+                        "queue_order_after_reorder",
+                        orderMatches,
+                        orderMatches
+                                ? "Runner queue reordered to " + reorderSnapshot.runner.queueRequestNames
+                                : "Runner queue reorder did not produce the expected order. Actual=" + (reorderSnapshot.runner != null ? reorderSnapshot.runner.queueRequestNames : "unavailable"),
+                        snapshotArtifactPath("runner-queue-after-reorder.json")
+                );
+            }
+        } else {
+            recordRunnerStateCheck(result, "queue_order_after_reorder", false, "Runner queue required at least two requests to test reordering.", null);
+        }
+
+        List<ApiRequest> removeQueue = new ArrayList<>(queueForRun);
+        if (!removeQueue.isEmpty()) {
+            int removeIndex = removeQueue.size() > 1 ? 1 : 0;
+            removeQueue.remove(removeIndex);
+        }
+        WorkspaceState removeState = WorkspaceState.copyOf(runnerTemplate);
+        setRunnerQueueState(removeState, removeQueue);
+        restoreWorkspaceStateOnEdt(ui, removeState);
+        setRunnerPreviewRowsOnEdt(ui, buildUiRunnerPreview(removeState.collections, removeQueue));
+        SmokeUiEvidenceSnapshot removeSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "runner-queue-after-remove",
+                "runner-queue-after-remove.json",
+                "Runner queue after remove"
+        );
+        if (removeSnapshot != null) {
+            recordRunnerStateCheck(
+                    result,
+                    "queue_size_after_remove",
+                    removeSnapshot.runner != null && removeSnapshot.runner.queueSize == removeQueue.size(),
+                    removeSnapshot.runner != null
+                            ? "Runner queue size after remove=" + removeSnapshot.runner.queueSize + ", names=" + removeSnapshot.runner.queueRequestNames
+                            : "Runner snapshot unavailable after remove.",
+                    snapshotArtifactPath("runner-queue-after-remove.json")
+            );
+        }
+
+        WorkspaceState clearState = WorkspaceState.copyOf(runnerTemplate);
+        setRunnerQueueState(clearState, queueForRun);
+        restoreWorkspaceStateOnEdt(ui, clearState);
+        setRunnerPreviewRowsOnEdt(ui, buildUiRunnerPreview(clearState.collections, queueForRun));
+        clearRunnerQueueOnEdt(ui);
+        setRunnerPreviewRowsOnEdt(ui, Collections.emptyList());
+        SmokeUiEvidenceSnapshot clearSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "runner-queue-after-clear",
+                "runner-queue-after-clear.json",
+                "Runner queue after clear"
+        );
+        if (clearSnapshot != null) {
+            boolean queueEmpty = clearSnapshot.runner != null && clearSnapshot.runner.queueSize == 0;
+            boolean startDisabled = clearSnapshot.runner != null && !clearSnapshot.runner.startEnabled;
+            recordRunnerStateCheck(
+                    result,
+                    "queue_size_after_clear",
+                    queueEmpty,
+                    clearSnapshot.runner != null
+                            ? "Runner queue cleared. queueSize=" + clearSnapshot.runner.queueSize + ", startEnabled=" + clearSnapshot.runner.startEnabled
+                            : "Runner snapshot unavailable after clear.",
+                    snapshotArtifactPath("runner-queue-after-clear.json")
+            );
+            recordRunnerStateCheck(
+                    result,
+                    "start_disabled_when_queue_empty",
+                    queueEmpty && startDisabled,
+                    clearSnapshot.runner != null
+                            ? "Runner start enabled after clear=" + clearSnapshot.runner.startEnabled
+                            : "Runner snapshot unavailable after clear.",
+                    snapshotArtifactPath("runner-queue-after-clear.json")
+            );
+        }
+
+        WorkspaceState runState = WorkspaceState.copyOf(runnerTemplate);
+        setRunnerQueueState(runState, originalQueue);
+        restoreWorkspaceStateOnEdt(ui, runState);
+        ApiCollection liveRunCollection = selectRunnerCollection(runState.collections);
+        List<ApiRequest> liveRunQueue = new ArrayList<>(liveRunCollection != null ? selectRunnerUiQueueRequests(liveRunCollection) : Collections.emptyList());
+        if (liveRunQueue.isEmpty()) {
+            liveRunQueue = new ArrayList<>(originalQueue);
+        }
+        setRunnerPreviewRowsOnEdt(ui, buildUiRunnerPreview(runState.collections, liveRunQueue));
+        SmokeUiEvidenceSnapshot runBeforeSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "runner-queue-before",
+                "runner-queue-before.json",
+                "Runner queue before run"
+        );
+        if (runBeforeSnapshot != null) {
+            recordRunnerUiProbeChecks(result, runBeforeSnapshot, snapshotArtifactPath("runner-queue-before.json"));
+            recordRunnerStateCheck(
+                    result,
+                    "queue_size_before_run",
+                    runBeforeSnapshot.runner != null && runBeforeSnapshot.runner.queueSize == liveRunQueue.size(),
+                    runBeforeSnapshot.runner != null
+                            ? "Runner queue size before run=" + runBeforeSnapshot.runner.queueSize + ", names=" + runBeforeSnapshot.runner.queueRequestNames
+                            : "Runner snapshot unavailable before run.",
+                    snapshotArtifactPath("runner-queue-before.json")
+            );
+            recordRunnerStateCheck(
+                    result,
+                    "queue_order_before_run",
+                    runBeforeSnapshot.runner != null && !runBeforeSnapshot.runner.queueRequestNames.isEmpty(),
+                    runBeforeSnapshot.runner != null
+                            ? "Runner queue order before run recorded as " + runBeforeSnapshot.runner.queueRequestNames
+                            : "Runner snapshot unavailable before run.",
+                    snapshotArtifactPath("runner-queue-before.json")
+            );
+        }
+
+        startRunnerExecutionOnEdt(ui, liveRunQueue);
+        boolean running = waitForRunnerRunning(ui, TimeUnit.SECONDS.toMillis(Math.max(10, config.maxWaitSeconds)));
+        boolean lockAttemptPassed = false;
+        if (running) {
+            lockAttemptPassed = !reorderRunnerQueueOnEdt(ui, 0, liveRunQueue.size());
+        }
+        if (!running) {
+            recordRunnerStateCheck(
+                    result,
+                    "locked_while_running",
+                    false,
+                    "Runner never reached a running state, so the locked-while-running check could not be exercised.",
+                    snapshotArtifactPath("runner-queue-before.json")
+            );
+        } else {
+            recordRunnerStateCheck(
+                    result,
+                    "locked_while_running",
+                    lockAttemptPassed,
+                    lockAttemptPassed
+                            ? "Runner queue reorder was blocked while the runner was active."
+                            : "Runner queue reorder was not blocked while the runner was active.",
+                    snapshotArtifactPath("runner-queue-before.json")
+            );
+        }
+
+        waitForRunnerIdle(ui, TimeUnit.SECONDS.toMillis(Math.max(30, config.maxWaitSeconds)));
+        SmokeUiEvidenceSnapshot afterRunSnapshot = captureAndRecordEvidenceSnapshot(
+                result,
+                ui,
+                "runner-queue-after-run",
+                "runner-queue-after-run.json",
+                "Runner queue after run"
+        );
+        if (afterRunSnapshot != null && afterRunSnapshot.runner != null) {
+            boolean countPass = afterRunSnapshot.runner.resultCount == liveRunQueue.size();
+            boolean saw200 = afterRunSnapshot.runner.resultRows.stream().anyMatch(row -> row != null && row.statusCode == 200);
+            boolean saw404 = afterRunSnapshot.runner.resultRows.stream().anyMatch(row -> row != null && row.statusCode == 404);
+            boolean extractedVisible = afterRunSnapshot.runner.resultRows.stream().anyMatch(row -> row != null && row.extractedVariableCount > 0);
+            recordRunnerStateCheck(
+                    result,
+                    "result_count_after_run",
+                    countPass,
+                    countPass
+                            ? "Runner produced " + afterRunSnapshot.runner.resultCount + " result row(s)."
+                            : "Runner result count " + afterRunSnapshot.runner.resultCount + " did not match queue size " + originalQueue.size() + ".",
+                    snapshotArtifactPath("runner-queue-after-run.json")
+            );
+            recordRunnerStateCheck(
+                    result,
+                    "mixed_200_404_recorded",
+                    saw200 && saw404,
+                    saw200 && saw404
+                            ? "Runner recorded both 200 and 404 outcomes."
+                            : "Runner results did not include both 200 and 404 outcomes.",
+                    snapshotArtifactPath("runner-queue-after-run.json")
+            );
+            if (extractedVisible) {
+                recordRunnerStateCheck(
+                        result,
+                        "extraction_visible_or_recorded",
+                        true,
+                        "Runner recorded extracted variables in the result rows.",
+                        snapshotArtifactPath("runner-queue-after-run.json")
+                );
+            } else {
+                recordRunnerStateCheck(
+                        result,
+                        "extraction_visible_or_recorded",
+                        "skipped",
+                        "Runner results did not record any extracted variables; the model-level runner extraction checks cover this path.",
+                        snapshotArtifactPath("runner-queue-after-run.json")
+                );
+            }
+        } else {
+            recordRunnerStateCheck(result, "result_count_after_run", "skipped", "Runner snapshot unavailable after run.", snapshotArtifactPath("runner-queue-after-run.json"));
+            recordRunnerStateCheck(result, "mixed_200_404_recorded", "skipped", "Runner snapshot unavailable after run.", snapshotArtifactPath("runner-queue-after-run.json"));
+            recordRunnerStateCheck(result, "extraction_visible_or_recorded", "skipped", "Runner snapshot unavailable after run.", snapshotArtifactPath("runner-queue-after-run.json"));
+        }
+
+        maybeVisualDebugPause(result, "Visual debug pause after runner");
+    }
+
     private void runCollectionRunnerQueue(SmokeRuntimeResult result,
                                           String checkName,
                                           List<ApiCollection> sourceCollections,
@@ -2361,6 +3012,36 @@ public final class SmokeRuntimeRunner {
         }
     }
 
+    private void setPrivateField(Object target, String fieldName, Object value) {
+        try {
+            java.lang.reflect.Field field = target.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(target, value);
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to write field '" + fieldName + "' on " + target.getClass().getSimpleName() + ": " + e.getMessage(), e);
+        }
+    }
+
+    private Object invokePrivateMethod(Object target, String methodName, Class<?>[] parameterTypes, Object... args) {
+        try {
+            java.lang.reflect.Method method = target.getClass().getDeclaredMethod(methodName, parameterTypes);
+            method.setAccessible(true);
+            return method.invoke(target, args);
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to invoke method '" + methodName + "' on " + target.getClass().getSimpleName() + ": " + e.getMessage(), e);
+        }
+    }
+
+    private Object invokePrivateStaticMethod(Class<?> targetType, String methodName, Class<?>[] parameterTypes, Object... args) {
+        try {
+            java.lang.reflect.Method method = targetType.getDeclaredMethod(methodName, parameterTypes);
+            method.setAccessible(true);
+            return method.invoke(null, args);
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to invoke static method '" + methodName + "' on " + targetType.getSimpleName() + ": " + e.getMessage(), e);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, JTextField> getPrivateAuthFields(RequestEditorPanel panel) {
         Object authUi = getPrivateField(panel, "authUi", Object.class);
@@ -2457,6 +3138,597 @@ public final class SmokeRuntimeRunner {
         }
         ensureParentDirectory(resultPath);
         Files.writeString(resultPath, GSON.toJson(result), StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+    }
+
+    private SmokeUiEvidenceSnapshot captureUiSnapshotOnEdt(ImporterPanel ui, String label) throws Exception {
+        return runOnEdt(() -> ui != null ? ui.captureSmokeUiEvidenceSnapshot(label) : null);
+    }
+
+    private SmokeUiEvidenceSnapshot captureAndRecordEvidenceSnapshot(SmokeRuntimeResult result,
+                                                                     ImporterPanel ui,
+                                                                     String snapshotId,
+                                                                     String fileName,
+                                                                     String label) {
+        String checkName = normalizeEvidenceCheckName(snapshotId);
+        if (ui == null) {
+            result.addCheck("evidence.snapshots", checkName, "skipped", "Importer panel unavailable; snapshot not captured.", "json", null, null);
+            return null;
+        }
+
+        SmokeUiEvidenceSnapshot snapshot;
+        try {
+            snapshot = captureUiSnapshotOnEdt(ui, label);
+        } catch (Exception e) {
+            result.addCheck("evidence.snapshots", checkName, "fail", "Failed to capture evidence snapshot: " + e.getMessage(), "json", null, null);
+            result.addError("UI evidence capture failed for '" + snapshotId + "': " + e.getMessage());
+            return null;
+        }
+
+        if (!config.isCaptureUiEvidence()) {
+            result.addCheck("evidence.snapshots", checkName, "skipped", "captureUiEvidence=false; snapshot not written.", "json", null, null);
+            return snapshot;
+        }
+
+        Path evidenceDir = config.getEvidenceDirPath();
+        if (evidenceDir == null) {
+            result.addCheck("evidence.snapshots", checkName, "fail", "Evidence directory was not configured.", "json", null, null);
+            return snapshot;
+        }
+
+        Path snapshotPath = evidenceDir.resolve(fileName);
+        try {
+            ensureParentDirectory(snapshotPath);
+            Files.writeString(snapshotPath, GSON.toJson(snapshot), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            result.addArtifact(snapshotPath.toString());
+            result.addCheck("evidence.snapshots", checkName, "pass", "Captured UI evidence snapshot: " + label, "json", snapshotPath.toString(), null);
+        } catch (IOException e) {
+            result.addCheck("evidence.snapshots", checkName, "fail", "Failed to write evidence snapshot: " + e.getMessage(), "json", snapshotPath.toString(), null);
+            result.addError("Failed to write evidence snapshot '" + snapshotId + "': " + e.getMessage());
+        }
+        return snapshot;
+    }
+
+    private void recordUiProbeCheck(SmokeRuntimeResult result, String name, boolean passed, String details, String artifactPath) {
+        result.addCheck("ui.probe", name, passed ? "pass" : "fail", details, "json", artifactPath, null);
+    }
+
+    private void recordUiProbeCheck(SmokeRuntimeResult result, String name, String status, String details, String artifactPath) {
+        result.addCheck("ui.probe", name, status, details, "json", artifactPath, null);
+    }
+
+    private void recordTreeStateCheck(SmokeRuntimeResult result, String name, boolean passed, String details, String artifactPath) {
+        result.addCheck("ui.tree_state", name, passed ? "pass" : "fail", details, "json", artifactPath, null);
+    }
+
+    private void recordTreeStateCheck(SmokeRuntimeResult result, String name, String status, String details, String artifactPath) {
+        result.addCheck("ui.tree_state", name, status, details, "json", artifactPath, null);
+    }
+
+    private void recordRunnerStateCheck(SmokeRuntimeResult result, String name, boolean passed, String details, String artifactPath) {
+        result.addCheck("ui.runner", name, passed ? "pass" : "fail", details, "json", artifactPath, null);
+    }
+
+    private void recordRunnerStateCheck(SmokeRuntimeResult result, String name, String status, String details, String artifactPath) {
+        result.addCheck("ui.runner", name, status, details, "json", artifactPath, null);
+    }
+
+    private void recordLogScanCheck(SmokeRuntimeResult result, String name, boolean passed, String details, String artifactPath) {
+        result.addCheck("logs.scan", name, passed ? "pass" : "fail", details, "json", artifactPath, null);
+    }
+
+    private void recordManualChecklistCheck(SmokeRuntimeResult result, String name, boolean passed, String details, String artifactPath) {
+        result.addCheck("manual.checklist", name, passed ? "pass" : "fail", details, "md", artifactPath, null);
+    }
+
+    private void recordStartupUiProbeChecks(SmokeRuntimeResult result, SmokeUiEvidenceSnapshot snapshot, String artifactPath) {
+        boolean tabRegistered = snapshot != null && snapshot.selectedTopLevelTab != null && !snapshot.selectedTopLevelTab.isBlank() && snapshot.requestTree.exists;
+        recordUiProbeCheck(result,
+                "api_workbench_tab_registered",
+                tabRegistered,
+                tabRegistered ? "API Workbench tab and panel are available." : "API Workbench tab was not available after initialization.",
+                artifactPath);
+
+        boolean requestTreePresent = snapshot != null && snapshot.requestTree != null && snapshot.requestTree.exists;
+        recordUiProbeCheck(result,
+                "request_tree_present",
+                requestTreePresent,
+                requestTreePresent ? "Request tree component exists." : "Request tree component was not found.",
+                artifactPath);
+    }
+
+    private void recordImportUiProbeChecks(SmokeRuntimeResult result, SmokeUiEvidenceSnapshot snapshot, String artifactPath) {
+        boolean requestTreeRowCount = snapshot != null && snapshot.requestTree != null && snapshot.requestTree.rowCount > 0;
+        recordUiProbeCheck(result,
+                "request_tree_row_count",
+                requestTreeRowCount,
+                snapshot != null && snapshot.requestTree != null
+                        ? "Request tree row count=" + snapshot.requestTree.rowCount
+                        : "Request tree snapshot unavailable.",
+                artifactPath);
+
+        boolean loadedVisible = snapshot != null && snapshot.workspaceState != null && snapshot.workspaceState.collections != null && !snapshot.workspaceState.collections.isEmpty()
+                && snapshot.requestTree != null && snapshot.requestTree.rowCount > 0;
+        recordUiProbeCheck(result,
+                "loaded_collections_visible",
+                loadedVisible,
+                snapshot != null && snapshot.workspaceState != null
+                        ? "Loaded collections=" + snapshot.workspaceState.collections.size() + ", treeRows=" + (snapshot.requestTree != null ? snapshot.requestTree.rowCount : 0)
+                        : "Workspace snapshot unavailable.",
+                artifactPath);
+
+        boolean activeEnvironment = snapshot != null && snapshot.environment != null && snapshot.environment.activeEnvironmentId != null && !snapshot.environment.activeEnvironmentId.isBlank();
+        recordUiProbeCheck(result,
+                "active_environment",
+                activeEnvironment,
+                snapshot != null && snapshot.environment != null
+                        ? "Active environment=" + snapshot.environment.activeEnvironmentName + " (" + snapshot.environment.activeEnvironmentId + ")"
+                        : "Environment snapshot unavailable.",
+                artifactPath);
+
+        boolean environmentCombo = snapshot != null && snapshot.environment != null && snapshot.environment.profiles != null && !snapshot.environment.profiles.isEmpty()
+                && snapshot.environment.selectedComboLabel != null && !snapshot.environment.selectedComboLabel.isBlank();
+        recordUiProbeCheck(result,
+                "environment_combo_state",
+                environmentCombo,
+                snapshot != null && snapshot.environment != null
+                        ? "Selected combo='" + snapshot.environment.selectedComboLabel + "', profiles=" + snapshot.environment.profiles.size()
+                        : "Environment combo snapshot unavailable.",
+                artifactPath);
+
+        boolean importLogMessages = snapshot != null && snapshot.logs != null && snapshot.logs.importLogLineCount > 0;
+        recordUiProbeCheck(result,
+                "import_log_messages",
+                importLogMessages,
+                snapshot != null && snapshot.logs != null
+                        ? "Import log lines=" + snapshot.logs.importLogLineCount + ", tail=" + snapshot.logs.importLogTail
+                        : "Import log snapshot unavailable.",
+                artifactPath);
+    }
+
+    private void recordRequestEditorUiProbeChecks(SmokeRuntimeResult result, SmokeUiEvidenceSnapshot snapshot, String artifactPath) {
+        boolean selectedRequest = snapshot != null && snapshot.requestEditor != null && snapshot.requestEditor.currentRequestName != null && !snapshot.requestEditor.currentRequestName.isBlank();
+        recordUiProbeCheck(result,
+                "selected_request",
+                selectedRequest,
+                snapshot != null && snapshot.requestEditor != null
+                        ? "Selected request='" + snapshot.requestEditor.currentRequestName + "' from collection='" + snapshot.requestEditor.currentCollectionName + "'."
+                        : "Request editor snapshot unavailable.",
+                artifactPath);
+
+        boolean requestEditorState = snapshot != null && snapshot.requestEditor != null && snapshot.requestEditor.method != null && !snapshot.requestEditor.method.isBlank();
+        recordUiProbeCheck(result,
+                "request_editor_state",
+                requestEditorState,
+                snapshot != null && snapshot.requestEditor != null
+                        ? "Method=" + snapshot.requestEditor.method + ", url=" + snapshot.requestEditor.url + ", headers=" + snapshot.requestEditor.headerCount + ", bodyMode=" + snapshot.requestEditor.bodyMode + ", authMode=" + snapshot.requestEditor.authMode
+                        : "Request editor snapshot unavailable.",
+                artifactPath);
+
+        boolean sendButtonState = snapshot != null && snapshot.requestEditor != null && snapshot.requestEditor.sendEnabled;
+        if (sendButtonState) {
+            recordUiProbeCheck(result,
+                    "send_button_state",
+                    true,
+                    snapshot != null && snapshot.requestEditor != null
+                            ? "Send enabled=" + snapshot.requestEditor.sendEnabled + ", label='" + snapshot.requestEditor.sendModeLabel + "'."
+                            : "Send button snapshot unavailable.",
+                    artifactPath);
+        } else {
+            recordUiProbeCheck(result,
+                    "send_button_state",
+                    "skipped",
+                    snapshot != null && snapshot.requestEditor != null
+                            ? "Send button disabled in the current UI state; label='" + snapshot.requestEditor.sendModeLabel + "'."
+                            : "Send button snapshot unavailable.",
+                    artifactPath);
+        }
+    }
+
+    private void recordRunnerUiProbeChecks(SmokeRuntimeResult result, SmokeUiEvidenceSnapshot snapshot, String artifactPath) {
+        boolean queueSize = snapshot != null && snapshot.runner != null && snapshot.runner.queueSize > 0;
+        recordUiProbeCheck(result,
+                "runner_queue_size",
+                queueSize,
+                snapshot != null && snapshot.runner != null
+                        ? "Runner queue size=" + snapshot.runner.queueSize + ", names=" + snapshot.runner.queueRequestNames
+                        : "Runner snapshot unavailable.",
+                artifactPath);
+
+        boolean previewState = snapshot != null && snapshot.runner != null && snapshot.runner.previewCount > 0;
+        recordUiProbeCheck(result,
+                "runner_preview_state",
+                previewState,
+                snapshot != null && snapshot.runner != null
+                        ? "Runner preview rows=" + snapshot.runner.previewCount + ", queue order=" + snapshot.runner.queueRequestNames
+                        : "Runner preview snapshot unavailable.",
+                artifactPath);
+    }
+
+    private void maybeVisualDebugPause(SmokeRuntimeResult result, String phaseMessage) {
+        if (!config.isVisualDebug() || config.getPauseAfterMajorStepsMs() <= 0) {
+            return;
+        }
+        appendLog(phaseMessage);
+        try {
+            Thread.sleep(config.getPauseAfterMajorStepsMs());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            result.addError("Visual debug pause interrupted during '" + phaseMessage + "'.");
+        }
+    }
+
+    private void awaitUiIdle() throws Exception {
+        runOnEdt(() -> { });
+    }
+
+    private void restoreWorkspaceStateOnEdt(ImporterPanel ui, WorkspaceState state) throws Exception {
+        if (ui == null || state == null) {
+            return;
+        }
+        runOnEdt(() -> ui.restoreWorkspaceState(state));
+        awaitUiIdle();
+    }
+
+    private WorkspaceState captureWorkspaceStateOnEdt(ImporterPanel ui) throws Exception {
+        if (ui == null) {
+            return null;
+        }
+        return runOnEdt(ui::getWorkspaceStateSnapshot);
+    }
+
+    private void refreshRequestTreeAfterMutationOnEdt(ImporterPanel ui) throws Exception {
+        if (ui == null) {
+            return;
+        }
+        runOnEdt(() -> invokePrivateMethod(ui, "refreshRequestTreeAfterMutation", new Class<?>[]{Runnable.class}, (Object) null));
+        awaitUiIdle();
+    }
+
+    private boolean waitForRunnerRunning(ImporterPanel ui, long timeoutMs) throws Exception {
+        if (ui == null) {
+            return false;
+        }
+        long deadline = System.currentTimeMillis() + Math.max(1000L, timeoutMs);
+        while (System.currentTimeMillis() < deadline) {
+            SmokeUiEvidenceSnapshot snapshot = captureUiSnapshotOnEdt(ui, "runner-running-wait");
+            if (snapshot != null && snapshot.runner.running) {
+                return true;
+            }
+            Thread.sleep(100L);
+        }
+        return false;
+    }
+
+    private String normalizeEvidenceCheckName(String snapshotId) {
+        if (snapshotId == null || snapshotId.isBlank()) {
+            return "snapshot";
+        }
+        return snapshotId.replaceAll("[^A-Za-z0-9]+", "_").replaceAll("_+", "_").replaceAll("^_+|_+$", "");
+    }
+
+    private String snapshotArtifactPath(String fileName) {
+        Path evidenceDir = config.getEvidenceDirPath();
+        if (!config.isCaptureUiEvidence() || evidenceDir == null || fileName == null || fileName.isBlank()) {
+            return null;
+        }
+        return evidenceDir.resolve(fileName).toString();
+    }
+
+    private String workspaceTreePathKey(String collectionName, String folderPath) {
+        return (collectionName != null ? collectionName : "") + '' + (folderPath != null ? folderPath : "");
+    }
+
+    private String workspaceRequestIdentityKey(String collectionName, ApiRequest request, int requestIndex) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(collectionName != null ? collectionName : "");
+        builder.append('');
+        if (request != null) {
+            if (request.id != null && !request.id.isBlank()) {
+                builder.append("id=").append(request.id.trim());
+            } else {
+                builder.append("index=").append(requestIndex);
+                builder.append('').append("method=").append(request.method != null ? request.method : "");
+                builder.append('').append("name=").append(request.name != null ? request.name : "");
+                builder.append('').append("url=").append(request.url != null ? request.url : "");
+            }
+        }
+        return builder.toString();
+    }
+
+    private int findRequestIndexInCollection(ApiCollection collection, ApiRequest request) {
+        if (collection == null || request == null || collection.requests == null) {
+            return -1;
+        }
+        for (int i = 0; i < collection.requests.size(); i++) {
+            if (collection.requests.get(i) == request) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String firstNestedFolderPath(ApiCollection collection) {
+        if (collection == null || collection.folderPaths == null) {
+            return null;
+        }
+        for (String folderPath : collection.folderPaths) {
+            if (folderPath != null && !folderPath.isBlank() && folderPath.contains("/")) {
+                return folderPath;
+            }
+        }
+        return collection.folderPaths.isEmpty() ? null : collection.folderPaths.get(0);
+    }
+
+    private ApiRequest firstRequestInCollection(ApiCollection collection) {
+        if (collection == null || collection.requests == null) {
+            return null;
+        }
+        for (ApiRequest request : collection.requests) {
+            if (request != null) {
+                return request;
+            }
+        }
+        return null;
+    }
+
+    private ApiRequest firstRequestInFolder(ApiCollection collection, String folderPath) {
+        if (collection == null || collection.requests == null) {
+            return null;
+        }
+        for (ApiRequest request : collection.requests) {
+            if (request == null) {
+                continue;
+            }
+            String requestFolder = RequestPathResolver.getRequestFolderPath(collection, request);
+            if (Objects.equals(RequestTreePathService.normalizeFolderPath(requestFolder), RequestTreePathService.normalizeFolderPath(folderPath))) {
+                return request;
+            }
+        }
+        return null;
+    }
+
+    private ApiRequest firstRequestOutsideFolder(ApiCollection collection, String folderPath, ApiRequest excluded) {
+        if (collection == null || collection.requests == null) {
+            return null;
+        }
+        String normalizedFolder = RequestTreePathService.normalizeFolderPath(folderPath);
+        for (ApiRequest request : collection.requests) {
+            if (request == null || request == excluded) {
+                continue;
+            }
+            String requestFolder = RequestTreePathService.normalizeFolderPath(RequestPathResolver.getRequestFolderPath(collection, request));
+            if (!Objects.equals(requestFolder, normalizedFolder)) {
+                return request;
+            }
+        }
+        return null;
+    }
+
+    private ApiCollection findCollectionWithNestedFolder(List<ApiCollection> collections) {
+        if (collections == null) {
+            return null;
+        }
+        for (ApiCollection collection : collections) {
+            if (collection != null && collection.folderPaths != null) {
+                for (String folderPath : collection.folderPaths) {
+                    if (folderPath != null && folderPath.contains("/")) {
+                        return collection;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private ApiCollection copyCollectionForTest(ApiCollection source, String suffix) {
+        if (source == null) {
+            return null;
+        }
+        ApiCollection copy = WorkspaceState.fromCollections(List.of(source)).collections.get(0);
+        String baseName = source.name != null && !source.name.isBlank() ? source.name : "Collection";
+        String newName = baseName + (suffix != null && !suffix.isBlank() ? " " + suffix : " Copy");
+        requestTreeMutationService.renameCollection(copy, newName);
+        return copy;
+    }
+
+    private WorkspaceState buildUiSmokeWorkspaceState(WorkspaceState baseState,
+                                                      String editorCollectionName,
+                                                      EnvironmentProfile activeEnvironment) {
+        WorkspaceState state = WorkspaceState.copyOf(baseState);
+        if (activeEnvironment != null) {
+            materialiseRuntimeRequestUrls(state, activeEnvironment);
+        }
+        state.selectedTabIndex = 0;
+        state.expandedTreePathKeys = new ArrayList<>();
+        if (state.collections != null) {
+            for (ApiCollection collection : state.collections) {
+                if (collection != null && collection.name != null && !collection.name.isBlank()) {
+                    state.expandedTreePathKeys.add(workspaceTreePathKey(collection.name, ""));
+                }
+            }
+        }
+        if (editorCollectionName != null && !editorCollectionName.isBlank()) {
+            ApiCollection editorCollection = findCollectionByName(state.collections, editorCollectionName);
+            if (editorCollection != null) {
+                state.selectedVariablesCollectionName = editorCollection.name;
+                state.selectedOAuth2CollectionName = editorCollection.name;
+                ApiRequest selectedRequest = findRequestByPath(editorCollection, "/echo");
+                if (selectedRequest == null) {
+                    selectedRequest = firstRequestInCollection(editorCollection);
+                }
+                if (selectedRequest != null) {
+                    setSelectedRequestState(state, editorCollection, selectedRequest);
+                }
+            }
+        }
+        return state;
+    }
+
+    private void setSelectedRequestState(WorkspaceState state, ApiCollection collection, ApiRequest request) {
+        if (state == null || collection == null || request == null) {
+            return;
+        }
+        int requestIndex = findRequestIndexInCollection(collection, request);
+        state.selectedRequestCollectionName = collection.name;
+        state.selectedRequestIdentityKey = requestIndex >= 0
+                ? workspaceRequestIdentityKey(collection.name, request, requestIndex)
+                : workspaceRequestIdentityKey(collection.name, request, request != null ? request.sequenceOrder : -1);
+        state.selectedRequestName = request.name;
+        state.selectedRequestPath = request.path;
+    }
+
+    private void setRunnerQueueState(WorkspaceState state, List<ApiRequest> queue) {
+        if (state == null) {
+            return;
+        }
+        state.runnerQueuedRequestIdentityKeys = new ArrayList<>();
+        if (queue == null || queue.isEmpty()) {
+            return;
+        }
+        for (ApiRequest request : queue) {
+            if (request == null) {
+                continue;
+            }
+            ApiCollection collection = findCollectionByName(state.collections, request.sourceCollection);
+            String collectionName = collection != null ? collection.name : request.sourceCollection;
+            int requestIndex = findRequestIndexInCollection(collection, request);
+            state.runnerQueuedRequestIdentityKeys.add(requestIndex >= 0
+                    ? workspaceRequestIdentityKey(collectionName, request, requestIndex)
+                    : workspaceRequestIdentityKey(collectionName, request, request != null ? request.sequenceOrder : -1));
+        }
+    }
+
+    private ApiCollection findAlternateCollection(List<ApiCollection> collections, String excludedName) {
+        if (collections == null || collections.isEmpty()) {
+            return null;
+        }
+        for (ApiCollection collection : collections) {
+            if (collection != null && !Objects.equals(collection.name, excludedName)) {
+                return collection;
+            }
+        }
+        return collections.get(0);
+    }
+
+    private List<ApiRequest> selectRunnerUiQueueRequests(ApiCollection runnerCollection) {
+        List<ApiRequest> queue = new ArrayList<>();
+        if (runnerCollection == null) {
+            return queue;
+        }
+        ApiRequest delay = findRequestByPath(runnerCollection, "/delay");
+        ApiRequest token = findRequestByPath(runnerCollection, "/extract/token");
+        ApiRequest status404 = findRequestByPath(runnerCollection, "/status/404");
+        ApiRequest chained = findRequestByPath(runnerCollection, "/extract/chained");
+        ApiRequest health = findRequestByPath(runnerCollection, "/health");
+        ApiRequest users = findRequestByPath(runnerCollection, "/users");
+        ApiRequest echo = findRequestByPath(runnerCollection, "/echo");
+        if (delay != null && token != null && status404 != null && chained != null) {
+            queue.add(delay);
+            queue.add(token);
+            queue.add(status404);
+            queue.add(chained);
+            return queue;
+        }
+        if (delay != null && health != null && users != null && status404 != null) {
+            queue.add(delay);
+            queue.add(health);
+            queue.add(users);
+            queue.add(status404);
+            return queue;
+        }
+        if (token != null && status404 != null && chained != null && health != null) {
+            queue.add(token);
+            queue.add(status404);
+            queue.add(chained);
+            queue.add(health);
+            return queue;
+        }
+        if (health != null && users != null && echo != null && delay != null) {
+            queue.add(delay);
+            queue.add(health);
+            queue.add(users);
+            queue.add(echo);
+            return queue;
+        }
+        for (ApiRequest request : runnerCollection.requests) {
+            if (request != null) {
+                queue.add(request);
+            }
+            if (queue.size() >= 4) {
+                break;
+            }
+        }
+        return queue;
+    }
+
+    private String buildQueueOrderLabel(List<ApiRequest> requests) {
+        if (requests == null || requests.isEmpty()) {
+            return "[]";
+        }
+        List<String> labels = new ArrayList<>();
+        for (ApiRequest request : requests) {
+            labels.add(request != null && request.name != null ? request.name : "Request");
+        }
+        return labels.toString();
+    }
+
+    private List<RunnerPreviewRow> buildUiRunnerPreview(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
+        List<RunnerPreviewRow> preview = buildPreview(sourceCollections, selectedRequests);
+        return preview != null ? preview : new ArrayList<>();
+    }
+
+    private void setRunnerPreviewRowsOnEdt(ImporterPanel ui, List<RunnerPreviewRow> previewRows) throws Exception {
+        if (ui == null) {
+            return;
+        }
+        runOnEdt(() -> {
+            RunnerPreviewTableModel previewModel = getPrivateField(ui, "runnerPreviewModel", RunnerPreviewTableModel.class);
+            if (previewModel == null) {
+                previewModel = new RunnerPreviewTableModel();
+                setPrivateField(ui, "runnerPreviewModel", previewModel);
+            }
+            previewModel.setRows(previewRows != null ? previewRows : Collections.emptyList());
+        });
+    }
+
+    private boolean reorderRunnerQueueOnEdt(ImporterPanel ui, int sourceIndex, int targetIndex) throws Exception {
+        if (ui == null) {
+            return false;
+        }
+        return runOnEdt(() -> {
+            Object value = invokePrivateMethod(ui, "reorderRunnerQueue", new Class<?>[]{int.class, int.class}, sourceIndex, targetIndex);
+            return value instanceof Boolean booleanValue && booleanValue;
+        });
+    }
+
+    private void clearRunnerQueueOnEdt(ImporterPanel ui) throws Exception {
+        if (ui == null) {
+            return;
+        }
+        runOnEdt(() -> invokePrivateMethod(ui, "clearRunnerFromUi", new Class<?>[0]));
+    }
+
+    private void startRunnerExecutionOnEdt(ImporterPanel ui, List<ApiRequest> selected) throws Exception {
+        if (ui == null) {
+            return;
+        }
+        runOnEdt(() -> invokePrivateMethod(ui, "startRunnerExecution", new Class<?>[]{List.class}, selected));
+    }
+
+    private boolean waitForRunnerIdle(ImporterPanel ui, long timeoutMs) throws Exception {
+        if (ui == null) {
+            return true;
+        }
+        long deadline = System.currentTimeMillis() + Math.max(1000L, timeoutMs);
+        while (System.currentTimeMillis() < deadline) {
+            SmokeUiEvidenceSnapshot snapshot = captureUiSnapshotOnEdt(ui, "runner-wait");
+            if (snapshot != null && !snapshot.runner.running) {
+                return true;
+            }
+            Thread.sleep(100L);
+        }
+        return false;
     }
 
     private void writeWorkspaceSnapshot(WorkspaceState snapshot) {
@@ -2678,6 +3950,18 @@ public final class SmokeRuntimeRunner {
             names.add(request != null && request.name != null ? request.name : "Request");
         }
         return String.join(" -> ", names);
+    }
+
+    private List<String> requestNames(List<ApiRequest> requests) {
+        List<String> names = new ArrayList<>();
+        if (requests == null) {
+            return names;
+        }
+        for (ApiRequest request : requests) {
+            String name = request != null && request.name != null ? request.name : "Request";
+            names.add(name.trim().replace(' ', '_'));
+        }
+        return names;
     }
 
     private String previewOrder(List<RunnerPreviewRow> previewRows) {

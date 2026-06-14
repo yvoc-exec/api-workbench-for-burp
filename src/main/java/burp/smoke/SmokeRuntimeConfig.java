@@ -33,6 +33,14 @@ public final class SmokeRuntimeConfig {
     public boolean requireLiveEndpointTests = false;
     public boolean surgicalCoverage = true;
     public int largeCollectionRequestCount = 250;
+    public String evidenceDir;
+    public String logScanPath;
+    public String manualChecklistPath;
+    public Boolean captureUiEvidence;
+    public Boolean scanLogsForErrors;
+    public Boolean generateManualChecklist;
+    public Boolean visualDebug;
+    public Integer pauseAfterMajorStepsMs;
     public String resultJsonPath;
     public String reportPath;
     public String logPath;
@@ -126,6 +134,38 @@ public final class SmokeRuntimeConfig {
         return resolvePath(environmentExportPath);
     }
 
+    public Path getEvidenceDirPath() {
+        return resolvePath(evidenceDir);
+    }
+
+    public Path getLogScanPath() {
+        return resolvePath(logScanPath);
+    }
+
+    public Path getManualChecklistPath() {
+        return resolvePath(manualChecklistPath);
+    }
+
+    public boolean isCaptureUiEvidence() {
+        return captureUiEvidence == null || captureUiEvidence;
+    }
+
+    public boolean isScanLogsForErrors() {
+        return scanLogsForErrors == null || scanLogsForErrors;
+    }
+
+    public boolean isGenerateManualChecklist() {
+        return generateManualChecklist == null || generateManualChecklist;
+    }
+
+    public boolean isVisualDebug() {
+        return visualDebug != null && visualDebug;
+    }
+
+    public int getPauseAfterMajorStepsMs() {
+        return pauseAfterMajorStepsMs != null && pauseAfterMajorStepsMs > 0 ? pauseAfterMajorStepsMs : 0;
+    }
+
     public Path getFixturesRootPath() {
         return resolvePath(fixturesRoot);
     }
@@ -182,6 +222,44 @@ public final class SmokeRuntimeConfig {
         }
         if (localApiUrl == null || localApiUrl.isBlank()) {
             localApiUrl = getResolvedLocalApiUrl();
+        }
+
+        if (captureUiEvidence == null) {
+            captureUiEvidence = true;
+        }
+        if (scanLogsForErrors == null) {
+            scanLogsForErrors = true;
+        }
+        if (generateManualChecklist == null) {
+            generateManualChecklist = true;
+        }
+        if (visualDebug == null) {
+            visualDebug = false;
+        }
+        if (pauseAfterMajorStepsMs == null || pauseAfterMajorStepsMs < 0) {
+            pauseAfterMajorStepsMs = 0;
+        }
+
+        Path report = getReportPath();
+        Path reportsDir = report != null ? report.getParent() : null;
+        String effectiveRunId = runId != null && !runId.isBlank() ? runId : null;
+        if (effectiveRunId == null && report != null && report.getFileName() != null) {
+            String fileName = report.getFileName().toString();
+            String prefix = "runtime-smoke-report-";
+            if (fileName.startsWith(prefix) && fileName.endsWith(".md")) {
+                effectiveRunId = fileName.substring(prefix.length(), fileName.length() - 3);
+            }
+        }
+        if (reportsDir != null) {
+            if (evidenceDir == null || evidenceDir.isBlank()) {
+                evidenceDir = reportsDir.resolve("evidence").resolve(effectiveRunId != null ? effectiveRunId : "current").toString();
+            }
+            if (logScanPath == null || logScanPath.isBlank()) {
+                logScanPath = reportsDir.resolve("log-scan-" + (effectiveRunId != null ? effectiveRunId : "current") + ".json").toString();
+            }
+            if (manualChecklistPath == null || manualChecklistPath.isBlank()) {
+                manualChecklistPath = reportsDir.resolve("manual-checklist-remaining-" + (effectiveRunId != null ? effectiveRunId : "current") + ".md").toString();
+            }
         }
     }
 
