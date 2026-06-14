@@ -54,6 +54,9 @@ public final class WorkspaceStateJson {
         if (out.requestTreePaths == null) {
             out.requestTreePaths = new java.util.LinkedHashMap<>();
         }
+        if (out.runnerQueuedRequestIdentityKeys == null) {
+            out.runnerQueuedRequestIdentityKeys = new java.util.ArrayList<>();
+        }
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
         }

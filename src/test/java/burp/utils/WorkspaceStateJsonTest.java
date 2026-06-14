@@ -4,6 +4,7 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.ui.tree.RequestTreeMutationService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -410,6 +411,56 @@ class WorkspaceStateJsonTest {
         assertThat(restoredUsers.method).isEqualTo("GET");
         assertThat(restoredToken.url).isEqualTo("https://auth.example.test/token");
         assertThat(restoredUsers.url).isEqualTo("https://api.example.test/users");
+    }
+
+    @Test
+    void roundTripsMovedCollectionOrderAndMovedRequestPaths() {
+        RequestTreeMutationService mutationService = new RequestTreeMutationService();
+
+        ApiCollection archive = new ApiCollection();
+        archive.name = "Archive";
+
+        ApiCollection apim = new ApiCollection();
+        apim.name = "APIM";
+        apim.folderPaths.add("Admin");
+        apim.folderPaths.add("Auth");
+        apim.folderPaths.add("Auth/OAuth");
+
+        ApiRequest login = new ApiRequest();
+        login.id = "req-login";
+        login.name = "Login";
+        login.path = "Auth/OAuth";
+        login.sourceCollection = "APIM";
+        login.method = "POST";
+        login.url = "https://api.example.test/login";
+
+        ApiRequest audit = new ApiRequest();
+        audit.id = "req-audit";
+        audit.name = "Audit";
+        audit.path = "Auth/OAuth";
+        audit.sourceCollection = "APIM";
+        audit.method = "GET";
+        audit.url = "https://api.example.test/audit";
+
+        apim.requests.add(login);
+        apim.requests.add(audit);
+
+        mutationService.moveFolder(apim, "Auth", apim, "", 0);
+        mutationService.moveRequest(apim, audit, apim, "Auth/OAuth", 0);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(archive, apim)))
+        );
+
+        assertThat(parsed.collections).extracting(col -> col.name)
+                .containsExactly("Archive", "APIM");
+
+        ApiCollection restoredApim = parsed.collections.get(1);
+        assertThat(restoredApim.folderPaths).containsExactly("Auth", "Auth/OAuth", "Admin");
+        assertThat(restoredApim.requests).extracting(req -> req.id)
+                .containsExactly("req-audit", "req-login");
+        assertThat(restoredApim.requests.get(0).path).isEqualTo("Auth/OAuth");
+        assertThat(restoredApim.requests.get(1).path).isEqualTo("Auth/OAuth");
     }
 
     @Test

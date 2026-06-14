@@ -6,6 +6,7 @@ import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -126,6 +127,231 @@ public final class RequestTreeMutationService {
         return duplicate;
     }
 
+    public ApiRequest moveRequest(ApiCollection sourceCollection,
+                                  ApiRequest request,
+                                  ApiCollection targetCollection,
+                                  String targetFolderPath,
+                                  int targetIndex) {
+        if (sourceCollection == null || request == null || targetCollection == null) {
+            return null;
+        }
+
+        String normalizedSourceParent = RequestPathResolver.getRequestFolderPath(sourceCollection, request);
+        String normalizedTargetParent = RequestTreePathService.normalizeFolderPath(targetFolderPath);
+        String requestName = RequestTreeNamingPolicy.normalizeTreeLabel(request.name);
+        if (requestName.isBlank()) {
+            return null;
+        }
+
+        if (sourceCollection == targetCollection && Objects.equals(normalizedSourceParent, normalizedTargetParent)) {
+            int sourceSiblingIndex = findRequestSiblingIndex(sourceCollection, request, normalizedSourceParent);
+            if (sourceSiblingIndex == targetIndex) {
+                return request;
+            }
+        }
+
+        int sourceSiblingIndex = findRequestSiblingIndex(sourceCollection, request, normalizedSourceParent);
+        if (hasSiblingFolderOrRequestNameConflict(targetCollection, normalizedTargetParent, requestName, request)) {
+            return null;
+        }
+
+        if (sourceCollection.requests != null) {
+            sourceCollection.requests.remove(request);
+        }
+
+        request.path = normalizedTargetParent;
+        request.sourceCollection = targetCollection.name;
+
+        if (sourceCollection == targetCollection && Objects.equals(normalizedSourceParent, normalizedTargetParent)) {
+            if (sourceSiblingIndex >= 0 && sourceSiblingIndex < targetIndex) {
+                targetIndex--;
+            }
+        }
+
+        int insertIndex = findRequestInsertionIndex(targetCollection, normalizedTargetParent, targetIndex, request);
+        if (targetCollection.requests == null) {
+            targetCollection.requests = new ArrayList<>();
+        }
+        if (insertIndex < 0 || insertIndex > targetCollection.requests.size()) {
+            targetCollection.requests.add(request);
+        } else {
+            targetCollection.requests.add(insertIndex, request);
+        }
+
+        AuthInheritanceResolver.recomputeCollectionAuth(sourceCollection);
+        if (sourceCollection != targetCollection) {
+            AuthInheritanceResolver.recomputeCollectionAuth(targetCollection);
+        }
+        return request;
+    }
+
+    public List<ApiRequest> moveFolder(ApiCollection sourceCollection,
+                                       String sourceFolderPath,
+                                       ApiCollection targetCollection,
+                                       String targetFolderPath,
+                                       int targetIndex) {
+        List<ApiRequest> movedRequests = new ArrayList<>();
+        if (sourceCollection == null || targetCollection == null) {
+            return null;
+        }
+
+        String normalizedSource = RequestTreePathService.normalizeFolderPath(sourceFolderPath);
+        String normalizedTargetParent = RequestTreePathService.normalizeFolderPath(targetFolderPath);
+        if (normalizedSource.isBlank()) {
+            return null;
+        }
+        if (normalizedTargetParent.startsWith(normalizedSource + "/") || Objects.equals(normalizedTargetParent, normalizedSource)) {
+            return null;
+        }
+
+        String sourceLeaf = RequestTreePathService.leafFolderName(normalizedSource);
+        String targetPrefix = RequestTreePathService.joinFolderPath(normalizedTargetParent, sourceLeaf);
+
+        List<String> sourceSubtreePaths = collectFolderSubtreePaths(sourceCollection, normalizedSource);
+        List<ApiRequest> sourceSubtreeRequests = collectRequestSubtreeRequests(sourceCollection, normalizedSource);
+        int sourceSiblingIndex = findFolderSiblingIndex(sourceCollection, normalizedSource);
+        Set<String> sourceSubtreePathSet = new LinkedHashSet<>();
+        for (String path : sourceSubtreePaths) {
+            if (path != null && !path.isBlank()) {
+                sourceSubtreePathSet.add(RequestTreePathService.normalizeFolderPath(path));
+            }
+        }
+        Set<ApiRequest> sourceSubtreeRequestSet = new LinkedHashSet<>(sourceSubtreeRequests);
+        Map<ApiRequest, String> requestOriginalFolderPaths = new IdentityHashMap<>();
+        if (sourceCollection.requests != null) {
+            for (ApiRequest request : sourceSubtreeRequests) {
+                if (request != null) {
+                    requestOriginalFolderPaths.put(request, RequestPathResolver.getRequestFolderPath(sourceCollection, request));
+                }
+            }
+        }
+        Map<String, String> movedFolderAuthModes = new LinkedHashMap<>();
+        Map<String, ApiRequest.Auth> movedFolderAuth = new LinkedHashMap<>();
+        Map<String, Map<String, String>> movedFolderVars = new LinkedHashMap<>();
+        if (sourceCollection.folderAuthModes != null && !sourceCollection.folderAuthModes.isEmpty()) {
+            for (Map.Entry<String, String> entry : sourceCollection.folderAuthModes.entrySet()) {
+                String normalized = RequestTreePathService.normalizeFolderPath(entry.getKey());
+                if (!sourceSubtreePathSet.contains(normalized)) {
+                    continue;
+                }
+                String rewritten = RequestTreePathService.rewriteFolderPathPrefix(normalized, normalizedSource, targetPrefix);
+                if (!rewritten.isBlank()) {
+                    movedFolderAuthModes.put(rewritten, entry.getValue());
+                }
+            }
+        }
+        if (sourceCollection.folderAuth != null && !sourceCollection.folderAuth.isEmpty()) {
+            for (Map.Entry<String, ApiRequest.Auth> entry : sourceCollection.folderAuth.entrySet()) {
+                String normalized = RequestTreePathService.normalizeFolderPath(entry.getKey());
+                if (!sourceSubtreePathSet.contains(normalized)) {
+                    continue;
+                }
+                String rewritten = RequestTreePathService.rewriteFolderPathPrefix(normalized, normalizedSource, targetPrefix);
+                if (!rewritten.isBlank()) {
+                    movedFolderAuth.put(rewritten, AuthInheritanceResolver.copyAuth(entry.getValue()));
+                }
+            }
+        }
+        if (sourceCollection.folderVars != null && !sourceCollection.folderVars.isEmpty()) {
+            for (Map.Entry<String, Map<String, String>> entry : sourceCollection.folderVars.entrySet()) {
+                String normalized = RequestTreePathService.normalizeFolderPath(entry.getKey());
+                if (!sourceSubtreePathSet.contains(normalized)) {
+                    continue;
+                }
+                String rewritten = RequestTreePathService.rewriteFolderPathPrefix(normalized, normalizedSource, targetPrefix);
+                if (!rewritten.isBlank()) {
+                    movedFolderVars.put(rewritten, entry.getValue() != null ? new LinkedHashMap<>(entry.getValue()) : new LinkedHashMap<>());
+                }
+            }
+        }
+
+        if (hasFolderSubtreeConflict(targetCollection,
+                sourceSubtreePaths,
+                sourceSubtreePathSet,
+                sourceSubtreeRequestSet,
+                normalizedSource,
+                targetPrefix)) {
+            return null;
+        }
+
+        if (sourceCollection == targetCollection && Objects.equals(RequestTreePathService.getParentFolderPath(normalizedSource), normalizedTargetParent)) {
+            if (sourceSiblingIndex >= 0 && sourceSiblingIndex < targetIndex) {
+                targetIndex--;
+            }
+        }
+
+        if (sourceCollection.folderPaths != null) {
+            sourceCollection.folderPaths.removeIf(path -> RequestTreePathService.isFolderPathInSubtree(path, normalizedSource));
+            sourceCollection.folderPaths = normalizeFolderPaths(sourceCollection.folderPaths);
+        }
+        if (sourceCollection.requests != null) {
+            sourceCollection.requests.removeIf(sourceSubtreeRequestSet::contains);
+        }
+        if (sourceCollection.folderAuthModes != null) {
+            sourceCollection.folderAuthModes.keySet().removeIf(key -> RequestTreePathService.isFolderPathInSubtree(key, normalizedSource));
+        }
+        if (sourceCollection.folderAuth != null) {
+            sourceCollection.folderAuth.keySet().removeIf(key -> RequestTreePathService.isFolderPathInSubtree(key, normalizedSource));
+        }
+        if (sourceCollection.folderVars != null) {
+            sourceCollection.folderVars.keySet().removeIf(key -> RequestTreePathService.isFolderPathInSubtree(key, normalizedSource));
+        }
+
+        List<String> rewrittenPaths = new ArrayList<>();
+        for (String path : sourceSubtreePaths) {
+            String rewritten = RequestTreePathService.rewriteFolderPathPrefix(path, normalizedSource, targetPrefix);
+            if (!rewritten.isBlank()) {
+                rewrittenPaths.add(rewritten);
+            }
+        }
+
+        int folderInsertIndex = findFolderInsertionIndex(targetCollection, normalizedTargetParent, targetIndex);
+        insertFolderPaths(targetCollection, rewrittenPaths, folderInsertIndex);
+
+        if (targetCollection.folderAuthModes == null) {
+            targetCollection.folderAuthModes = new LinkedHashMap<>();
+        }
+        if (targetCollection.folderAuth == null) {
+            targetCollection.folderAuth = new LinkedHashMap<>();
+        }
+        if (targetCollection.folderVars == null) {
+            targetCollection.folderVars = new LinkedHashMap<>();
+        }
+        targetCollection.folderAuthModes.putAll(movedFolderAuthModes);
+        targetCollection.folderAuth.putAll(movedFolderAuth);
+        targetCollection.folderVars.putAll(movedFolderVars);
+
+        for (ApiRequest request : sourceSubtreeRequests) {
+            if (request == null) {
+                continue;
+            }
+            String requestFolderPath = requestOriginalFolderPaths.getOrDefault(request,
+                    RequestPathResolver.getRequestFolderPath(sourceCollection, request));
+            request.path = RequestTreePathService.rewriteFolderPathPrefix(requestFolderPath, normalizedSource, targetPrefix);
+            if (request.path == null) {
+                request.path = "";
+            }
+            request.sourceCollection = targetCollection.name;
+            movedRequests.add(request);
+        }
+
+        int requestInsertIndex = findRequestInsertionIndexAfterSubtree(targetCollection, targetPrefix);
+        if (targetCollection.requests == null) {
+            targetCollection.requests = new ArrayList<>();
+        }
+        if (requestInsertIndex < 0 || requestInsertIndex > targetCollection.requests.size()) {
+            targetCollection.requests.addAll(movedRequests);
+        } else {
+            targetCollection.requests.addAll(requestInsertIndex, movedRequests);
+        }
+
+        AuthInheritanceResolver.recomputeCollectionAuth(sourceCollection);
+        if (sourceCollection != targetCollection) {
+            AuthInheritanceResolver.recomputeCollectionAuth(targetCollection);
+        }
+        return movedRequests;
+    }
+
     public String renameCollection(ApiCollection collection, String newName) {
         if (collection == null) {
             return null;
@@ -235,6 +461,221 @@ public final class RequestTreeMutationService {
             removed.add(request);
         }
         return removed;
+    }
+
+    private static List<String> collectFolderSubtreePaths(ApiCollection collection, String sourcePrefix) {
+        List<String> subtree = new ArrayList<>();
+        if (collection == null) {
+            return subtree;
+        }
+        String normalizedSource = RequestTreePathService.normalizeFolderPath(sourcePrefix);
+        if (normalizedSource.isBlank() || collection.folderPaths == null) {
+            return subtree;
+        }
+        for (String folderPath : collection.folderPaths) {
+            String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+            if (RequestTreePathService.isFolderPathInSubtree(normalized, normalizedSource)) {
+                subtree.add(normalized);
+            }
+        }
+        return subtree;
+    }
+
+    private static List<ApiRequest> collectRequestSubtreeRequests(ApiCollection collection, String sourcePrefix) {
+        List<ApiRequest> subtree = new ArrayList<>();
+        if (collection == null || collection.requests == null) {
+            return subtree;
+        }
+        String normalizedSource = RequestTreePathService.normalizeFolderPath(sourcePrefix);
+        if (normalizedSource.isBlank()) {
+            return subtree;
+        }
+        for (ApiRequest request : collection.requests) {
+            if (request == null) {
+                continue;
+            }
+            String requestFolderPath = RequestPathResolver.getRequestFolderPath(collection, request);
+            if (RequestTreePathService.isFolderPathInSubtree(requestFolderPath, normalizedSource)) {
+                subtree.add(request);
+            }
+        }
+        return subtree;
+    }
+
+    private static int findRequestSiblingIndex(ApiCollection collection, ApiRequest request, String parentFolderPath) {
+        if (collection == null || request == null || collection.requests == null) {
+            return -1;
+        }
+        String normalizedParent = RequestTreePathService.normalizeFolderPath(parentFolderPath);
+        int index = 0;
+        for (ApiRequest existing : collection.requests) {
+            if (existing == null) {
+                continue;
+            }
+            String existingParent = RequestPathResolver.getRequestFolderPath(collection, existing);
+            if (!Objects.equals(existingParent, normalizedParent)) {
+                continue;
+            }
+            if (existing == request) {
+                return index;
+            }
+            index++;
+        }
+        return -1;
+    }
+
+    private static int findFolderSiblingIndex(ApiCollection collection, String folderPath) {
+        if (collection == null || collection.folderPaths == null) {
+            return -1;
+        }
+        String normalizedFolder = RequestTreePathService.normalizeFolderPath(folderPath);
+        if (normalizedFolder.isBlank()) {
+            return -1;
+        }
+        String parentPath = RequestTreePathService.getParentFolderPath(normalizedFolder);
+        int index = 0;
+        for (String existing : collection.folderPaths) {
+            String normalized = RequestTreePathService.normalizeFolderPath(existing);
+            if (normalized.isBlank()) {
+                continue;
+            }
+            if (!Objects.equals(RequestTreePathService.getParentFolderPath(normalized), parentPath)) {
+                continue;
+            }
+            if (Objects.equals(normalized, normalizedFolder)) {
+                return index;
+            }
+            index++;
+        }
+        return -1;
+    }
+
+    private static boolean hasRequestSiblingConflict(ApiCollection collection,
+                                                     String parentFolderPath,
+                                                     String candidateName,
+                                                     ApiRequest excludedRequest,
+                                                     Set<String> excludedFolderPaths,
+                                                     Set<ApiRequest> excludedRequests) {
+        if (collection == null) {
+            return false;
+        }
+        String normalizedParent = RequestTreePathService.normalizeFolderPath(parentFolderPath);
+        String candidateKey = normalizeKey(candidateName);
+        if (candidateKey.isBlank()) {
+            return false;
+        }
+
+        if (collection.folderPaths != null) {
+            for (String folderPath : collection.folderPaths) {
+                String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+                if (normalized.isBlank()) {
+                    continue;
+                }
+                if (excludedFolderPaths != null && excludedFolderPaths.contains(normalized)) {
+                    continue;
+                }
+                if (!Objects.equals(RequestTreePathService.getParentFolderPath(normalized), normalizedParent)) {
+                    continue;
+                }
+                if (normalizeKey(RequestTreePathService.leafFolderName(normalized)).equals(candidateKey)) {
+                    return true;
+                }
+            }
+        }
+
+        if (collection.requests != null) {
+            for (ApiRequest request : collection.requests) {
+                if (request == null || request == excludedRequest) {
+                    continue;
+                }
+                if (excludedRequests != null && excludedRequests.contains(request)) {
+                    continue;
+                }
+                if (!Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
+                    continue;
+                }
+                if (normalizeKey(request.name).equals(candidateKey)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasSiblingFolderOrRequestNameConflict(ApiCollection collection,
+                                                                 String parentFolderPath,
+                                                                 String candidateLeaf,
+                                                                 ApiRequest excludedRequest) {
+        String normalizedParent = RequestTreePathService.normalizeFolderPath(parentFolderPath);
+        String candidateKey = normalizeKey(candidateLeaf);
+        if (collection == null || candidateKey.isBlank()) {
+            return false;
+        }
+
+        if (collection.folderPaths != null) {
+            for (String folderPath : collection.folderPaths) {
+                String normalizedFolderPath = RequestTreePathService.normalizeFolderPath(folderPath);
+                if (normalizedFolderPath.isBlank()) {
+                    continue;
+                }
+                if (!Objects.equals(RequestTreePathService.getParentFolderPath(normalizedFolderPath), normalizedParent)) {
+                    continue;
+                }
+                if (normalizeKey(RequestTreePathService.leafFolderName(normalizedFolderPath)).equals(candidateKey)) {
+                    return true;
+                }
+            }
+        }
+
+        if (collection.requests == null) {
+            return false;
+        }
+        for (ApiRequest request : collection.requests) {
+            if (request == null || request == excludedRequest) {
+                continue;
+            }
+            if (!Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
+                continue;
+            }
+            if (normalizeKey(request.name).equals(candidateKey)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasFolderSubtreeConflict(ApiCollection collection,
+                                                    List<String> sourceSubtreePaths,
+                                                    Set<String> excludedFolderPaths,
+                                                    Set<ApiRequest> excludedRequests,
+                                                    String normalizedSourcePrefix,
+                                                    String targetPrefix) {
+        if (collection == null || sourceSubtreePaths == null || sourceSubtreePaths.isEmpty()) {
+            return false;
+        }
+        for (String sourcePath : sourceSubtreePaths) {
+            String candidate = RequestTreePathService.rewriteFolderPathPrefix(sourcePath, normalizedSourcePrefix, targetPrefix);
+            String candidateParent = RequestTreePathService.getParentFolderPath(candidate);
+            String candidateLeaf = RequestTreePathService.leafFolderName(candidate);
+            if (hasRequestSiblingConflict(collection, candidateParent, candidateLeaf, null, excludedFolderPaths, excludedRequests)) {
+                return true;
+            }
+            if (collection.folderPaths != null) {
+                for (String folderPath : collection.folderPaths) {
+                    String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+                    if (normalized.isBlank()) {
+                        continue;
+                    }
+                    if (excludedFolderPaths != null && excludedFolderPaths.contains(normalized)) {
+                        continue;
+                    }
+                    if (Objects.equals(normalized, candidate)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private void copyFolderSubtree(ApiCollection collection, String sourcePrefix, String targetPrefix) {
@@ -546,6 +987,33 @@ public final class RequestTreeMutationService {
         return lastIndex + 1;
     }
 
+    private static int findRequestInsertionIndex(ApiCollection collection,
+                                                 String parentFolderPath,
+                                                 int siblingIndex,
+                                                 ApiRequest excludedRequest) {
+        if (collection == null || collection.requests == null) {
+            return -1;
+        }
+        String normalizedParent = RequestTreePathService.normalizeFolderPath(parentFolderPath);
+        int index = 0;
+        int siblingCount = 0;
+        for (ApiRequest request : collection.requests) {
+            if (request == null || request == excludedRequest) {
+                continue;
+            }
+            if (!Objects.equals(RequestPathResolver.getRequestFolderPath(collection, request), normalizedParent)) {
+                index++;
+                continue;
+            }
+            if (siblingIndex >= 0 && siblingCount == siblingIndex) {
+                return index;
+            }
+            siblingCount++;
+            index++;
+        }
+        return index;
+    }
+
     private static int findRequestInsertionIndexAfterSubtree(ApiCollection collection, String sourcePrefix) {
         if (collection == null || collection.requests == null) {
             return -1;
@@ -561,6 +1029,29 @@ public final class RequestTreeMutationService {
         return lastIndex + 1;
     }
 
+    private static int findFolderInsertionIndex(ApiCollection collection, String parentFolderPath, int siblingIndex) {
+        if (collection == null || collection.folderPaths == null) {
+            return -1;
+        }
+        String normalizedParent = RequestTreePathService.normalizeFolderPath(parentFolderPath);
+        int index = 0;
+        int siblingCount = 0;
+        for (String folderPath : collection.folderPaths) {
+            String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+            if (normalized.isBlank()) {
+                continue;
+            }
+            if (Objects.equals(RequestTreePathService.getParentFolderPath(normalized), normalizedParent)) {
+                if (siblingIndex >= 0 && siblingCount == siblingIndex) {
+                    return index;
+                }
+                siblingCount++;
+            }
+            index++;
+        }
+        return index;
+    }
+
     private static List<String> normalizeFolderPaths(List<String> folderPaths) {
         List<String> normalized = new ArrayList<>();
         if (folderPaths == null) {
@@ -574,6 +1065,11 @@ public final class RequestTreeMutationService {
             }
         }
         return normalized;
+    }
+
+    private static String normalizeKey(String value) {
+        String normalized = RequestTreeNamingPolicy.normalizeTreeLabel(value);
+        return normalized.isEmpty() ? "" : normalized.toLowerCase(java.util.Locale.ROOT);
     }
 
     private static ApiRequest copyRequestForDuplicate(ApiRequest source, String targetCollectionName, String targetName, String targetPath) {
