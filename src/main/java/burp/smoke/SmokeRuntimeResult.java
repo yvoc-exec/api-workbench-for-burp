@@ -25,6 +25,14 @@ public final class SmokeRuntimeResult {
     public String workspaceSnapshotPath;
     public String collectionExportPath;
     public String environmentExportPath;
+    public String evidenceDirPath;
+    public String logScanPath;
+    public String manualChecklistPath;
+    public boolean captureUiEvidence;
+    public boolean scanLogsForErrors;
+    public boolean generateManualChecklist;
+    public boolean visualDebug;
+    public int pauseAfterMajorStepsMs;
     public String activeEnvironmentId;
     public final List<CheckResult> checks = new ArrayList<>();
     public final List<String> artifacts = new ArrayList<>();

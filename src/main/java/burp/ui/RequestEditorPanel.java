@@ -816,6 +816,7 @@ public class RequestEditorPanel extends JPanel {
 
     public JTextField getUrlField() { return urlField; }
     public JComboBox<String> getMethodBox() { return methodBox; }
+    public JTabbedPane getTabs() { return tabs; }
 
     private void clearAll() {
         resetDerivedHeaderMaterializationState();

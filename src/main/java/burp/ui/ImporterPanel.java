@@ -10,6 +10,7 @@ import burp.auth.TokenStore;
 import burp.UniversalImporter;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
+import burp.smoke.SmokeUiEvidenceSnapshot;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.RequestTreeDragPayload;
@@ -7624,6 +7625,279 @@ public class ImporterPanel {
             throw new IOException("No export file selected.");
         }
         Files.writeString(file.toPath(), snapshotText != null ? snapshotText : "", StandardCharsets.UTF_8);
+    }
+
+    public SmokeUiEvidenceSnapshot captureSmokeUiEvidenceSnapshot(String label) {
+        SmokeUiEvidenceSnapshot snapshot = new SmokeUiEvidenceSnapshot();
+        snapshot.label = label;
+        snapshot.capturedAt = DIAGNOSTICS_TIMESTAMP_FORMAT.format(ZonedDateTime.now());
+        snapshot.selectedTopLevelTab = safeSelectedTabTitle();
+        snapshot.workspaceState = getWorkspaceStateSnapshot();
+        snapshot.requestTree = captureSmokeRequestTreeState(snapshot.workspaceState);
+        snapshot.environment = captureSmokeEnvironmentState();
+        snapshot.runner = captureSmokeRunnerState(snapshot.workspaceState);
+        snapshot.requestEditor = captureSmokeRequestEditorState();
+        snapshot.logs = captureSmokeLogState();
+        if (snapshot.workspaceState == null) {
+            snapshot.notes.add("Workspace state unavailable.");
+        }
+        if (snapshot.requestTree == null || !snapshot.requestTree.exists) {
+            snapshot.notes.add("Request tree unavailable.");
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RequestTreeState captureSmokeRequestTreeState(WorkspaceState state) {
+        SmokeUiEvidenceSnapshot.RequestTreeState snapshot = new SmokeUiEvidenceSnapshot.RequestTreeState();
+        boolean treeExists = requestTree != null;
+        snapshot.exists = treeExists;
+        snapshot.showing = treeExists && requestTree.isShowing();
+        snapshot.valid = treeExists && requestTree.isValid();
+        snapshot.displayable = treeExists && requestTree.isDisplayable();
+        snapshot.visible = treeExists && requestTree.isVisible();
+        snapshot.rootVisible = treeExists && requestTree.isRootVisible();
+        snapshot.showsRootHandles = treeExists && requestTree.getShowsRootHandles();
+        snapshot.scrollsOnExpand = treeExists && requestTree.getScrollsOnExpand();
+        snapshot.rowCount = treeExists ? requestTree.getRowCount() : 0;
+        snapshot.selectedRow = treeExists ? requestTree.getLeadSelectionRow() : -1;
+        snapshot.selectedPath = treeExists ? safeTreePath(requestTree.getSelectionPath()) : "absent";
+        JViewport viewport = requestTreeScrollPane != null ? requestTreeScrollPane.getViewport() : null;
+        snapshot.viewportPosition = viewport != null ? String.valueOf(viewport.getViewPosition()) : "absent";
+        snapshot.viewportExtent = viewport != null ? String.valueOf(viewport.getExtentSize()) : "absent";
+        if (state != null) {
+            if (state.expandedTreePathKeys != null) {
+                snapshot.expandedTreePathKeys.addAll(state.expandedTreePathKeys);
+            }
+            if (state.checkedRequestIdentityKeys != null) {
+                snapshot.checkedRequestIdentityKeys.addAll(state.checkedRequestIdentityKeys);
+            }
+            if (state.checkedRequestKeys != null) {
+                snapshot.checkedRequestKeys.addAll(state.checkedRequestKeys);
+            }
+            if (state.collections != null) {
+                for (ApiCollection collection : state.collections) {
+                    String collectionName = safeCollectionName(collection);
+                    if (!"none".equals(collectionName)) {
+                        String treeKey = workspaceTreePathKey(collectionName, "");
+                        if (state.expandedTreePathKeys == null || !state.expandedTreePathKeys.contains(treeKey)) {
+                            snapshot.collapsedTopLevelCollections.add(collectionName);
+                        }
+                    }
+                }
+            }
+        }
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
+        if (selectedNode != null) {
+            snapshot.selectedNodeType = selectedNode.getNodeType() != null ? selectedNode.getNodeType().name().toLowerCase(Locale.ROOT) : null;
+            if (selectedNode.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                snapshot.selectedCollectionName = safeCollectionName(selectedNode.collection);
+            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                snapshot.selectedCollectionName = selectedNode.collection != null ? safeCollectionName(selectedNode.collection) : null;
+                snapshot.selectedFolderPath = selectedNode.folderPath;
+            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.REQUEST) {
+                snapshot.selectedCollectionName = selectedNode.request != null ? safeCollectionName(requestToCollectionMap.get(selectedNode.request)) : null;
+                snapshot.selectedRequestId = selectedNode.request != null ? selectedNode.request.id : null;
+                snapshot.selectedRequestName = safeRequestName(selectedNode.request);
+                snapshot.selectedRequestPath = selectedNode.request != null ? selectedNode.request.path : null;
+                snapshot.selectedRequestSourceCollection = selectedNode.request != null ? selectedNode.request.sourceCollection : null;
+            }
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.EnvironmentState captureSmokeEnvironmentState() {
+        SmokeUiEvidenceSnapshot.EnvironmentState snapshot = new SmokeUiEvidenceSnapshot.EnvironmentState();
+        snapshot.count = environmentProfiles.size();
+        EnvironmentProfile active = getActiveEnvironment();
+        snapshot.activeEnvironmentId = activeEnvironmentId;
+        snapshot.activeEnvironmentName = active != null ? active.displayName() : "none";
+        snapshot.selectedComboLabel = safeEnvironmentRefLabel(environmentCombo);
+        snapshot.workbenchComboLabel = safeEnvironmentRefLabel(workbenchEnvironmentCombo);
+        snapshot.oauth2ComboLabel = safeEnvironmentRefLabel(oauth2EnvironmentCombo);
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            SmokeUiEvidenceSnapshot.EnvironmentProfileState profileState = new SmokeUiEvidenceSnapshot.EnvironmentProfileState();
+            profileState.id = profile.id;
+            profileState.name = profile.displayName();
+            profileState.sourceFormat = profile.sourceFormat;
+            profileState.sourceFileName = profile.sourceFileName;
+            profileState.active = Objects.equals(profile.id, activeEnvironmentId);
+            if (profile.variables != null) {
+                profileState.variableCount = profile.variables.size();
+                profileState.variableKeys.addAll(profile.variables.keySet());
+                profileState.variables.putAll(profile.variables);
+            }
+            snapshot.profiles.add(profileState);
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RunnerState captureSmokeRunnerState(WorkspaceState state) {
+        SmokeUiEvidenceSnapshot.RunnerState snapshot = new SmokeUiEvidenceSnapshot.RunnerState();
+        snapshot.running = runner != null && runner.isRunning();
+        snapshot.startEnabled = startRunnerBtn != null && startRunnerBtn.isEnabled();
+        snapshot.cancelEnabled = cancelRunnerBtn != null && cancelRunnerBtn.isEnabled();
+        snapshot.pauseEnabled = pauseRunnerBtn != null && pauseRunnerBtn.isEnabled();
+        snapshot.resumeEnabled = resumeRunnerBtn != null && resumeRunnerBtn.isEnabled();
+        snapshot.stepEnabled = stepRunnerBtn != null && stepRunnerBtn.isEnabled();
+        snapshot.queueSize = runnerQueuedRequests.size();
+        for (ApiRequest request : runnerQueuedRequests) {
+            ApiCollection collection = requestToCollectionMap.get(request);
+            String collectionName = collection != null ? collection.name : (request != null ? request.sourceCollection : null);
+            int requestIndex = findRequestIndexInCollection(collection, request);
+            snapshot.queueRequestIdentityKeys.add(workspaceRequestIdentityKey(collectionName, request, requestIndex));
+            snapshot.queueRequestNames.add(safeRequestName(request));
+        }
+        if (runnerQueueList != null) {
+            snapshot.selectedQueueIndex = runnerQueueList.getSelectedIndex();
+            ApiRequest selectedQueueRequest = runnerQueueList.getSelectedValue();
+            if (selectedQueueRequest != null) {
+                ApiCollection collection = requestToCollectionMap.get(selectedQueueRequest);
+                String collectionName = collection != null ? collection.name : selectedQueueRequest.sourceCollection;
+                int requestIndex = findRequestIndexInCollection(collection, selectedQueueRequest);
+                snapshot.selectedQueueRequestIdentityKey = workspaceRequestIdentityKey(collectionName, selectedQueueRequest, requestIndex);
+                snapshot.selectedQueueRequestId = selectedQueueRequest.id;
+                snapshot.selectedQueueRequestName = selectedQueueRequest.name;
+                snapshot.selectedQueueRequestMethod = selectedQueueRequest.method;
+            }
+        }
+        if (runnerPreviewModel != null) {
+            snapshot.previewCount = runnerPreviewModel.getRowCount();
+            for (RunnerPreviewRow row : runnerPreviewModel.getRows()) {
+                if (row == null) {
+                    continue;
+                }
+                SmokeUiEvidenceSnapshot.RunnerPreviewRowState rowState = new SmokeUiEvidenceSnapshot.RunnerPreviewRowState();
+                rowState.order = row.order;
+                rowState.collectionName = row.collectionName;
+                rowState.requestName = row.requestName;
+                rowState.method = row.method;
+                rowState.urlPreview = row.urlPreview;
+                rowState.authStatus = row.authStatus;
+                if (row.unresolvedVariables != null) {
+                    rowState.unresolvedVariables.addAll(row.unresolvedVariables);
+                }
+                snapshot.previewRows.add(rowState);
+            }
+        }
+        if (resultModel != null) {
+            snapshot.resultCount = resultModel.getRowCount();
+            for (RunnerResult row : resultModel.getResults()) {
+                if (row == null) {
+                    continue;
+                }
+                SmokeUiEvidenceSnapshot.RunnerResultState rowState = new SmokeUiEvidenceSnapshot.RunnerResultState();
+                rowState.requestName = row.requestName;
+                rowState.requestId = row.requestId;
+                rowState.success = row.success;
+                rowState.statusCode = row.statusCode;
+                rowState.responseTimeMs = row.responseTimeMs;
+                rowState.responseSize = row.responseSize;
+                rowState.responseBodyLength = row.responseBodyLength;
+                rowState.errorMessage = row.errorMessage;
+                rowState.extractedVariableCount = row.extractedVariables != null ? row.extractedVariables.size() : 0;
+                snapshot.resultRows.add(rowState);
+            }
+        }
+        if (state != null && state.runnerQueuedRequestIdentityKeys != null && snapshot.queueRequestIdentityKeys.isEmpty()) {
+            snapshot.queueRequestIdentityKeys.addAll(state.runnerQueuedRequestIdentityKeys);
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RequestEditorState captureSmokeRequestEditorState() {
+        SmokeUiEvidenceSnapshot.RequestEditorState snapshot = new SmokeUiEvidenceSnapshot.RequestEditorState();
+        if (requestEditor == null) {
+            return snapshot;
+        }
+        ApiCollection currentCollection = requestEditor.getCurrentCollection();
+        ApiRequest currentRequest = requestEditor.getCurrentRequest();
+        snapshot.currentCollectionName = safeCollectionName(currentCollection);
+        snapshot.currentRequestId = currentRequest != null ? currentRequest.id : null;
+        snapshot.currentRequestName = safeRequestName(currentRequest);
+        if (requestEditor.getMethodBox() != null && requestEditor.getMethodBox().getSelectedItem() != null) {
+            snapshot.method = String.valueOf(requestEditor.getMethodBox().getSelectedItem());
+        }
+        if (requestEditor.getUrlField() != null) {
+            snapshot.url = requestEditor.getUrlField().getText();
+        }
+        snapshot.sendEnabled = requestEditor.isSendEnabled();
+        snapshot.sendModeLabel = requestEditor.getSendModeLabel();
+        JTabbedPane editorTabs = requestEditor.getTabs();
+        if (editorTabs != null) {
+            snapshot.tabCount = editorTabs.getTabCount();
+            int selectedIndex = editorTabs.getSelectedIndex();
+            if (selectedIndex >= 0 && selectedIndex < editorTabs.getTabCount()) {
+                snapshot.selectedTabTitle = editorTabs.getTitleAt(selectedIndex);
+            }
+        }
+        ApiRequest builtRequest = null;
+        try {
+            builtRequest = requestEditor.buildRequestFromUI();
+        } catch (Exception ignored) {
+            // Snapshot capture is best-effort.
+        }
+        if (builtRequest != null) {
+            snapshot.headerCount = builtRequest.headers != null ? builtRequest.headers.size() : 0;
+            snapshot.bodyMode = builtRequest.body != null && builtRequest.body.mode != null ? builtRequest.body.mode : "none";
+            if (builtRequest.authOverrideMode != null && !builtRequest.authOverrideMode.isBlank()) {
+                snapshot.authMode = builtRequest.authOverrideMode;
+            } else if (builtRequest.auth != null && builtRequest.auth.type != null) {
+                snapshot.authMode = builtRequest.auth.type;
+            } else {
+                snapshot.authMode = "inherit";
+            }
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.LogState captureSmokeLogState() {
+        SmokeUiEvidenceSnapshot.LogState snapshot = new SmokeUiEvidenceSnapshot.LogState();
+        captureLogSnapshot(importLog, snapshot.importLogTail, 5, value -> snapshot.importLogLineCount = value);
+        captureLogSnapshot(runnerLog, snapshot.runnerLogTail, 5, value -> snapshot.runnerLogLineCount = value);
+        captureLogSnapshot(diagnosticsArea, snapshot.diagnosticsLogTail, 5, value -> snapshot.diagnosticsLogLineCount = value);
+        return snapshot;
+    }
+
+    private void captureLogSnapshot(JTextArea area, List<String> tail, int maxTailLines, java.util.function.IntConsumer lineCountSetter) {
+        if (lineCountSetter != null) {
+            lineCountSetter.accept(0);
+        }
+        if (area == null) {
+            return;
+        }
+        String text = area.getText();
+        if (text == null || text.isBlank()) {
+            if (lineCountSetter != null) {
+                lineCountSetter.accept(0);
+            }
+            return;
+        }
+        String[] lines = text.split("\\R");
+        if (lineCountSetter != null) {
+            lineCountSetter.accept(lines.length);
+        }
+        if (tail != null && maxTailLines > 0) {
+            int start = Math.max(0, lines.length - maxTailLines);
+            for (int i = start; i < lines.length; i++) {
+                tail.add(lines[i]);
+            }
+        }
+    }
+
+    private String safeEnvironmentRefLabel(JComboBox<EnvironmentRef> combo) {
+        if (combo == null) {
+            return "absent";
+        }
+        Object selected = combo.getSelectedItem();
+        if (selected == null) {
+            return "none";
+        }
+        return selected.toString();
     }
 
     private void exportDiagnosticsSnapshot() {
