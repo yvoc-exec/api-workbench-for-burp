@@ -1634,23 +1634,29 @@ public class ImporterPanel {
     }
 
     private void rebuildTree() {
-        rebuildTree(pendingWorkspaceRequestTreePaths, Collections.emptyList());
+        rebuildTree(pendingWorkspaceRequestTreePaths, hasPopulatedRequestTree() ? collectExpandedTreePathKeys() : null);
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths) {
-        rebuildTree(requestTreePaths, Collections.emptyList());
+        rebuildTree(requestTreePaths, hasPopulatedRequestTree() ? collectExpandedTreePathKeys() : null);
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths, List<String> expandedTreePathKeys) {
         loadRequestTreeModel(requestTreePaths);
-        if (expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
+        if (expandedTreePathKeys == null) {
             for (int i = 0; i < requestTree.getRowCount(); i++) {
                 requestTree.expandRow(i);
             }
-        } else {
+        } else if (!expandedTreePathKeys.isEmpty()) {
             restoreExpandedTreePathKeys(expandedTreePathKeys);
         }
         refreshTreePresentation(requestTree);
+    }
+
+    private boolean hasPopulatedRequestTree() {
+        return treeModel != null
+                && treeModel.getRoot() instanceof DefaultMutableTreeNode
+                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
     }
 
     private void loadRequestTreeModel(Map<String, String> requestTreePaths) {
@@ -2655,9 +2661,13 @@ public class ImporterPanel {
             return;
         }
 
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
         List<String> expandedTreePathKeys = collectExpandedTreePathKeys();
         Map<String, String> requestTreePaths = collectRequestTreePathsFromRequestModels();
         runWithWorkspaceChangeNotificationsSuppressed(() -> rebuildTree(requestTreePaths, expandedTreePathKeys));
+        if (afterRefresh == null) {
+            restoreTreeSelection(selectedNode);
+        }
         if (afterRefresh != null) {
             afterRefresh.run();
         }
@@ -2665,6 +2675,36 @@ public class ImporterPanel {
         updateScopeControlState();
         refreshSessionActionControls();
         notifyWorkspaceChangedImmediately();
+    }
+
+    private void restoreTreeSelection(CollectionTreeNode selectedNode) {
+        if (requestTree == null) {
+            return;
+        }
+        if (selectedNode == null) {
+            requestTree.clearSelection();
+            return;
+        }
+        TreePath path = null;
+        switch (selectedNode.getNodeType()) {
+            case COLLECTION:
+                path = findCollectionTreePath(selectedNode.collection);
+                break;
+            case FOLDER:
+                ApiCollection folderCollection = findCollectionForNode(selectedNode);
+                if (folderCollection != null) {
+                    path = findFolderTreePath(folderCollection, selectedNode.folderPath);
+                }
+                break;
+            case REQUEST:
+                path = findRequestTreePathByRequest(selectedNode.request);
+                break;
+        }
+        if (path != null) {
+            requestTree.setSelectionPath(path);
+        } else {
+            requestTree.clearSelection();
+        }
     }
 
     private TreePath findCollectionTreePath(ApiCollection collection) {
@@ -3079,7 +3119,6 @@ public class ImporterPanel {
         if (sourceIndex < 0) {
             return false;
         }
-        ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
         if (sourceIndex == targetIndex) {
             return true;
         }
@@ -3090,21 +3129,7 @@ public class ImporterPanel {
             targetIndex--;
         }
         loadedCollections.add(targetIndex, collection);
-        refreshRequestTreeAfterMutation(() -> {
-            if (currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                    return;
-                }
-            }
-            TreePath path = findCollectionTreePath(collection);
-            if (path != null) {
-                selectTreePath(path);
-            }
-        });
+        refreshRequestTreeAfterMutation(null);
         appendImportLog("Reordered collection: " + normalizeTreeLabel(collection.name));
         return true;
     }
@@ -3160,17 +3185,6 @@ public class ImporterPanel {
             return moveCollection(payload.collection, dropRequest.targetIndex);
         }
 
-        ApiRequest currentRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
-        boolean currentRequestAffected = false;
-        if (payload.isFolder() && currentRequest != null) {
-            ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-            currentRequestAffected = currentCollection == payload.collection
-                    && isRequestInFolderSubtree(currentCollection, currentRequest, payload.folderPath);
-        } else if (payload.isRequest()) {
-            currentRequestAffected = currentRequest == payload.request;
-        }
-        final boolean affectedSelection = currentRequestAffected;
-
         if (payload.isRequest()) {
             ApiRequest moved = requestTreeMutationService.moveRequest(
                     payload.collection,
@@ -3181,17 +3195,16 @@ public class ImporterPanel {
             if (moved == null) {
                 return false;
             }
-            refreshRequestTreeAfterMutation(() -> {
-                TreePath path = findRequestTreePathByRequest(moved);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection movedCollection = findCollectionByRequest(moved);
-                    openRequestInEditor(moved, movedCollection);
-                }
-            });
+            refreshRequestTreeAfterMutation(null);
             appendImportLog("Moved request \"" + normalizeTreeLabel(moved.name) + "\" to \"" + dropRequest.targetFolderPath + "\"");
             return true;
         }
+
+        CollectionTreeNode selectedNodeBeforeMove = getSelectedRequestTreeNode();
+        boolean selectedFolderAffected = selectedNodeBeforeMove != null
+                && selectedNodeBeforeMove.getNodeType() == CollectionTreeNode.Type.FOLDER
+                && findCollectionForNode(selectedNodeBeforeMove) == payload.collection
+                && isFolderPathInSubtree(selectedNodeBeforeMove.folderPath, payload.folderPath);
 
         List<ApiRequest> movedRequests = requestTreeMutationService.moveFolder(
                 payload.collection,
@@ -3203,21 +3216,13 @@ public class ImporterPanel {
             return false;
         }
         String newFolderPath = RequestTreePathService.joinFolderPath(dropRequest.targetFolderPath, RequestTreePathService.leafFolderName(payload.folderPath));
-        refreshRequestTreeAfterMutation(() -> {
-            if (affectedSelection && currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                    return;
-                }
-            }
-            TreePath path = findFolderTreePath(dropRequest.targetCollection, newFolderPath);
+        refreshRequestTreeAfterMutation(selectedFolderAffected ? () -> {
+            String selectedFolderPath = rewriteFolderPathPrefix(selectedNodeBeforeMove.folderPath, payload.folderPath, newFolderPath);
+            TreePath path = findFolderTreePath(dropRequest.targetCollection, selectedFolderPath);
             if (path != null) {
                 selectTreePath(path);
             }
-        });
+        } : null);
         appendImportLog("Moved folder \"" + normalizeTreeLabel(RequestTreePathService.leafFolderName(payload.folderPath))
                 + "\" to \"" + newFolderPath + "\"");
         return true;
@@ -3308,16 +3313,6 @@ public class ImporterPanel {
             removeWorkbenchSendSnapshotsForRequests(collection.requests);
         }
         removeCollections(List.of(collection));
-        if (!currentRequestRemoved && currentRequest != null) {
-            refreshRequestTreeAfterMutation(() -> {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            });
-        }
     }
 
     private void deleteFolderNode(CollectionTreeNode node) {
@@ -3353,20 +3348,7 @@ public class ImporterPanel {
         List<ApiRequest> removedRequests = requestTreeMutationService.removeFolderSubtree(collection, sourcePrefix);
         removeRequestsFromRunnerQueue(removedRequests);
         removeWorkbenchSendSnapshotsForRequests(removedRequests);
-        refreshRequestTreeAfterMutation(() -> {
-            if (!currentRequestRemoved && currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            } else {
-                if (requestTree != null) {
-                    requestTree.clearSelection();
-                }
-            }
-        });
+        refreshRequestTreeAfterMutation(null);
     }
 
     private void deleteRequestNode(CollectionTreeNode node) {
@@ -3401,18 +3383,7 @@ public class ImporterPanel {
         List<ApiRequest> removedRequests = requestTreeMutationService.removeRequest(collection, node.request);
         removeRequestsFromRunnerQueue(removedRequests);
         removeWorkbenchSendSnapshotsForRequests(removedRequests);
-        refreshRequestTreeAfterMutation(() -> {
-            if (!currentRequestRemoved && currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            } else if (requestTree != null) {
-                requestTree.clearSelection();
-            }
-        });
+        refreshRequestTreeAfterMutation(null);
     }
 
     private void removeRequestsFromRunnerQueue(Collection<ApiRequest> removedRequests) {
@@ -4663,9 +4634,7 @@ public class ImporterPanel {
             loadedCollections.remove(target);
             appendImportLog("Removed collection: " + target.name);
         }
-        runWithWorkspaceChangeNotificationsSuppressed(this::rebuildTree);
-        refreshCollectionCombos();
-        notifyWorkspaceChangedImmediately();
+        refreshRequestTreeAfterMutation(null);
         if (loadedCollections.isEmpty()) {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
@@ -4904,7 +4873,8 @@ public class ImporterPanel {
             return;
         }
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+            rebuildTree(pendingRestore.requestTreePaths,
+                    pendingRestore.expandedTreePathKeys.isEmpty() ? null : pendingRestore.expandedTreePathKeys);
             if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
                 restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
             } else {
@@ -5107,7 +5077,7 @@ public class ImporterPanel {
                 ? new ArrayList<>(state.expandedTreePathKeys)
                 : Collections.emptyList();
 
-        rebuildTree(requestTreePaths, expandedTreePathKeys);
+        rebuildTree(requestTreePaths, expandedTreePathKeys.isEmpty() ? null : expandedTreePathKeys);
 
         if (state != null) {
             if (state.checkedRequestIdentityKeys != null && !state.checkedRequestIdentityKeys.isEmpty()) {
