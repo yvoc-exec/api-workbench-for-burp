@@ -16,6 +16,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HistoryPanelTest {
 
     @Test
+    void tableLayoutRemainsVisibleWithZeroEntries() {
+        HistoryPanel panel = new HistoryPanel(new HistoryStore(), new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier());
+
+        assertThat(panel.getHistoryTable().getRowCount()).isZero();
+        assertThat(panel.getHistoryTable().getColumnCount()).isEqualTo(13);
+        assertThat(panel.getHistoryTable().getTableHeader()).isNotNull();
+        assertThat(panel.getHistoryTable().getColumnName(0)).isEqualTo("Time");
+        assertThat(panel.getHistoryTable().getColumnName(7)).isEqualTo("URL Template");
+        assertThat(panel.getHistoryTable().getColumnName(12)).isEqualTo("Result");
+        assertThat(panel.getTableScrollPane().getMinimumSize().height).isGreaterThanOrEqualTo(220);
+        assertThat(panel.getTableScrollPane().getPreferredSize().height).isGreaterThanOrEqualTo(280);
+        assertThat(panel.getFilterScrollPane().getPreferredSize().height).isLessThanOrEqualTo(155);
+        assertThat(panel.getFilterScrollPane().getMinimumSize().height).isLessThanOrEqualTo(120);
+    }
+
+    @Test
     void panelForwardsActionsAndPreservesSelectionWhenFiltering() {
         HistoryStore store = new HistoryStore();
         HistoryEntry first = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
