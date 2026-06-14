@@ -19,6 +19,7 @@ class HistoryPanelTest {
     @Test
     void tableLayoutRemainsVisibleWithZeroEntries() {
         HistoryPanel panel = new HistoryPanel(new HistoryStore(), new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier());
+        JSplitPane splitPane = (JSplitPane) panel.getComponent(1);
 
         assertThat(panel.getHistoryTable().getRowCount()).isZero();
         assertThat(panel.getHistoryTable().getColumnCount()).isEqualTo(13);
@@ -26,8 +27,16 @@ class HistoryPanelTest {
         assertThat(panel.getHistoryTable().getColumnName(0)).isEqualTo("Time");
         assertThat(panel.getHistoryTable().getColumnName(7)).isEqualTo("URL Template");
         assertThat(panel.getHistoryTable().getColumnName(12)).isEqualTo("Result");
+        assertThat(panel.getTableScrollPane().getMinimumSize().width).isGreaterThanOrEqualTo(460);
         assertThat(panel.getTableScrollPane().getMinimumSize().height).isGreaterThanOrEqualTo(220);
+        assertThat(panel.getTableScrollPane().getPreferredSize().width).isGreaterThanOrEqualTo(820);
         assertThat(panel.getTableScrollPane().getPreferredSize().height).isGreaterThanOrEqualTo(280);
+        assertThat(panel.getDetailPanel().getMinimumSize().width).isGreaterThanOrEqualTo(320);
+        assertThat(panel.getDetailPanel().getMinimumSize().height).isGreaterThanOrEqualTo(140);
+        assertThat(panel.getDetailPanel().getPreferredSize().width).isGreaterThanOrEqualTo(520);
+        assertThat(splitPane.getOrientation()).isEqualTo(JSplitPane.HORIZONTAL_SPLIT);
+        assertThat(splitPane.getLeftComponent()).isSameAs(panel.getTableScrollPane());
+        assertThat(splitPane.getRightComponent()).isSameAs(panel.getDetailPanel());
         JPanel topPanel = (JPanel) panel.getComponent(0);
         assertThat(topPanel.getComponentCount()).isEqualTo(3);
         assertThat(topPanel.getComponent(1)).isInstanceOf(JLabel.class);
@@ -61,6 +70,7 @@ class HistoryPanelTest {
         panel.getHistoryTable().setRowSelectionInterval(1, 1);
         ImporterPanelTestSupport.awaitEdt();
         assertThat(panel.getSelectedEntry().id).isEqualTo("first");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Method: POST");
 
         panel.loadSelectedInWorkbench();
         panel.replaySelectedFromHistory();
