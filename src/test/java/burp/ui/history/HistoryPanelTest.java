@@ -1,9 +1,18 @@
 package burp.ui.history;
 
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.UserInterface;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.history.*;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 import javax.swing.*;
 import java.time.Duration;
@@ -13,6 +22,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class HistoryPanelTest {
 
@@ -45,6 +57,8 @@ class HistoryPanelTest {
         assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
         assertThat(panel.getFilterPanel().getMinimumSize().height).isLessThanOrEqualTo(72);
         assertThat(panel.getFilterPanel().getComponentCount()).isGreaterThan(0);
+        assertThat(panel.getDetailPanel().isRequestNativeViewerAvailable()).isFalse();
+        assertThat(panel.getDetailPanel().isResponseNativeViewerAvailable()).isFalse();
     }
 
     @Test
@@ -70,7 +84,10 @@ class HistoryPanelTest {
         panel.getHistoryTable().setRowSelectionInterval(1, 1);
         ImporterPanelTestSupport.awaitEdt();
         assertThat(panel.getSelectedEntry().id).isEqualTo("first");
-        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Method: POST");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
+        assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
+        assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("Content-Type: application/json");
 
         panel.loadSelectedInWorkbench();
         panel.replaySelectedFromHistory();
@@ -95,6 +112,58 @@ class HistoryPanelTest {
         assertThat(store.isEmpty()).isTrue();
         assertThat(notifier.confirmClearCount).isGreaterThan(0);
         assertThat(changeCount.get()).isGreaterThan(0);
+    }
+
+    @Test
+    void nativeDetailViewersRenderTemplatedRequestAndResponseMessages() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "native-entry", Instant.parse("2026-06-15T02:00:00Z"));
+        store.addEntry(entry);
+
+        MontoyaApi api = Mockito.mock(MontoyaApi.class);
+        UserInterface userInterface = Mockito.mock(UserInterface.class);
+        HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
+        HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
+        when(requestEditor.uiComponent()).thenReturn(new JPanel());
+        when(responseEditor.uiComponent()).thenReturn(new JPanel());
+        when(api.userInterface()).thenReturn(userInterface);
+        when(userInterface.createHttpRequestEditor(EditorOptions.READ_ONLY)).thenReturn(requestEditor);
+        when(userInterface.createHttpResponseEditor(EditorOptions.READ_ONLY)).thenReturn(responseEditor);
+
+        HistoryPanel panel = new HistoryPanel(store, new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier(), api);
+        reset(requestEditor, responseEditor);
+
+        panel.getHistoryTable().setRowSelectionInterval(0, 0);
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(panel.getDetailPanel().isRequestNativeViewerAvailable()).isTrue();
+        assertThat(panel.getDetailPanel().isResponseNativeViewerAvailable()).isTrue();
+
+        ArgumentCaptor<HttpRequest> requestCaptor = ArgumentCaptor.forClass(HttpRequest.class);
+        ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(requestEditor).setRequest(requestCaptor.capture());
+        verify(responseEditor).setResponse(responseCaptor.capture());
+
+        assertThat(requestCaptor.getValue().method()).isEqualTo("POST");
+        assertThat(requestCaptor.getValue().headerValue("Authorization")).isEqualTo("Bearer {{token}}");
+        assertThat(requestCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
+        assertThat(requestCaptor.getValue().bodyToString()).contains("{\"username\":\"demo\",\"password\":\"{{password}}\"}");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
+
+        assertThat(responseCaptor.getValue().statusCode()).isEqualTo((short) 200);
+        assertThat(responseCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
+        assertThat(responseCaptor.getValue().bodyToString()).contains("{\"ok\":true}");
+        assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
+        assertThat(entry.requestSnapshot.urlTemplate).isEqualTo("{{base_url}}/login");
+        assertThat(entry.requestSnapshot.displayBodyText()).contains("{{password}}");
+        assertThat(store.snapshot()).hasSize(1);
+
+        panel.getHistoryTable().clearSelection();
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).isBlank();
+        assertThat(panel.getDetailPanel().getResponseArea().getText()).isBlank();
+        assertThat(store.snapshot()).hasSize(1);
     }
 
     private static final class RecordingNotifier extends HistoryLoadResultNotifier {

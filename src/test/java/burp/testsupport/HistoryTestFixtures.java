@@ -243,7 +243,11 @@ public final class HistoryTestFixtures {
         when(bodyBytes.length()).thenReturn(bytes.length);
         when(response.body()).thenReturn(bodyBytes);
         when(response.bodyToString()).thenReturn(body != null ? body : "");
-        when(response.headers()).thenReturn(List.of());
+        burp.api.montoya.http.message.HttpHeader responseHeader = Mockito.mock(burp.api.montoya.http.message.HttpHeader.class);
+        when(responseHeader.name()).thenReturn("Content-Type");
+        when(responseHeader.value()).thenReturn(contentType != null ? contentType : "text/plain");
+        when(responseHeader.toString()).thenReturn("Content-Type: " + (contentType != null ? contentType : "text/plain"));
+        when(response.headers()).thenReturn(List.of(responseHeader));
 
         HttpRequestResponse responseWrapper = Mockito.mock(HttpRequestResponse.class);
         when(responseWrapper.response()).thenReturn(response);

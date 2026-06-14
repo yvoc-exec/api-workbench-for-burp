@@ -35,6 +35,7 @@ import burp.ui.dnd.EnvironmentTransferHandler;
 import burp.ui.dnd.RunnerQueueDragPayload;
 import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.ui.history.HistoryLoadResultNotifier;
+import burp.ui.history.HistoryNativeHttpMessageFactory;
 import burp.ui.history.HistoryPanel;
 import burp.utils.RequestPathResolver;
 import burp.utils.EnvironmentImportService;
@@ -726,6 +727,7 @@ public class ImporterPanel {
         if (request == null) {
             return;
         }
+        ensureRequestId(request);
         HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
                 collection,
                 request,
@@ -772,6 +774,7 @@ public class ImporterPanel {
         }
         ApiCollection collection = findCollectionByName(result.collectionName);
         ApiRequest request = findRequestById(result.requestId);
+        ensureRequestId(request);
         EnvironmentProfile active = getActiveEnvironment();
         HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, active, result);
         if (entry == null) {
@@ -794,6 +797,25 @@ public class ImporterPanel {
             entry.result = HistoryResult.from(result.success, result.errorMessage, entry.hasAssertionFailure(), !entry.unresolvedVariables.isEmpty());
         }
         recordHistoryEntry(entry);
+    }
+
+    private static String ensureRequestId(ApiRequest request) {
+        if (request == null) {
+            return null;
+        }
+        if (request.id == null || request.id.isBlank()) {
+            request.id = UUID.randomUUID().toString();
+        }
+        return request.id;
+    }
+
+    private static void ensureRequestIds(ApiCollection collection) {
+        if (collection == null || collection.requests == null || collection.requests.isEmpty()) {
+            return;
+        }
+        for (ApiRequest request : collection.requests) {
+            ensureRequestId(request);
+        }
     }
 
     private void recordHistoryEntry(HistoryEntry entry) {
@@ -819,32 +841,43 @@ public class ImporterPanel {
         if (requestEditor != null && requestEditor.isDirty() && !historyLoadResultNotifier.confirmReplaceCurrentRequest(mainPanel)) {
             return;
         }
-        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
-        if (context == null || context.collection == null || context.request == null) {
-            return;
-        }
-        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
-        applyEditedRequestToLiveRequest(context.collection, context.request, snapshotRequest);
-        if (context.originalRequestExists) {
-            openRequestInEditor(context.request, context.collection);
+        HistoryRequestContext existingContext = resolveExistingHistoryRequestContext(entry);
+        if (existingContext != null && existingContext.originalRequestExists && existingContext.collection != null && existingContext.request != null) {
+            ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+            applyEditedRequestToLiveRequest(existingContext.collection, existingContext.request, snapshotRequest);
+            openRequestInEditor(existingContext.request, existingContext.collection);
             if (requestEditor != null) {
                 requestEditor.markClean();
             }
-            selectRequestInTree(context.request);
-        } else {
-            refreshRequestTreeAfterMutation(() -> {
-                openRequestInEditor(context.request, context.collection);
-                if (requestEditor != null) {
-                    requestEditor.markClean();
-                }
-                selectRequestInTree(context.request);
-            });
+            selectRequestInTree(existingContext.request);
+            HistoryEntry loadedEntry = HistoryEntry.copyOf(entry);
+            if (loadedEntry != null) {
+                loadedEntry.collectionId = existingContext.collection.name;
+                loadedEntry.collectionName = existingContext.collection.name;
+                loadedEntry.folderPath = RequestPathResolver.getRequestFolderPath(existingContext.collection, existingContext.request);
+                loadedEntry.requestId = existingContext.request.id;
+                loadedEntry.requestName = existingContext.request.name;
+                historyLoadResultNotifier.showLoadedIntoOriginalRequest(mainPanel, loadedEntry);
+            } else {
+                historyLoadResultNotifier.showLoadedIntoOriginalRequest(mainPanel, entry);
+            }
+            notifyWorkspaceChangedImmediately();
+            return;
         }
-        if (context.originalRequestExists) {
-            historyLoadResultNotifier.showLoadedIntoOriginalRequest(mainPanel, entry);
-        } else {
-            historyLoadResultNotifier.showLoadedUnderHistoryReplays(mainPanel, context.request.name);
+        HistoryRequestContext fallbackContext = resolveHistoryRequestContext(entry, true);
+        if (fallbackContext == null || fallbackContext.collection == null || fallbackContext.request == null) {
+            return;
         }
+        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+        applyEditedRequestToLiveRequest(fallbackContext.collection, fallbackContext.request, snapshotRequest);
+        refreshRequestTreeAfterMutation(() -> {
+            openRequestInEditor(fallbackContext.request, fallbackContext.collection);
+            if (requestEditor != null) {
+                requestEditor.markClean();
+            }
+            selectRequestInTree(fallbackContext.request);
+        });
+        historyLoadResultNotifier.showLoadedUnderHistoryReplays(mainPanel, fallbackContext.request.name);
         notifyWorkspaceChangedImmediately();
     }
 
@@ -852,25 +885,25 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
+        HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
         ApiRequest request = entry.requestSnapshot.toApiRequest();
-        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
-        if (context == null || context.collection == null || context.request == null) {
-            return;
-        }
+        List<ApiCollection> collectionsForAnalysis = context != null && context.collection != null
+                ? List.of(context.collection)
+                : Collections.emptyList();
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
-                List.of(context.collection),
+                collectionsForAnalysis,
                 List.of(request),
                 runtimeOverlay);
         if (!issues.isEmpty()) {
-            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(context.collection));
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, collectionsForAnalysis);
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
                 appendImportLog("Replay cancelled due to unresolved variables.");
                 return;
             }
             runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
-        final ApiCollection resolvedCollection = context.collection;
+        final ApiCollection resolvedCollection = context != null ? context.collection : null;
         final ApiRequest replayRequest = request;
         final Map<String, String> runtimeOverlayForReplay = runtimeOverlay;
         SwingWorker<Void, String> worker = new SwingWorker<>() {
@@ -924,28 +957,28 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
-        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
-        if (context == null || context.collection == null || context.request == null) {
-            return;
-        }
+        HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
+        ApiRequest replayRequest = entry.requestSnapshot.toApiRequest();
+        List<ApiCollection> collectionsForAnalysis = context != null && context.collection != null
+                ? List.of(context.collection)
+                : Collections.emptyList();
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
-                List.of(context.collection),
-                List.of(context.request),
+                collectionsForAnalysis,
+                List.of(replayRequest),
                 runtimeOverlay);
         if (!issues.isEmpty()) {
-            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(context.collection));
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, collectionsForAnalysis);
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
                 appendImportLog("Send to Repeater cancelled due to unresolved variables.");
                 return;
             }
             runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
-        ApiRequest replayRequest = entry.requestSnapshot.toApiRequest();
         try {
             boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
             burp.parser.VariableResolver resolver = burp.utils.RuntimeResolverFactory.build(
-                    context.collection,
+                    context != null ? context.collection : null,
                     replayRequest,
                     runtimeOverlay != null
                             ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
@@ -953,15 +986,22 @@ public class ImporterPanel {
             );
             String resolvedUrl = resolver.resolve(replayRequest.url);
             burp.utils.HttpUtils.ParsedTarget parsed = burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl);
-            burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                    parsed.host, parsed.port, parsed.useHttps);
             byte[] rawRequest = requestBuilder.buildRequest(replayRequest, resolver);
-            burp.api.montoya.http.message.requests.HttpRequest builtRequest =
-                    burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
-                            service,
-                            burp.api.montoya.core.ByteArray.byteArray(rawRequest)
-                    );
-            String tabName = importer.generateRepeaterTabName(replayRequest.name, context.collection.name);
+            burp.api.montoya.http.message.requests.HttpRequest builtRequest;
+            try {
+                burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
+                        parsed.host, parsed.port, parsed.useHttps);
+                builtRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                        service,
+                        burp.api.montoya.core.ByteArray.byteArray(rawRequest)
+                );
+            } catch (Throwable serviceFailure) {
+                builtRequest = HistoryNativeHttpMessageFactory.request(
+                        new String(rawRequest != null ? rawRequest : new byte[0], StandardCharsets.UTF_8));
+            }
+            String tabName = importer.generateRepeaterTabName(
+                    replayRequest.name,
+                    context != null && context.collection != null ? context.collection.name : "");
             importer.sendToRepeater(builtRequest, tabName);
             appendImportLog("Sent history request to Repeater: " + tabName);
         } catch (Exception e) {
@@ -971,42 +1011,304 @@ public class ImporterPanel {
         }
     }
 
+    private HistoryRequestContext resolveExistingHistoryRequestContext(HistoryEntry entry) {
+        return resolveHistoryRequestContext(entry, false);
+    }
+
     private HistoryRequestContext resolveHistoryRequestContext(HistoryEntry entry, boolean createFallbackRequest) {
         if (entry == null || entry.requestSnapshot == null) {
             return null;
         }
-        ApiCollection collection = null;
-        ApiRequest request = null;
-        if (entry.collectionName != null) {
-            collection = findCollectionByName(entry.collectionName);
+        HistoryRequestContext resolved = resolveHistoryRequestContextCore(entry);
+        if (resolved != null && resolved.originalRequestExists) {
+            return resolved;
         }
-        if (collection == null && entry.requestId != null) {
-            collection = findCollectionContainingRequestId(entry.requestId);
+        if (!createFallbackRequest) {
+            return resolved;
         }
-        if (collection != null && entry.requestId != null) {
-            request = findRequestByIdInCollection(collection, entry.requestId);
+        if (resolved != null && resolved.ambiguousResolution && resolved.resolutionNote != null) {
+            historyLoadResultNotifier.showInfo(mainPanel, resolved.resolutionNote);
         }
-        boolean originalExists = collection != null && request != null;
-        if (!originalExists && createFallbackRequest) {
-            collection = ensureHistoryReplaysCollection();
-            if (collection == null) {
+        ApiCollection collection = ensureHistoryReplaysCollection();
+        if (collection == null) {
+            return null;
+        }
+        ApiRequest request = requestTreeMutationService.createBlankManualRequest(collection, "");
+        if (request == null) {
+            return null;
+        }
+        if (entry.requestName != null && !entry.requestName.isBlank()) {
+            request.name = entry.requestName;
+        }
+        if (entry.folderPath != null) {
+            request.path = entry.folderPath;
+        }
+        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+        applyEditedRequestToLiveRequest(collection, request, snapshotRequest);
+        return new HistoryRequestContext(collection, request, false, false, null);
+    }
+
+    private HistoryRequestContext resolveHistoryRequestContextCore(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return null;
+        }
+        String requestId = resolveHistoryRequestId(entry);
+        String collectionName = resolveHistoryCollectionName(entry);
+        String requestName = resolveHistoryRequestName(entry);
+        String folderPath = resolveHistoryFolderPath(entry);
+        String method = resolveHistoryMethod(entry);
+        String urlTemplate = resolveHistoryUrlTemplate(entry);
+
+        ApiCollection exactCollection = findCollectionByHistoryIdentity(collectionName);
+        if (exactCollection == null && requestId != null) {
+            HistoryRequestMatch exactMatch = findUniqueRequestMatchByIdInCollection(null, requestId);
+            if (exactMatch != null) {
+                return new HistoryRequestContext(exactMatch.collection, exactMatch.request, true, false, null);
+            }
+        }
+        if (exactCollection != null && requestId != null) {
+            ApiRequest request = findRequestByIdInCollection(exactCollection, requestId);
+            if (request != null) {
+                return new HistoryRequestContext(exactCollection, request, true, false, null);
+            }
+        }
+        if (requestId != null) {
+            List<HistoryRequestMatch> idMatches = findRequestMatchesById(requestId);
+            if (idMatches.size() == 1) {
+                HistoryRequestMatch match = idMatches.get(0);
+                return new HistoryRequestContext(match.collection, match.request, true, false, null);
+            }
+            if (idMatches.size() > 1) {
+                return new HistoryRequestContext(
+                        exactCollection,
+                        null,
+                        false,
+                        true,
+                        buildAmbiguousHistoryMatchMessage(collectionName, requestName, folderPath, method, urlTemplate, idMatches.size()));
+            }
+        }
+
+        List<HistoryRequestMatch> fallbackMatches = findFallbackRequestMatches(collectionName, requestName, folderPath, method, urlTemplate);
+        if (fallbackMatches.size() == 1) {
+            HistoryRequestMatch match = fallbackMatches.get(0);
+            return new HistoryRequestContext(match.collection, match.request, true, false, null);
+        }
+        if (fallbackMatches.size() > 1) {
+            return new HistoryRequestContext(
+                    exactCollection,
+                    null,
+                    false,
+                    true,
+                    buildAmbiguousHistoryMatchMessage(collectionName, requestName, folderPath, method, urlTemplate, fallbackMatches.size()));
+        }
+
+        if (exactCollection != null) {
+            return new HistoryRequestContext(exactCollection, null, false, false, null);
+        }
+        return null;
+    }
+
+    private HistoryRequestMatch findUniqueRequestMatchByIdInCollection(ApiCollection preferredCollection, String requestId) {
+        if (requestId == null || requestId.isBlank()) {
+            return null;
+        }
+        if (preferredCollection != null && preferredCollection.requests != null) {
+            List<HistoryRequestMatch> matches = new ArrayList<>();
+            for (ApiRequest request : preferredCollection.requests) {
+                if (request != null && requestId.equals(request.id)) {
+                    matches.add(new HistoryRequestMatch(preferredCollection, request));
+                }
+            }
+            if (matches.size() == 1) {
+                return matches.get(0);
+            }
+            if (matches.size() > 1) {
                 return null;
             }
-            request = requestTreeMutationService.createBlankManualRequest(collection, "");
-            if (request == null) {
-                return null;
-            }
-            if (entry.requestName != null && !entry.requestName.isBlank()) {
-                request.name = entry.requestName;
-            }
-            if (entry.folderPath != null) {
-                request.path = entry.folderPath;
-            }
-            ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
-            applyEditedRequestToLiveRequest(collection, request, snapshotRequest);
-            originalExists = false;
         }
-        return new HistoryRequestContext(collection, request, originalExists);
+        List<HistoryRequestMatch> allMatches = findRequestMatchesById(requestId);
+        return allMatches.size() == 1 ? allMatches.get(0) : null;
+    }
+
+    private List<HistoryRequestMatch> findRequestMatchesById(String requestId) {
+        List<HistoryRequestMatch> matches = new ArrayList<>();
+        if (requestId == null || requestId.isBlank()) {
+            return matches;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || collection.requests == null) {
+                continue;
+            }
+            for (ApiRequest request : collection.requests) {
+                if (request != null && requestId.equals(request.id)) {
+                    matches.add(new HistoryRequestMatch(collection, request));
+                }
+            }
+        }
+        return matches;
+    }
+
+    private List<HistoryRequestMatch> findFallbackRequestMatches(String collectionName,
+                                                                 String requestName,
+                                                                 String folderPath,
+                                                                 String method,
+                                                                 String urlTemplate) {
+        List<HistoryRequestMatch> matches = new ArrayList<>();
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || collection.requests == null) {
+                continue;
+            }
+            if (collectionName != null && !collectionName.isBlank() && !Objects.equals(collection.name, collectionName)) {
+                continue;
+            }
+            for (ApiRequest request : collection.requests) {
+                if (request == null) {
+                    continue;
+                }
+                if (requestName != null && !requestName.isBlank() && !Objects.equals(request.name, requestName)) {
+                    continue;
+                }
+                if (folderPath != null && !folderPath.isBlank()) {
+                    String requestFolderPath = RequestPathResolver.normalizeFolderPath(RequestPathResolver.getRequestFolderPath(collection, request));
+                    if (!Objects.equals(RequestPathResolver.normalizeFolderPath(folderPath), requestFolderPath)) {
+                        continue;
+                    }
+                }
+                if (method != null && !method.isBlank() && (request.method == null || !request.method.equalsIgnoreCase(method))) {
+                    continue;
+                }
+                if (urlTemplate != null && !urlTemplate.isBlank() && !Objects.equals(request.url, urlTemplate)) {
+                    continue;
+                }
+                matches.add(new HistoryRequestMatch(collection, request));
+            }
+        }
+        return matches;
+    }
+
+    private String resolveHistoryCollectionName(HistoryEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        if (entry.collectionName != null && !entry.collectionName.isBlank()) {
+            return entry.collectionName;
+        }
+        if (entry.collectionId != null && !entry.collectionId.isBlank()) {
+            return entry.collectionId;
+        }
+        if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null
+                && entry.requestSnapshot.authoredRequest.sourceCollection != null
+                && !entry.requestSnapshot.authoredRequest.sourceCollection.isBlank()) {
+            return entry.requestSnapshot.authoredRequest.sourceCollection;
+        }
+        return null;
+    }
+
+    private ApiCollection findCollectionByHistoryIdentity(String collectionName) {
+        if (collectionName == null || collectionName.isBlank()) {
+            return null;
+        }
+        return findCollectionByName(collectionName);
+    }
+
+    private String resolveHistoryRequestId(HistoryEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        if (entry.requestId != null && !entry.requestId.isBlank()) {
+            return entry.requestId;
+        }
+        if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null
+                && entry.requestSnapshot.authoredRequest.id != null
+                && !entry.requestSnapshot.authoredRequest.id.isBlank()) {
+            return entry.requestSnapshot.authoredRequest.id;
+        }
+        return null;
+    }
+
+    private String resolveHistoryRequestName(HistoryEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        if (entry.requestName != null && !entry.requestName.isBlank()) {
+            return entry.requestName;
+        }
+        if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null
+                && entry.requestSnapshot.authoredRequest.name != null
+                && !entry.requestSnapshot.authoredRequest.name.isBlank()) {
+            return entry.requestSnapshot.authoredRequest.name;
+        }
+        return null;
+    }
+
+    private String resolveHistoryFolderPath(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        if (entry.folderPath != null && !entry.folderPath.isBlank()) {
+            return RequestPathResolver.normalizeFolderPath(entry.folderPath);
+        }
+        if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null) {
+            return RequestPathResolver.getRequestFolderPath(entry.requestSnapshot.authoredRequest);
+        }
+        return "";
+    }
+
+    private String resolveHistoryMethod(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return null;
+        }
+        if (entry.requestSnapshot.method != null && !entry.requestSnapshot.method.isBlank()) {
+            return entry.requestSnapshot.method;
+        }
+        if (entry.requestSnapshot.authoredRequest != null && entry.requestSnapshot.authoredRequest.method != null
+                && !entry.requestSnapshot.authoredRequest.method.isBlank()) {
+            return entry.requestSnapshot.authoredRequest.method;
+        }
+        return null;
+    }
+
+    private String resolveHistoryUrlTemplate(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return null;
+        }
+        if (entry.requestSnapshot.urlTemplate != null && !entry.requestSnapshot.urlTemplate.isBlank()) {
+            return entry.requestSnapshot.urlTemplate;
+        }
+        if (entry.requestSnapshot.authoredRequest != null && entry.requestSnapshot.authoredRequest.url != null
+                && !entry.requestSnapshot.authoredRequest.url.isBlank()) {
+            return entry.requestSnapshot.authoredRequest.url;
+        }
+        return null;
+    }
+
+    private String buildAmbiguousHistoryMatchMessage(String collectionName,
+                                                     String requestName,
+                                                     String folderPath,
+                                                     String method,
+                                                     String urlTemplate,
+                                                     int candidateCount) {
+        StringBuilder sb = new StringBuilder("History request could not be uniquely resolved");
+        if (collectionName != null && !collectionName.isBlank()) {
+            sb.append(" in collection ").append(collectionName);
+        }
+        if (requestName != null && !requestName.isBlank()) {
+            sb.append(" for request ").append(requestName);
+        }
+        if (folderPath != null && !folderPath.isBlank()) {
+            sb.append(" [folder=").append(folderPath).append(']');
+        }
+        if (method != null && !method.isBlank()) {
+            sb.append(" [method=").append(method).append(']');
+        }
+        if (urlTemplate != null && !urlTemplate.isBlank()) {
+            sb.append(" [url=").append(urlTemplate).append(']');
+        }
+        if (candidateCount > 0) {
+            sb.append(" (").append(candidateCount).append(" matches)");
+        }
+        sb.append(". Loading under History Replays instead.");
+        return sb.toString();
     }
 
     private ApiCollection ensureHistoryReplaysCollection() {
@@ -1083,11 +1385,33 @@ public class ImporterPanel {
         final ApiCollection collection;
         final ApiRequest request;
         final boolean originalRequestExists;
+        final boolean ambiguousResolution;
+        final String resolutionNote;
 
         private HistoryRequestContext(ApiCollection collection, ApiRequest request, boolean originalRequestExists) {
+            this(collection, request, originalRequestExists, false, null);
+        }
+
+        private HistoryRequestContext(ApiCollection collection,
+                                      ApiRequest request,
+                                      boolean originalRequestExists,
+                                      boolean ambiguousResolution,
+                                      String resolutionNote) {
             this.collection = collection;
             this.request = request;
             this.originalRequestExists = originalRequestExists;
+            this.ambiguousResolution = ambiguousResolution;
+            this.resolutionNote = resolutionNote;
+        }
+    }
+
+    private static final class HistoryRequestMatch {
+        final ApiCollection collection;
+        final ApiRequest request;
+
+        private HistoryRequestMatch(ApiCollection collection, ApiRequest request) {
+            this.collection = collection;
+            this.request = request;
         }
     }
 
@@ -4845,6 +5169,7 @@ public class ImporterPanel {
                         appendImportLog("Rejected duplicate collection name: \"" + collection.name + "\"");
                         return;
                     }
+                    ensureRequestIds(collection);
                     registerCollectionRuntimeListener(collection);
                     loadedCollections.add(collection);
                     runWithWorkspaceChangeNotificationsSuppressed(ImporterPanel.this::rebuildTree);
@@ -4956,6 +5281,7 @@ public class ImporterPanel {
             if (isLoadedCollectionNameInUse(collection.name)) {
                 collection.name = RequestTreeNamingPolicy.uniqueCollectionCopyName(loadedCollections, collection.name);
             }
+            ensureRequestIds(collection);
             registerCollectionRuntimeListener(collection);
             loadedCollections.add(collection);
             appended.add(collection);
@@ -5454,21 +5780,21 @@ public class ImporterPanel {
         requestToCollectionMap.clear();
         if (collections != null) {
             for (ApiCollection col : collections) {
-            if (col == null) {
-                continue;
-            }
-            if (col.folderPaths != null) {
-                LinkedHashSet<String> normalizedFolderPaths = new LinkedHashSet<>();
-                for (String folderPath : col.folderPaths) {
-                    String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
-                    if (!normalized.isEmpty()) {
-                        normalizedFolderPaths.add(normalized);
-                    }
+                if (col == null) {
+                    continue;
                 }
-                col.folderPaths = new ArrayList<>(normalizedFolderPaths);
-            }
-            loadedCollections.add(col);
-            registerCollectionRuntimeListener(col);
+                if (col.folderPaths != null) {
+                    LinkedHashSet<String> normalizedFolderPaths = new LinkedHashSet<>();
+                    for (String folderPath : col.folderPaths) {
+                        String normalized = RequestTreePathService.normalizeFolderPath(folderPath);
+                        if (!normalized.isEmpty()) {
+                            normalizedFolderPaths.add(normalized);
+                        }
+                    }
+                    col.folderPaths = new ArrayList<>(normalizedFolderPaths);
+                }
+                loadedCollections.add(col);
+                registerCollectionRuntimeListener(col);
                 if (col.requests != null) {
                     for (ApiRequest req : col.requests) {
                         requestToCollectionMap.put(req, col);
@@ -7966,7 +8292,7 @@ public class ImporterPanel {
     }
 
     private JPanel createHistoryTab() {
-        historyPanel = new HistoryPanel(historyStore, historyExportService, historyDiffService, historyLoadResultNotifier);
+        historyPanel = new HistoryPanel(historyStore, historyExportService, historyDiffService, historyLoadResultNotifier, importer != null ? importer.getApi() : null);
         historyPanel.setLoadInWorkbenchAction(this::loadHistoryEntryIntoWorkbench);
         historyPanel.setReplayFromHistoryAction(this::replayHistoryEntry);
         historyPanel.setSendToRepeaterAction(this::sendHistoryEntryToRepeater);
