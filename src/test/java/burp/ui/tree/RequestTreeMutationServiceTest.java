@@ -363,6 +363,181 @@ class RequestTreeMutationServiceTest {
         assertThat(collection.requests).containsExactly(kept);
     }
 
+    @Test
+    void moveRequestWithinFolderReordersWithoutChangingIdentityOrMetadata() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Admin");
+
+        ApiRequest login = request("req-1", "Login", "Auth");
+        login.method = "POST";
+        login.url = "https://api.example.test/login";
+        login.headers.add(new ApiRequest.Header("X-Test", "one"));
+        login.body = new ApiRequest.Body();
+        login.body.mode = "raw";
+        login.body.raw = "{\"login\":true}";
+        login.preRequestScripts.add(new ApiRequest.Script("js", "console.log('pre');"));
+        login.postResponseScripts.add(new ApiRequest.Script("js", "console.log('post');"));
+        login.variables.add(variable("requestVar", "value"));
+        login.authOverrideMode = "explicit";
+        login.explicitAuth = auth("bearer", "token", "{{loginToken}}");
+        login.auth = login.explicitAuth;
+        login.editorMaterialized = true;
+        login.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+
+        ApiRequest audit = request("req-2", "Audit", "Auth");
+        audit.method = "GET";
+        collection.requests.add(login);
+        collection.requests.add(audit);
+
+        ApiRequest moved = service.moveRequest(collection, login, collection, "Admin", 0);
+
+        assertThat(moved).isSameAs(login);
+        assertThat(collection.requests).containsExactly(audit, login);
+        assertThat(login.path).isEqualTo("Admin");
+        assertThat(login.sourceCollection).isEqualTo("APIM");
+        assertThat(login.method).isEqualTo("POST");
+        assertThat(login.url).isEqualTo("https://api.example.test/login");
+        assertThat(login.headers).hasSize(1);
+        assertThat(login.body).isNotNull();
+        assertThat(login.body.raw).isEqualTo("{\"login\":true}");
+        assertThat(login.preRequestScripts).hasSize(1);
+        assertThat(login.postResponseScripts).hasSize(1);
+        assertThat(login.variables).extracting(variable -> variable.key + "=" + variable.value)
+                .containsExactly("requestVar=value");
+        assertThat(login.authOverrideMode).isEqualTo("explicit");
+        assertThat(login.explicitAuth.type).isEqualTo("bearer");
+        assertThat(login.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(login.editorMaterialized).isTrue();
+    }
+
+    @Test
+    void moveRequestWithinSameFolderReordersWithoutChangingIdentityOrPath() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+
+        ApiRequest login = request("req-1", "Login", "Auth");
+        ApiRequest audit = request("req-2", "Audit", "Auth");
+        collection.requests.add(login);
+        collection.requests.add(audit);
+
+        ApiRequest moved = service.moveRequest(collection, audit, collection, "Auth", 0);
+
+        assertThat(moved).isSameAs(audit);
+        assertThat(collection.requests).containsExactly(audit, login);
+        assertThat(login.path).isEqualTo("Auth");
+        assertThat(audit.path).isEqualTo("Auth");
+        assertThat(login.sourceCollection).isEqualTo("APIM");
+        assertThat(audit.sourceCollection).isEqualTo("APIM");
+    }
+
+    @Test
+    void moveRequestBetweenCollectionsUpdatesSourceCollectionAndKeepsIdentity() {
+        ApiCollection source = collection("APIM");
+        source.folderPaths.add("Auth");
+        ApiRequest request = request("req-1", "Login", "Auth");
+        request.method = "POST";
+        request.url = "https://api.example.test/login";
+        request.headers.add(new ApiRequest.Header("X-Test", "one"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"login\":true}";
+        request.authOverrideMode = "explicit";
+        request.explicitAuth = auth("bearer", "token", "{{loginToken}}");
+        request.auth = request.explicitAuth;
+        source.requests.add(request);
+
+        ApiCollection target = collection("Archive");
+
+        ApiRequest moved = service.moveRequest(source, request, target, "", 0);
+
+        assertThat(moved).isSameAs(request);
+        assertThat(source.requests).isEmpty();
+        assertThat(target.requests).containsExactly(request);
+        assertThat(request.sourceCollection).isEqualTo("Archive");
+        assertThat(request.path).isBlank();
+        assertThat(request.method).isEqualTo("POST");
+        assertThat(request.url).isEqualTo("https://api.example.test/login");
+        assertThat(request.headers).hasSize(1);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.raw).isEqualTo("{\"login\":true}");
+        assertThat(request.authOverrideMode).isEqualTo("explicit");
+        assertThat(request.explicitAuth.type).isEqualTo("bearer");
+    }
+
+    @Test
+    void moveFolderBetweenCollectionsRewritesDescendantsAndMetadata() {
+        ApiCollection source = collection("APIM");
+        source.folderPaths.add("Auth");
+        source.folderPaths.add("Auth/OAuth");
+        source.folderAuthModes.put("Auth", "explicit");
+        source.folderAuth.put("Auth", auth("bearer", "token", "{{folderToken}}"));
+        source.folderVars.put("Auth", new LinkedHashMap<>(java.util.Map.of("role", "admin")));
+
+        ApiRequest sameName = request("req-1", "Auth", "Auth");
+        sameName.method = "GET";
+        ApiRequest child = request("req-2", "Get Token", "Auth/OAuth");
+        child.method = "POST";
+        source.requests.add(sameName);
+        source.requests.add(child);
+
+        ApiCollection target = collection("Archive");
+        target.folderPaths.add("Admin");
+
+        List<ApiRequest> moved = service.moveFolder(source, "Auth", target, "Admin", 0);
+
+        assertThat(moved).containsExactly(sameName, child);
+        assertThat(source.folderPaths).isEmpty();
+        assertThat(source.requests).isEmpty();
+        assertThat(target.folderPaths).containsExactly("Admin", "Admin/Auth", "Admin/Auth/OAuth");
+        assertThat(target.folderAuthModes).containsEntry("Admin/Auth", "explicit");
+        assertThat(target.folderAuth.get("Admin/Auth").type).isEqualTo("bearer");
+        assertThat(target.folderVars.get("Admin/Auth")).containsEntry("role", "admin");
+        assertThat(sameName.path).isEqualTo("Admin/Auth");
+        assertThat(child.path).isEqualTo("Admin/Auth/OAuth");
+        assertThat(sameName.sourceCollection).isEqualTo("Archive");
+        assertThat(child.sourceCollection).isEqualTo("Archive");
+        assertThat(sameName.auth.type).isEqualTo("bearer");
+        assertThat(sameName.authSource).isEqualTo("folder: Admin/Auth");
+        assertThat(child.auth.type).isEqualTo("bearer");
+        assertThat(child.authSource).isEqualTo("folder: Admin/Auth");
+        assertThat(target.requests).containsExactly(sameName, child);
+    }
+
+    @Test
+    void moveFolderWithinSameCollectionReordersRootFoldersWithoutChangingDescendants() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Admin");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Auth/OAuth");
+
+        ApiRequest request = request("req-1", "Login", "Auth/OAuth");
+        collection.requests.add(request);
+
+        List<ApiRequest> moved = service.moveFolder(collection, "Auth", collection, "", 0);
+
+        assertThat(moved).containsExactly(request);
+        assertThat(collection.folderPaths).containsExactly("Auth", "Auth/OAuth", "Admin");
+        assertThat(collection.requests).containsExactly(request);
+        assertThat(request.path).isEqualTo("Auth/OAuth");
+        assertThat(request.sourceCollection).isEqualTo("APIM");
+    }
+
+    @Test
+    void moveFolderRejectsOwnDescendantTargets() {
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        collection.folderPaths.add("Auth/OAuth");
+        ApiRequest request = request("req-1", "Get Token", "Auth/OAuth");
+        collection.requests.add(request);
+
+        List<ApiRequest> moved = service.moveFolder(collection, "Auth", collection, "Auth/OAuth", 0);
+
+        assertThat(moved).isNull();
+        assertThat(collection.folderPaths).containsExactly("Auth", "Auth/OAuth");
+        assertThat(collection.requests).containsExactly(request);
+    }
+
     private static ApiCollection collection(String name) {
         ApiCollection collection = new ApiCollection();
         collection.name = name;

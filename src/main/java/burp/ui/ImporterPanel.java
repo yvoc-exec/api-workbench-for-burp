@@ -10,12 +10,23 @@ import burp.auth.TokenStore;
 import burp.UniversalImporter;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
+import burp.smoke.SmokeUiEvidenceSnapshot;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
+import burp.ui.tree.RequestTreeDragPayload;
 import burp.ui.tree.RequestTreeMutationService;
 import burp.ui.tree.RequestTreeNamingPolicy;
 import burp.ui.tree.RequestTreePathService;
+import burp.ui.tree.RequestTreeTransferHandler;
+import burp.ui.tree.TreeDropRequest;
+import burp.ui.dnd.ActiveEnvironmentDropTransferHandler;
+import burp.ui.dnd.EnvironmentDragPayload;
+import burp.ui.dnd.EnvironmentProfileDragSourceTransferHandler;
+import burp.ui.dnd.EnvironmentTransferHandler;
+import burp.ui.dnd.RunnerQueueDragPayload;
+import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.utils.RequestPathResolver;
+import burp.utils.EnvironmentImportService;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -33,6 +44,7 @@ import java.awt.*;
 import java.awt.event.*;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -102,6 +114,9 @@ public class ImporterPanel {
     private RunnerResultTableModel resultModel;
     private JTable timelineTable;
     private RunnerTimelineTableModel timelineModel;
+    private JList<ApiRequest> runnerQueueList;
+    private DefaultListModel<ApiRequest> runnerQueueListModel;
+    private JScrollPane runnerQueueScrollPane;
     private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
@@ -116,6 +131,7 @@ public class ImporterPanel {
     private RunnerPreviewTableModel runnerPreviewModel;
     private javax.swing.Timer runnerCancelPollTimer;
     private CollectionRunner.RunnerListener activeRunnerListener;
+    private RunnerQueueTransferHandler runnerQueueTransferHandler;
 
     // Runner detail pane
     private HttpRequestEditor detailRequestEditor;
@@ -150,12 +166,27 @@ public class ImporterPanel {
         }
     }
 
+    static final class DropImportResult {
+        final List<ApiCollection> importedCollections = new ArrayList<>();
+        final List<String> messages = new ArrayList<>();
+        int importedCount;
+        int failedCount;
+    }
+
+    static final class EnvironmentDropImportResult {
+        final List<EnvironmentProfile> importedProfiles = new ArrayList<>();
+        final List<String> messages = new ArrayList<>();
+        int importedCount;
+        int failedCount;
+    }
+
     // Environment tab
     private JComboBox<EnvironmentRef> environmentCombo;
     private JButton environmentImportBtn, environmentNewBtn, environmentDuplicateBtn,
             environmentDeleteBtn, environmentSetActiveBtn, environmentExportBtn, environmentSaveBtn;
     private JLabel environmentHintLabel;
     private JLabel environmentStatusLabel;
+    private JPanel environmentTopBarPanel;
     private JTextArea environmentRawArea;
     private JTable environmentTable;
     private DefaultTableModel environmentTableModel;
@@ -165,6 +196,9 @@ public class ImporterPanel {
     private boolean environmentDirty = false;
     private String renderedEnvironmentEditorProfileId = null;
     private boolean suppressEnvironmentEditorEvents = false;
+    private EnvironmentTransferHandler environmentFileDropHandler;
+    private EnvironmentProfileDragSourceTransferHandler environmentProfileDragSourceHandler;
+    private ActiveEnvironmentDropTransferHandler activeEnvironmentDropHandler;
 
     // Legacy scoped variables UI state retained for internal compatibility only.
     private JTextArea envVarsArea;
@@ -364,6 +398,7 @@ public class ImporterPanel {
         requestTree = tree;
         if (requestTreeScrollPane != null) {
             requestTreeScrollPane.setViewportView(tree);
+            installRequestTreeTransferSupport(tree);
             requestTreeScrollPane.revalidate();
             requestTreeScrollPane.repaint();
         }
@@ -396,7 +431,36 @@ public class ImporterPanel {
             handleRequestTreeSelectionChanged();
             updateScopeControlState();
         });
+        installRequestTreeTransferSupport(tree);
         return tree;
+    }
+
+    private void installRequestTreeTransferSupport(JTree tree) {
+        if (tree == null) {
+            return;
+        }
+        RequestTreeTransferHandler handler = new RequestTreeTransferHandler(
+                tree,
+                this::importCollectionFilesDroppedOnRequestTreeAsync,
+                this::canAcceptRequestTreeDrop,
+                this::handleRequestTreeDrop,
+                this::appendImportLog);
+        tree.setTransferHandler(handler);
+        tree.setDropMode(DropMode.ON_OR_INSERT);
+        if (!GraphicsEnvironment.isHeadless()) {
+            try {
+                tree.setDragEnabled(true);
+            } catch (HeadlessException ignored) {
+                // headless tests may still construct the tree; drag is best-effort.
+            }
+        }
+        if (requestTreeScrollPane != null) {
+            requestTreeScrollPane.setTransferHandler(handler);
+            JViewport viewport = requestTreeScrollPane.getViewport();
+            if (viewport != null) {
+                viewport.setTransferHandler(handler);
+            }
+        }
     }
 
     private JComponent createRightWorkbenchPanel() {
@@ -938,7 +1002,7 @@ public class ImporterPanel {
         environmentRawViewBtn.addActionListener(e -> switchEnvironmentView(false));
         environmentTableViewBtn.addActionListener(e -> switchEnvironmentView(true));
 
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        environmentTopBarPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         environmentCombo = new JComboBox<>();
         environmentCombo.setPrototypeDisplayValue(new EnvironmentRef(null, "No Environment"));
         environmentCombo.addActionListener(e -> handleEnvironmentSelectionChanged());
@@ -957,15 +1021,15 @@ public class ImporterPanel {
         environmentSaveBtn = new JButton("Save");
         environmentSaveBtn.addActionListener(e -> commitEnvironmentEditorToSelectedProfile());
 
-        topBar.add(new JLabel("Active Environment:"));
-        topBar.add(environmentCombo);
-        topBar.add(environmentImportBtn);
-        topBar.add(environmentNewBtn);
-        topBar.add(environmentDuplicateBtn);
-        topBar.add(environmentDeleteBtn);
-        topBar.add(environmentSetActiveBtn);
-        topBar.add(environmentExportBtn);
-        topBar.add(environmentSaveBtn);
+        environmentTopBarPanel.add(new JLabel("Active Environment:"));
+        environmentTopBarPanel.add(environmentCombo);
+        environmentTopBarPanel.add(environmentImportBtn);
+        environmentTopBarPanel.add(environmentNewBtn);
+        environmentTopBarPanel.add(environmentDuplicateBtn);
+        environmentTopBarPanel.add(environmentDeleteBtn);
+        environmentTopBarPanel.add(environmentSetActiveBtn);
+        environmentTopBarPanel.add(environmentExportBtn);
+        environmentTopBarPanel.add(environmentSaveBtn);
 
         JPanel centerWrap = new JPanel(new BorderLayout(5, 5));
         JPanel toggleBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
@@ -985,10 +1049,11 @@ public class ImporterPanel {
 
         initializeLegacyVariablesCompatibilityComponents();
 
-        panel.add(topBar, BorderLayout.NORTH);
+        panel.add(environmentTopBarPanel, BorderLayout.NORTH);
         panel.add(centerWrap, BorderLayout.CENTER);
         panel.add(statusPanel, BorderLayout.SOUTH);
 
+        installEnvironmentTransferSupport();
         installEnvironmentSaveShortcut(panel);
         installEnvironmentSaveShortcut(environmentEditorCardPanel);
         updateEnvironmentComboModel();
@@ -1061,6 +1126,7 @@ public class ImporterPanel {
 
         panel.add(oauth2Panel, BorderLayout.CENTER);
 
+        installEnvironmentTransferSupport();
         syncOAuth2UiState();
         return panel;
     }
@@ -1141,6 +1207,30 @@ public class ImporterPanel {
         timelineScroll.setPreferredSize(new Dimension(350, 180));
         timelineScroll.setMinimumSize(new Dimension(200, 120));
 
+        runnerQueueListModel = new DefaultListModel<>();
+        runnerQueueList = new JList<>(runnerQueueListModel);
+        runnerQueueList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        runnerQueueList.setCellRenderer((list, value, index, isSelected, cellHasFocus) -> {
+            JLabel label = (JLabel) new DefaultListCellRenderer().getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            ApiRequest request = value;
+            if (request != null) {
+                StringBuilder text = new StringBuilder();
+                text.append(request.name != null && !request.name.isBlank() ? request.name : "Request");
+                if (request.sourceCollection != null && !request.sourceCollection.isBlank()) {
+                    text.append(" [").append(request.sourceCollection).append("]");
+                }
+                if (request.path != null && !request.path.isBlank()) {
+                    text.append(" - ").append(request.path);
+                }
+                label.setText(text.toString());
+            }
+            return label;
+        });
+        runnerQueueScrollPane = new JScrollPane(runnerQueueList);
+        runnerQueueScrollPane.setBorder(BorderFactory.createTitledBorder("Runner Queue"));
+        runnerQueueScrollPane.setPreferredSize(new Dimension(320, 360));
+        runnerQueueScrollPane.setMinimumSize(new Dimension(220, 180));
+
         runnerDetailTabs = new JTabbedPane();
         detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         runnerDetailTabs.addTab("Request", detailRequestEditor.uiComponent());
@@ -1158,12 +1248,18 @@ public class ImporterPanel {
         resultsSplit.setOneTouchExpandable(true);
         resultsSplit.setContinuousLayout(true);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, resultsSplit, runnerDetailTabs);
+        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, resultsSplit);
+        queueSplit.setResizeWeight(0.30);
+        queueSplit.setOneTouchExpandable(true);
+        queueSplit.setContinuousLayout(true);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, queueSplit, runnerDetailTabs);
         splitPane.setResizeWeight(0.5);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
         panel.add(splitPane, BorderLayout.CENTER);
 
+        installRunnerQueueTransferSupport();
         resultTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
                 RunnerResult r = resultModel.getResultAt(resultTable.getSelectedRow());
@@ -1539,23 +1635,29 @@ public class ImporterPanel {
     }
 
     private void rebuildTree() {
-        rebuildTree(pendingWorkspaceRequestTreePaths, Collections.emptyList());
+        rebuildTree(pendingWorkspaceRequestTreePaths, hasPopulatedRequestTree() ? collectExpandedTreePathKeys() : null);
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths) {
-        rebuildTree(requestTreePaths, Collections.emptyList());
+        rebuildTree(requestTreePaths, hasPopulatedRequestTree() ? collectExpandedTreePathKeys() : null);
     }
 
     private void rebuildTree(Map<String, String> requestTreePaths, List<String> expandedTreePathKeys) {
         loadRequestTreeModel(requestTreePaths);
-        if (expandedTreePathKeys == null || expandedTreePathKeys.isEmpty()) {
+        if (expandedTreePathKeys == null) {
             for (int i = 0; i < requestTree.getRowCount(); i++) {
                 requestTree.expandRow(i);
             }
-        } else {
+        } else if (!expandedTreePathKeys.isEmpty()) {
             restoreExpandedTreePathKeys(expandedTreePathKeys);
         }
         refreshTreePresentation(requestTree);
+    }
+
+    private boolean hasPopulatedRequestTree() {
+        return treeModel != null
+                && treeModel.getRoot() instanceof DefaultMutableTreeNode
+                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
     }
 
     private void loadRequestTreeModel(Map<String, String> requestTreePaths) {
@@ -2560,9 +2662,13 @@ public class ImporterPanel {
             return;
         }
 
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
         List<String> expandedTreePathKeys = collectExpandedTreePathKeys();
         Map<String, String> requestTreePaths = collectRequestTreePathsFromRequestModels();
         runWithWorkspaceChangeNotificationsSuppressed(() -> rebuildTree(requestTreePaths, expandedTreePathKeys));
+        if (afterRefresh == null) {
+            restoreTreeSelection(selectedNode);
+        }
         if (afterRefresh != null) {
             afterRefresh.run();
         }
@@ -2570,6 +2676,36 @@ public class ImporterPanel {
         updateScopeControlState();
         refreshSessionActionControls();
         notifyWorkspaceChangedImmediately();
+    }
+
+    private void restoreTreeSelection(CollectionTreeNode selectedNode) {
+        if (requestTree == null) {
+            return;
+        }
+        if (selectedNode == null) {
+            requestTree.clearSelection();
+            return;
+        }
+        TreePath path = null;
+        switch (selectedNode.getNodeType()) {
+            case COLLECTION:
+                path = findCollectionTreePath(selectedNode.collection);
+                break;
+            case FOLDER:
+                ApiCollection folderCollection = findCollectionForNode(selectedNode);
+                if (folderCollection != null) {
+                    path = findFolderTreePath(folderCollection, selectedNode.folderPath);
+                }
+                break;
+            case REQUEST:
+                path = findRequestTreePathByRequest(selectedNode.request);
+                break;
+        }
+        if (path != null) {
+            requestTree.setSelectionPath(path);
+        } else {
+            requestTree.clearSelection();
+        }
     }
 
     private TreePath findCollectionTreePath(ApiCollection collection) {
@@ -2775,6 +2911,18 @@ public class ImporterPanel {
         return RequestTreeNamingPolicy.uniqueCollectionName(loadedCollections, baseName);
     }
 
+    private boolean isLoadedCollectionNameInUse(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (collection != null && collection.name != null && collection.name.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String uniqueRequestName(String baseName) {
         return uniqueName(collectRequestNames(), baseName);
     }
@@ -2964,6 +3112,123 @@ public class ImporterPanel {
         }
     }
 
+    boolean moveCollection(ApiCollection collection, int targetIndex) {
+        if (collection == null) {
+            return false;
+        }
+        int sourceIndex = loadedCollections.indexOf(collection);
+        if (sourceIndex < 0) {
+            return false;
+        }
+        if (sourceIndex == targetIndex) {
+            return true;
+        }
+        loadedCollections.remove(sourceIndex);
+        if (targetIndex < 0 || targetIndex > loadedCollections.size()) {
+            targetIndex = loadedCollections.size();
+        } else if (sourceIndex < targetIndex) {
+            targetIndex--;
+        }
+        loadedCollections.add(targetIndex, collection);
+        refreshRequestTreeAfterMutation(null);
+        appendImportLog("Reordered collection: " + normalizeTreeLabel(collection.name));
+        return true;
+    }
+
+    boolean canAcceptRequestTreeDrop(TreeDropRequest dropRequest) {
+        if (dropRequest == null || dropRequest.payload == null) {
+            return false;
+        }
+        RequestTreeDragPayload payload = dropRequest.payload;
+        if (payload.isCollection()) {
+            return dropRequest.targetCollection == null
+                    && (dropRequest.targetNode == null
+                    || dropRequest.targetNode.getNodeType() != CollectionTreeNode.Type.COLLECTION
+                    || dropRequest.targetNode.collection != payload.collection);
+        }
+        if (dropRequest.targetCollection == null) {
+            return false;
+        }
+        if (payload.isFolder()) {
+            if (payload.folderPath == null || payload.folderPath.isBlank()) {
+                return false;
+            }
+            if (dropRequest.targetNode != null
+                    && dropRequest.targetNode.getNodeType() == CollectionTreeNode.Type.FOLDER
+                    && dropRequest.targetNode.collection == payload.collection
+                    && RequestTreePathService.normalizeFolderPath(dropRequest.targetNode.folderPath).equals(payload.folderPath)) {
+                return false;
+            }
+            if (RequestTreePathService.isFolderPathInSubtree(dropRequest.targetFolderPath, payload.folderPath)) {
+                return false;
+            }
+            return true;
+        }
+        if (payload.isRequest()) {
+            if (dropRequest.targetNode != null
+                    && dropRequest.targetNode.getNodeType() == CollectionTreeNode.Type.REQUEST
+                    && dropRequest.targetNode.request == payload.request) {
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    boolean handleRequestTreeDrop(TreeDropRequest dropRequest) {
+        if (!canAcceptRequestTreeDrop(dropRequest)) {
+            return false;
+        }
+        persistCurrentRequestEditorState();
+
+        RequestTreeDragPayload payload = dropRequest.payload;
+        if (payload.isCollection()) {
+            return moveCollection(payload.collection, dropRequest.targetIndex);
+        }
+
+        if (payload.isRequest()) {
+            ApiRequest moved = requestTreeMutationService.moveRequest(
+                    payload.collection,
+                    payload.request,
+                    dropRequest.targetCollection,
+                    dropRequest.targetFolderPath,
+                    dropRequest.targetIndex);
+            if (moved == null) {
+                return false;
+            }
+            refreshRequestTreeAfterMutation(null);
+            appendImportLog("Moved request \"" + normalizeTreeLabel(moved.name) + "\" to \"" + dropRequest.targetFolderPath + "\"");
+            return true;
+        }
+
+        CollectionTreeNode selectedNodeBeforeMove = getSelectedRequestTreeNode();
+        boolean selectedFolderAffected = selectedNodeBeforeMove != null
+                && selectedNodeBeforeMove.getNodeType() == CollectionTreeNode.Type.FOLDER
+                && findCollectionForNode(selectedNodeBeforeMove) == payload.collection
+                && isFolderPathInSubtree(selectedNodeBeforeMove.folderPath, payload.folderPath);
+
+        List<ApiRequest> movedRequests = requestTreeMutationService.moveFolder(
+                payload.collection,
+                payload.folderPath,
+                dropRequest.targetCollection,
+                dropRequest.targetFolderPath,
+                dropRequest.targetIndex);
+        if (movedRequests == null) {
+            return false;
+        }
+        String newFolderPath = RequestTreePathService.joinFolderPath(dropRequest.targetFolderPath, RequestTreePathService.leafFolderName(payload.folderPath));
+        refreshRequestTreeAfterMutation(selectedFolderAffected ? () -> {
+            String selectedFolderPath = rewriteFolderPathPrefix(selectedNodeBeforeMove.folderPath, payload.folderPath, newFolderPath);
+            TreePath path = findFolderTreePath(dropRequest.targetCollection, selectedFolderPath);
+            if (path != null) {
+                selectTreePath(path);
+            }
+        } : null);
+        appendImportLog("Moved folder \"" + normalizeTreeLabel(RequestTreePathService.leafFolderName(payload.folderPath))
+                + "\" to \"" + newFolderPath + "\"");
+        return true;
+    }
+
 
     private void duplicateCollectionNode(CollectionTreeNode node) {
         if (node == null || node.collection == null) {
@@ -3049,16 +3314,6 @@ public class ImporterPanel {
             removeWorkbenchSendSnapshotsForRequests(collection.requests);
         }
         removeCollections(List.of(collection));
-        if (!currentRequestRemoved && currentRequest != null) {
-            refreshRequestTreeAfterMutation(() -> {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            });
-        }
     }
 
     private void deleteFolderNode(CollectionTreeNode node) {
@@ -3094,20 +3349,7 @@ public class ImporterPanel {
         List<ApiRequest> removedRequests = requestTreeMutationService.removeFolderSubtree(collection, sourcePrefix);
         removeRequestsFromRunnerQueue(removedRequests);
         removeWorkbenchSendSnapshotsForRequests(removedRequests);
-        refreshRequestTreeAfterMutation(() -> {
-            if (!currentRequestRemoved && currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            } else {
-                if (requestTree != null) {
-                    requestTree.clearSelection();
-                }
-            }
-        });
+        refreshRequestTreeAfterMutation(null);
     }
 
     private void deleteRequestNode(CollectionTreeNode node) {
@@ -3142,18 +3384,7 @@ public class ImporterPanel {
         List<ApiRequest> removedRequests = requestTreeMutationService.removeRequest(collection, node.request);
         removeRequestsFromRunnerQueue(removedRequests);
         removeWorkbenchSendSnapshotsForRequests(removedRequests);
-        refreshRequestTreeAfterMutation(() -> {
-            if (!currentRequestRemoved && currentRequest != null) {
-                TreePath path = findRequestTreePathByRequest(currentRequest);
-                if (path != null) {
-                    selectTreePath(path);
-                    ApiCollection currentCollection = findCollectionByRequest(currentRequest);
-                    openRequestInEditor(currentRequest, currentCollection);
-                }
-            } else if (requestTree != null) {
-                requestTree.clearSelection();
-            }
-        });
+        refreshRequestTreeAfterMutation(null);
     }
 
     private void removeRequestsFromRunnerQueue(Collection<ApiRequest> removedRequests) {
@@ -4166,10 +4397,9 @@ public class ImporterPanel {
             @Override
             protected ApiCollection doInBackground() throws Exception {
                 publish("Detecting format...");
-                ParserRegistry registry = new ParserRegistry();
-                CollectionParser parser = registry.detectParser(file);
+                CollectionParser parser = detectCollectionParser(file);
                 if (parser == null) {
-                    throw new Exception("Unknown collection format. Supported: Postman, Bruno, OpenAPI, Insomnia, HAR");
+                    throw new Exception("Unknown collection format. Supported: API Workbench, Postman, Bruno, OpenAPI, Insomnia, HAR");
                 }
                 publish("Detected: " + parser.getFormatName());
                 publish("Parsing...");
@@ -4218,6 +4448,121 @@ public class ImporterPanel {
             }
         };
         worker.execute();
+    }
+
+    private CollectionParser detectCollectionParser(File file) {
+        ParserRegistry registry = new ParserRegistry();
+        return registry.detectParser(file);
+    }
+
+    DropImportResult importCollectionFilesDroppedOnRequestTree(List<File> files) {
+        DropImportResult result = parseCollectionFilesForDrop(files);
+        applyCollectionDropImportResult(result);
+        return result;
+    }
+
+    private void importCollectionFilesDroppedOnRequestTreeAsync(List<File> files) {
+        SwingWorker<DropImportResult, String> worker = new SwingWorker<>() {
+            @Override
+            protected DropImportResult doInBackground() {
+                return parseCollectionFilesForDrop(files);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    applyCollectionDropImportResult(get());
+                } catch (Exception e) {
+                    appendImportLog("Drop import failed: " + e.getMessage());
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private DropImportResult parseCollectionFilesForDrop(List<File> files) {
+        DropImportResult result = new DropImportResult();
+        if (files == null || files.isEmpty()) {
+            result.messages.add("No files were dropped.");
+            return result;
+        }
+
+        for (File file : files) {
+            if (file == null) {
+                result.failedCount++;
+                result.messages.add("Skipped dropped file: null");
+                continue;
+            }
+            try {
+                CollectionParser parser = detectCollectionParser(file);
+                if (parser == null) {
+                    result.failedCount++;
+                    result.messages.add("Skipped unsupported file: " + file.getName());
+                    continue;
+                }
+                ApiCollection collection = parser.parse(file);
+                if (collection == null) {
+                    result.failedCount++;
+                    result.messages.add("Failed to import " + file.getName() + ": parser returned no collection.");
+                    continue;
+                }
+                result.importedCollections.add(collection);
+                result.messages.add("Imported collection candidate from " + file.getName() + ": " + collection.name);
+            } catch (Exception e) {
+                result.failedCount++;
+                result.messages.add("Failed to import " + file.getName() + ": " + e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    private void applyCollectionDropImportResult(DropImportResult result) {
+        if (result == null) {
+            return;
+        }
+
+        for (String message : result.messages) {
+            appendImportLog(message);
+        }
+
+        if (result.importedCollections.isEmpty()) {
+            result.importedCount = 0;
+            appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        List<ApiCollection> appended = new ArrayList<>();
+        for (ApiCollection collection : result.importedCollections) {
+            if (collection == null) {
+                continue;
+            }
+            if (collection.name == null || collection.name.isBlank()) {
+                collection.name = "Imported Collection";
+            }
+            if (isLoadedCollectionNameInUse(collection.name)) {
+                collection.name = RequestTreeNamingPolicy.uniqueCollectionCopyName(loadedCollections, collection.name);
+            }
+            registerCollectionRuntimeListener(collection);
+            loadedCollections.add(collection);
+            appended.add(collection);
+            appendImportLog("Imported collection: " + collection.name);
+        }
+
+        if (appended.isEmpty()) {
+            result.importedCount = 0;
+            appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        ApiCollection firstImported = appended.get(0);
+        result.importedCount = appended.size();
+        refreshRequestTreeAfterMutation(() -> {
+            TreePath path = findCollectionTreePath(firstImported);
+            if (path != null) {
+                selectTreePath(path);
+            }
+        });
+        appendImportLog("Drop import complete: " + appended.size() + " imported, " + result.failedCount + " failed.");
     }
 
     private void showRemoveCollectionsDialog() {
@@ -4290,9 +4635,7 @@ public class ImporterPanel {
             loadedCollections.remove(target);
             appendImportLog("Removed collection: " + target.name);
         }
-        runWithWorkspaceChangeNotificationsSuppressed(this::rebuildTree);
-        refreshCollectionCombos();
-        notifyWorkspaceChangedImmediately();
+        refreshRequestTreeAfterMutation(null);
         if (loadedCollections.isEmpty()) {
             importBtn.setEnabled(false);
             sendToRunnerBtn.setEnabled(false);
@@ -4352,6 +4695,7 @@ public class ImporterPanel {
         state.checkedRequestKeys = collectCheckedRequestKeys();
         captureWorkbenchSettings(state);
         captureRunnerSettings(state);
+        captureRunnerQueueState(state);
         captureRunnerDetailState(state);
         return state;
     }
@@ -4377,6 +4721,7 @@ public class ImporterPanel {
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
                 restoreWorkbenchSettings(state);
                 restoreRunnerSettings(state);
+                restoreRunnerQueueState(state);
                 restoreRunnerDetailState(state);
                 syncOAuth2UiState();
                 renderSelectedEnvironmentIntoEditor(true);
@@ -4529,7 +4874,8 @@ public class ImporterPanel {
             return;
         }
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            rebuildTree(pendingRestore.requestTreePaths, pendingRestore.expandedTreePathKeys);
+            rebuildTree(pendingRestore.requestTreePaths,
+                    pendingRestore.expandedTreePathKeys.isEmpty() ? null : pendingRestore.expandedTreePathKeys);
             if (!pendingRestore.checkedRequestIdentityKeys.isEmpty()) {
                 restoreCheckedRequestIdentityKeys(pendingRestore.checkedRequestIdentityKeys);
             } else {
@@ -4732,7 +5078,7 @@ public class ImporterPanel {
                 ? new ArrayList<>(state.expandedTreePathKeys)
                 : Collections.emptyList();
 
-        rebuildTree(requestTreePaths, expandedTreePathKeys);
+        rebuildTree(requestTreePaths, expandedTreePathKeys.isEmpty() ? null : expandedTreePathKeys);
 
         if (state != null) {
             if (state.checkedRequestIdentityKeys != null && !state.checkedRequestIdentityKeys.isEmpty()) {
@@ -5311,6 +5657,19 @@ public class ImporterPanel {
         state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
     }
 
+    private void captureRunnerQueueState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        state.runnerQueuedRequestIdentityKeys = new ArrayList<>();
+        for (ApiRequest request : runnerQueuedRequests) {
+            ApiCollection collection = requestToCollectionMap.get(request);
+            String collectionName = collection != null ? collection.name : (request != null ? request.sourceCollection : null);
+            int requestIndex = findRequestIndexInCollection(collection, request);
+            state.runnerQueuedRequestIdentityKeys.add(workspaceRequestIdentityKey(collectionName, request, requestIndex));
+        }
+    }
+
     private void restoreWorkbenchSettings(WorkspaceState state) {
         if (state == null) {
             return;
@@ -5343,6 +5702,75 @@ public class ImporterPanel {
             return;
         }
         applyTabIndex(runnerDetailTabs, state.runnerDetailTabIndex);
+    }
+
+    private void restoreRunnerQueueState(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        List<ApiRequest> restoredQueue = restoreRunnerQueueFromIdentityKeys(state.runnerQueuedRequestIdentityKeys);
+        runnerQueuedRequests.clear();
+        runnerQueuedRequests.addAll(restoredQueue);
+        refreshRunnerQueueList(restoredQueue.isEmpty() ? -1 : 0);
+        updateRunnerQueueUiState();
+    }
+
+    private List<ApiRequest> restoreRunnerQueueFromIdentityKeys(List<String> identityKeys) {
+        List<ApiRequest> restored = new ArrayList<>();
+        if (identityKeys == null || identityKeys.isEmpty()) {
+            return restored;
+        }
+        for (String identityKey : identityKeys) {
+            ApiRequest request = findRequestByIdentityKey(identityKey);
+            if (request != null && !restored.contains(request)) {
+                restored.add(request);
+            }
+        }
+        return restored;
+    }
+
+    private ApiRequest findRequestByIdentityKey(String identityKey) {
+        if (identityKey == null || identityKey.isBlank()) {
+            return null;
+        }
+        String[] parts = identityKey.split(String.valueOf(WORKSPACE_KEY_DELIMITER), -1);
+        String collectionName = parts.length > 0 ? parts[0] : null;
+        String requestToken = parts.length > 1 ? parts[1] : null;
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null || !Objects.equals(collectionName, collection.name) || collection.requests == null) {
+                continue;
+            }
+            for (int i = 0; i < collection.requests.size(); i++) {
+                ApiRequest request = collection.requests.get(i);
+                if (request == null) {
+                    continue;
+                }
+                String candidate = workspaceRequestIdentityKey(collection.name, request, i);
+                if (Objects.equals(candidate, identityKey)) {
+                    return request;
+                }
+                String fallback = workspaceRequestIdentityKey(collection.name, request);
+                if (Objects.equals(fallback, identityKey)) {
+                    return request;
+                }
+                if (requestToken != null && request.id != null && requestToken.startsWith("id=") && Objects.equals(requestToken, "id=" + request.id.trim())) {
+                    return request;
+                }
+            }
+        }
+        return null;
+    }
+
+    private int findRequestIndexInCollection(ApiCollection collection, ApiRequest request) {
+        if (collection == null || request == null || collection.requests == null) {
+            return -1;
+        }
+        for (int i = 0; i < collection.requests.size(); i++) {
+            if (collection.requests.get(i) == request) {
+                return i;
+            }
+        }
+        return request.sequenceOrder;
     }
 
 
@@ -5834,6 +6262,115 @@ public class ImporterPanel {
         return labelsById;
     }
 
+    private void installEnvironmentTransferSupport() {
+        environmentFileDropHandler = new EnvironmentTransferHandler(this::importEnvironmentFilesDroppedAsync, this::appendImportLog);
+        environmentProfileDragSourceHandler = new EnvironmentProfileDragSourceTransferHandler(this::getSelectedEnvironmentProfileForDrag, this::appendImportLog);
+        activeEnvironmentDropHandler = new ActiveEnvironmentDropTransferHandler(this::activateEnvironmentFromDrop, this::appendImportLog);
+
+        if (environmentEditorCardPanel != null) {
+            environmentEditorCardPanel.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentRawArea != null) {
+            environmentRawArea.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentTable != null) {
+            environmentTable.setTransferHandler(environmentFileDropHandler);
+        }
+        if (environmentTopBarPanel != null) {
+            environmentTopBarPanel.setTransferHandler(activeEnvironmentDropHandler);
+        }
+        if (environmentStatusLabel != null) {
+            environmentStatusLabel.setTransferHandler(activeEnvironmentDropHandler);
+        }
+        if (environmentCombo != null) {
+            environmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (workbenchEnvironmentCombo != null) {
+            workbenchEnvironmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (oauth2EnvironmentCombo != null) {
+            oauth2EnvironmentCombo.setTransferHandler(environmentProfileDragSourceHandler);
+        }
+        if (!GraphicsEnvironment.isHeadless()) {
+            installComboDragGesture(environmentCombo);
+            installComboDragGesture(workbenchEnvironmentCombo);
+            installComboDragGesture(oauth2EnvironmentCombo);
+        }
+    }
+
+    private void installComboDragGesture(JComboBox<EnvironmentRef> combo) {
+        if (combo == null || combo.getClientProperty("environmentDragGestureInstalled") != null) {
+            return;
+        }
+        combo.putClientProperty("environmentDragGestureInstalled", Boolean.TRUE);
+        final Point[] pressPoint = new Point[1];
+        combo.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                pressPoint[0] = e != null ? e.getPoint() : null;
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                pressPoint[0] = null;
+            }
+        });
+        combo.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (pressPoint[0] == null || combo.getTransferHandler() == null) {
+                    return;
+                }
+                if (Math.abs(e.getX() - pressPoint[0].x) < 4 && Math.abs(e.getY() - pressPoint[0].y) < 4) {
+                    return;
+                }
+                combo.getTransferHandler().exportAsDrag(combo, e, TransferHandler.COPY);
+                pressPoint[0] = null;
+            }
+        });
+    }
+
+    private EnvironmentProfile getSelectedEnvironmentProfileForDrag() {
+        EnvironmentProfile profile = getSelectedEnvironmentProfile();
+        if (profile != null) {
+            return profile;
+        }
+        if (environmentCombo != null) {
+            Object selected = environmentCombo.getSelectedItem();
+            if (selected instanceof EnvironmentRef ref) {
+                return ref.environment;
+            }
+        }
+        return null;
+    }
+
+    boolean activateEnvironmentFromDrop(EnvironmentDragPayload payload) {
+        if (payload == null || payload.environmentId == null || payload.environmentId.isBlank()) {
+            appendImportLog("Active environment drop rejected: missing environment id.");
+            return false;
+        }
+        EnvironmentProfile profile = findEnvironmentProfileById(payload.environmentId);
+        if (profile == null) {
+            appendImportLog("Active environment drop rejected: environment not found.");
+            return false;
+        }
+        setActiveEnvironmentId(profile.id);
+        appendImportLog("Active environment set to: " + profile.displayName());
+        return true;
+    }
+
+    private EnvironmentProfile findEnvironmentProfileById(String environmentId) {
+        if (environmentId == null || environmentId.isBlank()) {
+            return null;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null && Objects.equals(environmentId, profile.id)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
     private void handleEnvironmentImport() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Import Environment");
@@ -5846,7 +6383,7 @@ public class ImporterPanel {
             return;
         }
         try {
-            List<EnvironmentProfile> imported = burp.utils.EnvironmentImportService.importEnvironment(file);
+            List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
             if (imported == null || imported.isEmpty()) {
                 appendImportLog("No environment profiles found in " + file.getName() + ".");
                 return;
@@ -5862,6 +6399,171 @@ public class ImporterPanel {
                         JOptionPane.ERROR_MESSAGE);
             }
         }
+    }
+
+    void importEnvironmentFilesDropped(List<File> files) {
+        EnvironmentDropImportResult result = parseEnvironmentFilesForDrop(files);
+        applyEnvironmentDropImportResult(result);
+    }
+
+    private void importEnvironmentFilesDroppedAsync(List<File> files) {
+        SwingWorker<EnvironmentDropImportResult, String> worker = new SwingWorker<>() {
+            @Override
+            protected EnvironmentDropImportResult doInBackground() {
+                return parseEnvironmentFilesForDrop(files);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    applyEnvironmentDropImportResult(get());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    appendImportLog("Environment drop import interrupted.");
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    String message = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+                    appendImportLog("Environment drop import failed: " + message);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private EnvironmentDropImportResult parseEnvironmentFilesForDrop(List<File> files) {
+        EnvironmentDropImportResult result = new EnvironmentDropImportResult();
+        if (files == null || files.isEmpty()) {
+            result.failedCount++;
+            result.messages.add("Skipped dropped file list: empty");
+            return result;
+        }
+        for (File file : files) {
+            if (file == null) {
+                result.failedCount++;
+                result.messages.add("Skipped dropped file: null");
+                continue;
+            }
+            if (!file.exists() || !file.isFile() || !file.canRead()) {
+                result.failedCount++;
+                result.messages.add("Failed to import " + file.getName() + ": file not readable");
+                continue;
+            }
+            try {
+                List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
+                if (imported == null || imported.isEmpty()) {
+                    result.failedCount++;
+                    result.messages.add("Skipped unsupported environment file: " + file.getName());
+                    continue;
+                }
+                for (EnvironmentProfile profile : imported) {
+                    if (profile == null) {
+                        continue;
+                    }
+                    result.importedProfiles.add(profile);
+                    result.importedCount++;
+                    result.messages.add("Imported environment candidate from " + file.getName() + ": " + profile.displayName());
+                }
+            } catch (Exception e) {
+                result.failedCount++;
+                String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                String lowerMessage = message.toLowerCase(Locale.ROOT);
+                if (lowerMessage.contains("unsupported")
+                        || lowerMessage.contains("no environment variables found")
+                        || lowerMessage.contains("no insomnia environment resources found")) {
+                    result.messages.add("Skipped unsupported environment file: " + file.getName());
+                } else {
+                    result.messages.add("Failed to import " + file.getName() + ": " + message);
+                }
+            }
+        }
+        return result;
+    }
+
+    private void applyEnvironmentDropImportResult(EnvironmentDropImportResult result) {
+        if (result == null) {
+            appendImportLog("Environment drop import complete: 0 imported, 0 failed.");
+            return;
+        }
+        for (String message : result.messages) {
+            appendImportLog(message);
+        }
+        if (result.importedProfiles.isEmpty()) {
+            appendImportLog("Environment drop import complete: 0 imported, " + result.failedCount + " failed.");
+            return;
+        }
+
+        boolean hasActive = activeEnvironmentId != null && environmentProfiles.stream().anyMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId));
+        String firstImportedId = null;
+        Set<String> usedNames = new LinkedHashSet<>();
+        for (EnvironmentProfile existing : environmentProfiles) {
+            if (existing != null) {
+                usedNames.add(existing.displayName());
+            }
+        }
+        for (EnvironmentProfile profile : result.importedProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            profile.name = uniqueEnvironmentNameForDrop(profile.displayName(), usedNames);
+            usedNames.add(profile.displayName());
+            if (firstImportedId == null) {
+                firstImportedId = profile.id;
+            }
+            environmentProfiles.add(profile);
+        }
+
+        updateEnvironmentComboModel();
+        if (!hasActive && firstImportedId != null) {
+            suppressEnvironmentEditorEvents = true;
+            try {
+                selectEnvironmentById(firstImportedId);
+            } finally {
+                suppressEnvironmentEditorEvents = false;
+            }
+        }
+        renderSelectedEnvironmentIntoEditor(true);
+        updateEnvironmentUiState();
+        syncWorkbenchEnvironmentControls();
+        syncOAuth2UiState();
+        syncActiveEnvironmentToEditors();
+        notifyWorkspaceChangedImmediately();
+        appendImportLog("Environment drop import complete: " + result.importedCount + " imported, " + result.failedCount + " failed.");
+    }
+
+    private String uniqueEnvironmentNameForDrop(String desiredName,
+                                                Set<String> usedNames) {
+        String baseName = desiredName != null && !desiredName.isBlank() ? desiredName.trim() : "Imported Environment";
+        if (!environmentNameExists(baseName, usedNames)) {
+            return baseName;
+        }
+        String root = stripEnvironmentCopySuffix(baseName);
+        int copyIndex = 1;
+        while (true) {
+            String candidate = copyIndex == 1 ? root + " Copy" : root + " Copy " + copyIndex;
+            if (!environmentNameExists(candidate, usedNames)) {
+                return candidate;
+            }
+            copyIndex++;
+        }
+    }
+
+    private static String stripEnvironmentCopySuffix(String name) {
+        if (name == null || name.isBlank()) {
+            return "Imported Environment";
+        }
+        String trimmed = name.trim();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^(.*?)(?: Copy(?: \\d+)?)?$").matcher(trimmed);
+        if (matcher.matches()) {
+            String root = matcher.group(1);
+            return root == null || root.isBlank() ? trimmed : root;
+        }
+        return trimmed;
+    }
+
+    private boolean environmentNameExists(String candidate, Set<String> usedNames) {
+        return candidate != null && usedNames != null && usedNames.contains(candidate);
     }
 
     void addImportedEnvironmentProfiles(List<EnvironmentProfile> imported, String sourceName) {
@@ -6925,6 +7627,279 @@ public class ImporterPanel {
         Files.writeString(file.toPath(), snapshotText != null ? snapshotText : "", StandardCharsets.UTF_8);
     }
 
+    public SmokeUiEvidenceSnapshot captureSmokeUiEvidenceSnapshot(String label) {
+        SmokeUiEvidenceSnapshot snapshot = new SmokeUiEvidenceSnapshot();
+        snapshot.label = label;
+        snapshot.capturedAt = DIAGNOSTICS_TIMESTAMP_FORMAT.format(ZonedDateTime.now());
+        snapshot.selectedTopLevelTab = safeSelectedTabTitle();
+        snapshot.workspaceState = getWorkspaceStateSnapshot();
+        snapshot.requestTree = captureSmokeRequestTreeState(snapshot.workspaceState);
+        snapshot.environment = captureSmokeEnvironmentState();
+        snapshot.runner = captureSmokeRunnerState(snapshot.workspaceState);
+        snapshot.requestEditor = captureSmokeRequestEditorState();
+        snapshot.logs = captureSmokeLogState();
+        if (snapshot.workspaceState == null) {
+            snapshot.notes.add("Workspace state unavailable.");
+        }
+        if (snapshot.requestTree == null || !snapshot.requestTree.exists) {
+            snapshot.notes.add("Request tree unavailable.");
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RequestTreeState captureSmokeRequestTreeState(WorkspaceState state) {
+        SmokeUiEvidenceSnapshot.RequestTreeState snapshot = new SmokeUiEvidenceSnapshot.RequestTreeState();
+        boolean treeExists = requestTree != null;
+        snapshot.exists = treeExists;
+        snapshot.showing = treeExists && requestTree.isShowing();
+        snapshot.valid = treeExists && requestTree.isValid();
+        snapshot.displayable = treeExists && requestTree.isDisplayable();
+        snapshot.visible = treeExists && requestTree.isVisible();
+        snapshot.rootVisible = treeExists && requestTree.isRootVisible();
+        snapshot.showsRootHandles = treeExists && requestTree.getShowsRootHandles();
+        snapshot.scrollsOnExpand = treeExists && requestTree.getScrollsOnExpand();
+        snapshot.rowCount = treeExists ? requestTree.getRowCount() : 0;
+        snapshot.selectedRow = treeExists ? requestTree.getLeadSelectionRow() : -1;
+        snapshot.selectedPath = treeExists ? safeTreePath(requestTree.getSelectionPath()) : "absent";
+        JViewport viewport = requestTreeScrollPane != null ? requestTreeScrollPane.getViewport() : null;
+        snapshot.viewportPosition = viewport != null ? String.valueOf(viewport.getViewPosition()) : "absent";
+        snapshot.viewportExtent = viewport != null ? String.valueOf(viewport.getExtentSize()) : "absent";
+        if (state != null) {
+            if (state.expandedTreePathKeys != null) {
+                snapshot.expandedTreePathKeys.addAll(state.expandedTreePathKeys);
+            }
+            if (state.checkedRequestIdentityKeys != null) {
+                snapshot.checkedRequestIdentityKeys.addAll(state.checkedRequestIdentityKeys);
+            }
+            if (state.checkedRequestKeys != null) {
+                snapshot.checkedRequestKeys.addAll(state.checkedRequestKeys);
+            }
+            if (state.collections != null) {
+                for (ApiCollection collection : state.collections) {
+                    String collectionName = safeCollectionName(collection);
+                    if (!"none".equals(collectionName)) {
+                        String treeKey = workspaceTreePathKey(collectionName, "");
+                        if (state.expandedTreePathKeys == null || !state.expandedTreePathKeys.contains(treeKey)) {
+                            snapshot.collapsedTopLevelCollections.add(collectionName);
+                        }
+                    }
+                }
+            }
+        }
+        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
+        if (selectedNode != null) {
+            snapshot.selectedNodeType = selectedNode.getNodeType() != null ? selectedNode.getNodeType().name().toLowerCase(Locale.ROOT) : null;
+            if (selectedNode.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
+                snapshot.selectedCollectionName = safeCollectionName(selectedNode.collection);
+            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.FOLDER) {
+                snapshot.selectedCollectionName = selectedNode.collection != null ? safeCollectionName(selectedNode.collection) : null;
+                snapshot.selectedFolderPath = selectedNode.folderPath;
+            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.REQUEST) {
+                snapshot.selectedCollectionName = selectedNode.request != null ? safeCollectionName(requestToCollectionMap.get(selectedNode.request)) : null;
+                snapshot.selectedRequestId = selectedNode.request != null ? selectedNode.request.id : null;
+                snapshot.selectedRequestName = safeRequestName(selectedNode.request);
+                snapshot.selectedRequestPath = selectedNode.request != null ? selectedNode.request.path : null;
+                snapshot.selectedRequestSourceCollection = selectedNode.request != null ? selectedNode.request.sourceCollection : null;
+            }
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.EnvironmentState captureSmokeEnvironmentState() {
+        SmokeUiEvidenceSnapshot.EnvironmentState snapshot = new SmokeUiEvidenceSnapshot.EnvironmentState();
+        snapshot.count = environmentProfiles.size();
+        EnvironmentProfile active = getActiveEnvironment();
+        snapshot.activeEnvironmentId = activeEnvironmentId;
+        snapshot.activeEnvironmentName = active != null ? active.displayName() : "none";
+        snapshot.selectedComboLabel = safeEnvironmentRefLabel(environmentCombo);
+        snapshot.workbenchComboLabel = safeEnvironmentRefLabel(workbenchEnvironmentCombo);
+        snapshot.oauth2ComboLabel = safeEnvironmentRefLabel(oauth2EnvironmentCombo);
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            SmokeUiEvidenceSnapshot.EnvironmentProfileState profileState = new SmokeUiEvidenceSnapshot.EnvironmentProfileState();
+            profileState.id = profile.id;
+            profileState.name = profile.displayName();
+            profileState.sourceFormat = profile.sourceFormat;
+            profileState.sourceFileName = profile.sourceFileName;
+            profileState.active = Objects.equals(profile.id, activeEnvironmentId);
+            if (profile.variables != null) {
+                profileState.variableCount = profile.variables.size();
+                profileState.variableKeys.addAll(profile.variables.keySet());
+                profileState.variables.putAll(profile.variables);
+            }
+            snapshot.profiles.add(profileState);
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RunnerState captureSmokeRunnerState(WorkspaceState state) {
+        SmokeUiEvidenceSnapshot.RunnerState snapshot = new SmokeUiEvidenceSnapshot.RunnerState();
+        snapshot.running = runner != null && runner.isRunning();
+        snapshot.startEnabled = startRunnerBtn != null && startRunnerBtn.isEnabled();
+        snapshot.cancelEnabled = cancelRunnerBtn != null && cancelRunnerBtn.isEnabled();
+        snapshot.pauseEnabled = pauseRunnerBtn != null && pauseRunnerBtn.isEnabled();
+        snapshot.resumeEnabled = resumeRunnerBtn != null && resumeRunnerBtn.isEnabled();
+        snapshot.stepEnabled = stepRunnerBtn != null && stepRunnerBtn.isEnabled();
+        snapshot.queueSize = runnerQueuedRequests.size();
+        for (ApiRequest request : runnerQueuedRequests) {
+            ApiCollection collection = requestToCollectionMap.get(request);
+            String collectionName = collection != null ? collection.name : (request != null ? request.sourceCollection : null);
+            int requestIndex = findRequestIndexInCollection(collection, request);
+            snapshot.queueRequestIdentityKeys.add(workspaceRequestIdentityKey(collectionName, request, requestIndex));
+            snapshot.queueRequestNames.add(safeRequestName(request));
+        }
+        if (runnerQueueList != null) {
+            snapshot.selectedQueueIndex = runnerQueueList.getSelectedIndex();
+            ApiRequest selectedQueueRequest = runnerQueueList.getSelectedValue();
+            if (selectedQueueRequest != null) {
+                ApiCollection collection = requestToCollectionMap.get(selectedQueueRequest);
+                String collectionName = collection != null ? collection.name : selectedQueueRequest.sourceCollection;
+                int requestIndex = findRequestIndexInCollection(collection, selectedQueueRequest);
+                snapshot.selectedQueueRequestIdentityKey = workspaceRequestIdentityKey(collectionName, selectedQueueRequest, requestIndex);
+                snapshot.selectedQueueRequestId = selectedQueueRequest.id;
+                snapshot.selectedQueueRequestName = selectedQueueRequest.name;
+                snapshot.selectedQueueRequestMethod = selectedQueueRequest.method;
+            }
+        }
+        if (runnerPreviewModel != null) {
+            snapshot.previewCount = runnerPreviewModel.getRowCount();
+            for (RunnerPreviewRow row : runnerPreviewModel.getRows()) {
+                if (row == null) {
+                    continue;
+                }
+                SmokeUiEvidenceSnapshot.RunnerPreviewRowState rowState = new SmokeUiEvidenceSnapshot.RunnerPreviewRowState();
+                rowState.order = row.order;
+                rowState.collectionName = row.collectionName;
+                rowState.requestName = row.requestName;
+                rowState.method = row.method;
+                rowState.urlPreview = row.urlPreview;
+                rowState.authStatus = row.authStatus;
+                if (row.unresolvedVariables != null) {
+                    rowState.unresolvedVariables.addAll(row.unresolvedVariables);
+                }
+                snapshot.previewRows.add(rowState);
+            }
+        }
+        if (resultModel != null) {
+            snapshot.resultCount = resultModel.getRowCount();
+            for (RunnerResult row : resultModel.getResults()) {
+                if (row == null) {
+                    continue;
+                }
+                SmokeUiEvidenceSnapshot.RunnerResultState rowState = new SmokeUiEvidenceSnapshot.RunnerResultState();
+                rowState.requestName = row.requestName;
+                rowState.requestId = row.requestId;
+                rowState.success = row.success;
+                rowState.statusCode = row.statusCode;
+                rowState.responseTimeMs = row.responseTimeMs;
+                rowState.responseSize = row.responseSize;
+                rowState.responseBodyLength = row.responseBodyLength;
+                rowState.errorMessage = row.errorMessage;
+                rowState.extractedVariableCount = row.extractedVariables != null ? row.extractedVariables.size() : 0;
+                snapshot.resultRows.add(rowState);
+            }
+        }
+        if (state != null && state.runnerQueuedRequestIdentityKeys != null && snapshot.queueRequestIdentityKeys.isEmpty()) {
+            snapshot.queueRequestIdentityKeys.addAll(state.runnerQueuedRequestIdentityKeys);
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.RequestEditorState captureSmokeRequestEditorState() {
+        SmokeUiEvidenceSnapshot.RequestEditorState snapshot = new SmokeUiEvidenceSnapshot.RequestEditorState();
+        if (requestEditor == null) {
+            return snapshot;
+        }
+        ApiCollection currentCollection = requestEditor.getCurrentCollection();
+        ApiRequest currentRequest = requestEditor.getCurrentRequest();
+        snapshot.currentCollectionName = safeCollectionName(currentCollection);
+        snapshot.currentRequestId = currentRequest != null ? currentRequest.id : null;
+        snapshot.currentRequestName = safeRequestName(currentRequest);
+        if (requestEditor.getMethodBox() != null && requestEditor.getMethodBox().getSelectedItem() != null) {
+            snapshot.method = String.valueOf(requestEditor.getMethodBox().getSelectedItem());
+        }
+        if (requestEditor.getUrlField() != null) {
+            snapshot.url = requestEditor.getUrlField().getText();
+        }
+        snapshot.sendEnabled = requestEditor.isSendEnabled();
+        snapshot.sendModeLabel = requestEditor.getSendModeLabel();
+        JTabbedPane editorTabs = requestEditor.getTabs();
+        if (editorTabs != null) {
+            snapshot.tabCount = editorTabs.getTabCount();
+            int selectedIndex = editorTabs.getSelectedIndex();
+            if (selectedIndex >= 0 && selectedIndex < editorTabs.getTabCount()) {
+                snapshot.selectedTabTitle = editorTabs.getTitleAt(selectedIndex);
+            }
+        }
+        ApiRequest builtRequest = null;
+        try {
+            builtRequest = requestEditor.buildRequestFromUI();
+        } catch (Exception ignored) {
+            // Snapshot capture is best-effort.
+        }
+        if (builtRequest != null) {
+            snapshot.headerCount = builtRequest.headers != null ? builtRequest.headers.size() : 0;
+            snapshot.bodyMode = builtRequest.body != null && builtRequest.body.mode != null ? builtRequest.body.mode : "none";
+            if (builtRequest.authOverrideMode != null && !builtRequest.authOverrideMode.isBlank()) {
+                snapshot.authMode = builtRequest.authOverrideMode;
+            } else if (builtRequest.auth != null && builtRequest.auth.type != null) {
+                snapshot.authMode = builtRequest.auth.type;
+            } else {
+                snapshot.authMode = "inherit";
+            }
+        }
+        return snapshot;
+    }
+
+    private SmokeUiEvidenceSnapshot.LogState captureSmokeLogState() {
+        SmokeUiEvidenceSnapshot.LogState snapshot = new SmokeUiEvidenceSnapshot.LogState();
+        captureLogSnapshot(importLog, snapshot.importLogTail, 5, value -> snapshot.importLogLineCount = value);
+        captureLogSnapshot(runnerLog, snapshot.runnerLogTail, 5, value -> snapshot.runnerLogLineCount = value);
+        captureLogSnapshot(diagnosticsArea, snapshot.diagnosticsLogTail, 5, value -> snapshot.diagnosticsLogLineCount = value);
+        return snapshot;
+    }
+
+    private void captureLogSnapshot(JTextArea area, List<String> tail, int maxTailLines, java.util.function.IntConsumer lineCountSetter) {
+        if (lineCountSetter != null) {
+            lineCountSetter.accept(0);
+        }
+        if (area == null) {
+            return;
+        }
+        String text = area.getText();
+        if (text == null || text.isBlank()) {
+            if (lineCountSetter != null) {
+                lineCountSetter.accept(0);
+            }
+            return;
+        }
+        String[] lines = text.split("\\R");
+        if (lineCountSetter != null) {
+            lineCountSetter.accept(lines.length);
+        }
+        if (tail != null && maxTailLines > 0) {
+            int start = Math.max(0, lines.length - maxTailLines);
+            for (int i = start; i < lines.length; i++) {
+                tail.add(lines[i]);
+            }
+        }
+    }
+
+    private String safeEnvironmentRefLabel(JComboBox<EnvironmentRef> combo) {
+        if (combo == null) {
+            return "absent";
+        }
+        Object selected = combo.getSelectedItem();
+        if (selected == null) {
+            return "none";
+        }
+        return selected.toString();
+    }
+
     private void exportDiagnosticsSnapshot() {
         String snapshot = buildDiagnosticsSnapshot();
         if (diagnosticsArea != null) {
@@ -7294,15 +8269,144 @@ public class ImporterPanel {
         }
         if (selected.isEmpty()) {
             runnerQueuedRequests.clear();
+            refreshRunnerQueueList(-1);
             updateRunnerQueueUiState();
             appendImportLog("No requests selected to run.");
             return;
         }
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(selected);
+        refreshRunnerQueueList(0);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
         updateRunnerQueueUiState();
+    }
+
+    private void installRunnerQueueTransferSupport() {
+        runnerQueueTransferHandler = new RunnerQueueTransferHandler(
+                () -> runnerQueuedRequests,
+                this::reorderRunnerQueue,
+                this::appendRunnerLog);
+        if (runnerQueueList != null) {
+            runnerQueueList.setTransferHandler(runnerQueueTransferHandler);
+            runnerQueueList.setDropMode(DropMode.INSERT);
+            if (!GraphicsEnvironment.isHeadless()) {
+                try {
+                    runnerQueueList.setDragEnabled(true);
+                } catch (HeadlessException ignored) {
+                    // best effort only
+                }
+            }
+        }
+        if (runnerQueueScrollPane != null) {
+            runnerQueueScrollPane.setTransferHandler(runnerQueueTransferHandler);
+            JViewport viewport = runnerQueueScrollPane.getViewport();
+            if (viewport != null) {
+                viewport.setTransferHandler(runnerQueueTransferHandler);
+            }
+        }
+    }
+
+    private void refreshRunnerQueueList(int preferredSelectionIndex) {
+        if (runnerQueueListModel == null) {
+            return;
+        }
+        Runnable update = () -> {
+            ApiRequest selected = runnerQueueList != null ? runnerQueueList.getSelectedValue() : null;
+            if (runnerQueueList != null) {
+                runnerQueueList.clearSelection();
+            }
+            runnerQueueListModel.clear();
+            for (ApiRequest request : runnerQueuedRequests) {
+                runnerQueueListModel.addElement(request);
+            }
+            int indexToSelect = -1;
+            if (selected != null) {
+                indexToSelect = indexOfRunnerQueueRequest(selected);
+            }
+            if (indexToSelect < 0 && preferredSelectionIndex >= 0 && !runnerQueuedRequests.isEmpty()) {
+                indexToSelect = Math.min(preferredSelectionIndex, runnerQueuedRequests.size() - 1);
+            }
+            if (indexToSelect >= 0) {
+                selectRunnerQueueIndex(indexToSelect);
+            }
+        };
+        runOnEdtSync(update);
+    }
+
+    boolean reorderRunnerQueue(int sourceIndex, int targetIndex) {
+        if (runner == null) {
+            // queue editing is still allowed without a runner instance
+        } else if (runner.isRunning()) {
+            appendRunnerLog("Runner queue cannot be reordered while running.");
+            return false;
+        }
+        if (sourceIndex < 0 || sourceIndex >= runnerQueuedRequests.size()) {
+            return false;
+        }
+        int clampedTarget = Math.max(0, Math.min(targetIndex, runnerQueuedRequests.size()));
+        if (sourceIndex == clampedTarget || sourceIndex + 1 == clampedTarget) {
+            refreshRunnerQueueList(sourceIndex);
+            return true;
+        }
+        ApiRequest moved = runnerQueuedRequests.remove(sourceIndex);
+        if (sourceIndex < clampedTarget) {
+            clampedTarget--;
+        }
+        clampedTarget = Math.max(0, Math.min(clampedTarget, runnerQueuedRequests.size()));
+        runnerQueuedRequests.add(clampedTarget, moved);
+        refreshRunnerQueueList(clampedTarget);
+        updateRunnerQueueUiState();
+        final int selectedIndex = clampedTarget;
+        runOnEdtSync(() -> selectRunnerQueueIndex(selectedIndex));
+        notifyWorkspaceChangedImmediately();
+        appendRunnerLog("Reordered runner queue: " + (moved != null && moved.name != null ? moved.name : "Request") + " -> position " + (clampedTarget + 1));
+        return true;
+    }
+
+    private void selectRunnerQueueIndex(int index) {
+        if (runnerQueueList == null) {
+            return;
+        }
+        if (index < 0 || index >= runnerQueueListModel.getSize()) {
+            runnerQueueList.clearSelection();
+            return;
+        }
+        runnerQueueList.setSelectedIndex(index);
+        runnerQueueList.ensureIndexIsVisible(index);
+    }
+
+    private void runOnEdtSync(Runnable action) {
+        if (action == null) {
+            return;
+        }
+        if (SwingUtilities.isEventDispatchThread()) {
+            action.run();
+            return;
+        }
+        try {
+            SwingUtilities.invokeAndWait(action);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException(cause != null ? cause : e);
+        }
+    }
+
+    private int indexOfRunnerQueueRequest(ApiRequest request) {
+        if (request == null) {
+            return -1;
+        }
+        for (int i = 0; i < runnerQueuedRequests.size(); i++) {
+            if (runnerQueuedRequests.get(i) == request) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void switchToTabByName(String name) {
@@ -7534,6 +8638,7 @@ public class ImporterPanel {
             runnerLog.setText("");
         }
         runnerQueuedRequests.clear();
+        refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
         }
@@ -7546,6 +8651,9 @@ public class ImporterPanel {
         boolean running = runner != null && runner.isRunning();
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(!running && hasQueue);
+        }
+        if (runnerQueueListModel != null) {
+            refreshRunnerQueueList(runnerQueueList != null ? runnerQueueList.getSelectedIndex() : -1);
         }
     }
 
@@ -7753,10 +8861,11 @@ public class ImporterPanel {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         if (activeEnvironment == null) {
             String message = "Create or select an Active Environment before populating OAuth2 settings.";
-            if (GraphicsEnvironment.isHeadless()) {
+            Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+            if (GraphicsEnvironment.isHeadless() || owner == null || !owner.isDisplayable()) {
                 appendImportLog(message);
             } else {
-                JOptionPane.showMessageDialog(mainPanel,
+                JOptionPane.showMessageDialog(owner,
                         message,
                         "Active Environment Required",
                         JOptionPane.WARNING_MESSAGE);

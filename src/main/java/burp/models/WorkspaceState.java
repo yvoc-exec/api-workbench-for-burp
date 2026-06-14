@@ -37,6 +37,7 @@ public class WorkspaceState {
     public Boolean runnerFollowRedirects;
     public Boolean runnerDebugRawRequest;
     public Integer runnerDetailTabIndex;
+    public List<String> runnerQueuedRequestIdentityKeys = new ArrayList<>();
 
     public static WorkspaceState fromCollections(List<ApiCollection> source) {
         WorkspaceState state = new WorkspaceState();
@@ -80,6 +81,9 @@ public class WorkspaceState {
         copy.runnerFollowRedirects = source.runnerFollowRedirects;
         copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
+        copy.runnerQueuedRequestIdentityKeys = source.runnerQueuedRequestIdentityKeys != null
+                ? new ArrayList<>(source.runnerQueuedRequestIdentityKeys)
+                : new ArrayList<>();
         return copy;
     }
 
