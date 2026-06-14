@@ -261,12 +261,12 @@ public class HistoryPanel extends JPanel {
         table.setRowSelectionAllowed(true);
         table.setColumnSelectionAllowed(false);
 
-        tableScrollPane.setPreferredSize(new Dimension(800, 280));
-        tableScrollPane.setMinimumSize(new Dimension(0, 220));
-        detailPanel.setPreferredSize(new Dimension(800, 220));
-        detailPanel.setMinimumSize(new Dimension(0, 140));
+        tableScrollPane.setPreferredSize(new Dimension(820, 280));
+        tableScrollPane.setMinimumSize(new Dimension(460, 220));
+        detailPanel.setPreferredSize(new Dimension(520, 220));
+        detailPanel.setMinimumSize(new Dimension(320, 140));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, detailPanel);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tableScrollPane, detailPanel);
         splitPane.setResizeWeight(0.65);
         splitPane.setDividerLocation(0.65);
         splitPane.setOneTouchExpandable(true);
