@@ -11,21 +11,21 @@ import java.time.format.DateTimeParseException;
 import java.util.Locale;
 
 public class HistoryFilterPanel extends JPanel {
-    private final JTextField freeTextField = new JTextField(16);
+    private final JTextField freeTextField = new JTextField(12);
     private final JComboBox<String> sourceCombo = new JComboBox<>(new String[]{"All", "Workbench", "Runner"});
     private final JComboBox<String> methodCombo = new JComboBox<>(new String[]{"All", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"});
     private final JComboBox<String> statusClassCombo = new JComboBox<>(new String[]{"All", "1xx", "2xx", "3xx", "4xx", "5xx", "Error"});
     private final JTextField exactStatusField = new JTextField(5);
-    private final JTextField collectionField = new JTextField(10);
-    private final JTextField folderField = new JTextField(10);
-    private final JTextField requestField = new JTextField(10);
-    private final JTextField environmentField = new JTextField(10);
+    private final JTextField collectionField = new JTextField(8);
+    private final JTextField folderField = new JTextField(8);
+    private final JTextField requestField = new JTextField(8);
+    private final JTextField environmentField = new JTextField(8);
     private final JComboBox<String> resultCombo = new JComboBox<>(new String[]{"All", "Success", "Failure", "Error", "Assertion Failure", "Missing Variable", "Skipped", "Unknown"});
-    private final JTextField fromField = new JTextField(10);
-    private final JTextField toField = new JTextField(10);
-    private final JCheckBox hasResponseBodyBox = new JCheckBox("Has response body");
+    private final JTextField fromField = new JTextField(9);
+    private final JTextField toField = new JTextField(9);
+    private final JCheckBox hasResponseBodyBox = new JCheckBox("Has body");
     private final JCheckBox hasErrorBox = new JCheckBox("Has error");
-    private final JCheckBox hasAssertionFailureBox = new JCheckBox("Has assertion failure");
+    private final JCheckBox hasAssertionFailureBox = new JCheckBox("Has assert");
     private final JTextField attemptField = new JTextField(4);
     private final JTextField totalAttemptsField = new JTextField(4);
     private final JCheckBox retriesOnlyBox = new JCheckBox("Retries only");
@@ -33,40 +33,20 @@ public class HistoryFilterPanel extends JPanel {
     private Runnable changeListener;
 
     public HistoryFilterPanel() {
-        setLayout(new GridBagLayout());
+        setLayout(new BorderLayout(0, 2));
         setBorder(BorderFactory.createTitledBorder("Filters"));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(2, 3, 2, 3);
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.gridy = 0;
 
-        addRow(gbc, "Search", freeTextField);
-        addRow(gbc, "Source", sourceCombo);
-        addRow(gbc, "Method", methodCombo);
-        addRow(gbc, "Status Class", statusClassCombo);
-        addRow(gbc, "Status Code", exactStatusField);
-        addRow(gbc, "Collection", collectionField);
-        addRow(gbc, "Folder", folderField);
-        addRow(gbc, "Request", requestField);
-        addRow(gbc, "Environment", environmentField);
-        addRow(gbc, "Result", resultCombo);
-        addRow(gbc, "From", fromField);
-        addRow(gbc, "To", toField);
-        addRow(gbc, "Attempt", attemptField);
-        addRow(gbc, "Total Attempts", totalAttemptsField);
+        JPanel rows = new JPanel();
+        rows.setOpaque(false);
+        rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
+        rows.add(buildPrimaryRow());
+        rows.add(Box.createVerticalStrut(2));
+        rows.add(buildSecondaryRow());
+        add(rows, BorderLayout.CENTER);
 
-        gbc.gridx = 0;
-        gbc.gridwidth = 1;
-        gbc.fill = GridBagConstraints.NONE;
-        add(hasResponseBodyBox, gbc);
-        gbc.gridx = 1;
-        add(hasErrorBox, gbc);
-        gbc.gridx = 2;
-        add(hasAssertionFailureBox, gbc);
-        gbc.gridx = 3;
-        add(retriesOnlyBox, gbc);
-        gbc.gridx = 4;
-        add(clearButton, gbc);
+        setPreferredSize(new Dimension(0, 86));
+        setMinimumSize(new Dimension(0, 72));
+        setMaximumSize(new Dimension(Integer.MAX_VALUE, 108));
 
         installListeners();
         clear();
@@ -133,6 +113,12 @@ public class HistoryFilterPanel extends JPanel {
         return clearButton;
     }
 
+    @Override
+    public Dimension getMaximumSize() {
+        Dimension preferred = super.getPreferredSize();
+        return new Dimension(Integer.MAX_VALUE, Math.max(preferred.height, 86));
+    }
+
     private void installListeners() {
         java.awt.event.ActionListener listener = e -> notifyChanged();
         freeTextField.addActionListener(listener);
@@ -159,16 +145,40 @@ public class HistoryFilterPanel extends JPanel {
         });
     }
 
-    private void addRow(GridBagConstraints gbc, String label, JComponent field) {
-        gbc.gridx = 0;
-        gbc.gridwidth = 1;
-        gbc.fill = GridBagConstraints.NONE;
-        add(new JLabel(label + ":"), gbc);
-        gbc.gridx = 1;
-        gbc.gridwidth = GridBagConstraints.REMAINDER;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        add(field, gbc);
-        gbc.gridy++;
+    private JPanel buildPrimaryRow() {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        row.setOpaque(false);
+        addField(row, "Search", freeTextField);
+        addField(row, "Source", sourceCombo);
+        addField(row, "Method", methodCombo);
+        addField(row, "Status", statusClassCombo);
+        addField(row, "Code", exactStatusField);
+        addField(row, "Result", resultCombo);
+        row.add(clearButton);
+        return row;
+    }
+
+    private JPanel buildSecondaryRow() {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        row.setOpaque(false);
+        addField(row, "Collection", collectionField);
+        addField(row, "Folder", folderField);
+        addField(row, "Request", requestField);
+        addField(row, "Env", environmentField);
+        addField(row, "From", fromField);
+        addField(row, "To", toField);
+        addField(row, "Attempt", attemptField);
+        addField(row, "Total", totalAttemptsField);
+        row.add(hasResponseBodyBox);
+        row.add(hasErrorBox);
+        row.add(hasAssertionFailureBox);
+        row.add(retriesOnlyBox);
+        return row;
+    }
+
+    private static void addField(JPanel row, String label, JComponent field) {
+        row.add(new JLabel(label + ":"));
+        row.add(field);
     }
 
     private void notifyChanged() {

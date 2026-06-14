@@ -20,8 +20,7 @@ import java.util.function.Consumer;
 
 public class HistoryPanel extends JPanel {
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
-    private static final String RETENTION_NOTICE = "History keeps the latest 1000 entries. Older entries are automatically removed.";
-    private static final String SENSITIVE_NOTICE = "History entries are stored in the Burp project file and may contain sensitive request/response data.";
+    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.";
 
     private final HistoryStore historyStore;
     private final HistoryExportService exportService;
@@ -30,7 +29,6 @@ public class HistoryPanel extends JPanel {
     private final HistoryTableModel tableModel = new HistoryTableModel();
     private final JTable table = new JTable(tableModel);
     private final HistoryFilterPanel filterPanel = new HistoryFilterPanel();
-    private final JScrollPane filterScrollPane = new JScrollPane(filterPanel);
     private final HistoryDetailPanel detailPanel = new HistoryDetailPanel();
     private final HistoryActionsPanel actionsPanel = new HistoryActionsPanel();
     private final List<HistoryEntry> visibleEntries = new ArrayList<>();
@@ -90,10 +88,6 @@ public class HistoryPanel extends JPanel {
 
     public HistoryActionsPanel getActionsPanel() {
         return actionsPanel;
-    }
-
-    JScrollPane getFilterScrollPane() {
-        return filterScrollPane;
     }
 
     JScrollPane getTableScrollPane() {
@@ -255,17 +249,8 @@ public class HistoryPanel extends JPanel {
     private JComponent buildTopPanel() {
         JPanel top = new JPanel(new BorderLayout(5, 5));
         top.add(actionsPanel, BorderLayout.NORTH);
-
-        JPanel notices = new JPanel(new GridLayout(0, 1));
-        notices.add(buildNotice(RETENTION_NOTICE));
-        notices.add(buildNotice(SENSITIVE_NOTICE));
-        top.add(notices, BorderLayout.CENTER);
-        filterScrollPane.setBorder(BorderFactory.createEmptyBorder());
-        filterScrollPane.setPreferredSize(new Dimension(0, 155));
-        filterScrollPane.setMinimumSize(new Dimension(0, 120));
-        filterScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        filterScrollPane.getVerticalScrollBar().setUnitIncrement(18);
-        top.add(filterScrollPane, BorderLayout.SOUTH);
+        top.add(buildNotice(HISTORY_NOTICE), BorderLayout.CENTER);
+        top.add(filterPanel, BorderLayout.SOUTH);
         return top;
     }
 
@@ -282,7 +267,8 @@ public class HistoryPanel extends JPanel {
         detailPanel.setMinimumSize(new Dimension(0, 140));
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, detailPanel);
-        splitPane.setResizeWeight(0.68);
+        splitPane.setResizeWeight(0.65);
+        splitPane.setDividerLocation(0.65);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
         splitPane.setDividerSize(8);
