@@ -122,6 +122,70 @@ API Workbench includes drag/drop support for common workflows:
 
 Real mouse-driven drag/drop can still benefit from manual spot checks, especially when you want visual confirmation of the exact UI behavior.
 
+## Project Architecture
+
+```text
+.
+├── pom.xml
+├── README.md
+├── docs/
+│   ├── features.md
+│   ├── testing.md
+│   ├── security-smoke-mode.md
+│   └── release-notes-v2-draft.md
+├── src/
+│   ├── main/
+│   │   └── java/
+│   │       └── burp/
+│   │           ├── BurpExtender.java
+│   │           ├── UniversalImporter.java
+│   │           ├── auth/
+│   │           ├── exporter/
+│   │           ├── models/
+│   │           ├── parser/
+│   │           ├── runner/
+│   │           ├── smoke/
+│   │           │   ├── SmokeRuntimeConfig.java
+│   │           │   ├── SmokeRuntimeResult.java
+│   │           │   ├── SmokeRuntimeRunner.java
+│   │           │   └── SmokeUiEvidenceSnapshot.java
+│   │           ├── ui/
+│   │           │   ├── ImporterPanel.java
+│   │           │   ├── RequestEditorPanel.java
+│   │           │   ├── dnd/
+│   │           │   └── tree/
+│   │           └── utils/
+│   └── test/
+│       └── java/
+│           └── burp/
+│               ├── auth/
+│               ├── exporter/
+│               ├── models/
+│               ├── parser/
+│               ├── runner/
+│               ├── ui/
+│               │   ├── dnd/
+│               │   └── tree/
+│               └── utils/
+└── target/ (build output)
+```
+
+### Major areas
+
+- `BurpExtender.java` — Burp extension entry point and suite-tab registration.
+- `UniversalImporter.java` — top-level importer/workbench coordinator.
+- `models/` — collection, request, auth, and workspace data models.
+- `parser/` — import parsers for OpenAPI, Postman, Insomnia, Bruno, HAR, and native collections.
+- `ui/` — Swing UI panels, request editor, workbench, and tabs.
+- `ui/tree/` — request tree paths, mutation services, drag/drop payloads, and tree operations.
+- `ui/dnd/` — environment, runner queue, and drag/drop transfer handlers.
+- `runner/` — collection runner and request execution workflow.
+- `auth/` — auth and OAuth2/token handling.
+- `exporter/` — collection/environment export services.
+- `utils/` — import, workspace, script mode, environment, and support utilities.
+- `smoke/` — opt-in local runtime smoke validation, UI evidence snapshots, and reports.
+- `src/test/` — unit and integration tests for import/export, runner, drag/drop, tree state, smoke startup, and utility behavior.
+
 ## Smoke and local QA
 
 Runtime smoke mode is for local QA only.
