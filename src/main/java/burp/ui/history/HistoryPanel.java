@@ -30,9 +30,11 @@ public class HistoryPanel extends JPanel {
     private final HistoryTableModel tableModel = new HistoryTableModel();
     private final JTable table = new JTable(tableModel);
     private final HistoryFilterPanel filterPanel = new HistoryFilterPanel();
+    private final JScrollPane filterScrollPane = new JScrollPane(filterPanel);
     private final HistoryDetailPanel detailPanel = new HistoryDetailPanel();
     private final HistoryActionsPanel actionsPanel = new HistoryActionsPanel();
     private final List<HistoryEntry> visibleEntries = new ArrayList<>();
+    private final JScrollPane tableScrollPane = new JScrollPane(table);
     private HistoryFilterCriteria currentCriteria = new HistoryFilterCriteria();
     private Consumer<HistoryEntry> loadInWorkbenchAction;
     private Consumer<HistoryEntry> replayFromHistoryAction;
@@ -88,6 +90,14 @@ public class HistoryPanel extends JPanel {
 
     public HistoryActionsPanel getActionsPanel() {
         return actionsPanel;
+    }
+
+    JScrollPane getFilterScrollPane() {
+        return filterScrollPane;
+    }
+
+    JScrollPane getTableScrollPane() {
+        return tableScrollPane;
     }
 
     public JTable getHistoryTable() {
@@ -250,7 +260,12 @@ public class HistoryPanel extends JPanel {
         notices.add(buildNotice(RETENTION_NOTICE));
         notices.add(buildNotice(SENSITIVE_NOTICE));
         top.add(notices, BorderLayout.CENTER);
-        top.add(filterPanel, BorderLayout.SOUTH);
+        filterScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        filterScrollPane.setPreferredSize(new Dimension(0, 155));
+        filterScrollPane.setMinimumSize(new Dimension(0, 120));
+        filterScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        filterScrollPane.getVerticalScrollBar().setUnitIncrement(18);
+        top.add(filterScrollPane, BorderLayout.SOUTH);
         return top;
     }
 
@@ -261,9 +276,13 @@ public class HistoryPanel extends JPanel {
         table.setRowSelectionAllowed(true);
         table.setColumnSelectionAllowed(false);
 
-        JScrollPane tableScroll = new JScrollPane(table);
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, detailPanel);
-        splitPane.setResizeWeight(0.55);
+        tableScrollPane.setPreferredSize(new Dimension(800, 280));
+        tableScrollPane.setMinimumSize(new Dimension(0, 220));
+        detailPanel.setPreferredSize(new Dimension(800, 220));
+        detailPanel.setMinimumSize(new Dimension(0, 140));
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, detailPanel);
+        splitPane.setResizeWeight(0.68);
         splitPane.setOneTouchExpandable(true);
         splitPane.setContinuousLayout(true);
         splitPane.setDividerSize(8);
