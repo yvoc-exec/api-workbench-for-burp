@@ -5,6 +5,7 @@ import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
 
+import javax.swing.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -27,8 +28,14 @@ class HistoryPanelTest {
         assertThat(panel.getHistoryTable().getColumnName(12)).isEqualTo("Result");
         assertThat(panel.getTableScrollPane().getMinimumSize().height).isGreaterThanOrEqualTo(220);
         assertThat(panel.getTableScrollPane().getPreferredSize().height).isGreaterThanOrEqualTo(280);
-        assertThat(panel.getFilterScrollPane().getPreferredSize().height).isLessThanOrEqualTo(155);
-        assertThat(panel.getFilterScrollPane().getMinimumSize().height).isLessThanOrEqualTo(120);
+        JPanel topPanel = (JPanel) panel.getComponent(0);
+        assertThat(topPanel.getComponentCount()).isEqualTo(3);
+        assertThat(topPanel.getComponent(1)).isInstanceOf(JLabel.class);
+        assertThat(((JLabel) topPanel.getComponent(1)).getText())
+                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.");
+        assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
+        assertThat(panel.getFilterPanel().getMinimumSize().height).isLessThanOrEqualTo(72);
+        assertThat(panel.getFilterPanel().getComponentCount()).isGreaterThan(0);
     }
 
     @Test
