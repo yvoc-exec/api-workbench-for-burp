@@ -1,6 +1,7 @@
 package burp.ui.history;
 
 import burp.history.*;
+import burp.api.montoya.MontoyaApi;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -29,7 +30,7 @@ public class HistoryPanel extends JPanel {
     private final HistoryTableModel tableModel = new HistoryTableModel();
     private final JTable table = new JTable(tableModel);
     private final HistoryFilterPanel filterPanel = new HistoryFilterPanel();
-    private final HistoryDetailPanel detailPanel = new HistoryDetailPanel();
+    private final HistoryDetailPanel detailPanel;
     private final HistoryActionsPanel actionsPanel = new HistoryActionsPanel();
     private final List<HistoryEntry> visibleEntries = new ArrayList<>();
     private final JScrollPane tableScrollPane = new JScrollPane(table);
@@ -43,10 +44,19 @@ public class HistoryPanel extends JPanel {
                         HistoryExportService exportService,
                         HistoryDiffService diffService,
                         HistoryLoadResultNotifier notifier) {
+        this(historyStore, exportService, diffService, notifier, null);
+    }
+
+    public HistoryPanel(HistoryStore historyStore,
+                        HistoryExportService exportService,
+                        HistoryDiffService diffService,
+                        HistoryLoadResultNotifier notifier,
+                        MontoyaApi api) {
         this.historyStore = historyStore != null ? historyStore : new HistoryStore();
         this.exportService = exportService != null ? exportService : new HistoryExportService();
         this.diffService = diffService != null ? diffService : new HistoryDiffService();
         this.notifier = notifier != null ? notifier : new HistoryLoadResultNotifier();
+        this.detailPanel = new HistoryDetailPanel(api);
         setLayout(new BorderLayout(5, 5));
         setBorder(new EmptyBorder(5, 5, 5, 5));
 
