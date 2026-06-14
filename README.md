@@ -124,67 +124,148 @@ Real mouse-driven drag/drop can still benefit from manual spot checks, especiall
 
 ## Project Architecture
 
+The main source lives under `src/main/java/burp/`. `src/test/java/burp/` mirrors the same areas with tests.
+
 ```text
-.
-├── pom.xml
-├── README.md
-├── docs/
-│   ├── features.md
-│   ├── testing.md
-│   ├── security-smoke-mode.md
-│   └── release-notes-v2-draft.md
-├── src/
-│   ├── main/
-│   │   └── java/
-│   │       └── burp/
-│   │           ├── BurpExtender.java
-│   │           ├── UniversalImporter.java
-│   │           ├── auth/
-│   │           ├── exporter/
-│   │           ├── models/
-│   │           ├── parser/
-│   │           ├── runner/
-│   │           ├── smoke/
-│   │           │   ├── SmokeRuntimeConfig.java
-│   │           │   ├── SmokeRuntimeResult.java
-│   │           │   ├── SmokeRuntimeRunner.java
-│   │           │   └── SmokeUiEvidenceSnapshot.java
-│   │           ├── ui/
-│   │           │   ├── ImporterPanel.java
-│   │           │   ├── RequestEditorPanel.java
-│   │           │   ├── dnd/
-│   │           │   └── tree/
-│   │           └── utils/
-│   └── test/
-│       └── java/
-│           └── burp/
-│               ├── auth/
-│               ├── exporter/
-│               ├── models/
-│               ├── parser/
-│               ├── runner/
-│               ├── ui/
-│               │   ├── dnd/
-│               │   └── tree/
-│               └── utils/
-└── target/ (build output)
+burp/
+|-- BurpExtender.java                 # Extension entry point, startup diagnostics, suite-tab registration
+|-- UniversalImporter.java            # Top-level importer/workbench coordinator
+|-- auth/
+|   |-- OAuth2Config.java             # OAuth2 configuration model
+|   |-- OAuth2Manager.java            # Token acquisition and refresh coordinator
+|   |-- TokenStore.java               # Runtime token cache
+|   |-- ClientCredentialsHandler.java # Client Credentials grant handler
+|   |-- PasswordGrantHandler.java     # Resource Owner Password Credentials grant handler
+|   |-- RefreshTokenHandler.java      # Refresh Token grant handler
+|   `-- AuthorizationCodeHandler.java # PKCE + loopback callback grant handler
+|-- exporter/
+|   |-- CollectionExportService.java       # Collection export orchestration
+|   |-- EnvironmentExportService.java      # Environment export orchestration
+|   |-- ApiWorkbenchCollectionExporter.java # Native Workbench collection exporter
+|   |-- ApiWorkbenchEnvironmentExporter.java # Native Workbench environment exporter
+|   |-- PostmanCollectionExporter.java     # Postman v2.1 collection exporter
+|   |-- PostmanEnvironmentExporter.java    # Postman environment exporter
+|   |-- OpenApiCollectionExporter.java     # OpenAPI exporter
+|   |-- InsomniaCollectionExporter.java    # Insomnia collection exporter
+|   |-- InsomniaEnvironmentExporter.java   # Insomnia environment exporter
+|   |-- BrunoCollectionExporter.java       # Bruno collection exporter
+|   |-- BrunoEnvironmentExporter.java      # Bruno environment exporter
+|   |-- HarCollectionExporter.java         # HAR exporter
+|   |-- DotEnvEnvironmentExporter.java     # dotenv environment exporter
+|   |-- GenericJsonEnvironmentExporter.java # Flat JSON environment exporter
+|   |-- CollectionExportOptions.java       # Collection export options
+|   |-- EnvironmentExportOptions.java      # Environment export options
+|   |-- CollectionExportFormat.java        # Collection export format enum
+|   |-- EnvironmentExportFormat.java       # Environment export format enum
+|   |-- CollectionExportTree.java          # Collection-tree snapshot used by export flows
+|   |-- CollectionExportSupport.java       # Shared collection export helpers
+|   |-- ExportVariableResolutionService.java # Variable resolution during export
+|   |-- ExportSupport.java                 # Shared export helpers
+|   |-- ExportResult.java                  # Export result model
+|   |-- ExportFileNamePolicy.java          # Export filename policy
+|   |-- ExportIds.java                     # Stable export identifier helper
+|   `-- ExportException.java               # Export error type
+|-- models/
+|   |-- ApiCollection.java                # Unified collection model
+|   |-- ApiRequest.java                   # Unified request model
+|   |-- BearerTokenAliasCandidate.java    # OAuth2 alias candidate
+|   |-- EnvironmentProfile.java          # Active environment profile model
+|   |-- OAuth2EnvironmentState.java      # Runtime OAuth2/environment state
+|   |-- WorkspaceState.java              # Workspace persistence model
+|   |-- ImportResult.java                # Import operation result
+|   |-- RunnerPreviewRow.java            # Runner preview row model
+|   |-- RunnerResult.java                # Runner operation result
+|   |-- RunnerStopConditions.java        # Runner stop-condition config
+|   |-- RunnerTimelineRow.java           # Runner timeline row model
+|   `-- UnresolvedVariableIssue.java      # Unresolved-variable preflight issue
+|-- parser/
+|   |-- CollectionParser.java             # Parser interface
+|   |-- ParserRegistry.java               # Auto-detect parser registry
+|   |-- ApiWorkbenchCollectionParser.java # Native Workbench collection parser
+|   |-- PostmanParser.java                # Postman parser
+|   |-- OpenApiParser.java                # OpenAPI parser
+|   |-- InsomniaParser.java               # Insomnia parser
+|   |-- BrunoParser.java                  # Bruno parser
+|   |-- HarParser.java                    # HAR parser
+|   `-- VariableResolver.java             # Variable resolution engine
+|-- runner/
+|   `-- CollectionRunner.java             # Sequential request runner
+|-- smoke/
+|   |-- SmokeRuntimeConfig.java           # Opt-in runtime smoke configuration
+|   |-- SmokeRuntimeResult.java           # Runtime smoke result/report model
+|   |-- SmokeRuntimeRunner.java           # Local runtime smoke execution harness
+|   `-- SmokeUiEvidenceSnapshot.java      # UI evidence snapshot helper
+|-- ui/
+|   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, and Runner
+|   |-- OAuth2Panel.java                  # OAuth2 configuration UI
+|   |-- RequestEditorPanel.java           # Workbench request editor
+|   |-- RequestEditorAuthSupport.java     # Auth-field orchestration helper
+|   |-- RequestEditorBodySupport.java     # Body-mode UI helper
+|   |-- RequestEditorStateMapper.java     # Request model <-> editor state mapper
+|   |-- RequestEditorTableSupport.java    # Request editor table helper
+|   |-- RequestPreviewTableModel.java     # Request preview table model
+|   |-- ResponsePane.java                 # Response display pane
+|   |-- RunnerPreviewTableModel.java      # Runner preview table model
+|   |-- RunnerResultTableModel.java       # Runner results table model
+|   |-- RunnerTimelineTableModel.java     # Runner timeline table model
+|   |-- UnresolvedVariablesDialog.java    # Variable preflight dialog
+|   |-- AuthSettingsDialog.java           # Auth settings dialog
+|   |-- BearerTokenAliasDialog.java       # Bearer alias selection dialog
+|   |-- dnd/
+|   |   |-- ActiveEnvironmentDropTransferHandler.java # Active environment drop support
+|   |   |-- EnvironmentDragPayload.java    # Environment drag payload
+|   |   |-- EnvironmentProfileDragSourceTransferHandler.java # Environment drag source support
+|   |   |-- EnvironmentTransferHandler.java # Environment file/profile drag/drop
+|   |   |-- RunnerQueueDragPayload.java     # Runner queue drag payload
+|   |   `-- RunnerQueueTransferHandler.java # Runner queue reorder support
+|   `-- tree/
+|       |-- BurpLikeTreeCellRenderer.java  # Request tree renderer
+|       |-- CheckBoxTreeCellRenderer.java  # Checkbox tree renderer
+|       |-- CollectionTreeNode.java        # Tree node wrapper
+|       |-- RequestTreeDragPayload.java    # Request tree drag payload
+|       |-- RequestTreeMutationService.java # Tree create/move/rename/delete operations
+|       |-- RequestTreeNamingPolicy.java   # Tree naming rules
+|       |-- RequestTreePathService.java    # Tree path/scope helper
+|       |-- RequestTreeTransferHandler.java # Request tree drag/drop support
+|       `-- TreeDropRequest.java           # Drag/drop request model
+|-- utils/
+|   |-- AuthInheritanceResolver.java      # Auth inheritance resolution
+|   |-- DebouncedSwingAction.java         # Debounced Swing action helper
+|   |-- EnvironmentImportService.java     # Environment import handling
+|   |-- ExecutionResult.java              # Execution result wrapper
+|   |-- HttpUtils.java                    # HTTP/URL utilities
+|   |-- OAuth2BearerAliasDetector.java    # OAuth2 bearer alias detection
+|   |-- OAuth2PopulateHelper.java         # OAuth2 form/population helper
+|   |-- OAuth2RuntimeMapper.java          # Imported auth -> oauth2_* runtime mapping
+|   |-- RequestBuilder.java               # HTTP message construction
+|   |-- RequestBuildPolicy.java           # Request build policy
+|   |-- RequestDebugFormatter.java        # Request debug formatting
+|   |-- RequestPathResolver.java          # Request path resolution helper
+|   |-- RuntimeResolverFactory.java       # Runtime variable resolver factory
+|   |-- RuntimeVariablesJson.java         # Runtime vars/OAuth2 JSON helper
+|   |-- ScriptEngine.java                # Nashorn/Postman/Bruno script support
+|   |-- ScriptMode.java                  # Script execution mode
+|   |-- ScriptModeDetector.java          # Java/Nashorn mode detection
+|   |-- SharedRequestPipeline.java       # Shared build/send/script/OAuth pipeline
+|   |-- SwingEdt.java                    # EDT helper
+|   |-- UnresolvedVariableAnalyzer.java  # Unresolved-variable scanner
+|   |-- VariableDebugFormatter.java      # Variable debug formatting
+|   |-- WorkspaceStateJson.java          # Workspace state JSON helper
+|   |-- WorkspaceStateMigrator.java      # Workspace state migration helper
+|   `-- WorkspaceStateService.java       # Workspace persistence via extension data
 ```
 
-### Major areas
+`src/test/java/burp/` contains the unit and integration tests that mirror these same areas, including startup, import/export, runner, drag/drop, tree-state, smoke, and utility coverage.
 
-- `BurpExtender.java` — Burp extension entry point and suite-tab registration.
-- `UniversalImporter.java` — top-level importer/workbench coordinator.
-- `models/` — collection, request, auth, and workspace data models.
-- `parser/` — import parsers for OpenAPI, Postman, Insomnia, Bruno, HAR, and native collections.
-- `ui/` — Swing UI panels, request editor, workbench, and tabs.
-- `ui/tree/` — request tree paths, mutation services, drag/drop payloads, and tree operations.
-- `ui/dnd/` — environment, runner queue, and drag/drop transfer handlers.
-- `runner/` — collection runner and request execution workflow.
-- `auth/` — auth and OAuth2/token handling.
-- `exporter/` — collection/environment export services.
-- `utils/` — import, workspace, script mode, environment, and support utilities.
-- `smoke/` — opt-in local runtime smoke validation, UI evidence snapshots, and reports.
-- `src/test/` — unit and integration tests for import/export, runner, drag/drop, tree state, smoke startup, and utility behavior.
+### How the pieces fit together
+
+- `BurpExtender` starts the extension, registers the tab, and restores workspace state.
+- `UniversalImporter` and `ImporterPanel` coordinate the Workbench user flow.
+- Parsers normalize external formats into the shared collection and request models.
+- The request editor and runner share the same request-building, variable-resolution, and auth pipeline.
+- Drag/drop support is split between `ui/dnd` and `ui/tree`.
+- Workspace persistence is handled through the extension-data services and workspace-state models.
+- `smoke/` is local opt-in QA support and does not run during normal loading.
 
 ## Smoke and local QA
 
