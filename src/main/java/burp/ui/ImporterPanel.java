@@ -8,6 +8,15 @@ import burp.auth.OAuth2Manager;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 import burp.UniversalImporter;
+import burp.history.HistoryEntry;
+import burp.history.HistoryExportService;
+import burp.history.HistoryPersistenceService;
+import burp.history.HistoryStore;
+import burp.history.HistoryDiffService;
+import burp.history.HistoryResult;
+import burp.history.HistorySource;
+import burp.history.HistoryRequestSnapshot;
+import burp.history.HistoryResponseSnapshot;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.smoke.SmokeUiEvidenceSnapshot;
@@ -25,6 +34,8 @@ import burp.ui.dnd.EnvironmentProfileDragSourceTransferHandler;
 import burp.ui.dnd.EnvironmentTransferHandler;
 import burp.ui.dnd.RunnerQueueDragPayload;
 import burp.ui.dnd.RunnerQueueTransferHandler;
+import burp.ui.history.HistoryLoadResultNotifier;
+import burp.ui.history.HistoryPanel;
 import burp.utils.RequestPathResolver;
 import burp.utils.EnvironmentImportService;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -59,6 +70,7 @@ import java.util.logging.Logger;
 public class ImporterPanel {
     private static final Logger LOGGER = Logger.getLogger(ImporterPanel.class.getName());
     private static final String DIAGNOSTICS_TAB_NAME = "Diagnostics";
+    private static final String HISTORY_TAB_NAME = "History";
     private static final String DIAGNOSTICS_PLACEHOLDER_TEXT = "Click \"Refresh Snapshot\" to generate a diagnostics snapshot.";
     private static final DateTimeFormatter DIAGNOSTICS_TIMESTAMP_FORMAT = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
     private static final char WORKSPACE_KEY_DELIMITER = '\u001F';
@@ -78,6 +90,11 @@ public class ImporterPanel {
     private final RequestTreeMutationService requestTreeMutationService = new RequestTreeMutationService();
     private final CollectionExportService collectionExportService = new CollectionExportService();
     private final EnvironmentExportService environmentExportService = new EnvironmentExportService();
+    private final HistoryStore historyStore = new HistoryStore();
+    private final HistoryExportService historyExportService = new HistoryExportService();
+    private final HistoryDiffService historyDiffService = new HistoryDiffService();
+    private final HistoryPersistenceService historyPersistenceService = new HistoryPersistenceService();
+    private final HistoryLoadResultNotifier historyLoadResultNotifier = new HistoryLoadResultNotifier();
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -106,6 +123,7 @@ public class ImporterPanel {
     private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
+    private HistoryPanel historyPanel;
 
     // Runner tab
     private JTextArea runnerLog;
@@ -317,6 +335,7 @@ public class ImporterPanel {
         tabbedPane.addTab("Environment", createVariablesTab());
         tabbedPane.addTab("OAuth2", createOAuth2Tab());
         tabbedPane.addTab("Collection Runner", createRunnerTab());
+        tabbedPane.addTab(HISTORY_TAB_NAME, createHistoryTab());
         tabbedPane.addTab(DIAGNOSTICS_TAB_NAME, createDiagnosticsTab());
 
         panel.add(tabbedPane, BorderLayout.CENTER);
@@ -576,6 +595,9 @@ public class ImporterPanel {
         }
         applyEditedRequestToLiveRequest(col, liveRequest, edited);
         syncRequestEditorRuntimeContext(liveRequest, col);
+        if (requestEditor != null) {
+            requestEditor.markClean();
+        }
         notifyWorkspaceChanged();
 
         final ApiCollection resolvedCol = col;
@@ -586,6 +608,11 @@ public class ImporterPanel {
                 List.of(resolvedCol),
                 List.of(requestToSend),
                 runtimeOverlay);
+        final List<String> unresolvedVariableNames = issues.stream()
+                .map(issue -> issue != null ? issue.variableName : null)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList();
         if (!issues.isEmpty()) {
             UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
             if (action == UnresolvedVariablesDialog.Action.CANCEL) {
@@ -599,10 +626,12 @@ public class ImporterPanel {
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
+                UniversalImporter.SingleSendResult result = null;
+                String failureReason = null;
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    var result = runtimeOverlayForSend == null
+                    result = runtimeOverlayForSend == null
                             ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
                             : importer.sendSingleRequestWithBuiltRequest(
                                     requestToSend,
@@ -613,7 +642,8 @@ public class ImporterPanel {
                                     ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
                     var rr = result.response;
 
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, resolvedCol, result, sendModeLabel));
+                    final UniversalImporter.SingleSendResult sendResult = result;
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, resolvedCol, sendResult, sendModeLabel));
 
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
@@ -630,10 +660,19 @@ public class ImporterPanel {
                         publish("Sent to Repeater: " + tabName);
                     }
                 } catch (Exception e) {
-                    String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failureReason, sendModeLabel));
+                    failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    final String failure = failureReason;
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failure, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 }
+                recordWorkbenchHistoryEntry(
+                        requestToSend,
+                        resolvedCol,
+                        result,
+                        failureReason,
+                        unresolvedVariableNames,
+                        runtimeOverlayForSend,
+                        sendModeLabel);
                 return null;
             }
 
@@ -674,6 +713,381 @@ public class ImporterPanel {
         }
         if (requestEditor.getCurrentRequest() == null || requestEditor.getCurrentCollection() == null) {
             requestEditor.setSendControlsEnabled(false);
+        }
+    }
+
+    private void recordWorkbenchHistoryEntry(ApiRequest request,
+                                             ApiCollection collection,
+                                             UniversalImporter.SingleSendResult sendResult,
+                                             String failureReason,
+                                             List<String> unresolvedVariables,
+                                             Map<String, String> runtimeOverlay,
+                                             String sendModeLabel) {
+        if (request == null) {
+            return;
+        }
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                collection,
+                request,
+                getActiveEnvironment(),
+                sendResult != null ? sendResult.executionResult : null,
+                1,
+                1,
+                unresolvedVariables);
+        if (entry == null) {
+            return;
+        }
+        if (entry.requestSnapshot == null) {
+            entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+        }
+        if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
+            entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
+        }
+        if (sendResult != null && sendResult.executionResult == null && sendResult.response != null && sendResult.response.response() != null) {
+            entry.responseSnapshot = HistoryResponseSnapshot.from(sendResult.response.response());
+            entry.statusCode = entry.responseSnapshot != null ? entry.responseSnapshot.statusCode : entry.statusCode;
+            entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null ? entry.responseSnapshot.body.length : 0L;
+            entry.durationMillis = sendResult.elapsedMs;
+        }
+        if (failureReason != null && !failureReason.isBlank()) {
+            entry.errorMessage = failureReason;
+            if (sendResult == null || sendResult.executionResult == null) {
+                entry.result = HistoryResult.from(false, failureReason, entry.hasAssertionFailure(), unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            } else if (entry.result == HistoryResult.SUCCESS || entry.result == HistoryResult.UNKNOWN) {
+                entry.result = HistoryResult.from(false, failureReason, entry.hasAssertionFailure(), unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            }
+        }
+        if (entry.result == HistoryResult.UNKNOWN) {
+            entry.result = HistoryResult.from(sendResult != null && sendResult.executionResult != null && sendResult.executionResult.success,
+                    failureReason,
+                    entry.hasAssertionFailure(),
+                    unresolvedVariables != null && !unresolvedVariables.isEmpty());
+        }
+        recordHistoryEntry(entry);
+    }
+
+    private void recordRunnerHistoryAttempt(RunnerResult result) {
+        if (result == null) {
+            return;
+        }
+        ApiCollection collection = findCollectionByName(result.collectionName);
+        ApiRequest request = findRequestById(result.requestId);
+        EnvironmentProfile active = getActiveEnvironment();
+        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, active, result);
+        if (entry == null) {
+            return;
+        }
+        if (entry.collectionName == null) {
+            entry.collectionName = result.collectionName != null ? result.collectionName : (request != null ? request.sourceCollection : null);
+            entry.collectionId = entry.collectionName;
+        }
+        if (entry.folderPath == null) {
+            entry.folderPath = result.folderPath;
+        }
+        if (entry.requestSnapshot == null && request != null) {
+            entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+        }
+        if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
+            entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
+        }
+        if (entry.result == HistoryResult.UNKNOWN && result != null) {
+            entry.result = HistoryResult.from(result.success, result.errorMessage, entry.hasAssertionFailure(), !entry.unresolvedVariables.isEmpty());
+        }
+        recordHistoryEntry(entry);
+    }
+
+    private void recordHistoryEntry(HistoryEntry entry) {
+        if (entry == null) {
+            return;
+        }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> recordHistoryEntry(entry));
+            return;
+        }
+        entry.ensureDefaults();
+        historyStore.addEntry(entry);
+        if (historyPanel != null) {
+            historyPanel.refreshFromStore(entry.id);
+        }
+        notifyWorkspaceChanged();
+    }
+
+    private void loadHistoryEntryIntoWorkbench(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return;
+        }
+        if (requestEditor != null && requestEditor.isDirty() && !historyLoadResultNotifier.confirmReplaceCurrentRequest(mainPanel)) {
+            return;
+        }
+        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
+        if (context == null || context.collection == null || context.request == null) {
+            return;
+        }
+        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+        applyEditedRequestToLiveRequest(context.collection, context.request, snapshotRequest);
+        if (context.originalRequestExists) {
+            openRequestInEditor(context.request, context.collection);
+            if (requestEditor != null) {
+                requestEditor.markClean();
+            }
+            selectRequestInTree(context.request);
+        } else {
+            refreshRequestTreeAfterMutation(() -> {
+                openRequestInEditor(context.request, context.collection);
+                if (requestEditor != null) {
+                    requestEditor.markClean();
+                }
+                selectRequestInTree(context.request);
+            });
+        }
+        if (context.originalRequestExists) {
+            historyLoadResultNotifier.showLoadedIntoOriginalRequest(mainPanel, entry);
+        } else {
+            historyLoadResultNotifier.showLoadedUnderHistoryReplays(mainPanel, context.request.name);
+        }
+        notifyWorkspaceChangedImmediately();
+    }
+
+    private void replayHistoryEntry(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return;
+        }
+        ApiRequest request = entry.requestSnapshot.toApiRequest();
+        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
+        if (context == null || context.collection == null || context.request == null) {
+            return;
+        }
+        Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
+                List.of(context.collection),
+                List.of(request),
+                runtimeOverlay);
+        if (!issues.isEmpty()) {
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(context.collection));
+            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                appendImportLog("Replay cancelled due to unresolved variables.");
+                return;
+            }
+            runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        }
+        final ApiCollection resolvedCollection = context.collection;
+        final ApiRequest replayRequest = request;
+        final Map<String, String> runtimeOverlayForReplay = runtimeOverlay;
+        SwingWorker<Void, String> worker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                try {
+                    publish("Replaying: " + replayRequest.method + " " + replayRequest.url);
+                    boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
+                    UniversalImporter.SingleSendResult result = runtimeOverlayForReplay == null
+                            ? importer.sendSingleRequestWithBuiltRequest(replayRequest, resolvedCollection, follow)
+                            : importer.sendSingleRequestWithBuiltRequest(
+                                    replayRequest,
+                                    resolvedCollection,
+                                    follow,
+                                    runtimeOverlayForReplay,
+                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+                    publish("Replay complete: " + replayRequest.name);
+                    recordWorkbenchHistoryEntry(
+                            replayRequest,
+                            resolvedCollection,
+                            result,
+                            null,
+                            issues.stream().map(issue -> issue != null ? issue.variableName : null).filter(name -> name != null && !name.isBlank()).distinct().toList(),
+                            runtimeOverlayForReplay,
+                            "Replay from History");
+                } catch (Exception e) {
+                    String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    publish("Replay failed: " + failureReason);
+                    recordWorkbenchHistoryEntry(
+                            replayRequest,
+                            resolvedCollection,
+                            null,
+                            failureReason,
+                            issues.stream().map(issue -> issue != null ? issue.variableName : null).filter(name -> name != null && !name.isBlank()).distinct().toList(),
+                            runtimeOverlayForReplay,
+                            "Replay from History");
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                for (String msg : chunks) appendImportLog(msg);
+            }
+        };
+        worker.execute();
+    }
+
+    private void sendHistoryEntryToRepeater(HistoryEntry entry) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return;
+        }
+        HistoryRequestContext context = resolveHistoryRequestContext(entry, true);
+        if (context == null || context.collection == null || context.request == null) {
+            return;
+        }
+        Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
+                List.of(context.collection),
+                List.of(context.request),
+                runtimeOverlay);
+        if (!issues.isEmpty()) {
+            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(context.collection));
+            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
+                appendImportLog("Send to Repeater cancelled due to unresolved variables.");
+                return;
+            }
+            runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        }
+        ApiRequest replayRequest = entry.requestSnapshot.toApiRequest();
+        try {
+            boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
+            burp.parser.VariableResolver resolver = burp.utils.RuntimeResolverFactory.build(
+                    context.collection,
+                    replayRequest,
+                    runtimeOverlay != null
+                            ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
+                            : burp.utils.RuntimeResolverFactory.Options.defaultOptions()
+            );
+            String resolvedUrl = resolver.resolve(replayRequest.url);
+            burp.utils.HttpUtils.ParsedTarget parsed = burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl);
+            burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
+                    parsed.host, parsed.port, parsed.useHttps);
+            byte[] rawRequest = requestBuilder.buildRequest(replayRequest, resolver);
+            burp.api.montoya.http.message.requests.HttpRequest builtRequest =
+                    burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                            service,
+                            burp.api.montoya.core.ByteArray.byteArray(rawRequest)
+                    );
+            String tabName = importer.generateRepeaterTabName(replayRequest.name, context.collection.name);
+            importer.sendToRepeater(builtRequest, tabName);
+            appendImportLog("Sent history request to Repeater: " + tabName);
+        } catch (Exception e) {
+            String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            appendImportLog("Send to Repeater failed: " + failureReason);
+            historyLoadResultNotifier.showError(mainPanel, "Send to Repeater failed: " + failureReason);
+        }
+    }
+
+    private HistoryRequestContext resolveHistoryRequestContext(HistoryEntry entry, boolean createFallbackRequest) {
+        if (entry == null || entry.requestSnapshot == null) {
+            return null;
+        }
+        ApiCollection collection = null;
+        ApiRequest request = null;
+        if (entry.collectionName != null) {
+            collection = findCollectionByName(entry.collectionName);
+        }
+        if (collection == null && entry.requestId != null) {
+            collection = findCollectionContainingRequestId(entry.requestId);
+        }
+        if (collection != null && entry.requestId != null) {
+            request = findRequestByIdInCollection(collection, entry.requestId);
+        }
+        boolean originalExists = collection != null && request != null;
+        if (!originalExists && createFallbackRequest) {
+            collection = ensureHistoryReplaysCollection();
+            if (collection == null) {
+                return null;
+            }
+            request = requestTreeMutationService.createBlankManualRequest(collection, "");
+            if (request == null) {
+                return null;
+            }
+            if (entry.requestName != null && !entry.requestName.isBlank()) {
+                request.name = entry.requestName;
+            }
+            if (entry.folderPath != null) {
+                request.path = entry.folderPath;
+            }
+            ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+            applyEditedRequestToLiveRequest(collection, request, snapshotRequest);
+            originalExists = false;
+        }
+        return new HistoryRequestContext(collection, request, originalExists);
+    }
+
+    private ApiCollection ensureHistoryReplaysCollection() {
+        ApiCollection existing = findCollectionByName(HISTORY_TAB_NAME + " Replays");
+        if (existing != null) {
+            return existing;
+        }
+        ApiCollection collection = new ApiCollection();
+        collection.name = HISTORY_TAB_NAME + " Replays";
+        collection.description = "Auto-created collection for replaying history entries.";
+        collection.requests = new ArrayList<>();
+        collection.folderPaths = new ArrayList<>();
+        collection.variables = new ArrayList<>();
+        collection.folderVars = new LinkedHashMap<>();
+        collection.environment = new LinkedHashMap<>();
+        collection.folderAuthModes = new LinkedHashMap<>();
+        collection.folderAuth = new LinkedHashMap<>();
+        collection.runtimeVars = new LinkedHashMap<>();
+        collection.runtimeOAuth2 = new LinkedHashMap<>();
+        loadedCollections.add(collection);
+        registerCollectionRuntimeListener(collection);
+        refreshCollectionCombos();
+        return collection;
+    }
+
+    private ApiRequest findRequestById(String requestId) {
+        if (requestId == null || requestId.isBlank()) {
+            return null;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            ApiRequest request = findRequestByIdInCollection(collection, requestId);
+            if (request != null) {
+                return request;
+            }
+        }
+        return null;
+    }
+
+    private ApiRequest findRequestByIdInCollection(ApiCollection collection, String requestId) {
+        if (collection == null || requestId == null || requestId.isBlank() || collection.requests == null) {
+            return null;
+        }
+        for (ApiRequest request : collection.requests) {
+            if (request != null && requestId.equals(request.id)) {
+                return request;
+            }
+        }
+        return null;
+    }
+
+    private ApiCollection findCollectionContainingRequestId(String requestId) {
+        if (requestId == null || requestId.isBlank()) {
+            return null;
+        }
+        for (ApiCollection collection : loadedCollections) {
+            if (findRequestByIdInCollection(collection, requestId) != null) {
+                return collection;
+            }
+        }
+        return null;
+    }
+
+    private void selectRequestInTree(ApiRequest request) {
+        if (requestTree == null || request == null) {
+            return;
+        }
+        TreePath path = findRequestTreePathByRequest(request);
+        if (path != null) {
+            selectTreePath(path);
+        }
+    }
+
+    private static final class HistoryRequestContext {
+        final ApiCollection collection;
+        final ApiRequest request;
+        final boolean originalRequestExists;
+
+        private HistoryRequestContext(ApiCollection collection, ApiRequest request, boolean originalRequestExists) {
+            this.collection = collection;
+            this.request = request;
+            this.originalRequestExists = originalRequestExists;
         }
     }
 
@@ -4676,6 +5090,7 @@ public class ImporterPanel {
         Map<String, String> modelTreePaths = collectRequestTreePathsFromRequestModels();
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
+        state.historyEntries = historyStore.snapshot();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
         }
@@ -4716,6 +5131,10 @@ public class ImporterPanel {
                 }
                 restoreWorkspaceCollections(state.collections != null ? state.collections : Collections.emptyList());
                 replaceEnvironmentProfiles(state.environments);
+                historyPersistenceService.restoreStore(historyStore, state);
+                if (historyPanel != null) {
+                    historyPanel.refreshFromStore();
+                }
                 setActiveEnvironmentId(state.activeEnvironmentId);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
@@ -4747,7 +5166,8 @@ public class ImporterPanel {
         }
         boolean hasCollections = state.collections != null && !state.collections.isEmpty();
         boolean hasEnvironments = state.environments != null && !state.environments.isEmpty();
-        return hasCollections || hasEnvironments;
+        boolean hasHistory = state.historyEntries != null && !state.historyEntries.isEmpty();
+        return hasCollections || hasEnvironments || hasHistory;
     }
 
     private static final class PendingMainRequestTreeRestore {
@@ -7545,6 +7965,15 @@ public class ImporterPanel {
         commitVariablesDraftToCollection(ref.collection, ref.label);
     }
 
+    private JPanel createHistoryTab() {
+        historyPanel = new HistoryPanel(historyStore, historyExportService, historyDiffService, historyLoadResultNotifier);
+        historyPanel.setLoadInWorkbenchAction(this::loadHistoryEntryIntoWorkbench);
+        historyPanel.setReplayFromHistoryAction(this::replayHistoryEntry);
+        historyPanel.setSendToRepeaterAction(this::sendHistoryEntryToRepeater);
+        historyPanel.setWorkspaceChangeListener(this::notifyWorkspaceChanged);
+        return historyPanel;
+    }
+
     private JPanel createDiagnosticsTab() {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
@@ -8502,6 +8931,9 @@ public class ImporterPanel {
                     }
                     setRunnerControlsRunning(runner.isRunning());
                 });
+            }
+            @Override public void onAttemptComplete(RunnerResult result) {
+                SwingUtilities.invokeLater(() -> recordRunnerHistoryAttempt(result));
             }
             @Override public void onTimeline(RunnerTimelineRow row) {
                 SwingUtilities.invokeLater(() -> timelineModel.addRow(row));

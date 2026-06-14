@@ -21,6 +21,32 @@ Expected output:
 
 When present, focused tests for startup, request-tree state, drag/drop, runner behavior, or DataFlavor regressions can be run individually with Maven's `-Dtest=...` switch.
 
+## Replay history validation
+
+Replay History is covered by focused tests for the store, retention policy, persistence, Workbench capture, Runner capture, replay/load actions, filters, compare, and export formatting.
+
+Useful targeted cases include:
+
+- `HistoryStoreTest`
+- `HistoryRetentionPolicyTest`
+- `HistorySanitizerTest`
+- `HistoryPersistenceServiceTest`
+- `WorkbenchHistoryCaptureTest`
+- `RunnerHistoryCaptureTest`
+- `HistoryReplayActionTest`
+- `HistoryLoadInWorkbenchActionTest`
+- `HistoryReplaysCollectionTest`
+- `HistorySendToRepeaterActionTest`
+- `HistoryFiltersTest`
+- `HistoryDiffServiceTest`
+- `HistoryExportServiceTest`
+- `HistoryJsonExportServiceTest`
+- `HistoryCsvExportServiceTest`
+- `HistoryHarExportServiceTest`
+- `HistoryPanelTest`
+
+When your Burp setup supports saving and reopening a project, confirm that the History tab restores from workspace data as part of manual validation.
+
 ## Runtime smoke tester repo
 
 The separate `Automated Tester for API Workbench` repository is the script-driven runtime smoke harness.

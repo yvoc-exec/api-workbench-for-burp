@@ -58,6 +58,7 @@ public class RequestEditorPanel extends JPanel {
     private boolean authorizationHeaderMaterialized = false;
     private boolean contentTypeHeaderMaterialized = false;
     private Runnable trackedHeaderStateChangeListener;
+    private boolean dirty = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -265,12 +266,14 @@ public class RequestEditorPanel extends JPanel {
 
     private void refreshAllIfReady() {
         if (!loadingRequest) {
+            markDirty();
             refreshAll();
         }
     }
 
     private void refreshResolvedMirrorIfReady() {
         if (!loadingRequest) {
+            markDirty();
             refreshResolvedMirror();
         }
     }
@@ -279,6 +282,7 @@ public class RequestEditorPanel extends JPanel {
         if (loadingRequest || syncingDerivedHeaders) {
             return;
         }
+        markDirty();
         if (trackedHeaderStateChangeListener != null) {
             trackedHeaderStateChangeListener.run();
         }
@@ -286,6 +290,7 @@ public class RequestEditorPanel extends JPanel {
 
     private void handleAuthUiChangedIfReady() {
         if (!loadingRequest && headersModel != null) {
+            markDirty();
             syncAuthorizationHeaderFromCurrentAuth();
             refreshResolvedMirror();
         }
@@ -293,6 +298,7 @@ public class RequestEditorPanel extends JPanel {
 
     private void handleBodyUiChangedIfReady() {
         if (!loadingRequest && headersModel != null) {
+            markDirty();
             syncContentTypeHeaderFromCurrentBody();
             refreshResolvedMirror();
         }
@@ -319,6 +325,7 @@ public class RequestEditorPanel extends JPanel {
         }
         captureMaterializedDefaultHeaders(req);
         refreshAll();
+        markClean();
     }
 
     public void clearRequest() {
@@ -334,6 +341,7 @@ public class RequestEditorPanel extends JPanel {
         }
         refreshAll();
         setSendControlsEnabled(false);
+        markClean();
     }
 
     public ApiRequest getCurrentRequest() { return currentRequest; }
@@ -365,6 +373,20 @@ public class RequestEditorPanel extends JPanel {
 
     public void commitAllEdits() {
         RequestEditorTableSupport.commitAllEdits(paramsTable, headersTable, bodyFormTable);
+    }
+
+    public boolean isDirty() {
+        return dirty;
+    }
+
+    public void markClean() {
+        dirty = false;
+    }
+
+    public void markDirty() {
+        if (!loadingRequest) {
+            dirty = true;
+        }
     }
 
     public ApiRequest buildRequestFromUI() {

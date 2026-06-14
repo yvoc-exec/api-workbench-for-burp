@@ -9,6 +9,7 @@ API Workbench for Burp Suite is a Burp Suite extension for importing, organizing
 - Edit requests in place, then send them to Burp or Repeater.
 - Manage active environments and variables without leaving Burp.
 - Queue and run multiple requests with predictable sequencing.
+- Record and replay execution history from Workbench and Runner runs.
 - Drag and drop requests, folders, collections, and environments.
 - Export back to familiar formats for sharing, handoff, and reporting.
 
@@ -19,6 +20,7 @@ API Workbench for Burp Suite is a Burp Suite extension for importing, organizing
 3. Edit one request in the Workbench, then send it or send it to Repeater.
 4. Check requests into the Collection Runner, preview them, reorder them, and run them.
 5. Reorganize the tree with drag and drop while keeping collapse and selection state intact across refreshes.
+6. Open the History tab to revisit prior runs, compare entries, and export selected results while the latest 1000 entries are trimmed automatically.
 
 ## Key supported import formats
 
@@ -79,6 +81,7 @@ Environment behavior includes:
 - Reorder the runner queue before execution.
 - Clear or remove queued requests quickly.
 - Use active environments for base URLs, tokens, and other runtime values.
+- Review, replay, compare, and export prior runs from the History tab.
 - Export back to common formats for sharing and reporting.
 - Run local smoke validation for confidence before handoff.
 
@@ -121,6 +124,32 @@ API Workbench includes drag/drop support for common workflows:
 - Request tree state preservation across refresh and rebuild operations.
 
 Real mouse-driven drag/drop can still benefit from manual spot checks, especially when you want visual confirmation of the exact UI behavior.
+
+## Replay History
+
+The History tab records API Workbench executions from Workbench direct Send and Collection Runner attempts, including every retry. It does not capture Repeater sends, Burp Proxy traffic, Import-to-Sitemap live sends, manual request draft edits, or Scanner/Collaborator/OAST traffic.
+
+History keeps the latest 1000 entries in Burp project extension data. Older entries are automatically removed, and the tab shows that retention notice in the UI.
+
+History stores the request snapshot in authored/template form so it stays reusable with the active environment. Response metadata can include status, headers, body, duration, size, errors, assertions, and extractions.
+
+Available actions include:
+
+- Load in Workbench
+- Replay from History
+- Send to Repeater
+- Copy URL
+- Copy as cURL
+- Compare Selected
+- Export selected entries as HAR, native History JSON, or CSV
+- Delete selected entries
+- Clear History
+
+If the original request no longer exists, loading a history row creates or reuses a `History Replays` collection.
+
+Burp project files and exported history may contain sensitive request and response data. Review them before sharing.
+
+For the full feature reference, see [Replay History Guide](docs/replay-history.md).
 
 ## Project Architecture
 
@@ -165,6 +194,26 @@ burp/
 |   |-- ExportFileNamePolicy.java          # Export filename policy
 |   |-- ExportIds.java                     # Stable export identifier helper
 |   `-- ExportException.java               # Export error type
+|-- history/
+|   |-- HistoryEntry.java                  # Persisted replay-history row model
+|   |-- HistorySource.java                 # Workbench vs Runner source enum
+|   |-- HistoryResult.java                 # Normalized execution result classification
+|   |-- HistoryRequestSnapshot.java        # Authored/template request snapshot
+|   |-- HistoryResponseSnapshot.java       # Captured response snapshot
+|   |-- HistoryHeader.java                 # Request/response header snapshot model
+|   |-- HistoryAssertionResult.java        # Assertion outcome model
+|   |-- HistoryExtractionResult.java       # Extraction outcome model
+|   |-- HistoryFilterCriteria.java         # Table filter model
+|   |-- HistoryRetentionPolicy.java        # Latest-1000 retention policy
+|   |-- HistoryStore.java                  # In-memory retained history store
+|   |-- HistoryPersistenceService.java     # Workspace/project-data persistence bridge
+|   |-- HistoryExportService.java          # HAR/JSON/CSV export coordinator
+|   |-- HistoryJsonExportService.java      # Native history JSON export
+|   |-- HistoryCsvExportService.java       # Summary CSV export
+|   |-- HistoryHarExportService.java       # HAR export using templated values
+|   |-- HistoryDiffService.java            # Compare / diff generator
+|   |-- HistoryJsonSupport.java            # Shared JSON adapters and normalization
+|   `-- HistorySanitizer.java              # Display/export helpers
 |-- models/
 |   |-- ApiCollection.java                # Unified collection model
 |   |-- ApiRequest.java                   # Unified request model
@@ -196,7 +245,7 @@ burp/
 |   |-- SmokeRuntimeRunner.java           # Local runtime smoke execution harness
 |   `-- SmokeUiEvidenceSnapshot.java      # UI evidence snapshot helper
 |-- ui/
-|   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, and Runner
+|   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, Runner, and History
 |   |-- OAuth2Panel.java                  # OAuth2 configuration UI
 |   |-- RequestEditorPanel.java           # Workbench request editor
 |   |-- RequestEditorAuthSupport.java     # Auth-field orchestration helper
@@ -218,6 +267,14 @@ burp/
 |   |   |-- EnvironmentTransferHandler.java # Environment file/profile drag/drop
 |   |   |-- RunnerQueueDragPayload.java     # Runner queue drag payload
 |   |   `-- RunnerQueueTransferHandler.java # Runner queue reorder support
+|   |-- history/
+|   |   |-- HistoryPanel.java               # History tab shell, toolbar, filters, table, and detail split pane
+|   |   |-- HistoryTableModel.java          # History row table model
+|   |   |-- HistoryFilterPanel.java         # Full history filter controls
+|   |   |-- HistoryDetailPanel.java         # Request/response/variables/assertions detail tabs
+|   |   |-- HistoryActionsPanel.java        # Load/replay/export/compare/delete actions
+|   |   |-- HistoryCompareDialog.java       # Two-entry diff viewer
+|   |   `-- HistoryLoadResultNotifier.java  # Confirmation and notification popups
 |   `-- tree/
 |       |-- BurpLikeTreeCellRenderer.java  # Request tree renderer
 |       |-- CheckBoxTreeCellRenderer.java  # Checkbox tree renderer
@@ -255,15 +312,16 @@ burp/
 |   `-- WorkspaceStateService.java       # Workspace persistence via extension data
 ```
 
-`src/test/java/burp/` contains the unit and integration tests that mirror these same areas, including startup, import/export, runner, drag/drop, tree-state, smoke, and utility coverage.
+`src/test/java/burp/` contains the unit and integration tests that mirror these same areas, including startup, import/export, runner, drag/drop, tree-state, history, smoke, and utility coverage.
 
 ### How the pieces fit together
 
 - `BurpExtender` starts the extension, registers the tab, and restores workspace state.
 - `UniversalImporter` and `ImporterPanel` coordinate the Workbench user flow.
 - Parsers normalize external formats into the shared collection and request models.
-- The request editor and runner share the same request-building, variable-resolution, and auth pipeline.
+- The request editor, runner, and history capture logic share the same request-building, variable-resolution, and auth pipeline.
 - Drag/drop support is split between `ui/dnd` and `ui/tree`.
+- History captures Workbench sends and Runner attempts, then persists through workspace state so the latest 1000 entries restore with the project.
 - Workspace persistence is handled through the extension-data services and workspace-state models.
 - `smoke/` is local opt-in QA support and does not run during normal loading.
 
@@ -332,10 +390,11 @@ For focused operator guidance and deeper reference material, see:
 - [Operator Guide](OPERATOR_GUIDE.md)
 - [Complete Documentation](DOCUMENTATION.md)
 - [Feature Guide](docs/features.md)
+- [Replay History Guide](docs/replay-history.md)
 - [Testing Guide](docs/testing.md)
 - [Smoke Mode Security Notes](docs/security-smoke-mode.md)
 - [Draft v2 Release Notes](docs/release-notes-v2-draft.md)
 
 ## Summary
 
-API Workbench brings imported collections, a structured request tree, request editing, runner execution, environment management, and drag/drop reorganization into Burp Suite so you can spend less time rebuilding requests and more time testing them.
+API Workbench brings imported collections, a structured request tree, request editing, runner execution, replay history, environment management, and drag/drop reorganization into Burp Suite so you can spend less time rebuilding requests and more time testing them.

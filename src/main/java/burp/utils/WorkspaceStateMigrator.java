@@ -31,6 +31,9 @@ public final class WorkspaceStateMigrator {
         if (state.environments == null) {
             state.environments = new java.util.ArrayList<>();
         }
+        if (state.historyEntries == null) {
+            state.historyEntries = new java.util.ArrayList<>();
+        }
         for (EnvironmentProfile profile : state.environments) {
             if (profile != null) {
                 profile.ensureDefaults();
