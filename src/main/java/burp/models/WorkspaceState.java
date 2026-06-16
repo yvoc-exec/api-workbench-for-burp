@@ -1,5 +1,7 @@
 package burp.models;
 
+import burp.history.HistoryEntry;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +23,7 @@ public class WorkspaceState {
     public List<String> checkedRequestIdentityKeys = new ArrayList<>();
     public List<String> expandedTreePathKeys = new ArrayList<>();
     public Map<String, String> requestTreePaths = new LinkedHashMap<>();
+    public List<HistoryEntry> historyEntries = new ArrayList<>();
     public Boolean workbenchRepeaterSelected;
     public Boolean workbenchSitemapSelected;
     public Boolean workbenchIntruderSelected;
@@ -65,6 +68,7 @@ public class WorkspaceState {
         copy.checkedRequestIdentityKeys = source.checkedRequestIdentityKeys != null ? new ArrayList<>(source.checkedRequestIdentityKeys) : new ArrayList<>();
         copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
+        copy.historyEntries = copyHistoryEntries(source.historyEntries);
         copy.workbenchRepeaterSelected = source.workbenchRepeaterSelected;
         copy.workbenchSitemapSelected = source.workbenchSitemapSelected;
         copy.workbenchIntruderSelected = source.workbenchIntruderSelected;
@@ -149,6 +153,20 @@ public class WorkspaceState {
         }
         for (ApiRequest req : src) {
             out.add(copyRequest(req));
+        }
+        return out;
+    }
+
+    private static List<HistoryEntry> copyHistoryEntries(List<HistoryEntry> src) {
+        List<HistoryEntry> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (HistoryEntry entry : src) {
+            HistoryEntry copy = HistoryEntry.copyOf(entry);
+            if (copy != null) {
+                out.add(copy);
+            }
         }
         return out;
     }

@@ -1,5 +1,9 @@
 package burp.utils;
 
+import burp.history.HistoryEntry;
+import burp.history.HistoryJsonSupport;
+import burp.history.HistoryRetentionPolicy;
+import burp.history.HistoryStore;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
@@ -12,7 +16,7 @@ import com.google.gson.JsonParser;
 import java.util.Locale;
 
 public final class WorkspaceStateJson {
-    private static final Gson GSON = new GsonBuilder()
+    private static final Gson GSON = HistoryJsonSupport.configure(new GsonBuilder())
             .disableHtmlEscaping()
             .setPrettyPrinting()
             .create();
@@ -59,6 +63,11 @@ public final class WorkspaceStateJson {
         }
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
+        }
+        if (out.historyEntries == null) {
+            out.historyEntries = new java.util.ArrayList<>();
+        } else {
+            out.historyEntries = HistoryStore.normalizeEntries(out.historyEntries, HistoryRetentionPolicy.defaultPolicy());
         }
         normalizeEnvironmentProfiles(out);
         JsonObject rawRoot = raw != null && raw.isJsonObject() ? raw.getAsJsonObject() : null;

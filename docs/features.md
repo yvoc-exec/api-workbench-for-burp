@@ -56,6 +56,16 @@ Environment handling includes the active environment dropdown, variable resoluti
 - Capture results and failures in the runner view.
 - Resolve variables and environments during execution.
 
+## Replay history
+
+- Capture Workbench direct Send executions and Collection Runner attempts, including retries.
+- Preserve the authored/template request snapshot so replay stays environment-aware.
+- Persist the latest 1000 entries in Burp project extension data and restore them when the project reloads.
+- Load a row back into Workbench, replay it, send it to Repeater, compare two entries, or export selected rows as HAR, native History JSON, or CSV.
+- Treat Burp project files and exported history as sensitive because they may contain request and response data.
+
+For the full details, see [Replay History Guide](replay-history.md).
+
 ## Auth and OAuth2
 
 - Collection, folder, and request auth settings.

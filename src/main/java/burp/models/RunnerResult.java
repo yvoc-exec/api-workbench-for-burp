@@ -8,6 +8,8 @@ import java.util.*;
 public class RunnerResult {
     public String requestName;
     public String requestId;
+    public String collectionName;
+    public String folderPath;
     public String host;
     public String path;
     public String method;
@@ -25,6 +27,8 @@ public class RunnerResult {
     public String responseBodyPreview;
     public Map<String, String> extractedVariables = new HashMap<>();
     public List<AssertionResult> assertions = new ArrayList<>();
+    public int attemptNumber = 1;
+    public int totalAttempts = 1;
 
     public static class AssertionResult {
         public String name;
