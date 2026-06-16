@@ -6,6 +6,7 @@ import burp.utils.ExecutionResult;
 import burp.utils.HttpUtils;
 import burp.utils.ScriptEngine;
 import burp.utils.RequestBuilder;
+import burp.utils.RequestPathResolver;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -343,6 +344,8 @@ public class CollectionRunner {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
+        result.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
+        result.folderPath = col != null ? RequestPathResolver.getRequestFolderPath(col, req) : req.path;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
 
         if (pipeline == null) {
@@ -384,9 +387,9 @@ public class CollectionRunner {
                     fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + exec.requestHeaders + "\n=== End Runner Raw Request ===");
                 }
 
-                if (cancelled || Thread.currentThread().isInterrupted()) {
-                    return null;
-                }
+                    if (cancelled || Thread.currentThread().isInterrupted()) {
+                        return null;
+                    }
 
                 if (exec.success && exec.response != null && exec.response.response() != null) {
                     var response = exec.response.response();
@@ -434,11 +437,18 @@ public class CollectionRunner {
                         result.assertions.addAll(exec.assertions);
                     }
 
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+
                     break; // Success, exit retry loop
                 } else {
                     result.success = false;
                     result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
                     fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
                     if (attempts >= maxAttempts || cancelled) {
                         break;
                     }
@@ -455,6 +465,9 @@ public class CollectionRunner {
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
                 fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                result.attemptNumber = attempts;
+                result.totalAttempts = maxAttempts;
+                fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
                 if (attempts >= maxAttempts || cancelled) {
                     break;
                 }
@@ -472,6 +485,9 @@ public class CollectionRunner {
         if (result.success && attempts > 1) {
             fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " passed");
         }
+
+        result.attemptNumber = attempts;
+        result.totalAttempts = maxAttempts;
 
         return new RequestExecutionOutcome(result, attempts);
     }
@@ -628,6 +644,56 @@ public class CollectionRunner {
         return result != null && result.success && result.statusCode >= 400;
     }
 
+    private RunnerResult snapshotAttemptResult(RunnerResult source,
+                                               ExecutionResult exec,
+                                               int attemptNumber,
+                                               int totalAttempts) {
+        RunnerResult snapshot = new RunnerResult();
+        if (source != null) {
+            snapshot.requestName = source.requestName;
+            snapshot.requestId = source.requestId;
+            snapshot.collectionName = source.collectionName;
+            snapshot.folderPath = source.folderPath;
+            snapshot.host = source.host;
+            snapshot.path = source.path;
+            snapshot.method = source.method;
+            snapshot.requestUrl = source.requestUrl;
+            snapshot.requestHeaders = source.requestHeaders;
+            snapshot.requestBody = source.requestBody;
+            snapshot.success = source.success;
+            snapshot.statusCode = source.statusCode;
+            snapshot.responseTimeMs = source.responseTimeMs;
+            snapshot.responseSize = source.responseSize;
+            snapshot.responseBodyLength = source.responseBodyLength;
+            snapshot.responseHeaders = source.responseHeaders;
+            snapshot.responseBody = source.responseBody;
+            snapshot.errorMessage = source.errorMessage;
+            snapshot.responseBodyPreview = source.responseBodyPreview;
+            snapshot.extractedVariables = source.extractedVariables != null ? new HashMap<>(source.extractedVariables) : new HashMap<>();
+            snapshot.assertions = source.assertions != null ? new ArrayList<>(source.assertions) : new ArrayList<>();
+        }
+        if (exec != null) {
+            if (exec.requestHeaders != null) {
+                snapshot.requestHeaders = exec.requestHeaders;
+            }
+            if (exec.requestBody != null) {
+                snapshot.requestBody = exec.requestBody;
+            }
+            if (exec.resolvedUrl != null) {
+                snapshot.requestUrl = exec.resolvedUrl;
+            }
+            if (exec.assertions != null && !exec.assertions.isEmpty()) {
+                snapshot.assertions = new ArrayList<>(exec.assertions);
+            }
+            if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
+                snapshot.extractedVariables = new HashMap<>(exec.extractedVars);
+            }
+        }
+        snapshot.attemptNumber = Math.max(1, attemptNumber);
+        snapshot.totalAttempts = Math.max(1, totalAttempts);
+        return snapshot;
+    }
+
     private RunnerTimelineRow buildTimelineRow(ApiRequest req, ApiCollection col, RunnerResult result, int attempts) {
         RunnerTimelineRow row = new RunnerTimelineRow();
         row.order = req != null ? req.sequenceOrder : 0;
@@ -735,6 +801,11 @@ public class CollectionRunner {
             for (RunnerListener l : listeners) l.onRequestComplete(result);
         });
     }
+    private void fireOnAttemptComplete(RunnerResult result) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onAttemptComplete(result);
+        });
+    }
     private void fireOnTimeline(RunnerTimelineRow row) {
         SwingUtilities.invokeLater(() -> {
             for (RunnerListener l : listeners) l.onTimeline(row);
@@ -760,6 +831,7 @@ public class CollectionRunner {
         void onStart(String collectionName, int totalRequests);
         void onSkip(String requestName, String reason);
         void onRequestComplete(RunnerResult result);
+        default void onAttemptComplete(RunnerResult result) { }
         default void onTimeline(RunnerTimelineRow row) { }
         void onComplete(List<RunnerResult> results);
         void onError(String message);
