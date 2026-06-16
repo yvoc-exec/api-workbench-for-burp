@@ -6,6 +6,13 @@ API Workbench for Burp Suite is a structured API testing workspace inside Burp. 
 
 API testing often starts outside Burp: a Postman collection, an OpenAPI spec, an Insomnia export, a Bruno collection, or a HAR file. Burp is powerful for manual testing, but imported API workflows can quickly turn into scattered Repeater tabs, copied requests, and one-off edits that are hard to reuse.
 
+| Question | Answer |
+| --- | --- |
+| Who is it for? | Pentesters, AppSec engineers, and API testers working in Burp. |
+| What problem does it solve? | It keeps API collections, environments, request edits, Runner runs, and history in one Burp-native workspace instead of scattering them across Repeater tabs or manual rebuilds. |
+| Why not only Burp Repeater? | Repeater is great for tampering with one request, but API Workbench keeps the surrounding workflow organized and reusable. |
+| Why not rebuild requests by hand? | You can start from the assets your team already has and keep testing instead of recreating everything manually. |
+
 API Workbench keeps that work in one Burp-native workspace so you can:
 
 - avoid rebuilding API requests by hand;
@@ -19,15 +26,16 @@ API Workbench keeps that work in one Burp-native workspace so you can:
 
 ## What it gives you
 
-- Bring Postman, OpenAPI, Insomnia, Bruno, HAR, and native Workbench collections into Burp.
-- Create new API collections, folders, requests, and environments directly inside Burp.
-- Organize requests in a collection/folder/request tree instead of scattered Repeater tabs.
-- Use active environments and variables for base URLs, tokens, tenants, roles, and test data.
-- Configure OAuth2-backed workflows for authenticated API testing.
-- Edit and send requests from the Workbench, or send them to Repeater for deeper manual testing.
-- Queue and run ordered API flows with the Collection Runner.
-- Review, replay, compare, and export execution history from the History tab.
-- Export collections, environments, and selected history for reporting or handoff.
+| Capability | What users can do | Why it matters |
+| --- | --- | --- |
+| Import or create collections | Import Postman, OpenAPI, Insomnia, Bruno, or HAR assets, or create API collections manually | Start from real team assets or build custom test sets |
+| Request tree | Organize by collection, folder, and request | Avoid scattered Repeater tabs |
+| Workbench | Edit and send one request | Test and refine APIs inside Burp |
+| Environments | Create, import, edit, set active, duplicate, delete, and export environments | Switch targets, tenants, roles, and tokens |
+| OAuth2 | Configure token flows and reuse tokens | Reduce manual auth setup |
+| Collection Runner | Queue, preview, reorder, and run requests | Test chained API workflows |
+| Replay History | Replay, compare, export, and load prior executions | Reproduce findings and create evidence |
+| Export / handoff | Export collections, environments, and selected history | Share work with teammates, clients, or reports |
 
 ## Main features
 
@@ -35,164 +43,140 @@ API Workbench keeps that work in one Burp-native workspace so you can:
 
 API Workbench is not import-only. You can start from files your team already uses or create collections manually inside Burp.
 
-- Import existing API collections.
-- Create new collections, folders, and requests directly from the request tree.
-- Create folders and requests from imported collections without starting over.
-- File-drop import makes it easy to bring assets into the tree.
-- Supported import formats:
-  - API Workbench JSON
-  - Postman Collection v2.1 JSON
-  - OpenAPI 3.0 JSON
-  - OpenAPI 3.0 YAML
-  - Insomnia JSON
-  - Bruno ZIP
-  - HAR 1.2 JSON
+| Create/edit action | Supported | Notes |
+| --- | --- | --- |
+| New Collection | Yes | Build a collection manually inside Burp |
+| New Folder | Yes | Organize requests by feature, role, or attack path |
+| New Request | Yes | Starts as GET with a blank URL |
+| Rename | Yes | Rename collections, folders, and requests |
+| Duplicate | Yes | Duplicate requests or tree items where supported |
+| Delete | Yes | Remove collections, folders, or requests |
 
-Use this when you want to begin from the assets teams already have instead of rebuilding requests by hand.
+Request labels can contain `/` safely. Folder names reject `/` and `\` to avoid ambiguous tree paths.
+
+Supported collection formats are summarized in [Supported formats](#supported-formats).
 
 ### Organize requests in a Burp-native workflow
 
 Keep API testing organized by feature, role, object type, or attack path.
 
-- Work with a collection/folder/request tree.
-- Drag and drop to reorder requests, folders, and collections.
-- Move requests, folders, and collections within the tree.
-- Preserve tree state across refreshes and rebuilds.
-- Import by dropping files into the tree.
-
-Manual naming rules are built for API testing, too:
-
-- request labels can contain `/` safely;
-- folder names reject `/` and `\` to avoid ambiguous tree paths;
-- duplicate, rename, and delete actions are available for collections, folders, and requests.
+| Tree behavior | Supported | Notes |
+| --- | --- | --- |
+| Collection / folder / request tree | Yes | Keep API work organized by feature, role, object type, or attack path |
+| Drag/drop reorder | Yes | Move requests, folders, and collections |
+| Tree state preservation | Yes | Keep selection and collapse state across refreshes |
+| File-drop import | Yes | Drag supported files into the tree |
+| Safe request labels | Yes | Request labels can contain `/` safely |
+| Folder path protection | Yes | Folder names reject `/` and `\` to avoid ambiguous paths |
 
 ### Edit and send requests from the Workbench
 
 The Workbench is where you inspect and modify a single API request without leaving Burp.
 
-- Edit method, URL, headers, body, and auth settings.
-- Work with per-request state where applicable.
-- Send the current request from Workbench.
-- Send a request to Burp Repeater for deeper tampering.
-- Inspect response and result details in the editor panes.
-- Create manual GET requests with a blank URL when you want to assemble an endpoint step by step.
+| Editor capability | What users can do |
+| --- | --- |
+| Method / URL / headers / body | Edit requests in place |
+| Auth settings | Adjust auth at collection, folder, or request scope |
+| Send / Send to Repeater | Test or hand off to Repeater |
+| Response display | Inspect results without leaving Burp |
+| Blank URL request creation | Create manual GET requests and fill endpoints step by step |
 
-This makes it easier to refine a request, test it, and then hand it off to Repeater when you need more control.
+Per-request state stays attached to the request you are working on, which makes it easier to refine a request, test it, and then hand it off to Repeater when you need more control.
 
 ### Manage environments and variables
 
 Switch between environments without rewriting the collection.
 
-- Create, import, edit, save, duplicate, delete, set active, and export environments.
-- Supported environment formats:
-  - API Workbench Environment JSON
-  - Postman Environment JSON
-  - dotenv `.env`
-  - Generic flat JSON
-  - Insomnia Environment JSON
-  - Bruno environment `.bru`
-- Use the active environment dropdown to swap contexts quickly.
-- Resolve variables across collection, environment, and request scopes.
-- Benefit from variable shadowing when the same variable name exists in multiple scopes.
-- Keep templates like `{{base_url}}` and `{{token}}` intact until runtime resolution.
-- Handle unresolved variables before send, runner execution, import, and export when resolution is enabled.
+| Environment action | Supported | Notes |
+| --- | --- | --- |
+| New Environment | Yes | Create variables directly inside Burp |
+| Import Environment | Yes | Bring in Postman, dotenv, JSON, Insomnia, or Bruno environments |
+| Edit / Save | Yes | Manage values used by runtime resolution |
+| Duplicate | Yes | Quickly create role, tenant, or target variants |
+| Delete | Yes | Remove unused profiles |
+| Set Active | Yes | Select the environment used by Workbench, Runner, and exports |
+| Export | Yes | Share or archive reusable environment profiles |
 
-Use this to move between dev, staging, production, tenant, role, or token sets without duplicating the collection.
+Supported environment formats are summarized in [Supported formats](#supported-formats).
+
+Use the active environment dropdown to swap contexts quickly. Collection, environment, and request scopes all participate in variable resolution, with higher-priority values shadowing lower-priority ones when names overlap. Unresolved variables are surfaced before send, runner execution, import, and export when resolution is enabled.
 
 ### Test authenticated APIs with OAuth2 support
 
 API Workbench includes OAuth2-aware request handling for common API testing flows.
 
-- Configure OAuth2 at collection, folder, or request scope.
-- Acquire tokens from the Workbench workflow.
-- Refresh tokens when they expire.
-- Store tokens for reuse during the current workspace session.
-- Supported grant flows include:
-  - Client Credentials
-  - Password Grant
-  - Refresh Token
-  - Authorization Code / PKCE where supported
+| OAuth2 flow | Support | Notes |
+| --- | --- | --- |
+| Client Credentials | Yes | Common machine-to-machine flow |
+| Password Grant | Yes | Supported for legacy or controlled environments |
+| Refresh Token | Yes | Reuses existing refresh tokens when available |
+| Authorization Code / PKCE | Where supported | Uses a localhost callback flow |
 
-This reduces the amount of manual token copying needed for authenticated API testing.
+The Workbench can acquire tokens, refresh them when they expire, and store them for reuse during the current workspace session. That reduces the amount of manual token copying needed for authenticated API testing.
 
 ### Run chained API workflows with Collection Runner
 
 Use the runner for ordered, repeatable API flows.
 
-- Queue checked requests.
-- Preview the run before execution.
-- Reorder the runner queue.
-- Remove selected queued requests or clear the queue.
-- Run sequential API workflows.
-- Capture success, failure, status, and duration.
-- Support extraction and assertion workflows where available.
+| Runner capability | What users can do |
+| --- | --- |
+| Queue checked requests | Build a run list |
+| Preview before execution | Confirm order and scope |
+| Reorder queue | Test paths in the right sequence |
+| Remove selected / clear queue | Adapt quickly when plans change |
+| Sequential runs | Execute login -> create -> update -> delete flows |
+| Capture results | Track success, failure, status, and duration |
+| Extraction / assertion workflows | Support chained testing where available |
 
-Use it for flows like login → create object → update object → delete object → verify authorization behavior.
+Use it for flows like login -> create object -> update object -> delete object -> verify authorization behavior.
 
 ### Revisit and replay testing activity with Replay History
 
 Replay History keeps a Burp-native record of what you actually ran from API Workbench.
 
-- Captures Workbench Send.
-- Captures Collection Runner attempts.
-- Captures retry attempts.
-- Does not capture Burp Proxy traffic.
-- Does not capture Repeater sends.
-- Does not capture Import-to-Sitemap live sends.
-- Load in Workbench.
-- Replay from History.
-- Send to Repeater.
-- Copy URL.
-- Copy as cURL.
-- Compare Selected.
-- Export as HAR, native History JSON, or CSV.
-- Delete selected entries.
-- Clear History.
-- Retains the latest 1000 entries.
-- Warns that history may contain sensitive request and response data.
+| Recorded? | Sources |
+| --- | --- |
+| Captured | Workbench Send, Collection Runner attempts, and retry attempts |
+| Not captured | Burp Proxy traffic, Repeater sends, Import-to-Sitemap live sends, manual request draft edits, Scanner, Collaborator, or OAST traffic |
 
-If the original request still exists, Load in Workbench applies the history snapshot back into that original request. If it no longer exists, API Workbench creates or reuses a `History Replays` collection.
+| Action | Why it matters |
+| --- | --- |
+| Load in Workbench | Apply the history snapshot back into the original request when it still exists |
+| Replay from History | Re-run a previous request state |
+| Send to Repeater | Continue manual tampering |
+| Copy URL / Copy as cURL | Share quickly or move outside Burp |
+| Compare Selected | Diff two runs |
+| Export HAR / JSON / CSV | Build evidence and handoff artifacts |
+| Delete selected / Clear History | Manage stored history |
 
-Use this to revisit what was tested, compare different runs, replay a previous request state, or export evidence for reporting.
+Replay History retains the latest 1000 entries. If the original request still exists, Load in Workbench applies the snapshot back into that original request. If it no longer exists, API Workbench creates or reuses a `History Replays` collection. Burp project files and exported history may contain sensitive request and response data, so review them before sharing.
+
+For the full feature reference, see [Replay History Guide](docs/replay-history.md).
 
 ### Export collections, environments, and history for handoff
 
 Move cleaned-up work out of Burp when you need to share or archive it.
 
-- Collection export formats:
-  - API Workbench JSON
-  - Postman Collection v2.1 JSON
-  - OpenAPI 3.0 JSON
-  - OpenAPI 3.0 YAML
-  - Insomnia JSON
-  - Bruno ZIP
-  - HAR 1.2 JSON
-- Environment export formats:
-  - API Workbench Environment JSON
-  - Postman Environment JSON
-  - dotenv `.env`
-  - Generic flat JSON
-  - Insomnia Environment JSON
-  - Bruno environment `.bru`
-- History export formats:
-  - HAR
-  - native History JSON
-  - CSV summary
-
-This makes it easier to hand off collections, environment profiles, or selected execution history to teammates, clients, or reports.
+| Export area | Formats | Why it matters |
+| --- | --- | --- |
+| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Share a cleaned-up collection in the format your team prefers |
+| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | Reuse the same targets, tenants, roles, and tokens elsewhere |
+| History | HAR, Native History JSON, CSV summary | Export evidence or produce lightweight reports |
 
 ### Ease-of-use features for daily testing
 
 The small workflow details add up when you are testing APIs all day.
 
-- Drag/drop imports.
-- Drag/drop request tree organization.
-- Runner queue reorder.
-- Active environment switching.
-- Unresolved variable prompts.
-- Copy as cURL.
-- Send to Repeater.
-- Clear/remove queue actions.
+| Ease-of-use feature | Why it matters |
+| --- | --- |
+| Drag/drop imports | Reduce setup overhead |
+| Tree organization drag/drop | Keep structure tidy |
+| Runner queue reorder | Adjust runs quickly |
+| Active environment switching | Move between targets fast |
+| Unresolved variable prompts | Catch missing values earlier |
+| Copy as cURL | Share with others or move to another tool |
+| Send to Repeater | Escalate interesting cases |
+| Clear/remove queue actions | Clean up as plans change |
 
 These features reduce repetitive setup work and keep testing moving inside Burp.
 
@@ -201,7 +185,7 @@ These features reduce repetitive setup work and keep testing moving inside Burp.
 1. Import a Postman collection, OpenAPI spec, Insomnia export, Bruno collection, or HAR file and start testing immediately in Burp.
 2. Create a new collection manually for undocumented endpoints, then add folders and requests as you discover them.
 3. Build a dev, staging, or tenant-specific environment profile and switch contexts with the active environment dropdown.
-4. Queue a login → create → update → delete sequence in the Collection Runner, then inspect results and compare runs in History.
+4. Queue a login -> create -> update -> delete sequence in the Collection Runner, then inspect results and compare runs in History.
 5. Send an interesting request to Repeater when you want to tamper with one case, then replay the result later from History.
 6. Export a cleaned-up collection, a reusable environment file, or selected history entries for handoff and reporting.
 
@@ -209,90 +193,196 @@ These features reduce repetitive setup work and keep testing moving inside Burp.
 
 ### Collections
 
-| Format | Direction | Notes |
-| --- | --- | --- |
-| API Workbench JSON | Import / export | Native collection format. |
-| Postman Collection v2.1 JSON | Import / export | Supports shared Postman collections. |
-| OpenAPI 3.0 JSON | Import / export | Structured API definition support. |
-| OpenAPI 3.0 YAML | Import / export | YAML variant of OpenAPI 3.0. |
-| Insomnia JSON | Import / export | Supports Insomnia exports. |
-| Bruno ZIP | Import / export | Supports Bruno collection packages. |
-| HAR 1.2 JSON | Import / export | Supports captured request collections. |
+| Format | Import | Export | Notes |
+| --- | --- | --- | --- |
+| API Workbench JSON | Yes | Yes | Native collection format |
+| Postman Collection v2.1 JSON | Yes | Yes | Postman-compatible sharing |
+| OpenAPI 3.0 JSON | Yes | Yes | Structured API definitions |
+| OpenAPI 3.0 YAML | Yes | Yes | YAML OpenAPI support |
+| Insomnia JSON | Yes | Yes | Insomnia export/import |
+| Bruno ZIP | Yes | Yes | Bruno collection packages |
+| HAR 1.2 JSON | Yes | Yes | Captured request collections |
 
 ### Environments
 
-| Format | Direction | Notes |
-| --- | --- | --- |
-| API Workbench Environment JSON | Import / export | Native environment format. |
-| Postman Environment JSON | Import / export | Supports Postman-style environments. |
-| dotenv `.env` | Import / export | Simple `key=value` variables. |
-| Generic flat JSON | Import / export | Flat JSON object support. |
-| Insomnia Environment JSON | Import / export | Supports Insomnia environments. |
-| Bruno environment `.bru` | Import / export | Supports Bruno variable blocks. |
+| Format | Import | Export | Notes |
+| --- | --- | --- | --- |
+| API Workbench Environment JSON | Yes | Yes | Native environment format |
+| Postman Environment JSON | Yes | Yes | Postman-style variables |
+| dotenv `.env` | Yes | Yes | Simple key=value variables |
+| Generic flat JSON | Yes | Yes | Flat JSON object |
+| Insomnia Environment JSON | Yes | Yes | Insomnia environment exports |
+| Bruno environment `.bru` | Yes | Yes | Bruno variable blocks |
 
 ### History exports
 
-| Format | Notes |
+| Format | Purpose |
 | --- | --- |
-| HAR | Best for portable network-style evidence. |
-| Native History JSON | Best for fidelity inside API Workbench. |
-| CSV summary | Best for lightweight review and reporting. |
+| HAR | Portable network-style evidence |
+| Native History JSON | Full-fidelity API Workbench history |
+| CSV summary | Lightweight review and reporting |
 
-## Replay History
+## Project architecture
 
-Replay History is a focused reference for the History tab.
-
-What it records:
-
-- Workbench direct Send
-- Collection Runner executions, including each retry attempt
-
-What it does not record:
-
-- Repeater sends
-- Burp Proxy traffic
-- Import-to-Sitemap live sends
-- Manual request draft edits
-- Scanner, Collaborator, or OAST traffic
-
-History stores the authored/template request snapshot plus execution metadata such as result, status, duration, size, environment, unresolved variables, assertions, and extractions.
-
-Available actions:
-
-- Load in Workbench
-- Replay from History
-- Send to Repeater
-- Copy URL
-- Copy as cURL
-- Compare Selected
-- Export selected entries as HAR, native History JSON, or CSV
-- Delete selected entries
-- Clear History
-
-Retention and loading behavior:
-
-- The latest 1000 entries are retained.
-- Older entries are removed automatically.
-- Burp project files and exported history may contain sensitive request and response data.
-- If the original request still exists, Load in Workbench restores the snapshot into that request.
-- If the original request no longer exists, API Workbench creates or reuses `History Replays`.
-
-For details, see [Replay History Guide](docs/replay-history.md).
-
-## Project Architecture
-
-- `src/main/java/burp/` contains the extension entry point and core feature packages.
-- `src/test/java/burp/` mirrors the production code with focused tests.
+The main source lives under `src/main/java/burp/`. Tests live under `src/test/java/burp/`.
 
 ```text
 burp/
-|-- auth/      OAuth2 token acquisition, refresh, and storage
-|-- exporter/  Collection, environment, and history export
-|-- history/   Replay history capture, compare, and export
-|-- parser/    Postman, OpenAPI, Insomnia, Bruno, and HAR importers
-|-- runner/    Sequential collection runner
-|-- ui/        Workbench, environments, OAuth2, runner, and history panels
-`-- utils/     Shared request-building, variable-resolution, and workspace helpers
+|-- BurpExtender.java                 # Extension entry point, startup diagnostics, suite-tab registration
+|-- UniversalImporter.java            # Top-level importer/workbench coordinator
+|-- auth/
+|   |-- OAuth2Config.java             # OAuth2 configuration model
+|   |-- OAuth2Manager.java            # Token acquisition and refresh coordinator
+|   |-- TokenStore.java               # Runtime token cache
+|   |-- ClientCredentialsHandler.java  # Client Credentials grant handler
+|   |-- PasswordGrantHandler.java     # Resource Owner Password Credentials grant handler
+|   |-- RefreshTokenHandler.java      # Refresh Token grant handler
+|   `-- AuthorizationCodeHandler.java # PKCE + loopback callback grant handler
+|-- exporter/
+|   |-- CollectionExportService.java       # Collection export orchestration
+|   |-- EnvironmentExportService.java      # Environment export orchestration
+|   |-- ApiWorkbenchCollectionExporter.java # Native Workbench collection exporter
+|   |-- ApiWorkbenchEnvironmentExporter.java # Native Workbench environment exporter
+|   |-- PostmanCollectionExporter.java     # Postman v2.1 collection exporter
+|   |-- PostmanEnvironmentExporter.java    # Postman environment exporter
+|   |-- OpenApiCollectionExporter.java     # OpenAPI exporter
+|   |-- InsomniaCollectionExporter.java    # Insomnia collection exporter
+|   |-- InsomniaEnvironmentExporter.java   # Insomnia environment exporter
+|   |-- BrunoCollectionExporter.java       # Bruno collection exporter
+|   |-- BrunoEnvironmentExporter.java      # Bruno environment exporter
+|   |-- HarCollectionExporter.java         # HAR exporter
+|   |-- DotEnvEnvironmentExporter.java     # dotenv environment exporter
+|   |-- GenericJsonEnvironmentExporter.java # Flat JSON environment exporter
+|   |-- CollectionExportOptions.java       # Collection export options
+|   |-- EnvironmentExportOptions.java      # Environment export options
+|   |-- CollectionExportFormat.java        # Collection export format enum
+|   |-- EnvironmentExportFormat.java       # Environment export format enum
+|   |-- CollectionExportTree.java          # Collection-tree snapshot used by export flows
+|   |-- CollectionExportSupport.java       # Shared collection export helpers
+|   |-- ExportVariableResolutionService.java # Variable resolution during export
+|   |-- ExportSupport.java                 # Shared export helpers
+|   |-- ExportResult.java                  # Export result model
+|   |-- ExportFileNamePolicy.java          # Export filename policy
+|   |-- ExportIds.java                     # Stable export identifier helper
+|   `-- ExportException.java               # Export error type
+|-- history/
+|   |-- HistoryEntry.java                  # Persisted replay-history row model
+|   |-- HistorySource.java                 # Workbench vs Runner source enum
+|   |-- HistoryResult.java                 # Normalized execution result classification
+|   |-- HistoryRequestSnapshot.java        # Authored/template request snapshot
+|   |-- HistoryResponseSnapshot.java       # Captured response snapshot
+|   |-- HistoryHeader.java                # Request/response header snapshot model
+|   |-- HistoryAssertionResult.java        # Assertion outcome model
+|   |-- HistoryExtractionResult.java       # Extraction outcome model
+|   |-- HistoryFilterCriteria.java         # Table filter model
+|   |-- HistoryRetentionPolicy.java        # Latest-1000 retention policy
+|   |-- HistoryStore.java                  # In-memory retained history store
+|   |-- HistoryPersistenceService.java     # Workspace/project-data persistence bridge
+|   |-- HistoryExportService.java          # HAR/JSON/CSV export coordinator
+|   |-- HistoryJsonExportService.java      # Native history JSON export
+|   |-- HistoryCsvExportService.java       # Summary CSV export
+|   |-- HistoryHarExportService.java       # HAR export using templated values
+|   |-- HistoryDiffService.java            # Compare / diff generator
+|   |-- HistoryJsonSupport.java            # Shared JSON adapters and normalization
+|   `-- HistorySanitizer.java              # Display/export helpers
+|-- models/
+|   |-- ApiCollection.java                # Unified collection model
+|   |-- ApiRequest.java                   # Unified request model
+|   |-- BearerTokenAliasCandidate.java    # OAuth2 alias candidate
+|   |-- EnvironmentProfile.java          # Active environment profile model
+|   |-- OAuth2EnvironmentState.java      # Runtime OAuth2/environment state
+|   |-- WorkspaceState.java              # Workspace persistence model
+|   |-- ImportResult.java                # Import operation result
+|   |-- RunnerPreviewRow.java            # Runner preview row model
+|   |-- RunnerResult.java                # Runner operation result
+|   |-- RunnerStopConditions.java        # Runner stop-condition config
+|   |-- RunnerTimelineRow.java            # Runner timeline row model
+|   `-- UnresolvedVariableIssue.java      # Unresolved-variable preflight issue
+|-- parser/
+|   |-- CollectionParser.java             # Parser interface
+|   |-- ParserRegistry.java               # Auto-detect parser registry
+|   |-- ApiWorkbenchCollectionParser.java # Native Workbench collection parser
+|   |-- PostmanParser.java                # Postman parser
+|   |-- OpenApiParser.java                # OpenAPI parser
+|   |-- InsomniaParser.java                # Insomnia parser
+|   |-- BrunoParser.java                  # Bruno parser
+|   |-- HarParser.java                    # HAR parser
+|   `-- VariableResolver.java             # Variable resolution engine
+|-- runner/
+|   `-- CollectionRunner.java             # Sequential request runner
+|-- smoke/
+|   |-- SmokeRuntimeConfig.java           # Opt-in runtime smoke configuration
+|   |-- SmokeRuntimeResult.java           # Runtime smoke result/report model
+|   |-- SmokeRuntimeRunner.java           # Local runtime smoke execution harness
+|   `-- SmokeUiEvidenceSnapshot.java      # UI evidence snapshot helper
+|-- ui/
+|   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, Runner, and History
+|   |-- OAuth2Panel.java                  # OAuth2 configuration UI
+|   |-- RequestEditorPanel.java           # Workbench request editor
+|   |-- RequestEditorAuthSupport.java     # Auth-field orchestration helper
+|   |-- RequestEditorBodySupport.java     # Body-mode UI helper
+|   |-- RequestEditorStateMapper.java     # Request model <-> editor state mapper
+|   |-- RequestEditorTableSupport.java    # Request editor table helper
+|   |-- RequestPreviewTableModel.java     # Request preview table model
+|   |-- ResponsePane.java                 # Response display pane
+|   |-- RunnerPreviewTableModel.java      # Runner preview table model
+|   |-- RunnerResultTableModel.java       # Runner results table model
+|   |-- RunnerTimelineTableModel.java     # Runner timeline table model
+|   |-- UnresolvedVariablesDialog.java    # Variable preflight dialog
+|   |-- AuthSettingsDialog.java           # Auth settings dialog
+|   |-- BearerTokenAliasDialog.java       # Bearer alias selection dialog
+|   |-- dnd/
+|   |   |-- ActiveEnvironmentDropTransferHandler.java # Active environment drop support
+|   |   |-- EnvironmentDragPayload.java    # Environment drag payload
+|   |   |-- EnvironmentProfileDragSourceTransferHandler.java # Environment drag source support
+|   |   |-- EnvironmentTransferHandler.java # Environment file/profile drag/drop
+|   |   |-- RunnerQueueDragPayload.java     # Runner queue drag payload
+|   |   `-- RunnerQueueTransferHandler.java # Runner queue reorder support
+|   |-- history/
+|   |   |-- HistoryPanel.java               # History tab shell, toolbar, filters, table, and detail split pane
+|   |   |-- HistoryTableModel.java          # History row table model
+|   |   |-- HistoryFilterPanel.java         # Full history filter controls
+|   |   |-- HistoryDetailPanel.java         # Request/response/variables/assertions detail tabs
+|   |   |-- HistoryActionsPanel.java        # Load/replay/export/compare/delete actions
+|   |   |-- HistoryCompareDialog.java       # Two-entry diff viewer
+|   |   |-- HistoryLoadResultNotifier.java  # Confirmation and notification popups
+|   |   |-- HistoryNativeHttpMessageFactory.java # History response/body message adapter
+|   |   `-- HistoryNativeMessageFormatter.java   # Native history formatting helpers
+|   `-- tree/
+|       |-- BurpLikeTreeCellRenderer.java  # Request tree renderer
+|       |-- CheckBoxTreeCellRenderer.java  # Checkbox tree renderer
+|       |-- CollectionTreeNode.java        # Tree node wrapper
+|       |-- RequestTreeDragPayload.java    # Request tree drag payload
+|       |-- RequestTreeMutationService.java # Tree create/move/rename/delete operations
+|       |-- RequestTreeNamingPolicy.java   # Tree naming rules
+|       |-- RequestTreePathService.java    # Tree path/scope helper
+|       |-- RequestTreeTransferHandler.java # Request tree drag/drop support
+|       `-- TreeDropRequest.java           # Drag/drop request model
+|-- utils/
+|   |-- AuthInheritanceResolver.java      # Auth inheritance resolution
+|   |-- DebouncedSwingAction.java         # Debounced Swing action helper
+|   |-- EnvironmentImportService.java     # Environment import handling
+|   |-- ExecutionResult.java              # Execution result wrapper
+|   |-- HttpUtils.java                    # HTTP/URL utilities
+|   |-- OAuth2BearerAliasDetector.java    # OAuth2 bearer alias detection
+|   |-- OAuth2PopulateHelper.java         # OAuth2 form/population helper
+|   |-- OAuth2RuntimeMapper.java          # Imported auth -> oauth2_* runtime mapping
+|   |-- RequestBuilder.java               # HTTP message construction
+|   |-- RequestBuildPolicy.java           # Request build policy
+|   |-- RequestDebugFormatter.java        # Request debug formatting
+|   |-- RequestPathResolver.java          # Request path resolution helper
+|   |-- RuntimeResolverFactory.java       # Runtime variable resolver factory
+|   |-- RuntimeVariablesJson.java         # Runtime vars/OAuth2 JSON helper
+|   |-- ScriptEngine.java                # Nashorn/Postman/Bruno script support
+|   |-- ScriptMode.java                  # Script execution mode
+|   |-- ScriptModeDetector.java          # Java/Nashorn mode detection
+|   |-- SharedRequestPipeline.java       # Shared build/send/script/OAuth pipeline
+|   |-- SwingEdt.java                    # EDT helper
+|   |-- UnresolvedVariableAnalyzer.java  # Unresolved-variable scanner
+|   |-- VariableDebugFormatter.java      # Variable debug formatting
+|   |-- WorkspaceStateJson.java          # Workspace state JSON helper
+|   |-- WorkspaceStateMigrator.java      # Workspace state migration helper
+|   `-- WorkspaceStateService.java       # Workspace persistence via extension data
 ```
 
 ## Installation and build
