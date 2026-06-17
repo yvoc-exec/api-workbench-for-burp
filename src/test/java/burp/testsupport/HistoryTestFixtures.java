@@ -117,7 +117,8 @@ public final class HistoryTestFixtures {
         exec.requestHeaders = "Authorization: Bearer {{token}}\nContent-Type: application/json";
         exec.requestBody = "{\"username\":\"demo\",\"password\":\"{{password}}\"}";
         exec.rawRequestBytes = ("POST /login HTTP/1.1\r\nHost: api.example.test\r\n" +
-                "Authorization: Bearer {{token}}\r\n\r\n{\"username\":\"demo\",\"password\":\"{{password}}\"}")
+                "Authorization: Bearer {{token}}\r\n" +
+                "Content-Type: application/json\r\n\r\n{\"username\":\"demo\",\"password\":\"{{password}}\"}")
                 .getBytes(StandardCharsets.UTF_8);
         exec.resolvedVariables.put("base_url", BASE_URL);
         exec.resolvedVariables.put("token", "env-token");
@@ -136,6 +137,11 @@ public final class HistoryTestFixtures {
         result.requestUrl = "{{base_url}}/login";
         result.requestHeaders = "Authorization: Bearer {{token}}\nContent-Type: application/json";
         result.requestBody = "{\"username\":\"demo\",\"password\":\"{{password}}\"}";
+        result.rawRequestBytes = ("POST /login HTTP/1.1\r\nHost: api.example.test\r\n" +
+                "Authorization: Bearer {{token}}\r\n" +
+                "Content-Type: application/json\r\n\r\n{\"username\":\"demo\",\"password\":\"{{password}}\"}")
+                .getBytes(StandardCharsets.UTF_8);
+        result.rawRequestText = new String(result.rawRequestBytes, StandardCharsets.UTF_8);
         result.success = success;
         result.statusCode = statusCode;
         result.responseTimeMs = 321L;
@@ -146,6 +152,8 @@ public final class HistoryTestFixtures {
         result.errorMessage = errorMessage;
         result.assertions.add(new RunnerResult.AssertionResult("Status is 200", success, "200", String.valueOf(statusCode)));
         result.extractedVariables.put("session", "abc123");
+        result.resolvedVariables.put("base_url", BASE_URL);
+        result.resolvedVariables.put("token", "env-token");
         result.attemptNumber = attemptNumber;
         result.totalAttempts = totalAttempts;
         return result;
@@ -216,6 +224,7 @@ public final class HistoryTestFixtures {
         copy.headers = source.headers != null ? new ArrayList<>(source.headers) : new ArrayList<>();
         copy.body = source.body;
         copy.variables = source.variables != null ? new ArrayList<>(source.variables) : new ArrayList<>();
+        copy.scriptBlocks = source.scriptBlocks != null ? new ArrayList<>(source.scriptBlocks) : new ArrayList<>();
         return copy;
     }
 

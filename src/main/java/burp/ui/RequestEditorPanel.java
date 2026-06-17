@@ -8,7 +8,11 @@ import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.*;
@@ -262,6 +266,8 @@ public class RequestEditorPanel extends JPanel {
         bodyRawArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::handleBodyUiChangedIfReady));
         preScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
         postScriptArea.getDocument().addDocumentListener(new SimpleDocumentListener(this::refreshResolvedMirrorIfReady));
+        installVariableTooltip(urlField);
+        installVariableTooltip(bodyRawArea);
     }
 
     private void refreshAllIfReady() {
@@ -368,6 +374,7 @@ public class RequestEditorPanel extends JPanel {
     private void refreshAll() {
         syncAuthorizationHeaderFromCurrentAuth();
         syncContentTypeHeaderFromCurrentBody();
+        refreshVariableHighlights();
         refreshResolvedMirror();
     }
 
@@ -804,6 +811,91 @@ public class RequestEditorPanel extends JPanel {
 
         resolvedViewArea.setText(out.toString());
         resolvedViewArea.setCaretPosition(0);
+        refreshVariableHighlights(vr.getVariables());
+    }
+
+    private void refreshVariableHighlights() {
+        if (currentRequest == null) {
+            VariableHighlightStyler.clear(urlField);
+            VariableHighlightStyler.clear(bodyRawArea);
+            return;
+        }
+        var vr = RuntimeResolverFactory.build(
+                currentCollection,
+                currentRequest,
+                runtimeVariablesExplicit
+                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeVariables)
+                        : RuntimeResolverFactory.Options.defaultOptions()
+        );
+        refreshVariableHighlights(vr.getVariables());
+    }
+
+    private void refreshVariableHighlights(Map<String, String> resolverVariables) {
+        if (urlField != null) {
+            VariableHighlightStyler.apply(urlField, urlField.getText(), resolverVariables);
+        }
+        if (bodyRawArea != null) {
+            VariableHighlightStyler.apply(bodyRawArea, bodyRawArea.getText(), resolverVariables);
+        }
+    }
+
+    private void installVariableTooltip(JTextComponent component) {
+        if (component == null) {
+            return;
+        }
+        ToolTipManager.sharedInstance().registerComponent(component);
+        component.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                updateVariableTooltip(component, e);
+            }
+        });
+        component.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseExited(MouseEvent e) {
+                component.setToolTipText(null);
+            }
+        });
+    }
+
+    private void updateVariableTooltip(JTextComponent component, MouseEvent e) {
+        if (component == null || e == null || currentRequest == null) {
+            if (component != null) {
+                component.setToolTipText(null);
+            }
+            return;
+        }
+        var vr = RuntimeResolverFactory.build(
+                currentCollection,
+                currentRequest,
+                runtimeVariablesExplicit
+                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeVariables)
+                        : RuntimeResolverFactory.Options.defaultOptions()
+        );
+        int offset = component.viewToModel2D(e.getPoint());
+        VariableTokenScanner.VariableToken token = VariableTokenScanner.tokenAt(component.getText(), offset, vr.getVariables());
+        if (token == null) {
+            component.setToolTipText(null);
+            return;
+        }
+        String value = token.value != null ? token.value : "";
+        String status = token.isResolved() ? "Resolved" : "Unresolved";
+        String scope = token.isResolved() ? "active/runtime" : "unknown";
+        String html = "<html><b>{{" + token.key + "}}</b><br>Status: " + status
+                + "<br>Value: " + escapeHtml(value.isEmpty() ? "(empty)" : value)
+                + "<br>Scope: " + scope + "</html>";
+        component.setToolTipText(html);
+    }
+
+    private static String escapeHtml(String input) {
+        if (input == null) {
+            return "";
+        }
+        return input
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
     }
 
     private void appendBuildPolicyDiagnostics(StringBuilder out, ApiRequest req) {

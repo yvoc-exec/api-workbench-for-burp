@@ -2,6 +2,8 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptPhase;
 import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
 
@@ -144,8 +146,8 @@ final class RequestEditorStateMapper {
             ensureStarterRow(ctx.bodyFormModel);
         }
 
-        loadScripts(req.preRequestScripts, ctx.preScriptArea);
-        loadScripts(req.postResponseScripts, ctx.postScriptArea);
+        loadScripts(preRequestScriptsForDisplay(req), ctx.preScriptArea);
+        loadScripts(postResponseScriptsForDisplay(req), ctx.postScriptArea);
         ctx.refreshResolvedMirror.run();
     }
 
@@ -232,6 +234,11 @@ final class RequestEditorStateMapper {
 
         appendScript(ctx.preScriptArea.getText(), req.preRequestScripts);
         appendScript(ctx.postScriptArea.getText(), req.postResponseScripts);
+        req.scriptBlocks = currentRequest.scriptBlocks != null ? copyScriptBlocks(currentRequest.scriptBlocks) : new ArrayList<>();
+        if (req.scriptBlocks.isEmpty()) {
+            req.scriptBlocks.addAll(convertLegacyScripts(req.preRequestScripts, ScriptPhase.PRE_REQUEST, currentRequest));
+            req.scriptBlocks.addAll(convertLegacyScripts(req.postResponseScripts, ScriptPhase.POST_RESPONSE, currentRequest));
+        }
         return req;
     }
 
@@ -409,5 +416,75 @@ final class RequestEditorStateMapper {
         if (!script.isEmpty()) {
             targetScripts.add(new ApiRequest.Script("js", script));
         }
+    }
+
+    private static List<ApiRequest.Script> preRequestScriptsForDisplay(ApiRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        if (request.preRequestScripts != null && !request.preRequestScripts.isEmpty()) {
+            return request.preRequestScripts;
+        }
+        return scriptsForPhase(request.scriptBlocks, ScriptPhase.PRE_REQUEST);
+    }
+
+    private static List<ApiRequest.Script> postResponseScriptsForDisplay(ApiRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        if (request.postResponseScripts != null && !request.postResponseScripts.isEmpty()) {
+            return request.postResponseScripts;
+        }
+        return scriptsForPhase(request.scriptBlocks, ScriptPhase.POST_RESPONSE);
+    }
+
+    private static List<ApiRequest.Script> scriptsForPhase(List<ScriptBlock> blocks, ScriptPhase phase) {
+        List<ApiRequest.Script> scripts = new ArrayList<>();
+        if (blocks == null) {
+            return scripts;
+        }
+        for (ScriptBlock block : blocks) {
+            if (block != null && block.phase == phase && block.source != null) {
+                scripts.add(block.toLegacyScript());
+            }
+        }
+        return scripts;
+    }
+
+    private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> blocks) {
+        List<ScriptBlock> copy = new ArrayList<>();
+        if (blocks == null) {
+            return copy;
+        }
+        for (ScriptBlock block : blocks) {
+            ScriptBlock cloned = ScriptBlock.copyOf(block);
+            if (cloned != null) {
+                copy.add(cloned);
+            }
+        }
+        return copy;
+    }
+
+    private static List<ScriptBlock> convertLegacyScripts(List<ApiRequest.Script> scripts, ScriptPhase phase, ApiRequest currentRequest) {
+        List<ScriptBlock> blocks = new ArrayList<>();
+        if (scripts == null) {
+            return blocks;
+        }
+        int order = 0;
+        for (ApiRequest.Script script : scripts) {
+            ScriptBlock block = ScriptBlock.fromLegacy(
+                    script,
+                    burp.scripts.ScriptDialect.LEGACY_NASHORN,
+                    phase,
+                    burp.scripts.ScriptScope.REQUEST,
+                    currentRequest != null ? currentRequest.sourceCollection : null,
+                    currentRequest != null ? currentRequest.path : null,
+                    order++
+            );
+            if (block != null) {
+                blocks.add(block);
+            }
+        }
+        return blocks;
     }
 }

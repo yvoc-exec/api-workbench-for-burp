@@ -2,6 +2,8 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestBuilder;
 import burp.parser.VariableResolver;
@@ -63,6 +65,10 @@ class BrunoParserTest {
                 .asString()
                 .contains("if (responseCode.code === 200) {")
                 .contains("pm.environment.set(\"done\", \"yes\");");
+        assertThat(req.scriptBlocks)
+                .hasSize(1);
+        assertThat(req.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.BRUNO);
+        assertThat(req.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
     }
 
     @Test

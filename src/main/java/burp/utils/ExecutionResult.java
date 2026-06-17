@@ -24,6 +24,7 @@ public class ExecutionResult {
     public long elapsedMs;
     public String errorMessage;
     public byte[] rawRequestBytes;
+    public String rawRequestText;
     public Map<String, String> resolvedVariables = new HashMap<>();
     public String requestHeaders;
     public String requestBody;

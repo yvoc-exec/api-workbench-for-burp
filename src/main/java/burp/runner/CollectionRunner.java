@@ -50,6 +50,7 @@ public class CollectionRunner {
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
+    private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
     private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
 
@@ -89,6 +90,9 @@ public class CollectionRunner {
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
     public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
         this.runtimeOverlayProvider = provider;
+    }
+    public void setActiveEnvironmentProvider(Function<ApiCollection, EnvironmentProfile> provider) {
+        this.activeEnvironmentProvider = provider;
     }
     public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
         this.oauth2TokenSink = oauth2TokenSink;
@@ -371,20 +375,32 @@ public class CollectionRunner {
             attempts++;
             try {
                 Map<String, String> overlay = runtimeOverlayFor(col);
+                EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
                 ExecutionResult exec;
                 if (pipeline == null) {
                     exec = null;
-                } else if (overlay == null && oauth2TokenSink == null) {
+                } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
                     exec = pipeline.execute(req, col, followRedirects);
-                } else {
+                } else if (activeEnvironment == null) {
                     exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                } else if (overlay == null && oauth2TokenSink == null) {
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment);
+                } else {
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     return null;
                 }
-                if (debugRawRequest && exec != null && exec.requestHeaders != null) {
-                    fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + exec.requestHeaders + "\n=== End Runner Raw Request ===");
+                if (debugRawRequest && exec != null) {
+                    String rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : exec.requestHeaders);
+                    if (rawRequestText != null) {
+                        fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + rawRequestText + "\n=== End Runner Raw Request ===");
+                    }
                 }
 
                     if (cancelled || Thread.currentThread().isInterrupted()) {
@@ -396,6 +412,12 @@ public class CollectionRunner {
                     result.success = true;
                     result.statusCode = response.statusCode();
                     result.responseSize = response.body().length();
+                    result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                    result.rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : null);
 
                     String body = response.bodyToString();
                     result.responseBody = body;
@@ -415,6 +437,7 @@ public class CollectionRunner {
                     result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
+                    result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
                     HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(
                         exec.resolvedUrl != null ? exec.resolvedUrl : req.url);
                     result.host = parsed.host;
@@ -575,6 +598,13 @@ public class CollectionRunner {
         return runtimeOverlayProvider.apply(col);
     }
 
+    private EnvironmentProfile activeEnvironmentFor(ApiCollection col) {
+        if (activeEnvironmentProvider == null) {
+            return null;
+        }
+        return activeEnvironmentProvider.apply(col);
+    }
+
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {
         Set<String> unresolved = new LinkedHashSet<>();
         if (req == null) {
@@ -671,6 +701,9 @@ public class CollectionRunner {
             snapshot.responseBodyPreview = source.responseBodyPreview;
             snapshot.extractedVariables = source.extractedVariables != null ? new HashMap<>(source.extractedVariables) : new HashMap<>();
             snapshot.assertions = source.assertions != null ? new ArrayList<>(source.assertions) : new ArrayList<>();
+            snapshot.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
+            snapshot.rawRequestText = source.rawRequestText;
+            snapshot.resolvedVariables = source.resolvedVariables != null ? new HashMap<>(source.resolvedVariables) : new HashMap<>();
         }
         if (exec != null) {
             if (exec.requestHeaders != null) {
@@ -678,6 +711,12 @@ public class CollectionRunner {
             }
             if (exec.requestBody != null) {
                 snapshot.requestBody = exec.requestBody;
+            }
+            if (exec.rawRequestBytes != null) {
+                snapshot.rawRequestBytes = exec.rawRequestBytes.clone();
+                snapshot.rawRequestText = exec.rawRequestText != null
+                        ? exec.rawRequestText
+                        : new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8);
             }
             if (exec.resolvedUrl != null) {
                 snapshot.requestUrl = exec.resolvedUrl;
@@ -687,6 +726,9 @@ public class CollectionRunner {
             }
             if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
                 snapshot.extractedVariables = new HashMap<>(exec.extractedVars);
+            }
+            if (exec.resolvedVariables != null && !exec.resolvedVariables.isEmpty()) {
+                snapshot.resolvedVariables = new HashMap<>(exec.resolvedVariables);
             }
         }
         snapshot.attemptNumber = Math.max(1, attemptNumber);

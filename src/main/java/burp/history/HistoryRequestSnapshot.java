@@ -24,6 +24,10 @@ public class HistoryRequestSnapshot {
     public String authType;
     public Map<String, String> requestVariablesAsAuthored = new LinkedHashMap<>();
     public ApiRequest authoredRequest;
+    public byte[] rawRequestSent;
+    public String rawRequestSentText;
+    public String resolvedUrl;
+    public Map<String, String> resolvedVariables = new LinkedHashMap<>();
 
     public static HistoryRequestSnapshot from(ApiRequest request) {
         HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
@@ -80,7 +84,25 @@ public class HistoryRequestSnapshot {
                 ? new LinkedHashMap<>(source.requestVariablesAsAuthored)
                 : new LinkedHashMap<>();
         copy.authoredRequest = copyRequest(source.authoredRequest);
+        copy.rawRequestSent = source.rawRequestSent != null ? source.rawRequestSent.clone() : null;
+        copy.rawRequestSentText = source.rawRequestSentText;
+        copy.resolvedUrl = source.resolvedUrl;
+        copy.resolvedVariables = source.resolvedVariables != null ? new LinkedHashMap<>(source.resolvedVariables) : new LinkedHashMap<>();
         return copy;
+    }
+
+    public String preferredRawRequestText() {
+        if (rawRequestSentText != null && !rawRequestSentText.isBlank()) {
+            return rawRequestSentText;
+        }
+        if (rawRequestSent != null && rawRequestSent.length > 0) {
+            return new String(rawRequestSent, StandardCharsets.UTF_8);
+        }
+        return "";
+    }
+
+    public boolean hasRawRequestSent() {
+        return (rawRequestSentText != null && !rawRequestSentText.isBlank()) || (rawRequestSent != null && rawRequestSent.length > 0);
     }
 
     public ApiRequest toApiRequest() {

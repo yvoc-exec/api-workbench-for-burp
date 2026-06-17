@@ -84,7 +84,8 @@ class HistoryPanelTest {
         panel.getHistoryTable().setRowSelectionInterval(1, 1);
         ImporterPanelTestSupport.awaitEdt();
         assertThat(panel.getSelectedEntry().id).isEqualTo("first");
-        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("POST /login HTTP/1.1");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Host: api.example.test");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("Content-Type: application/json");
@@ -148,7 +149,7 @@ class HistoryPanelTest {
         assertThat(requestCaptor.getValue().headerValue("Authorization")).isEqualTo("Bearer {{token}}");
         assertThat(requestCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
         assertThat(requestCaptor.getValue().bodyToString()).contains("{\"username\":\"demo\",\"password\":\"{{password}}\"}");
-        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("POST /login HTTP/1.1");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
 
         assertThat(responseCaptor.getValue().statusCode()).isEqualTo((short) 200);

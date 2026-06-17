@@ -5,6 +5,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import burp.scripts.ScriptBlock;
+
 /**
  * Unified API Collection model.
  */
@@ -21,6 +23,10 @@ public class ApiCollection {
     public List<ApiRequest.Variable> variables = new ArrayList<>();
     /** Bruno folder-scoped variables keyed by normalized folder path. */
     public Map<String, Map<String, String>> folderVars = new LinkedHashMap<>();
+    /** Collection-level script blocks in native model form. */
+    public List<ScriptBlock> scriptBlocks = new ArrayList<>();
+    /** Folder-level script blocks keyed by normalized folder path. */
+    public Map<String, List<ScriptBlock>> folderScriptBlocks = new LinkedHashMap<>();
     public Map<String, String> environment = new HashMap<>();
     /** Collection-level effective auth used as the root Postman auth source. */
     public ApiRequest.Auth auth;

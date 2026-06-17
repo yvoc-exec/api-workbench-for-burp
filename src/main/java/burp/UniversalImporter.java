@@ -115,8 +115,8 @@ public class UniversalImporter {
      * Each request resolves against its own source collection context.
      */
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
-                                          int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
-        importRequestsSequential(queue, destinations, delayMs, null, null, null, logCallback, resultCallback);
+                                         int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
+        importRequestsSequential(queue, destinations, delayMs, null, null, null, null, logCallback, resultCallback);
     }
 
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
@@ -124,6 +124,7 @@ public class UniversalImporter {
                                          Map<String, String> runtimeOverlay,
                                          SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
                                          SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+                                         EnvironmentProfile activeEnvironment,
                                          LogCallback logCallback,
                                          ResultCallback resultCallback) {
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
@@ -141,7 +142,7 @@ public class UniversalImporter {
                             resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, logCallback, colSources);
+                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("[OK] " + qr.request.name);
@@ -194,7 +195,7 @@ public class UniversalImporter {
      */
     public SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
-        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, null, null, null);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, null, null, null, null);
     }
 
     public SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -203,7 +204,7 @@ public class UniversalImporter {
             boolean followRedirects,
             Map<String, String> runtimeOverlay,
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) throws Exception {
-        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, null);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, null, null);
     }
 
     public SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -213,14 +214,29 @@ public class UniversalImporter {
             Map<String, String> runtimeOverlay,
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
         return new SingleSendResult(
             exec.response,
             exec.builtRequest,
-            exec.requestHeaders,
+            exec.rawRequestText != null
+                    ? exec.rawRequestText
+                    : (exec.rawRequestBytes != null
+                        ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : exec.requestHeaders),
             exec.resolvedUrl,
             exec.elapsedMs,
             exec.errorMessage,
@@ -354,17 +370,18 @@ public class UniversalImporter {
                                 Map<String, String> runtimeOverlay,
                                 SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
                                 SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+                                EnvironmentProfile activeEnvironment,
                                 LogCallback logCallback,
                                 Map<String, String> colSources) throws Exception {
         String destinationLower = destination.toLowerCase();
         boolean liveSend = "sitemap".equals(destinationLower);
         ExecutionResult exec = runtimeOverlay != null
                 ? (liveSend
-                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink)
-                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink))
+                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment)
+                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment))
                 : (liveSend
-                    ? pipeline.execute(req, collection, followRedirects)
-                    : pipeline.build(req, collection));
+                    ? pipeline.execute(req, collection, followRedirects, null, null, null, activeEnvironment)
+                    : pipeline.build(req, collection, null, null, null, activeEnvironment));
         if (exec == null || !exec.success || exec.requestHeaders == null) {
             throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }

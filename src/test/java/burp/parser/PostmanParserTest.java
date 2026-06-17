@@ -2,6 +2,9 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -57,6 +60,80 @@ class PostmanParserTest {
         assertThat(collection.requests).hasSize(1);
         assertThat(collection.requests.get(0).url)
                 .isEqualTo("https://api.example.test/users/{{user_id}}?include=roles");
+    }
+
+    @Test
+    void preservesCollectionFolderAndRequestScriptsWithDialects() throws Exception {
+        ApiCollection collection = parsePostman("""
+                {
+                  "info": {
+                    "name": "Script Demo",
+                    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+                  },
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": ["console.log('collection pre');"]
+                      }
+                    }
+                  ],
+                  "item": [
+                    {
+                      "name": "Auth",
+                      "event": [
+                        {
+                          "listen": "test",
+                          "script": {
+                            "exec": "console.log('folder test');"
+                          }
+                        }
+                      ],
+                      "item": [
+                        {
+                          "name": "Login",
+                          "request": {
+                            "method": "POST",
+                            "url": "https://api.example.test/login"
+                          },
+                          "event": [
+                            {
+                              "listen": "prerequest",
+                              "script": {
+                                "exec": ["pm.environment.set('token', 'abc');"]
+                              }
+                            },
+                            {
+                              "listen": "test",
+                              "script": {
+                                "exec": "pm.test('ok', function () {});"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        assertThat(collection.scriptBlocks).hasSize(1);
+        assertThat(collection.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(collection.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+        assertThat(collection.scriptBlocks.get(0).scope).isEqualTo(ScriptScope.COLLECTION);
+        assertThat(collection.folderScriptBlocks.get("Auth")).hasSize(1);
+        assertThat(collection.folderScriptBlocks.get("Auth").get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(collection.folderScriptBlocks.get("Auth").get(0).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
+
+        ApiRequest req = collection.requests.get(0);
+        assertThat(req.preRequestScripts).hasSize(1);
+        assertThat(req.postResponseScripts).hasSize(1);
+        assertThat(req.scriptBlocks).hasSize(2);
+        assertThat(req.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(req.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+        assertThat(req.scriptBlocks.get(0).scope).isEqualTo(ScriptScope.REQUEST);
+        assertThat(req.scriptBlocks.get(1).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
     }
 
     @Test

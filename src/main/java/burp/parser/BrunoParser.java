@@ -2,6 +2,10 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import burp.utils.AuthInheritanceResolver;
 import java.io.*;
 import java.nio.file.*;
@@ -259,7 +263,9 @@ public class BrunoParser implements CollectionParser {
             // Parse assert (test scripts)
             String assertBlock = extractBlock(content, "assert");
             if (assertBlock != null) {
-                req.postResponseScripts.add(new ApiRequest.Script("js", assertBlock));
+                ApiRequest.Script script = new ApiRequest.Script("js", assertBlock);
+                req.postResponseScripts.add(script);
+                addScriptBlock(req, script, ScriptDialect.BRUNO, ScriptPhase.TEST, file, 0);
             }
 
             // Parse script:pre-request
@@ -268,7 +274,9 @@ public class BrunoParser implements CollectionParser {
                 String script = preScriptBlock;
                 // Normalize Bruno script to standard JS
                 script = normalizeBrunoScript(script);
-                req.preRequestScripts.add(new ApiRequest.Script("js", script));
+                ApiRequest.Script legacy = new ApiRequest.Script("js", script);
+                req.preRequestScripts.add(legacy);
+                addScriptBlock(req, legacy, ScriptDialect.BRUNO, ScriptPhase.PRE_REQUEST, file, 1);
             }
 
             // Parse script:post-response
@@ -276,7 +284,9 @@ public class BrunoParser implements CollectionParser {
             if (postScriptBlock != null) {
                 String script = postScriptBlock;
                 script = normalizeBrunoScript(script);
-                req.postResponseScripts.add(new ApiRequest.Script("js", script));
+                ApiRequest.Script legacy = new ApiRequest.Script("js", script);
+                req.postResponseScripts.add(legacy);
+                addScriptBlock(req, legacy, ScriptDialect.BRUNO, ScriptPhase.POST_RESPONSE, file, 2);
             }
 
             return req;
@@ -565,6 +575,29 @@ public class BrunoParser implements CollectionParser {
      * Normalize Bruno script syntax to standard JavaScript.
      * Converts bru.setVar() to pm.environment.set() for cross-compatibility.
      */
+    private void addScriptBlock(ApiRequest req,
+                                ApiRequest.Script script,
+                                ScriptDialect dialect,
+                                ScriptPhase phase,
+                                File file,
+                                int order) {
+        if (req == null || script == null) {
+            return;
+        }
+        ScriptBlock block = ScriptBlock.fromLegacy(
+                script,
+                dialect,
+                phase,
+                ScriptScope.REQUEST,
+                "bruno",
+                file != null ? file.getAbsolutePath() : null,
+                order
+        );
+        if (block != null) {
+            req.scriptBlocks.add(block);
+        }
+    }
+
     private String normalizeBrunoScript(String script) {
         if (script == null) return "";
         // Convert bru.setVar("key", value) -> pm.environment.set("key", value)

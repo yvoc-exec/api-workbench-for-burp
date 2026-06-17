@@ -19,6 +19,7 @@ import burp.history.HistoryRequestSnapshot;
 import burp.history.HistoryResponseSnapshot;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
+import burp.utils.SharedRequestPipeline;
 import burp.smoke.SmokeUiEvidenceSnapshot;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
@@ -278,6 +279,7 @@ public class ImporterPanel {
         this.runner = runner;
         if (this.runner != null) {
             this.runner.setRuntimeOverlayProvider(collection -> hasActiveEnvironment() ? activeEnvironmentOverlay() : null);
+            this.runner.setActiveEnvironmentProvider(collection -> getActiveEnvironment());
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
             this.runner.setRuntimeVariableSink(ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
         }
@@ -605,6 +607,7 @@ public class ImporterPanel {
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
                 List.of(resolvedCol),
                 List.of(requestToSend),
@@ -632,15 +635,14 @@ public class ImporterPanel {
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    result = runtimeOverlayForSend == null
-                            ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
-                            : importer.sendSingleRequestWithBuiltRequest(
-                                    requestToSend,
-                                    resolvedCol,
-                                    follow,
-                                    runtimeOverlayForSend,
-                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+                    result = sendSingleRequestWithBuiltRequest(
+                            requestToSend,
+                            resolvedCol,
+                            follow,
+                            runtimeOverlayForSend,
+                            ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            activeEnvironment);
                     var rr = result.response;
 
                     final UniversalImporter.SingleSendResult sendResult = result;
@@ -906,21 +908,21 @@ public class ImporterPanel {
         final ApiCollection resolvedCollection = context != null ? context.collection : null;
         final ApiRequest replayRequest = request;
         final Map<String, String> runtimeOverlayForReplay = runtimeOverlay;
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
                 try {
                     publish("Replaying: " + replayRequest.method + " " + replayRequest.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    UniversalImporter.SingleSendResult result = runtimeOverlayForReplay == null
-                            ? importer.sendSingleRequestWithBuiltRequest(replayRequest, resolvedCollection, follow)
-                            : importer.sendSingleRequestWithBuiltRequest(
-                                    replayRequest,
-                                    resolvedCollection,
-                                    follow,
-                                    runtimeOverlayForReplay,
-                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+                    UniversalImporter.SingleSendResult result = sendSingleRequestWithBuiltRequest(
+                            replayRequest,
+                            resolvedCollection,
+                            follow,
+                            runtimeOverlayForReplay,
+                            ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            activeEnvironment);
                     publish("Replay complete: " + replayRequest.name);
                     recordWorkbenchHistoryEntry(
                             replayRequest,
@@ -1009,6 +1011,26 @@ public class ImporterPanel {
             appendImportLog("Send to Repeater failed: " + failureReason);
             historyLoadResultNotifier.showError(mainPanel, "Send to Repeater failed: " + failureReason);
         }
+    }
+
+    private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest request,
+            ApiCollection collection,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment) throws Exception {
+        if (runtimeOverlay == null && activeEnvironment == null) {
+            return importer.sendSingleRequestWithBuiltRequest(request, collection, followRedirects);
+        }
+        return importer.sendSingleRequestWithBuiltRequest(
+                request,
+                collection,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink);
     }
 
     private HistoryRequestContext resolveExistingHistoryRequestContext(HistoryEntry entry) {
@@ -1431,6 +1453,7 @@ public class ImporterPanel {
         liveRequest.body = copyBody(edited.body);
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
         liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
+        liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
         liveRequest.authOverrideMode = edited.authOverrideMode != null ? edited.authOverrideMode : "inherit";
         liveRequest.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(edited.explicitAuth);
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, liveRequest);
@@ -1504,6 +1527,20 @@ public class ImporterPanel {
                 continue;
             }
             out.add(new ApiRequest.Script(script.type, script.exec));
+        }
+        return out;
+    }
+
+    private static List<burp.scripts.ScriptBlock> copyScriptBlocks(List<burp.scripts.ScriptBlock> scripts) {
+        List<burp.scripts.ScriptBlock> out = new ArrayList<>();
+        if (scripts == null) {
+            return out;
+        }
+        for (burp.scripts.ScriptBlock block : scripts) {
+            burp.scripts.ScriptBlock copy = burp.scripts.ScriptBlock.copyOf(block);
+            if (copy != null) {
+                out.add(copy);
+            }
         }
         return out;
     }
@@ -8983,6 +9020,7 @@ public class ImporterPanel {
             return;
         }
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
@@ -9008,6 +9046,7 @@ public class ImporterPanel {
             runtimeOverlay,
             this::storeOAuth2TokenInActiveEnvironment,
             this::applyRuntimeVariableDeltaToActiveEnvironment,
+            activeEnvironment,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
                 if (importProgress != null) {
@@ -9900,30 +9939,34 @@ public class ImporterPanel {
                     // Tests may construct the panel without a Montoya object factory.
                 }
             }
-            if (detailResponseEditor != null) {
-                try {
-                    detailResponseEditor.setResponse(HttpResponse.httpResponse());
-                } catch (RuntimeException ignored) {
-                    // Tests may construct the panel without a Montoya object factory.
+        if (detailResponseEditor != null) {
+            try {
+                detailResponseEditor.setResponse(HttpResponse.httpResponse());
+            } catch (RuntimeException ignored) {
+                // Tests may construct the panel without a Montoya object factory.
+            }
+        }
+        detailVarsText.setText("");
+        return;
+    }
+        String requestText = r.rawRequestText;
+        if (requestText == null || requestText.isBlank()) {
+            StringBuilder req = new StringBuilder();
+            req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\r\n");
+            req.append("Host: ").append(r.host != null ? r.host : "").append("\r\n");
+            if (r.requestHeaders != null) {
+                String[] lines = r.requestHeaders.split("\n");
+                for (int i = 1; i < lines.length; i++) {
+                    req.append(lines[i]).append("\r\n");
                 }
             }
-            detailVarsText.setText("");
-            return;
-        }
-        StringBuilder req = new StringBuilder();
-        req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\r\n");
-        req.append("Host: ").append(r.host != null ? r.host : "").append("\r\n");
-        if (r.requestHeaders != null) {
-            String[] lines = r.requestHeaders.split("\n");
-            for (int i = 1; i < lines.length; i++) {
-                req.append(lines[i]).append("\r\n");
+            if (r.requestBody != null && !r.requestBody.isEmpty()) {
+                req.append("\r\n").append(r.requestBody);
             }
-        }
-        if (r.requestBody != null && !r.requestBody.isEmpty()) {
-            req.append("\r\n").append(r.requestBody);
+            requestText = req.toString();
         }
         if (detailRequestEditor != null) {
-            detailRequestEditor.setRequest(HttpRequest.httpRequest(req.toString()));
+            detailRequestEditor.setRequest(HttpRequest.httpRequest(requestText));
         }
 
         StringBuilder resp = new StringBuilder();

@@ -16,6 +16,8 @@ public class RunnerResult {
     public String requestUrl;
     public String requestHeaders;
     public String requestBody;
+    public byte[] rawRequestBytes;
+    public String rawRequestText;
     public boolean success;
     public int statusCode;
     public long responseTimeMs;
@@ -26,6 +28,7 @@ public class RunnerResult {
     public String errorMessage;
     public String responseBodyPreview;
     public Map<String, String> extractedVariables = new HashMap<>();
+    public Map<String, String> resolvedVariables = new HashMap<>();
     public List<AssertionResult> assertions = new ArrayList<>();
     public int attemptNumber = 1;
     public int totalAttempts = 1;
