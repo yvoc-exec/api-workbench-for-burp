@@ -1336,6 +1336,7 @@ public final class SmokeRuntimeRunner {
         }
         copy.preRequestScripts = copyScripts(source.preRequestScripts);
         copy.postResponseScripts = copyScripts(source.postResponseScripts);
+        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
         return copy;
     }
 
@@ -1389,6 +1390,20 @@ public final class SmokeRuntimeRunner {
         for (ApiRequest.Script script : scripts) {
             if (script != null) {
                 copy.add(new ApiRequest.Script(script.type, script.exec));
+            }
+        }
+        return copy;
+    }
+
+    private List<burp.scripts.ScriptBlock> copyScriptBlocks(List<burp.scripts.ScriptBlock> scripts) {
+        List<burp.scripts.ScriptBlock> copy = new ArrayList<>();
+        if (scripts == null) {
+            return copy;
+        }
+        for (burp.scripts.ScriptBlock block : scripts) {
+            burp.scripts.ScriptBlock cloned = burp.scripts.ScriptBlock.copyOf(block);
+            if (cloned != null) {
+                copy.add(cloned);
             }
         }
         return copy;

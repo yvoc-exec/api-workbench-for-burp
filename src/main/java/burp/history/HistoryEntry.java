@@ -62,6 +62,18 @@ public class HistoryEntry {
                     ? entry.responseSnapshot.body.length
                     : 0L;
             entry.requestSizeBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.length : entry.requestSnapshot.approximateSizeBytes();
+            if (entry.requestSnapshot != null) {
+                entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
+                        ? exec.rawRequestText
+                        : (exec.rawRequestBytes != null
+                        ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : null);
+                entry.requestSnapshot.resolvedUrl = exec.resolvedUrl;
+                entry.requestSnapshot.resolvedVariables = exec.resolvedVariables != null
+                        ? new LinkedHashMap<>(exec.resolvedVariables)
+                        : new LinkedHashMap<>();
+            }
             entry.result = HistoryResult.from(exec.success,
                     exec.errorMessage,
                     hasFailedAssertion(exec.assertions),
@@ -100,6 +112,14 @@ public class HistoryEntry {
             entry.assertions = copyAssertions(result.assertions);
             entry.extractions = copyExtractions(result.extractedVariables);
             entry.unresolvedVariables = normalizeStrings(extractUnresolvedFromResult(result));
+            if (entry.requestSnapshot != null) {
+                entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
+                entry.requestSnapshot.rawRequestSentText = result.rawRequestText;
+                entry.requestSnapshot.resolvedUrl = result.requestUrl;
+                entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
+                        ? new LinkedHashMap<>(result.resolvedVariables)
+                        : new LinkedHashMap<>();
+            }
             entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
                     !entry.unresolvedVariables.isEmpty());
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
@@ -275,6 +295,8 @@ public class HistoryEntry {
         sb.append("Duration: ").append(durationMillis).append(" ms").append('\n');
         sb.append("Request Size: ").append(requestSizeBytes).append(" bytes").append('\n');
         sb.append("Response Size: ").append(responseSizeBytes).append(" bytes").append('\n');
+        sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
+        sb.append("Authored Template Available: ").append(requestSnapshot != null && requestSnapshot.authoredRequest != null ? "yes" : "no").append('\n');
         sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
         return sb.toString().trim();
@@ -311,6 +333,9 @@ public class HistoryEntry {
         long size = 0L;
         if (result == null) {
             return size;
+        }
+        if (result.rawRequestBytes != null && result.rawRequestBytes.length > 0) {
+            return result.rawRequestBytes.length;
         }
         if (result.requestHeaders != null) {
             size += result.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;

@@ -2,6 +2,10 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import burp.utils.AuthInheritanceResolver;
 import com.google.gson.*;
 import java.io.*;
@@ -99,6 +103,17 @@ public class PostmanParser implements CollectionParser {
             }
         }
 
+        if (collectionObj.has("event") && collectionObj.get("event").isJsonArray()) {
+            parseEvents(
+                    collectionObj.getAsJsonArray("event"),
+                    null,
+                    collection.scriptBlocks,
+                    ScriptScope.COLLECTION,
+                    collection.name,
+                    "postman"
+            );
+        }
+
         // Parse items recursively
         if (collectionObj.has("item") && collectionObj.get("item").isJsonArray()) {
             parseItems(collectionObj.getAsJsonArray("item"), "", collection, collectionAuth);
@@ -136,9 +151,9 @@ public class PostmanParser implements CollectionParser {
 
                 // Item-level events take priority; fall back to request-level events
                 if (item.has("event") && item.get("event").isJsonArray()) {
-                    parseEvents(item.getAsJsonArray("event"), req);
+                    parseEvents(item.getAsJsonArray("event"), req, req.scriptBlocks, ScriptScope.REQUEST, currentPath, "postman");
                 } else if (reqObj.has("event") && reqObj.get("event").isJsonArray()) {
-                    parseEvents(reqObj.getAsJsonArray("event"), req);
+                    parseEvents(reqObj.getAsJsonArray("event"), req, req.scriptBlocks, ScriptScope.REQUEST, currentPath, "postman");
                 }
 
                 collection.requests.add(req);
@@ -146,6 +161,10 @@ public class PostmanParser implements CollectionParser {
 
             // Nested folders
             if (item.has("item") && item.get("item").isJsonArray()) {
+                if (item.has("event") && item.get("event").isJsonArray()) {
+                    List<ScriptBlock> folderBlocks = collection.folderScriptBlocks.computeIfAbsent(currentPath, key -> new ArrayList<>());
+                    parseEvents(item.getAsJsonArray("event"), null, folderBlocks, ScriptScope.FOLDER, currentPath, "postman");
+                }
                 parseItems(item.getAsJsonArray("item"), currentPath, collection, nextInherited);
             }
         }
@@ -279,12 +298,22 @@ public class PostmanParser implements CollectionParser {
     }
 
     private void parseEvents(JsonArray events, ApiRequest req) {
+        parseEvents(events, req, req != null ? req.scriptBlocks : null, ScriptScope.REQUEST, req != null ? req.path : null, "postman");
+    }
+
+    private void parseEvents(JsonArray events,
+                             ApiRequest req,
+                             List<ScriptBlock> scriptBlocks,
+                             ScriptScope scope,
+                             String sourcePath,
+                             String sourceFormat) {
         Set<String> seen = new HashSet<>();
         for (JsonElement e : events) {
             JsonObject event = e.getAsJsonObject();
             String listen = getString(event, "listen", "");
             if (event.has("script") && event.get("script").isJsonObject()) {
                 JsonObject script = event.getAsJsonObject("script");
+                String scriptType = getString(script, "type", "js");
                 String exec = "";
                 if (script.has("exec") && script.get("exec").isJsonArray()) {
                     StringBuilder sb = new StringBuilder();
@@ -299,13 +328,66 @@ public class PostmanParser implements CollectionParser {
                 String hash = listen + "|" + exec.hashCode();
                 if (seen.contains(hash)) continue;
                 seen.add(hash);
-                if ("prerequest".equals(listen)) {
-                    req.preRequestScripts.add(new ApiRequest.Script("js", exec));
-                } else if ("test".equals(listen)) {
-                    req.postResponseScripts.add(new ApiRequest.Script("js", exec));
+                ScriptPhase phase = "prerequest".equals(listen)
+                        ? ScriptPhase.PRE_REQUEST
+                        : "test".equals(listen)
+                        ? ScriptPhase.POST_RESPONSE
+                        : null;
+                if (phase == null) {
+                    continue;
+                }
+                if (req != null) {
+                    ApiRequest.Script legacy = new ApiRequest.Script(scriptType, exec);
+                    if (phase == ScriptPhase.PRE_REQUEST) {
+                        req.preRequestScripts.add(legacy);
+                    } else {
+                        req.postResponseScripts.add(legacy);
+                    }
+                    addScriptBlock(scriptBlocks, legacy, ScriptDialect.POSTMAN, phase, scope, sourceFormat, sourcePath, listen);
+                } else {
+                    addScriptBlock(scriptBlocks, scriptType, exec, ScriptDialect.POSTMAN, phase, scope, sourceFormat, sourcePath, listen);
                 }
             }
         }
+    }
+
+    private void addScriptBlock(List<ScriptBlock> scriptBlocks,
+                                ApiRequest.Script legacy,
+                                ScriptDialect dialect,
+                                ScriptPhase phase,
+                                ScriptScope scope,
+                                String sourceFormat,
+                                String sourcePath,
+                                String listen) {
+        if (scriptBlocks == null || legacy == null) {
+            return;
+        }
+        addScriptBlock(scriptBlocks, legacy.type, legacy.exec, dialect, phase, scope, sourceFormat, sourcePath, listen);
+    }
+
+    private void addScriptBlock(List<ScriptBlock> scriptBlocks,
+                                String scriptType,
+                                String source,
+                                ScriptDialect dialect,
+                                ScriptPhase phase,
+                                ScriptScope scope,
+                                String sourceFormat,
+                                String sourcePath,
+                                String listen) {
+        if (scriptBlocks == null || source == null) {
+            return;
+        }
+        ScriptBlock block = ScriptBlock.of(source, dialect, phase, scope);
+        block.sourceFormat = sourceFormat;
+        block.sourcePath = sourcePath;
+        block.order = scriptBlocks.size();
+        if (scriptType != null && !scriptType.isBlank()) {
+            block.metadata.put("type", scriptType);
+        }
+        if (listen != null && !listen.isBlank()) {
+            block.metadata.put("listen", listen);
+        }
+        scriptBlocks.add(block);
     }
 
     private ApiRequest.Body parseBody(JsonObject bodyObj) {

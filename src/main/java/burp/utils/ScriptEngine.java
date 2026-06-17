@@ -26,6 +26,10 @@ public class ScriptEngine {
         this.engineManager = new ScriptEngineManager();
     }
 
+    public ScriptMode getScriptMode() {
+        return scriptMode;
+    }
+
     /**
      * Execute a pre-request script. Can modify variables before the request is sent.
      */

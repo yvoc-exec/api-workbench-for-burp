@@ -7,6 +7,10 @@ import burp.models.UnresolvedVariableIssue;
 import burp.parser.ApiWorkbenchCollectionParser;
 import burp.parser.CollectionParser;
 import burp.parser.ParserRegistry;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -46,6 +50,8 @@ class CollectionExportServiceTest {
         assertThat(exported.get("description").getAsString()).isEqualTo("API collection for exports");
         assertThat(jsonArrayStrings(exported.getAsJsonArray("folderPaths")))
                 .contains("Auth", "Auth/OAuth", "Users");
+        assertThat(exported.getAsJsonArray("scriptBlocks")).isNotNull();
+        assertThat(exported.getAsJsonObject("folderScriptBlocks").getAsJsonArray("Auth")).isNotNull();
         assertThat(exported.toString()).doesNotContain("runtime_only", "runtime-token");
 
         JsonObject login = requestByName(exported.getAsJsonArray("requests"), "Auth");
@@ -126,6 +132,15 @@ class CollectionExportServiceTest {
                 .contains(org.assertj.core.groups.Tuple.tuple("request_var", "request-value"));
         assertThat(login.preRequestScripts).hasSize(1);
         assertThat(login.postResponseScripts).hasSize(1);
+        assertThat(login.scriptBlocks).hasSize(2);
+        assertThat(login.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(login.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+        assertThat(login.scriptBlocks.get(0).scope).isEqualTo(ScriptScope.REQUEST);
+        assertThat(login.scriptBlocks.get(1).dialect).isEqualTo(ScriptDialect.INSOMNIA);
+        assertThat(imported.scriptBlocks).hasSize(1);
+        assertThat(imported.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(imported.folderScriptBlocks.get("Auth")).hasSize(1);
+        assertThat(imported.folderScriptBlocks.get("Auth").get(0).dialect).isEqualTo(ScriptDialect.BRUNO);
         assertThat(login.disabled).isFalse();
         assertThat(login.sequenceOrder).isEqualTo(1);
 

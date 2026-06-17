@@ -17,7 +17,7 @@ It does not capture:
 - Manual request draft edits
 - Scanner, Collaborator, or OAST traffic
 
-Each row stores the request in authored/template form, plus execution metadata such as result, status, duration, size, environment, unresolved variables, assertions, and extractions.
+Each row stores the request in authored/template form, plus the raw sent request when it is available. The detail pane prefers the raw HTTP request that was actually sent, and falls back to the authored/template snapshot only when the raw message is unavailable. History also captures execution metadata such as result, status, duration, size, environment, unresolved variables, assertions, and extractions.
 
 ## Retention and persistence
 

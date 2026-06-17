@@ -9,7 +9,11 @@ import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.scripts.ScriptAssertionResult;
+import burp.scripts.ScriptExecutionResult;
+import burp.scripts.UnifiedScriptRuntime;
 
 import java.util.*;
 
@@ -40,6 +44,7 @@ public class SharedRequestPipeline {
     private final MontoyaApi api;
     private final RequestBuilder requestBuilder;
     private final ScriptEngine scriptEngine;
+    private final UnifiedScriptRuntime unifiedScriptRuntime;
     private final OAuth2Manager oauth2Manager;
 
     public SharedRequestPipeline(MontoyaApi api, RequestBuilder requestBuilder,
@@ -48,69 +53,104 @@ public class SharedRequestPipeline {
         this.requestBuilder = requestBuilder;
         this.scriptEngine = scriptEngine;
         this.oauth2Manager = oauth2Manager;
+        this.unifiedScriptRuntime = new UnifiedScriptRuntime(
+                api,
+                scriptEngine != null ? scriptEngine.getScriptMode() : ScriptMode.DISABLED
+        );
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        return execute(req, col, followRedirects, null, null);
+        return execute(req, col, followRedirects, null, null, null, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
-        return build(req, col, null, null);
+        return build(req, col, null, null, null, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null);
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink,
                                    RuntimeVariableSink runtimeVariableSink) {
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink,
+                                   EnvironmentProfile activeEnvironment) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
                                  Map<String, String> runtimeOverlay,
                                  OAuth2TokenSink oauth2TokenSink) {
-        return build(req, col, runtimeOverlay, oauth2TokenSink, null);
+        return build(req, col, runtimeOverlay, oauth2TokenSink, null, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
                                  Map<String, String> runtimeOverlay,
                                  OAuth2TokenSink oauth2TokenSink,
                                  RuntimeVariableSink runtimeVariableSink) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
+        return build(req, col, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null);
+    }
+
+    public ExecutionResult build(ApiRequest req, ApiCollection col,
+                                 Map<String, String> runtimeOverlay,
+                                 OAuth2TokenSink oauth2TokenSink,
+                                 RuntimeVariableSink runtimeVariableSink,
+                                 EnvironmentProfile activeEnvironment) {
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
     }
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
                                             ExecutionResult result, boolean sendRequest,
                                             Map<String, String> runtimeOverlay,
                                             OAuth2TokenSink oauth2TokenSink,
-                                            RuntimeVariableSink runtimeVariableSink) {
-        VariableResolver resolver = RuntimeResolverFactory.build(
-                col,
-                req,
-                runtimeOverlay != null
-                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
-                        : RuntimeResolverFactory.Options.defaultOptions()
-        );
-        Map<String, String> scriptContext = runtimeOverlay != null
-                ? new HashMap<>(runtimeOverlay)
-                : (col != null ? new HashMap<>(col.runtimeVars) : new HashMap<>());
+                                            RuntimeVariableSink runtimeVariableSink,
+                                            EnvironmentProfile activeEnvironment) {
+        Map<String, String> scriptContext = buildInitialRuntimeOverlay(col, runtimeOverlay, activeEnvironment);
         Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
+        ApiRequest effectiveRequest = req;
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
-            if (scriptEngine != null && col != null) {
-                scriptEngine.executePreRequest(req, resolver, scriptContext);
+            if (shouldUseUnifiedRuntime()) {
+                ScriptExecutionResult scriptResult = unifiedScriptRuntime.executePreRequest(
+                        col,
+                        req,
+                        activeEnvironment,
+                        sendRequest ? "Send" : "Runner",
+                        1
+                );
+                effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
+                applyRuntimeMutations(scriptContext, scriptResult);
+                mergeRuntimeAssertions(result, scriptResult);
+            } else if (scriptEngine != null && col != null) {
+                VariableResolver legacyResolver = RuntimeResolverFactory.build(
+                        col,
+                        req,
+                        RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
+                );
+                scriptEngine.executePreRequest(req, legacyResolver, scriptContext);
             }
 
+            VariableResolver resolver = RuntimeResolverFactory.build(
+                    col,
+                    effectiveRequest,
+                    RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
+            );
+
             // 2. OAuth2 token refresh if needed
-            if (oauth2Manager != null && req.hasAuth() && "oauth2".equalsIgnoreCase(req.auth.type)) {
+            if (oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
                 try {
                         OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
                         if (config.isValid()) {
@@ -146,12 +186,13 @@ public class SharedRequestPipeline {
             }
 
             // 3. Build request
-            byte[] rawRequest = requestBuilder.buildRequest(req, resolver);
+            byte[] rawRequest = requestBuilder.buildRequest(effectiveRequest, resolver);
             result.rawRequestBytes = rawRequest;
+            result.rawRequestText = rawRequest != null ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8) : null;
             result.resolvedVariables = new HashMap<>(resolver.getVariables());
-            warnIfUnresolved(rawRequest, req.name);
+            warnIfUnresolved(rawRequest, effectiveRequest != null ? effectiveRequest.name : null);
 
-            String resolvedUrl = resolver.resolve(req.url);
+            String resolvedUrl = resolver.resolve(effectiveRequest != null ? effectiveRequest.url : null);
             result.resolvedUrl = resolvedUrl;
             String[] requestParts = splitRawRequest(rawRequest);
             result.requestHeaders = requestParts[0];
@@ -183,7 +224,7 @@ public class SharedRequestPipeline {
                 result.success = true;
 
                 // 5. Post-response scripts
-                if (scriptEngine != null && col != null) {
+                if ((shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
                     String body = response.response().bodyToString();
                     int statusCode = response.response().statusCode();
                     Map<String, List<String>> headersMap = new HashMap<>();
@@ -196,7 +237,24 @@ public class SharedRequestPipeline {
                     scriptResult.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
                     scriptResult.statusCode = statusCode;
 
-                    scriptEngine.executePostResponse(req, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
+                    if (shouldUseUnifiedRuntime()) {
+                        ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
+                                col,
+                                effectiveRequest,
+                        activeEnvironment,
+                        sendRequest ? "Send" : "Runner",
+                        1,
+                        body,
+                        statusCode,
+                        headersMap,
+                        result.elapsedMs,
+                        scriptResult
+                        );
+                        applyRuntimeMutations(scriptContext, postResult);
+                        mergeRuntimeAssertions(scriptResult, postResult);
+                    } else if (scriptEngine != null && col != null) {
+                        scriptEngine.executePostResponse(effectiveRequest, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
+                    }
 
                     if (!scriptResult.extractedVariables.isEmpty()) {
                         result.extractedVars.putAll(scriptResult.extractedVariables);
@@ -239,6 +297,131 @@ public class SharedRequestPipeline {
             }
         }
         return result;
+    }
+
+    private boolean shouldUseUnifiedRuntime() {
+        return unifiedScriptRuntime != null && unifiedScriptRuntime.isEnabled();
+    }
+
+    private Map<String, String> buildInitialRuntimeOverlay(ApiCollection collection,
+                                                           Map<String, String> runtimeOverlay,
+                                                           EnvironmentProfile activeEnvironment) {
+        Map<String, String> overlay = new LinkedHashMap<>();
+        boolean hasOverlaySource = false;
+        if (activeEnvironment != null) {
+            overlay.putAll(activeEnvironment.toRuntimeOverlay());
+            hasOverlaySource = true;
+        }
+        if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
+            overlay.putAll(runtimeOverlay);
+            hasOverlaySource = true;
+        }
+        if (!hasOverlaySource && collection != null) {
+            if (collection.runtimeOAuth2 != null && !collection.runtimeOAuth2.isEmpty()) {
+                overlay.putAll(collection.runtimeOAuth2);
+            }
+            if (collection.runtimeVars != null && !collection.runtimeVars.isEmpty()) {
+                overlay.putAll(collection.runtimeVars);
+            }
+        }
+        return overlay;
+    }
+
+    private ApiRequest applyScriptResultToRequest(ApiRequest currentRequest, ScriptExecutionResult scriptResult) {
+        if (scriptResult == null || scriptResult.mutatedRequest == null) {
+            return currentRequest;
+        }
+        return scriptResult.mutatedRequest;
+    }
+
+    private void applyRuntimeMutations(Map<String, String> scriptContext, ScriptExecutionResult scriptResult) {
+        if (scriptContext == null || scriptResult == null || scriptResult.variableMutations == null) {
+            return;
+        }
+        for (var mutation : scriptResult.variableMutations) {
+            if (mutation == null || mutation.key == null || mutation.key.isBlank()) {
+                continue;
+            }
+            if (mutation.newValue == null) {
+                scriptContext.remove(mutation.key);
+            } else {
+                scriptContext.put(mutation.key, mutation.newValue);
+            }
+        }
+    }
+
+    private void mergeRuntimeAssertions(ExecutionResult executionResult, ScriptExecutionResult scriptResult) {
+        if (executionResult == null || scriptResult == null || scriptResult.assertions == null) {
+            if (executionResult != null && scriptResult != null && scriptResult.errors != null) {
+                for (String error : scriptResult.errors) {
+                    executionResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                            "Script error",
+                            false,
+                            "no error",
+                            error
+                    ));
+                }
+            }
+            return;
+        }
+        for (ScriptAssertionResult assertion : scriptResult.assertions) {
+            if (assertion == null) {
+                continue;
+            }
+            executionResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                    assertion.name != null ? assertion.name : "script assertion",
+                    assertion.passed,
+                    assertion.expected,
+                    assertion.actual
+            ));
+        }
+        if (scriptResult.errors != null) {
+            for (String error : scriptResult.errors) {
+                executionResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                        "Script error",
+                        false,
+                        "no error",
+                        error
+                ));
+            }
+        }
+    }
+
+    private void mergeRuntimeAssertions(burp.models.RunnerResult runnerResult, ScriptExecutionResult scriptResult) {
+        if (runnerResult == null || scriptResult == null || scriptResult.assertions == null) {
+            if (runnerResult != null && scriptResult != null && scriptResult.errors != null) {
+                for (String error : scriptResult.errors) {
+                    runnerResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                            "Script error",
+                            false,
+                            "no error",
+                            error
+                    ));
+                }
+            }
+            return;
+        }
+        for (ScriptAssertionResult assertion : scriptResult.assertions) {
+            if (assertion == null) {
+                continue;
+            }
+            runnerResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                    assertion.name != null ? assertion.name : "script assertion",
+                    assertion.passed,
+                    assertion.expected,
+                    assertion.actual
+            ));
+        }
+        if (scriptResult.errors != null) {
+            for (String error : scriptResult.errors) {
+                runnerResult.assertions.add(new burp.models.RunnerResult.AssertionResult(
+                        "Script error",
+                        false,
+                        "no error",
+                        error
+                ));
+            }
+        }
     }
 
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {
