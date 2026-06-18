@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import javax.swing.text.JTextComponent;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
@@ -1545,7 +1546,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         return privateField(editor, "tabs");
     }
 
-    private static JTextArea bodyRawArea(RequestEditorPanel editor) throws Exception {
+    private static JTextComponent bodyRawArea(RequestEditorPanel editor) throws Exception {
         return privateField(editor, "bodyRawArea");
     }
 

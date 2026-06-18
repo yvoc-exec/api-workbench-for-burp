@@ -11,11 +11,17 @@ public class ScriptModeDetector {
         public final ScriptMode mode;
         public final String reason;
         public final int javaVersion;
+        public final String engineName;
 
         public DetectionResult(ScriptMode mode, String reason, int javaVersion) {
+            this(mode, reason, javaVersion, null);
+        }
+
+        public DetectionResult(ScriptMode mode, String reason, int javaVersion, String engineName) {
             this.mode = mode;
             this.reason = reason;
             this.javaVersion = javaVersion;
+            this.engineName = engineName;
         }
     }
 
@@ -26,13 +32,15 @@ public class ScriptModeDetector {
                 "Java " + version + " detected. Java 17+ is required for script execution.", version);
         }
         // Probe the primary JavaScript runtime used by the extension.
-        String probeReason = probeJavaScriptRuntime();
+        burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine();
+        String probeReason = engine.isAvailable() ? null : engine.getInitializationFailure();
         if (probeReason == null) {
             return new DetectionResult(ScriptMode.FULL_JS,
-                "Java " + version + " with JavaScript engine available.", version);
+                "Java " + version + " with " + engine.getEngineName() + " available.", version, engine.getEngineName());
         } else {
             return new DetectionResult(ScriptMode.LIMITED,
-                "Java " + version + " detected. JavaScript probe failed: " + probeReason, version);
+                "Java " + version + " detected. JavaScript probe failed: " + probeReason, version,
+                engine.getEngineName());
         }
     }
 
@@ -60,15 +68,8 @@ public class ScriptModeDetector {
     }
 
     static String probeJavaScriptRuntime() {
-        try {
-            burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine();
-            if (engine.isAvailable()) {
-                return null;
-            }
-            return "No JavaScript runtime found";
-        } catch (Throwable t) {
-            return "JavaScript probe failed: " + t.getClass().getSimpleName() + ": " + t.getMessage();
-        }
+        burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine();
+        return engine.isAvailable() ? null : engine.getInitializationFailure();
     }
 
     static String probeNashorn() {

@@ -6,7 +6,7 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
-import javax.swing.JTextArea;
+import javax.swing.JTextPane;
 import javax.swing.SwingConstants;
 import javax.swing.border.Border;
 import javax.swing.table.DefaultTableModel;
@@ -29,7 +29,7 @@ final class RequestEditorBodySupport {
         final JPanel panel;
         final Map<String, JRadioButton> bodyModeButtons = new LinkedHashMap<>();
         final JPanel bodyContentPanel = new JPanel(new CardLayout());
-        final JTextArea bodyRawArea = new JTextArea(8, 40);
+        final JTextPane bodyRawArea = new JTextPane();
         final DefaultTableModel bodyFormModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
         final javax.swing.JTable bodyFormTable = RequestEditorTableSupport.createEditableTable(bodyFormModel);
         final Runnable refreshResolvedMirror;

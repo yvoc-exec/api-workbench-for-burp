@@ -263,7 +263,10 @@ class UnifiedScriptRuntimeTest {
     void graalSandboxEngineExecutesSimpleScriptAndBlocksHostClassAccess() throws Exception {
         GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
 
-        assertThat(engine.getEngineName()).isIn("GraalJS", "Nashorn fallback", "Unavailable");
+        assertThat(engine.isGraalAvailable()).isTrue();
+        assertThat(engine.isNashornFallbackAvailable()).isFalse();
+        assertThat(engine.getEngineName()).isEqualTo("GraalJS");
+        assertThat(engine.getInitializationFailure()).isNull();
         Object value = engine.execute("1 + 1", Map.of());
         assertThat(value).isNotNull();
         assertThat(((Number) value).intValue()).isEqualTo(2);

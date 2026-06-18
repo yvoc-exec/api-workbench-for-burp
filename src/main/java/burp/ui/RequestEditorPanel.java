@@ -24,7 +24,7 @@ import java.util.List;
  */
 public class RequestEditorPanel extends JPanel {
     private JComboBox<String> methodBox;
-    private JTextField urlField;
+    private JTextComponent urlField;
     private JTabbedPane tabs;
 
     // Params
@@ -41,7 +41,7 @@ public class RequestEditorPanel extends JPanel {
 
     // Body
     private RequestEditorBodySupport.BodyUi bodyUi;
-    private JTextArea bodyRawArea;
+    private JTextComponent bodyRawArea;
     private JTable bodyFormTable;
     private DefaultTableModel bodyFormModel;
 
@@ -69,6 +69,8 @@ public class RequestEditorPanel extends JPanel {
     private final Map<JTextComponent, VariableHoverSupport> variableHoverSupports = new IdentityHashMap<>();
     private static final String VARIABLE_HOVER_INSTALLED_PROPERTY = "awb.variable.hover.installed";
     private static final int VARIABLE_HOVER_DELAY_MS = 650;
+    private static final int VARIABLE_HOVER_HIDE_DELAY_MS = 300;
+    private boolean updatingVariableStyles = false;
 
     // Send action callback
     public interface SendActionListener {
@@ -125,8 +127,23 @@ public class RequestEditorPanel extends JPanel {
     private JPanel createTopBar() {
         JPanel panel = new JPanel(new BorderLayout(5, 0));
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
-        urlField = new JTextField();
+        urlField = new JTextPane();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JScrollPane urlScroll = new JScrollPane(urlField);
+        Color fieldBorderColor = UIManager.getColor("TextField.shadow");
+        if (fieldBorderColor == null) {
+            fieldBorderColor = UIManager.getColor("Component.shadow");
+        }
+        if (fieldBorderColor == null) {
+            fieldBorderColor = new Color(160, 160, 160);
+        }
+        urlScroll.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(fieldBorderColor, 1),
+                BorderFactory.createEmptyBorder(0, 2, 0, 2)
+        ));
+        urlScroll.setPreferredSize(new Dimension(320, Math.max(26, urlField.getFontMetrics(urlField.getFont()).getHeight() + 10)));
+        urlScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        urlScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER);
 
         // Send split button
         sendBtn = new JButton("Send");
@@ -156,7 +173,7 @@ public class RequestEditorPanel extends JPanel {
         sendPanel.add(sendDropdownBtn, BorderLayout.EAST);
 
         panel.add(methodBox, BorderLayout.WEST);
-        panel.add(urlField, BorderLayout.CENTER);
+        panel.add(urlScroll, BorderLayout.CENTER);
         panel.add(sendPanel, BorderLayout.EAST);
         return panel;
     }
@@ -322,14 +339,14 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void refreshAllIfReady() {
-        if (!loadingRequest) {
+        if (!loadingRequest && !updatingVariableStyles) {
             markDirty();
             refreshAll();
         }
     }
 
     private void refreshResolvedMirrorIfReady() {
-        if (!loadingRequest) {
+        if (!loadingRequest && !updatingVariableStyles) {
             markDirty();
             refreshResolvedMirror();
         }
@@ -346,7 +363,7 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void handleAuthUiChangedIfReady() {
-        if (!loadingRequest && headersModel != null) {
+        if (!loadingRequest && !updatingVariableStyles && headersModel != null) {
             markDirty();
             syncAuthorizationHeaderFromCurrentAuth();
             refreshResolvedMirror();
@@ -354,7 +371,7 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void handleBodyUiChangedIfReady() {
-        if (!loadingRequest && headersModel != null) {
+        if (!loadingRequest && !updatingVariableStyles && headersModel != null) {
             markDirty();
             syncContentTypeHeaderFromCurrentBody();
             refreshResolvedMirror();
@@ -867,8 +884,8 @@ public class RequestEditorPanel extends JPanel {
 
     private void refreshVariableHighlights() {
         if (currentRequest == null) {
-            VariableHighlightStyler.clear(urlField);
-            VariableHighlightStyler.clear(bodyRawArea);
+            updateVariableTextStyles(urlField, List.of());
+            updateVariableTextStyles(bodyRawArea, List.of());
             return;
         }
         var vr = RuntimeResolverFactory.build(
@@ -882,19 +899,31 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void refreshVariableHighlights(Map<String, String> resolverVariables) {
-        if (urlField != null) {
-            VariableHighlightStyler.apply(urlField, urlField.getText(), resolverVariables);
+        updateVariableTextStyles(urlField, VariableTokenScanner.scan(textOf(urlField), resolverVariables));
+        updateVariableTextStyles(bodyRawArea, VariableTokenScanner.scan(textOf(bodyRawArea), resolverVariables));
+    }
+
+    private void updateVariableTextStyles(JTextComponent component, List<VariableTokenScanner.VariableToken> tokens) {
+        if (component == null) {
+            return;
         }
-        if (bodyRawArea != null) {
-            VariableHighlightStyler.apply(bodyRawArea, bodyRawArea.getText(), resolverVariables);
+        boolean previous = updatingVariableStyles;
+        updatingVariableStyles = true;
+        try {
+            VariableHighlightStyler.apply(component, tokens);
+        } finally {
+            updatingVariableStyles = previous;
         }
+    }
+
+    private String textOf(JTextComponent component) {
+        return component != null && component.getText() != null ? component.getText() : "";
     }
 
     private void installVariableHoverSupport(JTextComponent component) {
         if (component == null) {
             return;
         }
-        ToolTipManager.sharedInstance().registerComponent(component);
         component.putClientProperty(VARIABLE_HOVER_INSTALLED_PROPERTY, Boolean.TRUE);
         VariableHoverSupport support = variableHoverSupports.computeIfAbsent(component, c -> new VariableHoverSupport(c));
         component.addMouseMotionListener(new MouseMotionAdapter() {
@@ -906,17 +935,13 @@ public class RequestEditorPanel extends JPanel {
         component.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseExited(MouseEvent e) {
-                support.hidePopup();
-                component.setToolTipText(null);
+                support.scheduleHidePopup();
             }
         });
     }
 
     private void updateVariableHoverState(JTextComponent component, MouseEvent e, VariableHoverSupport support) {
         if (component == null || e == null || currentRequest == null) {
-            if (component != null) {
-                component.setToolTipText(null);
-            }
             if (support != null) {
                 support.hidePopup();
             }
@@ -924,39 +949,14 @@ public class RequestEditorPanel extends JPanel {
         }
         VariableHoverInfo info = resolveVariableHoverInfo(component, e);
         if (info == null) {
-            component.setToolTipText(null);
             if (support != null) {
                 support.hidePopup();
             }
             return;
         }
-        String html = buildVariableTooltipHtml(info);
-        component.setToolTipText(html);
         if (support != null) {
             support.setCurrentInfo(info, e.getPoint());
         }
-    }
-
-    private String buildVariableTooltipHtml(VariableHoverInfo info) {
-        if (info == null || info.key == null || info.key.isBlank()) {
-            return null;
-        }
-        StringBuilder html = new StringBuilder();
-        html.append("<html><b>{{").append(escapeHtml(info.key)).append("}}</b>");
-        html.append("<br>Status: ").append(escapeHtml(info.statusText()));
-        html.append("<br>Value: ").append(escapeHtml(info.value != null && !info.value.isBlank() ? info.value : "(empty)"));
-        html.append("<br>Scope: ").append(escapeHtml(info.scope != null && !info.scope.isBlank() ? info.scope : "unknown"));
-        if (info.source != null && !info.source.isBlank()) {
-            html.append("<br>Source: ").append(escapeHtml(info.source));
-        }
-        if (info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
-            html.append("<br>Active Env: ").append(escapeHtml(info.activeEnvironmentName));
-        }
-        if (info.message != null && !info.message.isBlank()) {
-            html.append("<br>").append(escapeHtml(info.message));
-        }
-        html.append("</html>");
-        return html.toString();
     }
 
     private VariableHoverInfo resolveVariableHoverInfo(JTextComponent component, MouseEvent e) {
@@ -976,36 +976,124 @@ public class RequestEditorPanel extends JPanel {
             }
         }
         if (info == null) {
-            info = new VariableHoverInfo();
-            info.key = token.key;
-            info.resolved = token.isResolved();
-            info.value = token.value;
-            info.scope = token.isResolved() ? "active/runtime" : "unknown";
-            info.source = token.isResolved() ? "runtime overlay" : "unresolved";
-            info.activeEnvironmentName = variableActionBridge != null ? variableActionBridge.activeEnvironmentName() : null;
-            info.canEdit = token.isResolved() && variableActionBridge != null && variableActionBridge.hasActiveEnvironment();
-            info.canCreate = !token.isResolved() && variableActionBridge != null && variableActionBridge.hasActiveEnvironment();
-            return info;
+            info = createFallbackHoverInfo(token);
+        }
+        normalizeHoverInfo(info, token);
+        return info;
+    }
+
+    private VariableHoverInfo createFallbackHoverInfo(VariableTokenScanner.VariableToken token) {
+        VariableHoverInfo info = new VariableHoverInfo();
+        info.key = token != null ? token.key : null;
+        info.resolved = token != null && token.isResolved();
+        info.value = token != null ? token.value : null;
+        info.activeEnvironmentName = variableActionBridge != null ? variableActionBridge.activeEnvironmentName() : null;
+        info.canEdit = variableActionBridge != null && variableActionBridge.hasActiveEnvironment() && info.resolved;
+        info.canCreate = variableActionBridge != null && variableActionBridge.hasActiveEnvironment() && !info.resolved;
+        return info;
+    }
+
+    private void normalizeHoverInfo(VariableHoverInfo info, VariableTokenScanner.VariableToken token) {
+        if (info == null) {
+            return;
         }
         if (info.key == null || info.key.isBlank()) {
-            info.key = token.key;
+            info.key = token != null ? token.key : "";
         }
-        if (info.value == null && token.value != null) {
-            info.value = token.value;
-        }
+        boolean tokenResolved = token != null && token.isResolved();
         if (!info.resolved) {
-            info.resolved = token.isResolved();
+            info.resolved = tokenResolved;
         }
-        if (info.scope == null || info.scope.isBlank()) {
-            info.scope = token.isResolved() ? "active/runtime" : "unknown";
-        }
-        if (info.source == null || info.source.isBlank()) {
-            info.source = token.isResolved() ? "runtime overlay" : "unresolved";
+        if (info.value == null && token != null && token.value != null) {
+            info.value = token.value;
         }
         if (info.activeEnvironmentName == null && variableActionBridge != null) {
             info.activeEnvironmentName = variableActionBridge.activeEnvironmentName();
         }
-        return info;
+        if (info.resolved) {
+            if (info.scope == null || info.scope.isBlank() || "unknown".equalsIgnoreCase(info.scope)) {
+                info.scope = normalizeResolvedScope(info);
+            }
+            if (info.source == null || info.source.isBlank() || "unresolved".equalsIgnoreCase(info.source)) {
+                info.source = normalizeResolvedSource(info);
+            }
+            if (info.message == null || info.message.isBlank()) {
+                info.message = buildResolvedHoverMessage(info);
+            }
+        } else {
+            info.scope = normalizeUnresolvedScope(info);
+            info.source = normalizeUnresolvedSource(info);
+            if (info.message == null || info.message.isBlank()) {
+                info.message = info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()
+                        ? "Create target: Active Environment (persisted variable)."
+                        : "No Active Environment selected. Select or import an environment to edit or create persisted variables.";
+            }
+        }
+        if (variableActionBridge != null && variableActionBridge.hasActiveEnvironment()) {
+            info.canEdit = info.canEdit || info.resolved;
+            info.canCreate = info.canCreate || !info.resolved;
+        } else {
+            info.canEdit = false;
+            info.canCreate = false;
+        }
+    }
+
+    private String normalizeResolvedScope(VariableHoverInfo info) {
+        if (info == null) {
+            return "resolved";
+        }
+        if (info.scope != null && !info.scope.isBlank() && !"unknown".equalsIgnoreCase(info.scope)) {
+            return info.scope;
+        }
+        if (info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
+            return "active environment";
+        }
+        return "resolved value";
+    }
+
+    private String normalizeResolvedSource(VariableHoverInfo info) {
+        if (info == null) {
+            return "resolved value";
+        }
+        if (info.source != null && !info.source.isBlank() && !"unresolved".equalsIgnoreCase(info.source)) {
+            return info.source;
+        }
+        if (info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
+            return "Active Environment";
+        }
+        return "resolved value";
+    }
+
+    private String normalizeUnresolvedScope(VariableHoverInfo info) {
+        if (info != null && info.scope != null && !info.scope.isBlank() && !"unknown".equalsIgnoreCase(info.scope)) {
+            return info.scope;
+        }
+        return "not found";
+    }
+
+    private String normalizeUnresolvedSource(VariableHoverInfo info) {
+        if (info != null && info.source != null && !info.source.isBlank() && !"unresolved".equalsIgnoreCase(info.source)) {
+            return info.source;
+        }
+        if (info != null && info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
+            return "Active Environment";
+        }
+        return "unresolved";
+    }
+
+    private String buildResolvedHoverMessage(VariableHoverInfo info) {
+        StringBuilder message = new StringBuilder();
+        if (info != null && info.source != null && !info.source.isBlank()) {
+            message.append("Resolved from ").append(info.source);
+        } else {
+            message.append("Resolved");
+        }
+        if (info != null && info.canEdit) {
+            message.append(". Edit target: Active Environment (persisted variable).");
+        } else if (info != null && info.activeEnvironmentName == null) {
+            message.append(". No Active Environment selected. Select or import an environment to edit or create persisted variables.");
+        }
+        return message.toString();
     }
 
     private VariableTokenScanner.VariableToken findVariableToken(JTextComponent component, MouseEvent e) {
@@ -1037,7 +1125,7 @@ public class RequestEditorPanel extends JPanel {
         }
         if (variableActionBridge == null || !variableActionBridge.hasActiveEnvironment()) {
             if (variableDialogProvider != null) {
-                variableDialogProvider.info(this, "Variable Editor", "No active environment is selected.");
+                variableDialogProvider.info(this, "Variable Editor", "No Active Environment selected. Select or import an environment to edit or create persisted variables.");
             }
             return false;
         }
@@ -1080,13 +1168,12 @@ public class RequestEditorPanel extends JPanel {
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
         JPanel header = new JPanel(new GridLayout(0, 1, 0, 2));
-        header.add(new JLabel("<html><b>{{" + escapeHtml(info != null && info.key != null ? info.key : "") + "}}</b></html>"));
+        header.add(new JLabel("{{" + (info != null && info.key != null ? info.key : "") + "}}"));
         header.add(new JLabel("Status: " + (info != null ? info.statusText() : "Unknown")));
-        header.add(new JLabel("Value: " + (info != null && info.value != null && !info.value.isBlank() ? info.value : "(empty)")));
-        header.add(new JLabel("Scope: " + (info != null && info.scope != null ? info.scope : "unknown")));
-        if (info != null && info.source != null && !info.source.isBlank()) {
-            header.add(new JLabel("Source: " + info.source));
-        }
+        header.add(new JLabel("Value: " + valuePreview(info)));
+        header.add(new JLabel("Scope: " + scopePreview(info)));
+        header.add(new JLabel("Source: " + sourcePreview(info)));
+        header.add(new JLabel("Editable: " + editablePreview(info)));
         if (info != null && info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
             header.add(new JLabel("Active Env: " + info.activeEnvironmentName));
         }
@@ -1117,7 +1204,7 @@ public class RequestEditorPanel extends JPanel {
                 ? (info != null && info.resolved
                 ? "Edit the value in the Active Environment after confirmation."
                 : "Create the variable in the Active Environment after confirmation.")
-                : "No active environment selected.");
+                : "No Active Environment selected. Select or import one to edit or create persisted variables.");
         editButton.addActionListener(e -> {
             boolean applied = info != null && info.resolved
                     ? promptAndApplyVariableEdit(info)
@@ -1136,7 +1223,41 @@ public class RequestEditorPanel extends JPanel {
         return popup;
     }
 
-    private void showVariablePopup(JTextComponent component, VariableHoverInfo info, Point point) {
+    private String valuePreview(VariableHoverInfo info) {
+        if (info == null || info.value == null || info.value.isBlank()) {
+            return "(empty)";
+        }
+        return info.value;
+    }
+
+    private String scopePreview(VariableHoverInfo info) {
+        if (info == null || info.scope == null || info.scope.isBlank()) {
+            return "not found";
+        }
+        return info.scope;
+    }
+
+    private String sourcePreview(VariableHoverInfo info) {
+        if (info == null || info.source == null || info.source.isBlank()) {
+            return "unresolved";
+        }
+        return info.source;
+    }
+
+    private String editablePreview(VariableHoverInfo info) {
+        if (variableActionBridge == null || !variableActionBridge.hasActiveEnvironment()) {
+            return "No Active Environment selected";
+        }
+        if (info == null) {
+            return "Unknown";
+        }
+        if (info.resolved) {
+            return info.canEdit ? "Edit in Active Environment after confirmation" : "Read-only resolved value";
+        }
+        return info.canCreate ? "Create in Active Environment after confirmation" : "No permission to create";
+    }
+
+    private void showVariablePopup(JTextComponent component, VariableHoverInfo info, Point point, VariableHoverSupport support) {
         if (component == null || info == null || info.key == null || info.key.isBlank() || point == null) {
             return;
         }
@@ -1146,6 +1267,9 @@ public class RequestEditorPanel extends JPanel {
         }
         JPopupMenu popup = buildVariablePopup(component, info);
         component.putClientProperty("awb.variable.popup", popup);
+        if (support != null) {
+            support.trackPopup(popup);
+        }
         if (component.isShowing()) {
             popup.show(component, Math.max(0, point.x), Math.max(0, point.y + 18));
         }
@@ -1154,17 +1278,21 @@ public class RequestEditorPanel extends JPanel {
     private final class VariableHoverSupport {
         private final JTextComponent component;
         private final javax.swing.Timer timer;
+        private final javax.swing.Timer hideTimer;
         private MouseEvent lastEvent;
         private VariableHoverInfo lastInfo;
+        private boolean hoveringPopup = false;
 
         private VariableHoverSupport(JTextComponent component) {
             this.component = component;
             this.timer = new javax.swing.Timer(VARIABLE_HOVER_DELAY_MS, e -> {
                 if (lastInfo != null) {
-                    showVariablePopup(component, lastInfo, lastEvent != null ? lastEvent.getPoint() : new Point(0, 0));
+                    showVariablePopup(component, lastInfo, lastEvent != null ? lastEvent.getPoint() : new Point(0, 0), this);
                 }
             });
             this.timer.setRepeats(false);
+            this.hideTimer = new javax.swing.Timer(VARIABLE_HOVER_HIDE_DELAY_MS, e -> hidePopup());
+            this.hideTimer.setRepeats(false);
         }
 
         private void handleMouseMoved(MouseEvent e) {
@@ -1176,13 +1304,59 @@ public class RequestEditorPanel extends JPanel {
             this.lastInfo = info;
             if (info == null || info.key == null || info.key.isBlank()) {
                 timer.stop();
+                hidePopup();
                 return;
             }
+            cancelHidePopup();
             timer.restart();
+        }
+
+        private void scheduleHidePopup() {
+            if (hoveringPopup) {
+                return;
+            }
+            hideTimer.restart();
+        }
+
+        private void cancelHidePopup() {
+            hideTimer.stop();
+        }
+
+        private void trackPopup(JPopupMenu popup) {
+            if (popup == null) {
+                return;
+            }
+            attachPopupHoverListeners(popup);
+        }
+
+        private void attachPopupHoverListeners(Component root) {
+            if (root == null) {
+                return;
+            }
+            MouseAdapter listener = new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hoveringPopup = true;
+                    cancelHidePopup();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hoveringPopup = false;
+                    scheduleHidePopup();
+                }
+            };
+            root.addMouseListener(listener);
+            if (root instanceof Container container) {
+                for (Component child : container.getComponents()) {
+                    attachPopupHoverListeners(child);
+                }
+            }
         }
 
         private void hidePopup() {
             timer.stop();
+            hideTimer.stop();
             Object popup = component.getClientProperty("awb.variable.popup");
             if (popup instanceof JPopupMenu menu) {
                 menu.setVisible(false);
@@ -1190,18 +1364,8 @@ public class RequestEditorPanel extends JPanel {
             component.putClientProperty("awb.variable.popup", null);
             lastInfo = null;
             lastEvent = null;
+            hoveringPopup = false;
         }
-    }
-
-    private static String escapeHtml(String input) {
-        if (input == null) {
-            return "";
-        }
-        return input
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
     }
 
     private static final class SwingVariableDialogProvider implements VariableDialogProvider {
@@ -1252,7 +1416,7 @@ public class RequestEditorPanel extends JPanel {
         out.append("\n");
     }
 
-    public JTextField getUrlField() { return urlField; }
+    public JTextComponent getUrlField() { return urlField; }
     public JComboBox<String> getMethodBox() { return methodBox; }
     public JTabbedPane getTabs() { return tabs; }
 

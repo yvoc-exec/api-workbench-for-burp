@@ -9,8 +9,8 @@ import burp.utils.RequestBuilder;
 
 import javax.swing.JComboBox;
 import javax.swing.JTextArea;
-import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -29,12 +29,12 @@ final class RequestEditorStateMapper {
 
     static final class Context {
         final JComboBox<String> methodBox;
-        final JTextField urlField;
+        final JTextComponent urlField;
         final DefaultTableModel paramsModel;
         final JComboBox<String> authTypeBox;
         final Runnable rebuildAuthFields;
         final DefaultTableModel headersModel;
-        final JTextArea bodyRawArea;
+        final JTextComponent bodyRawArea;
         final DefaultTableModel bodyFormModel;
         final Consumer<String> setBodyModeInternal;
         final Supplier<String> getBodyModeInternal;
@@ -48,12 +48,12 @@ final class RequestEditorStateMapper {
         final RequestBuilder requestBuilder;
 
         Context(JComboBox<String> methodBox,
-                JTextField urlField,
+                JTextComponent urlField,
                 DefaultTableModel paramsModel,
                 JComboBox<String> authTypeBox,
                 Runnable rebuildAuthFields,
                 DefaultTableModel headersModel,
-                JTextArea bodyRawArea,
+                JTextComponent bodyRawArea,
                 DefaultTableModel bodyFormModel,
                 Consumer<String> setBodyModeInternal,
                 Supplier<String> getBodyModeInternal,
