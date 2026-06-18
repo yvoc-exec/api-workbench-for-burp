@@ -842,28 +842,39 @@ public class CollectionRunner {
                 return ScriptDependentRequestResult.ignored("runRequest is ignored outside Runner mode.");
             }
             ApiRequest target = resolveRequest(targetNameOrId);
-                if (target == null) {
-                    String message = "Dependent request target not found: " + safeLabel(targetNameOrId);
-                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
-                    return ScriptDependentRequestResult.failure(message);
-                }
-                String stackKey = dependentKey(target);
-                if (requestStack.contains(stackKey)) {
-                    String message = "Dependent request recursion detected: " + stackKey;
-                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
-                    return ScriptDependentRequestResult.failure(message);
-                }
-                if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
-                    String message = "Dependent request depth limit reached.";
-                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
-                    return ScriptDependentRequestResult.failure(message);
-                }
-                if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
-                    String message = "Dependent request count limit reached.";
-                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
-                    return ScriptDependentRequestResult.failure(message);
-                }
+            if (target == null) {
+                String message = "Dependent request target not found: " + safeLabel(targetNameOrId);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (target.disabled) {
+                String message = "Dependent request target is disabled: " + safeLabel(target.name != null && !target.name.isBlank() ? target.name : targetNameOrId);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (context.request != null && sameRequest(target, context.request)) {
+                String message = "Dependent request recursion detected: " + dependentKey(target);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            String stackKey = dependentKey(target);
+            if (requestStack.contains(stackKey)) {
+                String message = "Dependent request recursion detected: " + stackKey;
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
+                String message = "Dependent request depth limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
+                String message = "Dependent request count limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
             dependentDepth++;
+            int currentDepth = dependentDepth;
             dependentCount++;
             requestStack.push(stackKey);
             try {
@@ -878,7 +889,7 @@ public class CollectionRunner {
                         false,
                         context.request != null ? context.request.name : null,
                         context.request != null ? context.request.id : null,
-                        dependentDepth);
+                        currentDepth);
                 RunnerResult child = outcome != null ? outcome.result : null;
                 if (child == null) {
                     return ScriptDependentRequestResult.failure("Dependent request execution produced no result.");
@@ -887,7 +898,7 @@ public class CollectionRunner {
                 child.triggeredByScript = true;
                 child.parentRequestName = context.request != null ? context.request.name : null;
                 child.parentRequestId = context.request != null ? context.request.id : null;
-                child.dependentDepth = dependentDepth;
+                child.dependentDepth = currentDepth;
                 results.add(child);
                 fireOnRequestComplete(child);
                 fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
@@ -907,7 +918,7 @@ public class CollectionRunner {
                 dependentResult.resolvedRequestId = child.requestId;
                 dependentResult.parentRequestName = context.request != null ? context.request.name : null;
                 dependentResult.parentRequestId = context.request != null ? context.request.id : null;
-                dependentResult.depth = dependentDepth;
+                dependentResult.depth = currentDepth;
                 dependentResult.runnerResult = child;
                 return dependentResult;
             } finally {
@@ -940,6 +951,7 @@ public class CollectionRunner {
                 return ScriptDependentRequestResult.failure(message);
             }
             dependentDepth++;
+            int currentDepth = dependentDepth;
             dependentCount++;
             requestStack.push("ad-hoc:" + dependentCount);
             try {
@@ -952,7 +964,7 @@ public class CollectionRunner {
                         true,
                         context.request != null ? context.request.name : null,
                         context.request != null ? context.request.id : null,
-                        dependentDepth);
+                        currentDepth);
                 RunnerResult child = outcome != null ? outcome.result : null;
                 if (child == null) {
                     return ScriptDependentRequestResult.failure("Ad-hoc request execution produced no result.");
@@ -962,7 +974,7 @@ public class CollectionRunner {
                 child.triggeredByScript = true;
                 child.parentRequestName = context.request != null ? context.request.name : null;
                 child.parentRequestId = context.request != null ? context.request.id : null;
-                child.dependentDepth = dependentDepth;
+                child.dependentDepth = currentDepth;
                 results.add(child);
                 fireOnRequestComplete(child);
                 fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
@@ -982,7 +994,7 @@ public class CollectionRunner {
                 dependentResult.resolvedRequestId = child.requestId;
                 dependentResult.parentRequestName = context.request != null ? context.request.name : null;
                 dependentResult.parentRequestId = context.request != null ? context.request.id : null;
-                dependentResult.depth = dependentDepth;
+                dependentResult.depth = currentDepth;
                 dependentResult.adHoc = true;
                 dependentResult.runnerResult = child;
                 return dependentResult;
@@ -1028,6 +1040,19 @@ public class CollectionRunner {
                 return request.name;
             }
             return "";
+        }
+
+        private boolean sameRequest(ApiRequest left, ApiRequest right) {
+            if (left == null || right == null) {
+                return false;
+            }
+            if (left.id != null && !left.id.isBlank() && right.id != null && !right.id.isBlank()) {
+                return left.id.equals(right.id);
+            }
+            if (left.name != null && !left.name.isBlank() && right.name != null && !right.name.isBlank()) {
+                return left.name.equalsIgnoreCase(right.name);
+            }
+            return false;
         }
 
         private String safeLabel(String value) {
