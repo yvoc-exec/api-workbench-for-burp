@@ -7,6 +7,10 @@ import burp.api.montoya.http.RedirectionMode;
 import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.ui.history.HistoryNativeHttpMessageFactory;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
@@ -62,24 +66,24 @@ public class SharedRequestPipeline {
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND);
+        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
-        return build(req, col, null, null, null, null, ExecutionSource.BUILD_PREVIEW);
+        return build(req, col, null, null, null, null, ExecutionSource.BUILD_PREVIEW, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND);
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink,
                                    RuntimeVariableSink runtimeVariableSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND);
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -88,7 +92,7 @@ public class SharedRequestPipeline {
                                    RuntimeVariableSink runtimeVariableSink,
                                    EnvironmentProfile activeEnvironment) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND, null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -98,20 +102,31 @@ public class SharedRequestPipeline {
                                    EnvironmentProfile activeEnvironment,
                                    ExecutionSource executionSource) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink,
+                                   EnvironmentProfile activeEnvironment,
+                                   ExecutionSource executionSource,
+                                   burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
+        ExecutionResult result = new ExecutionResult();
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
                                  Map<String, String> runtimeOverlay,
                                  OAuth2TokenSink oauth2TokenSink) {
-        return build(req, col, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.BUILD_PREVIEW);
+        return build(req, col, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.BUILD_PREVIEW, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
                                  Map<String, String> runtimeOverlay,
                                  OAuth2TokenSink oauth2TokenSink,
                                  RuntimeVariableSink runtimeVariableSink) {
-        return build(req, col, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.BUILD_PREVIEW);
+        return build(req, col, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.BUILD_PREVIEW, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -119,7 +134,7 @@ public class SharedRequestPipeline {
                                  OAuth2TokenSink oauth2TokenSink,
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW);
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW, null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -128,7 +143,17 @@ public class SharedRequestPipeline {
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment,
                                  ExecutionSource executionSource) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource);
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null);
+    }
+
+    public ExecutionResult build(ApiRequest req, ApiCollection col,
+                                 Map<String, String> runtimeOverlay,
+                                 OAuth2TokenSink oauth2TokenSink,
+                                 RuntimeVariableSink runtimeVariableSink,
+                                 EnvironmentProfile activeEnvironment,
+                                 ExecutionSource executionSource,
+                                 burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor);
     }
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -137,13 +162,16 @@ public class SharedRequestPipeline {
                                             OAuth2TokenSink oauth2TokenSink,
                                             RuntimeVariableSink runtimeVariableSink,
                                             EnvironmentProfile activeEnvironment,
-                                            ExecutionSource executionSource) {
+                                            ExecutionSource executionSource,
+                                            burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
         ExecutionSource effectiveSource = executionSource != null ? executionSource : (sendRequest ? ExecutionSource.WORKBENCH_SEND : ExecutionSource.BUILD_PREVIEW);
         if (result != null) {
             result.executionSource = effectiveSource;
             result.scriptEngineName = unifiedScriptRuntime != null ? unifiedScriptRuntime.getEngineName() : "Unavailable";
             result.success = true;
         }
+        recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
+                col, req, activeEnvironment, "Request build started", null);
         Map<String, String> scriptContext = buildInitialRuntimeOverlay(col, runtimeOverlay, activeEnvironment);
         Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
@@ -157,12 +185,16 @@ public class SharedRequestPipeline {
                         req,
                         activeEnvironment,
                         effectiveSource,
-                        1
+                        1,
+                        dependentRequestExecutor
                 );
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
                 applyRuntimeMutations(scriptContext, scriptResult);
                 mergeScriptResult(result, scriptResult);
+                recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
                 if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
+                    recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
+                            col, req, activeEnvironment, "Request skipped by script", "Flow control: SKIP_REQUEST");
                     result.response = null;
                     result.builtRequest = null;
                     result.rawRequestBytes = null;
@@ -193,6 +225,8 @@ public class SharedRequestPipeline {
                         if (config.isValid()) {
                             TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
                             if (entry != null && entry.accessToken != null) {
+                                recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.INFO, effectiveSource,
+                                        col, req, activeEnvironment, "OAuth2 token acquired", "Token resolved and injected");
                                 Map<String, String> storedVars;
                                 if (oauth2TokenSink != null) {
                                     storedVars = oauth2TokenSink.store(col, entry);
@@ -216,10 +250,12 @@ public class SharedRequestPipeline {
                                     resolver.addAll(storedVars);
                                 }
                             }
-                        }
-                } catch (Exception e) {
-                    if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
                 }
+            } catch (Exception e) {
+                if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
+                recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.ERROR, effectiveSource,
+                        col, req, activeEnvironment, "OAuth2 refresh failed", e.getMessage());
+            }
             }
 
             // 3. Build request
@@ -228,6 +264,8 @@ public class SharedRequestPipeline {
             result.rawRequestText = rawRequest != null ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8) : null;
             result.resolvedVariables = new HashMap<>(resolver.getVariables());
             warnIfUnresolved(rawRequest, effectiveRequest != null ? effectiveRequest.name : null);
+            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
+                    col, effectiveRequest, activeEnvironment, "Raw request built", result.rawRequestText);
 
             String resolvedUrl = resolver.resolve(effectiveRequest != null ? effectiveRequest.url : null);
             result.resolvedUrl = resolvedUrl;
@@ -264,6 +302,9 @@ public class SharedRequestPipeline {
             long endTime = System.currentTimeMillis();
             result.elapsedMs = endTime - startTime;
             result.response = response;
+            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
+                    col, effectiveRequest, activeEnvironment, "HTTP response received",
+                    response != null && response.response() != null ? "status=" + response.response().statusCode() : "no response");
 
             if (response != null && response.response() != null) {
                 // 5. Post-response scripts
@@ -283,7 +324,7 @@ public class SharedRequestPipeline {
                     if (shouldUseUnifiedRuntime()) {
                         ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
                                 col,
-                                effectiveRequest,
+                        effectiveRequest,
                         activeEnvironment,
                         effectiveSource,
                         1,
@@ -291,11 +332,13 @@ public class SharedRequestPipeline {
                         statusCode,
                         headersMap,
                         result.elapsedMs,
-                        scriptResult
+                        scriptResult,
+                        dependentRequestExecutor
                         );
                         applyRuntimeMutations(scriptContext, postResult);
                         mergeScriptResult(result, postResult);
                         mergeScriptResult(scriptResult, postResult);
+                        recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
                     } else if (scriptEngine != null && col != null) {
                         scriptEngine.executePostResponse(effectiveRequest, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
                     }
@@ -316,6 +359,8 @@ public class SharedRequestPipeline {
         } catch (Exception e) {
             result.success = false;
             result.errorMessage = extractCleanError(e);
+            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.ERROR, effectiveSource,
+                    col, req, activeEnvironment, "Request execution failed", result.errorMessage);
         } finally {
             result.removedVars.clear();
             Set<String> removedKeys = new LinkedHashSet<>();
@@ -340,6 +385,10 @@ public class SharedRequestPipeline {
                 runtimeVariableSink.apply(col, changedVars, removedKeys);
             } else if (col != null) {
                 col.applyRuntimeVarDelta(changedVars, removedKeys);
+            }
+            if (!changedVars.isEmpty() || !removedKeys.isEmpty()) {
+                recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
+                        col, req, activeEnvironment, "Runtime variables updated", "changed=" + changedVars.keySet() + " removed=" + removedKeys);
             }
         }
         return result;
@@ -419,6 +468,14 @@ public class SharedRequestPipeline {
         if (scriptResult.variableMutations != null) {
             executionResult.scriptVariableMutations.addAll(scriptResult.variableMutations);
         }
+        if (scriptResult.dependentRequestResults != null) {
+            executionResult.scriptDependentRequestResults.addAll(scriptResult.dependentRequestResults);
+        }
+        if (scriptResult.dependentRequestCount > 0) {
+            executionResult.dependentRequestCount += scriptResult.dependentRequestCount;
+        } else if (scriptResult.dependentRequestResults != null && !scriptResult.dependentRequestResults.isEmpty()) {
+            executionResult.dependentRequestCount += scriptResult.dependentRequestResults.size();
+        }
         if (scriptResult.assertions != null) {
             for (ScriptAssertionResult assertion : scriptResult.assertions) {
                 if (assertion == null) {
@@ -469,6 +526,14 @@ public class SharedRequestPipeline {
         }
         if (scriptResult.variableMutations != null) {
             runnerResult.scriptVariableMutations.addAll(scriptResult.variableMutations);
+        }
+        if (scriptResult.dependentRequestResults != null) {
+            runnerResult.scriptDependentRequestResults.addAll(scriptResult.dependentRequestResults);
+        }
+        if (scriptResult.dependentRequestCount > 0) {
+            runnerResult.dependentRequestCount += scriptResult.dependentRequestCount;
+        } else if (scriptResult.dependentRequestResults != null && !scriptResult.dependentRequestResults.isEmpty()) {
+            runnerResult.dependentRequestCount += scriptResult.dependentRequestResults.size();
         }
         if (scriptResult.assertions != null) {
             for (ScriptAssertionResult assertion : scriptResult.assertions) {
@@ -547,5 +612,74 @@ public class SharedRequestPipeline {
             return i;
         }
         return -1;
+    }
+
+    private void recordDiagnostic(DiagnosticOperation operation,
+                                  DiagnosticSeverity severity,
+                                  ExecutionSource source,
+                                  ApiCollection collection,
+                                  ApiRequest request,
+                                  EnvironmentProfile environment,
+                                  String message,
+                                  String details) {
+        DiagnosticEvent event = DiagnosticEvent.of(operation, severity, source != null ? source.name() : null, message);
+        if (collection != null) {
+            event.collectionName = collection.name;
+        }
+        if (request != null) {
+            event.requestName = request.name;
+            event.requestId = request.id;
+            event.folderPath = request.path;
+        }
+        if (environment != null) {
+            event.environmentName = environment.displayName();
+        }
+        event.executionSource = source;
+        event.withDetails(details);
+        DiagnosticStore.getInstance().record(event);
+    }
+
+    private void recordScriptDiagnostic(ExecutionSource source,
+                                        ApiCollection collection,
+                                        ApiRequest request,
+                                        EnvironmentProfile environment,
+                                        ScriptExecutionResult scriptResult,
+                                        String message) {
+        if (scriptResult == null) {
+            return;
+        }
+        DiagnosticEvent event = DiagnosticEvent.of(DiagnosticOperation.SCRIPT_EXECUTION, DiagnosticSeverity.INFO,
+                source != null ? source.name() : null, message);
+        if (collection != null) {
+            event.collectionName = collection.name;
+        }
+        if (request != null) {
+            event.requestName = request.name;
+            event.requestId = request.id;
+            event.folderPath = request.path;
+        }
+        if (environment != null) {
+            event.environmentName = environment.displayName();
+        }
+        event.executionSource = source;
+        event.scriptDialect = null;
+        StringBuilder details = new StringBuilder();
+        if (scriptResult.logs != null && !scriptResult.logs.isEmpty()) {
+            details.append("logs=").append(scriptResult.logs.size()).append('\n');
+        }
+        if (scriptResult.warnings != null && !scriptResult.warnings.isEmpty()) {
+            details.append("warnings=").append(scriptResult.warnings.size()).append('\n');
+        }
+        if (scriptResult.errors != null && !scriptResult.errors.isEmpty()) {
+            details.append("errors=").append(scriptResult.errors.size()).append('\n');
+        }
+        if (scriptResult.variableMutations != null && !scriptResult.variableMutations.isEmpty()) {
+            details.append("mutations=").append(scriptResult.variableMutations.size()).append('\n');
+        }
+        if (scriptResult.flowControl != null) {
+            details.append("flowControl=").append(scriptResult.flowControl).append('\n');
+        }
+        event.withDetails(details.toString().trim());
+        DiagnosticStore.getInstance().record(event);
     }
 }

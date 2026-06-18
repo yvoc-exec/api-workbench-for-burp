@@ -961,11 +961,9 @@ public final class ScriptBindingsFactory {
 
         @HostAccess.Export
         public void runRequest(Object request) {
-            context.warn("bru.runRequest is not executed in the sandbox yet.", null, null);
-            context.setFlowControl(ScriptFlowControl.RUN_REQUEST,
-                    request != null ? request.toString() : null,
-                    null,
-                    "bru.runRequest");
+            if (context != null) {
+                context.runDependentRequest(request != null ? request.toString() : null);
+            }
         }
 
         @HostAccess.Export
@@ -1087,10 +1085,6 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("awb.sendRequest is not executed in the sandbox yet.", null, null);
-            context.setFlowControl(ScriptFlowControl.SEND_AD_HOC_REQUEST,
-                    request != null ? request.toString() : null,
-                    null,
-                    "awb.sendRequest");
         }
     }
 
@@ -1136,18 +1130,28 @@ public final class ScriptBindingsFactory {
 
         @HostAccess.Export
         public void runRequest(String name) {
-            if (context != null) {
-                context.warn("runRequest is recognized but not executed yet.", null, null);
-                context.setFlowControl(ScriptFlowControl.RUN_REQUEST, name, null, "runRequest");
+            runRequest((Object) name);
+        }
+
+        @HostAccess.Export
+        public void runRequest(Object target) {
+            if (context == null) {
+                return;
             }
+            context.runDependentRequest(target != null ? target.toString() : null);
         }
 
         @HostAccess.Export
         public void sendAdHocRequest(String name) {
-            if (context != null) {
-                context.warn("sendAdHocRequest is recognized but not executed yet.", null, null);
-                context.setFlowControl(ScriptFlowControl.SEND_AD_HOC_REQUEST, name, null, "sendAdHocRequest");
+            sendAdHocRequest((Object) name);
+        }
+
+        @HostAccess.Export
+        public void sendAdHocRequest(Object request) {
+            if (context == null) {
+                return;
             }
+            context.sendAdHocRequest(ScriptAdHocRequest.from(request));
         }
     }
 

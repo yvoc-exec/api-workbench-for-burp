@@ -34,6 +34,7 @@ public class ScriptExecutionContext {
     public Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
     public Object parsedResponseJson;
     public RunnerResult runnerResult;
+    public ScriptDependentRequestExecutor dependentRequestExecutor;
     public boolean runnerOnlyFlowControlsAllowed = true;
     public boolean scriptErrorsStopExecution = false;
 
@@ -122,6 +123,62 @@ public class ScriptExecutionContext {
         result.nextRequestName = nextRequestName;
         result.nextRequestId = nextRequestId;
         result.message = message;
+    }
+
+    public ScriptDependentRequestResult runDependentRequest(String targetNameOrId) {
+        if (executionSource != ExecutionSource.RUNNER) {
+            warn("runRequest is ignored outside Runner mode.", null, null);
+            return ScriptDependentRequestResult.ignored("runRequest is ignored outside Runner mode.");
+        }
+        if (dependentRequestExecutor == null) {
+            warn("runRequest is recognized but no dependent executor is available.", null, null);
+            return ScriptDependentRequestResult.ignored("runRequest is recognized but no dependent executor is available.");
+        }
+        ScriptDependentRequestResult dependent = dependentRequestExecutor.runRequest(this, targetNameOrId);
+        if (dependent != null && dependent.executed) {
+            result.flowControl = ScriptFlowControl.RUN_REQUEST;
+            result.nextRequestName = dependent.resolvedRequestName != null ? dependent.resolvedRequestName : targetNameOrId;
+            result.nextRequestId = dependent.resolvedRequestId;
+            result.message = dependent.message != null ? dependent.message : "runRequest";
+            result.dependentRequestResults.add(dependent);
+            result.dependentRequestCount++;
+        } else if (dependent != null) {
+            String message = dependent.warningMessage != null && !dependent.warningMessage.isBlank()
+                    ? dependent.warningMessage
+                    : dependent.errorMessage;
+            if (message != null && !message.isBlank()) {
+                warn(message, null, null);
+            }
+        }
+        return dependent;
+    }
+
+    public ScriptDependentRequestResult sendAdHocRequest(ScriptAdHocRequest request) {
+        if (executionSource != ExecutionSource.RUNNER) {
+            warn("sendAdHocRequest is ignored outside Runner mode.", null, null);
+            return ScriptDependentRequestResult.ignored("sendAdHocRequest is ignored outside Runner mode.");
+        }
+        if (dependentRequestExecutor == null) {
+            warn("sendAdHocRequest is recognized but no dependent executor is available.", null, null);
+            return ScriptDependentRequestResult.ignored("sendAdHocRequest is recognized but no dependent executor is available.");
+        }
+        ScriptDependentRequestResult dependent = dependentRequestExecutor.sendAdHocRequest(this, request);
+        if (dependent != null && dependent.executed) {
+            result.flowControl = ScriptFlowControl.SEND_AD_HOC_REQUEST;
+            result.nextRequestName = dependent.resolvedRequestName;
+            result.nextRequestId = dependent.resolvedRequestId;
+            result.message = dependent.message != null ? dependent.message : "sendAdHocRequest";
+            result.dependentRequestResults.add(dependent);
+            result.dependentRequestCount++;
+        } else if (dependent != null) {
+            String message = dependent.warningMessage != null && !dependent.warningMessage.isBlank()
+                    ? dependent.warningMessage
+                    : dependent.errorMessage;
+            if (message != null && !message.isBlank()) {
+                warn(message, null, null);
+            }
+        }
+        return dependent;
     }
 
     public ScriptVariableMutation setEnvironment(String key, String value, boolean persist, String scriptId, String scriptName) {

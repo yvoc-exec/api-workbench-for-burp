@@ -1,6 +1,7 @@
 package burp.models;
 
 import burp.scripts.ExecutionSource;
+import burp.scripts.ScriptDependentRequestResult;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
@@ -41,10 +42,18 @@ public class RunnerResult {
     public List<String> scriptWarnings = new ArrayList<>();
     public List<String> scriptErrors = new ArrayList<>();
     public List<ScriptVariableMutation> scriptVariableMutations = new ArrayList<>();
+    public List<ScriptDependentRequestResult> scriptDependentRequestResults = new ArrayList<>();
     public ScriptFlowControl scriptFlowControl = ScriptFlowControl.CONTINUE;
     public String scriptFlowMessage;
     public String scriptFlowNextRequestName;
     public String scriptFlowNextRequestId;
+    public int dependentRequestCount;
+    public boolean dependentExecution;
+    public boolean adHocExecution;
+    public String parentRequestName;
+    public String parentRequestId;
+    public int dependentDepth;
+    public boolean triggeredByScript;
     public int attemptNumber = 1;
     public int totalAttempts = 1;
 
@@ -68,9 +77,10 @@ public class RunnerResult {
             return "Stopped by Script";
         }
         if (success) {
-            return statusCode > 0 ? String.valueOf(statusCode) : "OK";
+            String label = statusCode > 0 ? String.valueOf(statusCode) : "OK";
+            return dependentExecution ? label + " (dependent)" : label;
         }
-        return "ERR";
+        return dependentExecution ? "ERR (dependent)" : "ERR";
     }
 
     public String displayLogStatusLabel() {
@@ -85,9 +95,11 @@ public class RunnerResult {
                     : "STOPPED by script (" + errorMessage + ")";
         }
         if (success) {
-            return statusCode > 0 ? "OK " + statusCode : "OK";
+            String label = statusCode > 0 ? "OK " + statusCode : "OK";
+            return dependentExecution ? label + " (dependent)" : label;
         }
-        return "FAIL " + (errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Unknown error");
+        String label = "FAIL " + (errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Unknown error");
+        return dependentExecution ? label + " (dependent)" : label;
     }
 
     public static class AssertionResult {

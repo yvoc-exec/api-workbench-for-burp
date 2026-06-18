@@ -53,7 +53,7 @@ class HistoryPanelTest {
         assertThat(topPanel.getComponentCount()).isEqualTo(3);
         assertThat(topPanel.getComponent(1)).isInstanceOf(JLabel.class);
         assertThat(((JLabel) topPanel.getComponent(1)).getText())
-                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.");
+                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.");
         assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
         assertThat(panel.getFilterPanel().getMinimumSize().height).isLessThanOrEqualTo(72);
         assertThat(panel.getFilterPanel().getComponentCount()).isGreaterThan(0);
