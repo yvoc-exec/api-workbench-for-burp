@@ -21,9 +21,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CollectionRunnerDependentRequestDiagnosticsTest {
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore diagnostics = DiagnosticStore.getInstance();
+        diagnostics.setCaptureEnabled(false);
+        diagnostics.clear();
+    }
+
     @Test
     void dependentRequestExecutionEmitsRunnerAndHistoryDiagnostics() {
         DiagnosticStore diagnostics = DiagnosticStore.getInstance();
+        diagnostics.setCaptureEnabled(true);
         diagnostics.clear();
 
         AtomicInteger sendCount = new AtomicInteger();
@@ -85,7 +93,5 @@ class CollectionRunnerDependentRequestDiagnosticsTest {
                     assertThat(event.message).contains("history captured");
                 });
         assertThat(diagnostics.compactSummary()).contains("events=");
-
-        diagnostics.clear();
     }
 }

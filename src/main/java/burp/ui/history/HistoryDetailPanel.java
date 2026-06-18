@@ -5,6 +5,7 @@ import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.history.HistoryEntry;
+import burp.ui.SwingShortcutSupport;
 
 import javax.swing.*;
 import java.awt.*;
@@ -70,6 +71,12 @@ public class HistoryDetailPanel extends JPanel {
         configureTextArea(assertionsArea);
         configureTextArea(scriptArea);
         configureTextArea(metadataArea);
+        SwingShortcutSupport.installTextComponentShortcuts(requestArea);
+        SwingShortcutSupport.installTextComponentShortcuts(responseArea);
+        SwingShortcutSupport.installTextComponentShortcuts(variablesArea);
+        SwingShortcutSupport.installTextComponentShortcuts(assertionsArea);
+        SwingShortcutSupport.installTextComponentShortcuts(scriptArea);
+        SwingShortcutSupport.installTextComponentShortcuts(metadataArea);
 
         tabs.addTab("Request", requestCardPanel);
         tabs.addTab("Response", responseCardPanel);

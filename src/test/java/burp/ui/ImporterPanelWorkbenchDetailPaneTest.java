@@ -42,7 +42,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
         ImporterPanel.WorkbenchSendSnapshot snapshotB = snapshot("B");
 
         harness.panel.openRequestInEditor(collection.requests.get(0), collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isBlank();
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).contains("Not yet sent");
         assertThat(harness.panel.getWorkbenchSendSnapshot(collection.requests.get(0))).isNull();
 
         harness.panel.applyWorkbenchSendSnapshot(collection.requests.get(0), collection, snapshotA);
@@ -52,7 +52,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
         harness.panel.openRequestInEditor(collection.requests.get(1), collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isBlank();
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).contains("Not yet sent");
         harness.panel.applyWorkbenchSendSnapshot(collection.requests.get(1), collection, snapshotB);
         assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META B");
         verify(harness.workbenchRequestEditor).setRequest(same(snapshotB.builtRequest));
@@ -81,7 +81,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
         harness.panel.openRequestInEditor(requestC, collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isBlank();
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).contains("Not yet sent");
         assertThat(harness.panel.getWorkbenchSendSnapshot(requestC)).isNull();
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
@@ -140,7 +140,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
 
         ApiRequest duplicate = request("req-a-copy", "Request A Copy");
         harness.panel.openRequestInEditor(duplicate, collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isBlank();
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).contains("Not yet sent");
         assertThat(harness.panel.getWorkbenchSendSnapshot(duplicate)).isNull();
         assertThat(harness.panel.getWorkbenchSendSnapshot(requestA)).isNotNull();
 

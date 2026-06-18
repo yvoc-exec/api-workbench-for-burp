@@ -6,10 +6,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class DiagnosticStoreTest {
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore store = DiagnosticStore.getInstance();
+        store.setCaptureEnabled(false);
+        store.clear();
+    }
+
     @Test
     void sanitizedReportSkipsDebugWhenNotIncluded() {
         DiagnosticStore store = DiagnosticStore.getInstance();
         store.clear();
+        store.setCaptureEnabled(true);
         store.record(DiagnosticEvent.of(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.DEBUG, "test", "debug detail")
                 .withDetails("token=secret"));
         store.record(DiagnosticEvent.of(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, "test", "info detail")
@@ -28,6 +36,7 @@ class DiagnosticStoreTest {
     void clearRemovesRecordedEvents() {
         DiagnosticStore store = DiagnosticStore.getInstance();
         store.clear();
+        store.setCaptureEnabled(true);
         store.record(DiagnosticEvent.of(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, "test", "hello"));
         assertThat(store.snapshot()).isNotEmpty();
         store.clear();

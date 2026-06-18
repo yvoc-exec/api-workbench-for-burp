@@ -29,6 +29,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ImporterPanelDiagnosticsTabTest {
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore.getInstance().setCaptureEnabled(false);
+        DiagnosticStore.getInstance().clear();
+    }
+
     @Test
     void diagnosticsSnapshotIncludesMainRequestTreeAndSafeUiMetadata() throws Exception {
         ImporterPanel panel = newPanel();
@@ -65,7 +71,7 @@ class ImporterPanelDiagnosticsTabTest {
 
     @Test
     void diagnosticsSnapshotIncludesSanitizedRecordedEvents() throws Exception {
-        DiagnosticStore.getInstance().clear();
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, "test", "Request built")
                 .withDetails("Authorization: Bearer token-secret\nCookie: session=abc123\naccess_token=super-secret"));
 
@@ -76,16 +82,16 @@ class ImporterPanelDiagnosticsTabTest {
 
         assertThat(snapshot).contains("=== Diagnostics Events ===");
         assertThat(snapshot).contains("=== REQUEST_BUILD (1) ===");
+        assertThat(snapshot).contains("diagnostics.summary=events=1 warnings=0 errors=0 debug=0");
         assertThat(snapshot).contains("Request built");
         assertThat(snapshot).doesNotContain("token-secret");
         assertThat(snapshot).doesNotContain("session=abc123");
         assertThat(snapshot).doesNotContain("super-secret");
-        DiagnosticStore.getInstance().clear();
     }
 
     @Test
     void diagnosticsSnapshotGroupsEventsByOperationWithSummary() throws Exception {
-        DiagnosticStore.getInstance().clear();
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.IMPORT, DiagnosticSeverity.INFO, "test", "Import started"));
         DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.EXPORT, DiagnosticSeverity.WARNING, "test", "Export warning"));
 
@@ -95,15 +101,14 @@ class ImporterPanelDiagnosticsTabTest {
         String snapshot = buildSnapshot(panel);
 
         assertThat(snapshot).contains("=== Diagnostics Summary ===");
-        assertThat(snapshot).contains("Summary: events=");
+        assertThat(snapshot).contains("diagnostics.summary=events=2 warnings=1 errors=0 debug=0");
         assertThat(snapshot).contains("=== IMPORT (1) ===");
         assertThat(snapshot).contains("=== EXPORT (1) ===");
-        DiagnosticStore.getInstance().clear();
     }
 
     @Test
     void activeEnvironmentSwitchEmitsDiagnosticsEvent() throws Exception {
-        DiagnosticStore.getInstance().clear();
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         ImporterPanel panel = newPanel();
         EnvironmentProfile dev = environment("Dev", "https://dev.example.test");
         EnvironmentProfile qa = environment("QA", "https://qa.example.test");
@@ -114,7 +119,6 @@ class ImporterPanelDiagnosticsTabTest {
         String snapshot = buildSnapshot(panel);
         assertThat(snapshot).contains("=== ENVIRONMENT_SWITCH (1) ===");
         assertThat(snapshot).contains("Active environment switched");
-        DiagnosticStore.getInstance().clear();
     }
 
     @Test

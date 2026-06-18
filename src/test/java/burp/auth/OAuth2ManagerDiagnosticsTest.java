@@ -13,8 +13,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OAuth2ManagerDiagnosticsTest {
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore.getInstance().setCaptureEnabled(false);
+        DiagnosticStore.getInstance().clear();
+    }
+
     @Test
     void clearTokensRecordsDiagnosticsEvent() {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         DiagnosticStore.getInstance().clear();
 
         OAuth2Manager manager = new OAuth2Manager(Mockito.mock(burp.api.montoya.MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS));
@@ -31,6 +38,7 @@ class OAuth2ManagerDiagnosticsTest {
 
     @Test
     void refreshIfNeededWithInvalidVariablesRecordsDiagnostic() {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         DiagnosticStore.getInstance().clear();
 
         OAuth2Manager manager = new OAuth2Manager(Mockito.mock(burp.api.montoya.MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS));
@@ -47,6 +55,7 @@ class OAuth2ManagerDiagnosticsTest {
 
     @Test
     void acquireTokenNullConfigRecordsErrorDiagnostics() {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
         DiagnosticStore.getInstance().clear();
 
         OAuth2Manager manager = new OAuth2Manager(Mockito.mock(burp.api.montoya.MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS));

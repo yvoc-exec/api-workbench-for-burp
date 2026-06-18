@@ -35,7 +35,12 @@ public final class ExportVariableResolutionService {
         if (exportOnlyVariables != null && !exportOnlyVariables.isEmpty()) {
             overlay.putAll(exportOnlyVariables);
         }
-        return RuntimeResolverFactory.build(collection, request, RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay));
+        return RuntimeResolverFactory.build(
+                collection,
+                request,
+                RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay)
+                        .withCollectionRuntimeLayers(false)
+        );
     }
 
     public static List<UnresolvedVariableIssue> collectUnresolvedIssues(ApiCollection collection,
@@ -61,7 +66,7 @@ public final class ExportVariableResolutionService {
             if (request == null) {
                 continue;
             }
-            issues.addAll(ANALYZER.analyze(collection, request, overlay));
+            issues.addAll(ANALYZER.analyze(collection, request, overlay, false));
             scanValues(issues, collection.name, request.name, "script:pre-request", request.preRequestScripts != null ? request.preRequestScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
             scanValues(issues, collection.name, request.name, "script:post-response", request.postResponseScripts != null ? request.postResponseScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
         }

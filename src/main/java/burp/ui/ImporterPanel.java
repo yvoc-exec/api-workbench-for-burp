@@ -22,6 +22,7 @@ import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 import burp.utils.OAuth2BearerAliasDetector;
+import burp.utils.ExecutionResult;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.SharedRequestPipeline;
 import burp.smoke.SmokeUiEvidenceSnapshot;
@@ -127,10 +128,13 @@ public class ImporterPanel {
     private HttpRequestEditor workbenchRequestEditor;
     private HttpResponseEditor workbenchResponseEditor;
     private JTextArea workbenchMetaText;
+    private JTextArea workbenchScriptText;
+    private JTextArea workbenchAssertionsText;
     private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
     private JCheckBox diagnosticsIncludeDebugBox;
+    private JCheckBox diagnosticsCaptureBox;
     private HistoryPanel historyPanel;
 
     // Runner tab
@@ -173,6 +177,8 @@ public class ImporterPanel {
         final HttpRequest builtRequest;
         final HttpResponse response;
         final String metaText;
+        final String scriptOutputText;
+        final String assertionsText;
         final String failureReason;
         final String sendModeLabel;
         final long timestampMillis;
@@ -183,9 +189,22 @@ public class ImporterPanel {
                               String failureReason,
                               String sendModeLabel,
                               long timestampMillis) {
+            this(builtRequest, response, metaText, "", "", failureReason, sendModeLabel, timestampMillis);
+        }
+
+        WorkbenchSendSnapshot(HttpRequest builtRequest,
+                              HttpResponse response,
+                              String metaText,
+                              String scriptOutputText,
+                              String assertionsText,
+                              String failureReason,
+                              String sendModeLabel,
+                              long timestampMillis) {
             this.builtRequest = builtRequest;
             this.response = response;
             this.metaText = metaText;
+            this.scriptOutputText = scriptOutputText;
+            this.assertionsText = assertionsText;
             this.failureReason = failureReason;
             this.sendModeLabel = sendModeLabel;
             this.timestampMillis = timestampMillis;
@@ -498,50 +517,27 @@ public class ImporterPanel {
         requestEditor.setVariableActionBridge(new RequestEditorPanel.VariableActionBridge() {
             @Override
             public RequestEditorPanel.VariableHoverInfo inspect(String key) {
+                ApiCollection collection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+                EnvironmentProfile active = getActiveEnvironment();
+                Map<String, String> runtimeOverlay = active != null
+                        ? Collections.emptyMap()
+                        : (requestEditor != null ? requestEditor.getRuntimeVariablesSnapshot() : Collections.emptyMap());
+                burp.utils.RuntimeResolverFactory.ResolutionTrace trace =
+                        burp.utils.RuntimeResolverFactory.inspect(collection, requestEditor != null ? requestEditor.getCurrentRequest() : null, active, runtimeOverlay, key);
                 RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
                 info.key = key;
-                EnvironmentProfile active = getActiveEnvironment();
-                if (active != null) {
-                    active.ensureDefaults();
-                    String activeValue = active.variables != null ? active.variables.get(key) : null;
-                    if (activeValue != null) {
-                        info.resolved = true;
-                        info.value = activeValue;
-                        info.scope = "active environment";
-                        info.source = "Active Environment";
-                        info.activeEnvironmentName = active.displayName();
-                        info.canEdit = true;
-                        info.canCreate = true;
-                        info.message = "Resolved from Active Environment. Edit target: Active Environment (persisted variable).";
-                        return info;
-                    }
-                }
-                ApiCollection collection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
-                Map<String, String> runtimeOverlay = collection != null ? getEffectiveRuntimeVarsForRequestContext(collection) : Collections.emptyMap();
-                String runtimeValue = runtimeOverlay != null ? runtimeOverlay.get(key) : null;
-                if (runtimeValue != null) {
-                    info.resolved = true;
-                    info.value = runtimeValue;
-                    info.scope = "runtime overlay";
-                    info.source = "Runtime Overlay";
-                    info.activeEnvironmentName = active != null ? active.displayName() : null;
-                    info.canEdit = active != null;
-                    info.canCreate = active != null;
-                    info.message = active != null
-                            ? "Resolved from Runtime Overlay. Edit target: Active Environment (persisted variable)."
-                            : "Resolved from Runtime Overlay. Select an Active Environment to edit or create persisted variables.";
-                    return info;
-                }
-                info.resolved = false;
-                info.value = null;
-                info.scope = "not found";
-                info.source = active != null ? "Active Environment" : "No Active Environment selected";
-                info.activeEnvironmentName = active != null ? active.displayName() : null;
+                info.resolved = trace != null && trace.resolved;
+                info.value = trace != null ? trace.value : null;
+                info.scope = trace != null && trace.scope != null ? trace.scope : (info.resolved ? "resolved" : "not found");
+                info.source = trace != null && trace.source != null ? trace.source : (active != null ? "Active Environment" : "No Active Environment selected");
+                info.shadowedSource = trace != null ? trace.shadowedSource : null;
+                info.shadowedValue = trace != null ? trace.shadowedValue : null;
+                info.activeEnvironmentName = trace != null && trace.activeEnvironmentName != null ? trace.activeEnvironmentName : (active != null ? active.displayName() : null);
                 info.canEdit = active != null;
                 info.canCreate = active != null;
-                info.message = active != null
+                info.message = trace != null && trace.message != null ? trace.message : (active != null
                         ? "No value found. Create target: Active Environment (persisted variable)."
-                        : "No Active Environment selected. Select or import an environment to edit or create persisted variables.";
+                        : "No Active Environment selected. Select or import an environment to edit or create persisted variables.");
                 return info;
             }
 
@@ -605,7 +601,20 @@ public class ImporterPanel {
         workbenchMetaText = new JTextArea();
         workbenchMetaText.setEditable(false);
         workbenchMetaText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(workbenchMetaText);
         workbenchDetailTabs.addTab("Meta", new JScrollPane(workbenchMetaText));
+
+        workbenchScriptText = new JTextArea();
+        workbenchScriptText.setEditable(false);
+        workbenchScriptText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(workbenchScriptText);
+        workbenchDetailTabs.addTab("Script Output", new JScrollPane(workbenchScriptText));
+
+        workbenchAssertionsText = new JTextArea();
+        workbenchAssertionsText.setEditable(false);
+        workbenchAssertionsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(workbenchAssertionsText);
+        workbenchDetailTabs.addTab("Assertions / Extractions", new JScrollPane(workbenchAssertionsText));
         return workbenchDetailTabs;
     }
 
@@ -661,6 +670,7 @@ public class ImporterPanel {
         importLog = new JTextArea(3, 50);
         importLog.setEditable(false);
         importLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(importLog);
         JScrollPane logScroll = new JScrollPane(importLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Workbench Log"));
         logScroll.setPreferredSize(new Dimension(400, 100));
@@ -1656,10 +1666,13 @@ public class ImporterPanel {
                                                   ApiCollection sentCollection,
                                                   UniversalImporter.SingleSendResult result,
                                                   String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 result != null ? result.builtRequest : null,
                 result != null && result.response != null ? result.response.response() : null,
-                buildWorkbenchMetaText(sentRequest, result, sendModeLabel, null),
+                buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment),
+                buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
+                buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
                 null,
                 sendModeLabel,
                 System.currentTimeMillis());
@@ -1670,10 +1683,13 @@ public class ImporterPanel {
                                                   ApiCollection sentCollection,
                                                   String reason,
                                                   String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 null,
                 null,
-                buildWorkbenchMetaText(sentRequest, null, sendModeLabel, reason),
+                buildWorkbenchMetaText(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment),
+                "No script output for this request.",
+                "No assertions or extractions for this request.",
                 reason,
                 sendModeLabel,
                 System.currentTimeMillis());
@@ -1734,9 +1750,26 @@ public class ImporterPanel {
     void showWorkbenchSendSnapshotForSelection(ApiRequest request) {
         WorkbenchSendSnapshot snapshot = request != null ? workbenchSendSnapshots.get(request) : null;
         if (snapshot == null) {
-            clearWorkbenchDetailPane();
+            if (request != null && requestEditor != null) {
+                displayWorkbenchPendingSelection(request, requestEditor.getCurrentCollection());
+            } else {
+                clearWorkbenchDetailPane();
+            }
             return;
         }
+        displayWorkbenchSendSnapshot(snapshot);
+    }
+
+    private void displayWorkbenchPendingSelection(ApiRequest request, ApiCollection collection) {
+        WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
+                null,
+                null,
+                buildWorkbenchMetaText(collection, request, null, requestEditor != null ? requestEditor.getSendModeLabel() : "", null, getActiveEnvironment()),
+                "No script output for this request.",
+                "No assertions or extractions for this request.",
+                null,
+                requestEditor != null ? requestEditor.getSendModeLabel() : "",
+                System.currentTimeMillis());
         displayWorkbenchSendSnapshot(snapshot);
     }
 
@@ -1763,6 +1796,18 @@ public class ImporterPanel {
             workbenchMetaText.setText(snapshot.metaText != null ? snapshot.metaText : "");
             workbenchMetaText.setCaretPosition(0);
         }
+        if (workbenchScriptText != null) {
+            workbenchScriptText.setText(snapshot.scriptOutputText != null && !snapshot.scriptOutputText.isBlank()
+                    ? snapshot.scriptOutputText
+                    : "No script output for this request.");
+            workbenchScriptText.setCaretPosition(0);
+        }
+        if (workbenchAssertionsText != null) {
+            workbenchAssertionsText.setText(snapshot.assertionsText != null && !snapshot.assertionsText.isBlank()
+                    ? snapshot.assertionsText
+                    : "No assertions or extractions for this request.");
+            workbenchAssertionsText.setCaretPosition(0);
+        }
     }
 
     private void clearWorkbenchDetailPane() {
@@ -1784,22 +1829,49 @@ public class ImporterPanel {
             workbenchMetaText.setText("");
             workbenchMetaText.setCaretPosition(0);
         }
+        if (workbenchScriptText != null) {
+            workbenchScriptText.setText("");
+            workbenchScriptText.setCaretPosition(0);
+        }
+        if (workbenchAssertionsText != null) {
+            workbenchAssertionsText.setText("");
+            workbenchAssertionsText.setCaretPosition(0);
+        }
     }
 
-    private String buildWorkbenchMetaText(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel, String failureReason) {
+    private String buildWorkbenchMetaText(ApiCollection sentCollection,
+                                          ApiRequest edited,
+                                          UniversalImporter.SingleSendResult result,
+                                          String sendModeLabel,
+                                          String failureReason,
+                                          EnvironmentProfile activeEnvironment) {
         StringBuilder meta = new StringBuilder();
+        String collectionName = sentCollection != null && sentCollection.name != null ? sentCollection.name : (edited != null ? edited.sourceCollection : "");
+        String folderPath = sentCollection != null && edited != null ? RequestPathResolver.getRequestFolderPath(sentCollection, edited) : (edited != null && edited.path != null ? edited.path : "");
+        String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
+        String method = edited != null && edited.method != null ? edited.method : "GET";
+        String urlTemplate = edited != null && edited.url != null ? edited.url : "";
+        String finalResolvedUrl = result != null && result.resolvedUrl != null ? result.resolvedUrl : "";
+        String authLine = buildAuthMetaLine(edited);
+        String executionSource = result != null && result.executionResult != null && result.executionResult.executionSource != null
+                ? result.executionResult.executionSource.name()
+                : "Workbench Send";
+
         if (failureReason != null && !failureReason.isEmpty()) {
             meta.append("Send failed: ").append(failureReason).append("\n");
-            return meta.toString();
         }
-        String method = edited != null && edited.method != null ? edited.method : "GET";
-        String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
-        meta.append("Request: ").append(requestName).append(" [").append(method).append("]\n");
-        String authLine = buildAuthMetaLine(edited);
+        meta.append("Collection Name: ").append(collectionName != null ? collectionName : "").append("\n");
+        meta.append("Folder Path: ").append(folderPath != null ? folderPath : "").append("\n");
+        meta.append("Request Name: ").append(requestName).append("\n");
+        meta.append("HTTP Method: ").append(method).append("\n");
         if (authLine != null) {
             meta.append(authLine);
         }
-        meta.append("Resolved URL: ").append(result != null && result.resolvedUrl != null ? result.resolvedUrl : "").append("\n");
+        meta.append("Active Environment Name: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append("\n");
+        meta.append("URL Template: ").append(urlTemplate).append("\n");
+        meta.append("Final Resolved URL: ").append(finalResolvedUrl.isBlank() ? "Not yet sent" : finalResolvedUrl).append("\n");
+        meta.append("Execution Source: ").append(executionSource).append("\n");
+        meta.append("Attempt: ").append(result != null && result.executionResult != null ? "1/1" : "Not yet sent").append("\n");
         int statusCode = 0;
         int responseBytes = 0;
         if (result != null && result.response != null && result.response.response() != null) {
@@ -1807,8 +1879,15 @@ public class ImporterPanel {
             statusCode = response.statusCode();
             responseBytes = response.body() != null ? response.body().getBytes().length : 0;
         }
-        meta.append("Status: ").append(statusCode).append("\n");
-        meta.append("Elapsed: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
+        meta.append("Duration: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
+        meta.append("Status: ").append(statusCode > 0 ? statusCode : "Not yet sent").append("\n");
+        meta.append("Result Classification: ").append(statusCode > 0 ? (statusCode >= 400 ? "Failure" : "Success") : "Not yet sent").append("\n");
+        meta.append("Script Engine: ").append(result != null && result.executionResult != null && result.executionResult.scriptEngineName != null ? result.executionResult.scriptEngineName : "Not yet sent").append("\n");
+        meta.append("Script Mode: ").append(scriptMode != null ? scriptMode.label : "").append("\n");
+        meta.append("Flow Control State: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowControl != null ? result.executionResult.scriptFlowControl : "CONTINUE").append("\n");
+        meta.append("Flow Message: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowMessage != null ? result.executionResult.scriptFlowMessage : "").append("\n");
+        meta.append("Raw Request Available: ").append(result != null && result.rawRequestText != null ? "yes" : "no").append("\n");
+        meta.append("Response Available: ").append(result != null && result.response != null && result.response.response() != null ? "yes" : "no").append("\n");
         meta.append("Response bytes: ").append(responseBytes).append("\n");
         meta.append("Send mode: ").append(sendModeLabel != null ? sendModeLabel : "").append("\n");
         if (result != null && result.rawRequestText != null) {
@@ -1817,7 +1896,102 @@ public class ImporterPanel {
                 meta.append("Unresolved tokens: ").append(String.join(", ", unresolved)).append("\n");
             }
         }
+        if (result == null) {
+            meta.append("Not yet sent\n");
+        }
         return meta.toString();
+    }
+
+    private String buildWorkbenchScriptOutputText(ExecutionResult executionResult) {
+        if (executionResult == null) {
+            return "No script output for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Execution Source: ").append(executionResult.executionSource != null ? executionResult.executionSource : "Workbench Send").append('\n');
+        sb.append("Script Engine: ").append(executionResult.scriptEngineName != null ? executionResult.scriptEngineName : "").append('\n');
+        sb.append("Flow Control: ").append(executionResult.scriptFlowControl != null ? executionResult.scriptFlowControl : "CONTINUE").append('\n');
+        sb.append("Flow Message: ").append(executionResult.scriptFlowMessage != null ? executionResult.scriptFlowMessage : "").append('\n');
+        sb.append('\n').append("Logs:").append('\n');
+        if (executionResult.scriptLogs == null || executionResult.scriptLogs.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var log : executionResult.scriptLogs) {
+                if (log == null) {
+                    continue;
+                }
+                sb.append('[').append(log.level != null ? log.level.toUpperCase(Locale.ROOT) : "INFO").append("] ")
+                        .append(log.message != null ? log.message : "");
+                if (log.scriptName != null && !log.scriptName.isBlank()) {
+                    sb.append(" (script=").append(log.scriptName).append(')');
+                }
+                sb.append('\n');
+            }
+        }
+        sb.append('\n').append("Warnings:").append('\n');
+        if (executionResult.scriptWarnings == null || executionResult.scriptWarnings.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String warning : executionResult.scriptWarnings) {
+                sb.append(warning != null ? warning : "").append('\n');
+            }
+        }
+        sb.append('\n').append("Errors:").append('\n');
+        if (executionResult.scriptErrors == null || executionResult.scriptErrors.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String error : executionResult.scriptErrors) {
+                sb.append(error != null ? error : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildWorkbenchAssertionsText(ExecutionResult executionResult) {
+        if (executionResult == null) {
+            return "No assertions or extractions for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Assertions:").append('\n');
+        if (executionResult.assertions == null || executionResult.assertions.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (RunnerResult.AssertionResult assertion : executionResult.assertions) {
+                if (assertion == null) {
+                    continue;
+                }
+                sb.append(assertion.passed ? "[PASS] " : "[FAIL] ")
+                        .append(assertion.name != null ? assertion.name : "")
+                        .append(" expected=").append(assertion.expected != null ? assertion.expected : "")
+                        .append(" actual=").append(assertion.actual != null ? assertion.actual : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Variable Mutations:").append('\n');
+        if (executionResult.scriptVariableMutations == null || executionResult.scriptVariableMutations.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var mutation : executionResult.scriptVariableMutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Extractions:").append('\n');
+        if (executionResult.extractedVars == null || executionResult.extractedVars.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (Map.Entry<String, String> entry : executionResult.extractedVars.entrySet()) {
+                sb.append(entry.getKey()).append(" = ").append(entry.getValue() != null ? entry.getValue() : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
     }
 
     static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
@@ -1856,6 +2030,7 @@ public class ImporterPanel {
 
         environmentRawArea = new JTextArea(18, 60);
         environmentRawArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(environmentRawArea);
         environmentRawArea.setText("# key=value per line\n# base_url=http://localhost:8080\n# token=abc123");
         environmentRawArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { markEnvironmentDirty(); }
@@ -2190,6 +2365,7 @@ public class ImporterPanel {
         runnerLog = new JTextArea(3, 50);
         runnerLog.setEditable(false);
         runnerLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(runnerLog);
         JScrollPane logScroll = new JScrollPane(runnerLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Runner Log"));
         logScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
@@ -5343,8 +5519,8 @@ public class ImporterPanel {
     private void addCollection() {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileFilter(new FileNameExtensionFilter(
-            "API Collections (JSON, YAML, YML, HAR, BRU folder)",
-            "json", "yaml", "yml", "har"
+            "API Collections (JSON, YAML, YML, HAR, BRU folder/ZIP)",
+            "json", "yaml", "yml", "har", "zip"
         ));
         chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
         if (chooser.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
@@ -5702,6 +5878,7 @@ public class ImporterPanel {
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
         state.historyEntries = historyStore.snapshot();
+        state.diagnosticsCaptureEnabled = DiagnosticStore.getInstance().isCaptureEnabled();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
         }
@@ -5743,6 +5920,7 @@ public class ImporterPanel {
                 restoreWorkspaceCollections(state.collections != null ? state.collections : Collections.emptyList());
                 replaceEnvironmentProfiles(state.environments);
                 historyPersistenceService.restoreStore(historyStore, state);
+                DiagnosticStore.getInstance().setCaptureEnabled(state.diagnosticsCaptureEnabled);
                 if (historyPanel != null) {
                     historyPanel.refreshFromStore();
                 }
@@ -5756,6 +5934,7 @@ public class ImporterPanel {
                 syncOAuth2UiState();
                 renderSelectedEnvironmentIntoEditor(true);
                 updateEnvironmentUiState();
+                syncDiagnosticsCaptureUi(DiagnosticStore.getInstance().isCaptureEnabled());
                 syncWorkbenchEnvironmentControls();
                 syncActiveEnvironmentToEditors();
                 if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
@@ -8695,6 +8874,7 @@ public class ImporterPanel {
         diagnosticsArea = new JTextArea(24, 100);
         diagnosticsArea.setEditable(false);
         diagnosticsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(diagnosticsArea);
         diagnosticsArea.setText(DIAGNOSTICS_PLACEHOLDER_TEXT);
         diagnosticsArea.setLineWrap(false);
         diagnosticsArea.setWrapStyleWord(false);
@@ -8704,6 +8884,14 @@ public class ImporterPanel {
         panel.add(scrollPane, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        diagnosticsCaptureBox = new JCheckBox();
+        syncDiagnosticsCaptureUi(DiagnosticStore.getInstance().isCaptureEnabled());
+        diagnosticsCaptureBox.addActionListener(e -> {
+            DiagnosticStore.getInstance().setCaptureEnabled(diagnosticsCaptureBox.isSelected());
+            syncDiagnosticsCaptureUi(diagnosticsCaptureBox.isSelected());
+            refreshDiagnosticsSnapshot();
+            notifyWorkspaceChangedImmediately();
+        });
         JButton refreshButton = new JButton("Refresh Snapshot");
         refreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
         JButton clearButton = new JButton("Clear Session Diagnostics");
@@ -8714,6 +8902,7 @@ public class ImporterPanel {
         exportButton.addActionListener(e -> exportDiagnosticsSnapshot());
         diagnosticsIncludeDebugBox = new JCheckBox("Include Debug");
         diagnosticsIncludeDebugBox.setToolTipText("Include debug diagnostics in the snapshot and exported report.");
+        buttons.add(diagnosticsCaptureBox);
         buttons.add(refreshButton);
         buttons.add(clearButton);
         buttons.add(copyButton);
@@ -8722,6 +8911,17 @@ public class ImporterPanel {
         panel.add(buttons, BorderLayout.NORTH);
 
         return panel;
+    }
+
+    private void syncDiagnosticsCaptureUi(boolean enabled) {
+        if (diagnosticsCaptureBox == null) {
+            return;
+        }
+        diagnosticsCaptureBox.setText("Diagnostics Capture: " + (enabled ? "ON" : "OFF"));
+        diagnosticsCaptureBox.setSelected(enabled);
+        diagnosticsCaptureBox.setToolTipText(enabled
+                ? "Detailed diagnostic events are being recorded for this workspace."
+                : "Detailed diagnostic events are not being recorded. Turn this on to capture variable, script, and runner diagnostics.");
     }
 
     void refreshDiagnosticsSnapshot() {
@@ -8785,6 +8985,10 @@ public class ImporterPanel {
         sb.append('\n');
         appendDiagnosticsSectionHeader(sb, "Diagnostics Summary");
         appendDiagnosticsLine(sb, "diagnostics.summary", DiagnosticStore.getInstance().compactSummary());
+        appendDiagnosticsLine(sb, "diagnostics.capture", DiagnosticStore.getInstance().isCaptureEnabled() ? "ON" : "OFF");
+        if (!DiagnosticStore.getInstance().isCaptureEnabled()) {
+            appendDiagnosticsLine(sb, "diagnostics.note", "Diagnostics Capture is OFF. Enable capture to record detailed variable/script/request/runner diagnostics.");
+        }
         sb.append('\n');
         appendDiagnosticsSectionHeader(sb, "Diagnostics Events");
         sb.append(DiagnosticStore.getInstance().sanitizedReport(diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected()));
@@ -10130,19 +10334,12 @@ public class ImporterPanel {
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request, Map<String, String> activeOverlay) {
-        VariableResolver resolver = new VariableResolver();
-        if (collection != null) {
-            resolver.addEnvironmentVariables(collection);
-            resolver.addCollectionVariables(collection);
-            resolver.addFolderVariables(collection, request);
-        }
-        if (activeOverlay != null && !activeOverlay.isEmpty()) {
-            resolver.addAll(activeOverlay);
-        }
-        if (request != null) {
-            resolver.addRequestVariables(request);
-        }
-        return resolver;
+        return burp.utils.RuntimeResolverFactory.build(
+                collection,
+                request,
+                burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(activeOverlay)
+                        .withCollectionRuntimeLayers(false)
+        );
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
@@ -10175,6 +10372,12 @@ public class ImporterPanel {
                     existing.put(variable.key, variable.value);
                 }
             }
+        }
+        if (collection != null && collection.runtimeOAuth2 != null) {
+            existing.putAll(collection.runtimeOAuth2);
+        }
+        if (collection != null && collection.runtimeVars != null) {
+            existing.putAll(collection.runtimeVars);
         }
         if (collection != null && request != null) {
             String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
