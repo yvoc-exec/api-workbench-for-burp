@@ -149,6 +149,10 @@ public class CollectionRunner {
      * Multi-collection runner with per-collection scoped variable resolution.
      */
     public void runCollections(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
+        runCollections(sourceCollections, selectedRequests, false);
+    }
+
+    public void runCollections(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests, boolean startPaused) {
         if (running) return;
         if (selectedRequests == null || selectedRequests.isEmpty()) {
             fireOnError("No requests selected for runner");
@@ -158,8 +162,8 @@ public class CollectionRunner {
         cancelled = false;
         final RunnerStopConditions activeStopConditions = copyStopConditions(ensureStopConditions());
         synchronized (pauseLock) {
-            pauseRequested = false;
-            singleStepRequested = false;
+            pauseRequested = startPaused;
+            singleStepRequested = startPaused;
         }
         results.clear();
         extractedVars.clear();
@@ -195,13 +199,11 @@ public class CollectionRunner {
                 int maxFlowControlJumps = Math.max(ordered.size() * 4, 20);
 
                 for (int i = 0; i < ordered.size() && !cancelled; i++) {
-                    if (i > 0) {
-                        if (!waitIfPausedOrStepConsumed()) {
-                            break;
-                        }
-                        if (delayMs > 0) {
-                            Thread.sleep(delayMs);
-                        }
+                    if (!waitIfPausedOrStepConsumed()) {
+                        break;
+                    }
+                    if (i > 0 && delayMs > 0) {
+                        Thread.sleep(delayMs);
                     }
 
                     ApiRequest req = ordered.get(i);
@@ -384,6 +386,8 @@ public class CollectionRunner {
         result.parentRequestId = parentRequestId;
         result.dependentDepth = dependentDepth;
         result.triggeredByScript = dependentExecution || adHocExecution;
+
+        fireOnRequestStart(snapshotRequestStart(result, req, col));
 
         if (pipeline == null) {
             result.success = false;
@@ -606,6 +610,38 @@ public class CollectionRunner {
         result.totalAttempts = maxAttempts;
 
         return new RequestExecutionOutcome(result, attempts);
+    }
+
+    private RunnerResult snapshotRequestStart(RunnerResult source, ApiRequest req, ApiCollection col) {
+        RunnerResult snapshot = new RunnerResult();
+        if (source != null) {
+            snapshot.requestName = source.requestName;
+            snapshot.requestId = source.requestId;
+            snapshot.collectionName = source.collectionName;
+            snapshot.folderPath = source.folderPath;
+            snapshot.method = source.method;
+            snapshot.host = source.host;
+            snapshot.path = source.path;
+            snapshot.requestUrl = source.requestUrl;
+            snapshot.dependentExecution = source.dependentExecution;
+            snapshot.adHocExecution = source.adHocExecution;
+            snapshot.parentRequestName = source.parentRequestName;
+            snapshot.parentRequestId = source.parentRequestId;
+            snapshot.dependentDepth = source.dependentDepth;
+            snapshot.triggeredByScript = source.triggeredByScript;
+            snapshot.attemptNumber = Math.max(1, source.attemptNumber);
+            snapshot.totalAttempts = Math.max(1, source.totalAttempts);
+        } else if (req != null) {
+            snapshot.requestName = req.name;
+            snapshot.requestId = req.id;
+            snapshot.method = req.method != null ? req.method.toUpperCase() : "GET";
+            snapshot.requestUrl = req.url;
+            snapshot.path = req.path;
+        }
+        if (col != null && snapshot.collectionName == null) {
+            snapshot.collectionName = col.name;
+        }
+        return snapshot;
     }
 
     private String extractCleanError(Exception e) {
@@ -1350,6 +1386,11 @@ public class CollectionRunner {
             for (RunnerListener l : listeners) l.onStart(collectionName, totalRequests);
         });
     }
+    private void fireOnRequestStart(RunnerResult result) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onRequestStart(result);
+        });
+    }
     private void fireOnSkip(String requestName, String reason) {
         SwingUtilities.invokeLater(() -> {
             for (RunnerListener l : listeners) l.onSkip(requestName, reason);
@@ -1388,6 +1429,7 @@ public class CollectionRunner {
 
     public interface RunnerListener {
         void onStart(String collectionName, int totalRequests);
+        default void onRequestStart(RunnerResult result) { }
         void onSkip(String requestName, String reason);
         void onRequestComplete(RunnerResult result);
         default void onAttemptComplete(RunnerResult result) { }

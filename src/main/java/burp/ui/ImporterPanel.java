@@ -25,6 +25,7 @@ import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.ExecutionResult;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.SharedRequestPipeline;
+import burp.scripts.ScriptVariableMutation;
 import burp.smoke.SmokeUiEvidenceSnapshot;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
@@ -42,9 +43,12 @@ import burp.ui.dnd.RunnerQueueDragPayload;
 import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.ui.history.HistoryLoadResultNotifier;
 import burp.ui.history.HistoryNativeHttpMessageFactory;
+import burp.history.HistoryHeader;
+import burp.ui.history.HistoryDetailPanel;
 import burp.ui.history.HistoryPanel;
 import burp.utils.RequestPathResolver;
 import burp.utils.EnvironmentImportService;
+import burp.utils.RuntimeResolverFactory;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -124,12 +128,8 @@ public class ImporterPanel {
     private JButton actionsBtn;
     private JCheckBox debugRawRequestBox;
     private RequestEditorPanel requestEditor;
+    private HistoryDetailPanel workbenchDetailPanel;
     private JTabbedPane workbenchDetailTabs;
-    private HttpRequestEditor workbenchRequestEditor;
-    private HttpResponseEditor workbenchResponseEditor;
-    private JTextArea workbenchMetaText;
-    private JTextArea workbenchScriptText;
-    private JTextArea workbenchAssertionsText;
     private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
@@ -141,12 +141,13 @@ public class ImporterPanel {
     private JTextArea runnerLog;
     private JProgressBar runnerProgress;
     private JTable resultTable;
-    private RunnerResultTableModel resultModel;
-    private JTable timelineTable;
+    private RunnerExecutionTableModel resultModel;
     private RunnerTimelineTableModel timelineModel;
+    private JTable timelineTable;
     private JList<ApiRequest> runnerQueueList;
     private DefaultListModel<ApiRequest> runnerQueueListModel;
     private JScrollPane runnerQueueScrollPane;
+    private HistoryDetailPanel runnerDetailPanel;
     private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
@@ -162,11 +163,11 @@ public class ImporterPanel {
     private javax.swing.Timer runnerCancelPollTimer;
     private CollectionRunner.RunnerListener activeRunnerListener;
     private RunnerQueueTransferHandler runnerQueueTransferHandler;
-
-    // Runner detail pane
-    private HttpRequestEditor detailRequestEditor;
-    private HttpResponseEditor detailResponseEditor;
-    private JTextArea detailVarsText;
+    private int runnerExecutingQueueIndex = -1;
+    private boolean runnerQueueFresh = false;
+    private int runnerExecutionSequence = 0;
+    private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
+    private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
 
     // Workbench environment selector
     private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
@@ -182,6 +183,7 @@ public class ImporterPanel {
         final String failureReason;
         final String sendModeLabel;
         final long timestampMillis;
+        HistoryEntry detailEntry;
 
         WorkbenchSendSnapshot(HttpRequest builtRequest,
                               HttpResponse response,
@@ -590,32 +592,10 @@ public class ImporterPanel {
         return split;
     }
 
-    private JTabbedPane createWorkbenchDetailTabs() {
-        workbenchDetailTabs = new JTabbedPane();
-        workbenchRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        workbenchDetailTabs.addTab("Request", workbenchRequestEditor.uiComponent());
-
-        workbenchResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        workbenchDetailTabs.addTab("Response", workbenchResponseEditor.uiComponent());
-
-        workbenchMetaText = new JTextArea();
-        workbenchMetaText.setEditable(false);
-        workbenchMetaText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        SwingShortcutSupport.installTextComponentShortcuts(workbenchMetaText);
-        workbenchDetailTabs.addTab("Meta", new JScrollPane(workbenchMetaText));
-
-        workbenchScriptText = new JTextArea();
-        workbenchScriptText.setEditable(false);
-        workbenchScriptText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        SwingShortcutSupport.installTextComponentShortcuts(workbenchScriptText);
-        workbenchDetailTabs.addTab("Script Output", new JScrollPane(workbenchScriptText));
-
-        workbenchAssertionsText = new JTextArea();
-        workbenchAssertionsText.setEditable(false);
-        workbenchAssertionsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        SwingShortcutSupport.installTextComponentShortcuts(workbenchAssertionsText);
-        workbenchDetailTabs.addTab("Assertions / Extractions", new JScrollPane(workbenchAssertionsText));
-        return workbenchDetailTabs;
+    private HistoryDetailPanel createWorkbenchDetailTabs() {
+        workbenchDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        workbenchDetailTabs = workbenchDetailPanel.getTabbedPane();
+        return workbenchDetailPanel;
     }
 
     private JPanel createEnvBindingRow() {
@@ -1667,6 +1647,7 @@ public class ImporterPanel {
                                                   UniversalImporter.SingleSendResult result,
                                                   String sendModeLabel) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 result != null ? result.builtRequest : null,
                 result != null && result.response != null ? result.response.response() : null,
@@ -1676,6 +1657,7 @@ public class ImporterPanel {
                 null,
                 sendModeLabel,
                 System.currentTimeMillis());
+        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -1684,6 +1666,7 @@ public class ImporterPanel {
                                                   String reason,
                                                   String sendModeLabel) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 null,
                 null,
@@ -1693,6 +1676,7 @@ public class ImporterPanel {
                 reason,
                 sendModeLabel,
                 System.currentTimeMillis());
+        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -1729,7 +1713,7 @@ public class ImporterPanel {
     }
 
     String getWorkbenchDetailMetaTextForTest() {
-        return workbenchMetaText != null ? workbenchMetaText.getText() : "";
+        return workbenchDetailPanel != null ? workbenchDetailPanel.getMetadataArea().getText() : "";
     }
 
     private boolean isWorkbenchRequestSelection(ApiRequest sentRequest, ApiCollection sentCollection) {
@@ -1761,16 +1745,10 @@ public class ImporterPanel {
     }
 
     private void displayWorkbenchPendingSelection(ApiRequest request, ApiCollection collection) {
-        WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
-                null,
-                null,
-                buildWorkbenchMetaText(collection, request, null, requestEditor != null ? requestEditor.getSendModeLabel() : "", null, getActiveEnvironment()),
-                "No script output for this request.",
-                "No assertions or extractions for this request.",
-                null,
-                requestEditor != null ? requestEditor.getSendModeLabel() : "",
-                System.currentTimeMillis());
-        displayWorkbenchSendSnapshot(snapshot);
+        if (workbenchDetailPanel == null) {
+            return;
+        }
+        workbenchDetailPanel.showEntry(buildWorkbenchPreviewEntry(collection, request, requestEditor != null ? requestEditor.getSendModeLabel() : ""));
     }
 
     private void displayWorkbenchSendSnapshot(WorkbenchSendSnapshot snapshot) {
@@ -1778,64 +1756,36 @@ public class ImporterPanel {
             clearWorkbenchDetailPane();
             return;
         }
-        if (workbenchRequestEditor != null) {
-            try {
-                workbenchRequestEditor.setRequest(snapshot.builtRequest != null ? snapshot.builtRequest : HttpRequest.httpRequest());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
+        if (workbenchDetailPanel != null) {
+            HistoryEntry detailEntry = snapshot.detailEntry != null
+                    ? HistoryEntry.copyOf(snapshot.detailEntry)
+                    : new HistoryEntry();
+            detailEntry.metadataSummaryText = snapshot.metaText;
+            detailEntry.scriptOutputSummaryText = snapshot.scriptOutputText;
+            detailEntry.assertionsSummaryText = snapshot.assertionsText;
+            detailEntry.errorMessage = snapshot.failureReason;
+            if (detailEntry.source == null) {
+                detailEntry.source = HistorySource.WORKBENCH;
             }
-        }
-        if (workbenchResponseEditor != null) {
-            try {
-                workbenchResponseEditor.setResponse(snapshot.response != null ? snapshot.response : HttpResponse.httpResponse());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
+            if (detailEntry.timestamp == null) {
+                detailEntry.timestamp = java.time.Instant.now();
             }
-        }
-        if (workbenchMetaText != null) {
-            workbenchMetaText.setText(snapshot.metaText != null ? snapshot.metaText : "");
-            workbenchMetaText.setCaretPosition(0);
-        }
-        if (workbenchScriptText != null) {
-            workbenchScriptText.setText(snapshot.scriptOutputText != null && !snapshot.scriptOutputText.isBlank()
-                    ? snapshot.scriptOutputText
-                    : "No script output for this request.");
-            workbenchScriptText.setCaretPosition(0);
-        }
-        if (workbenchAssertionsText != null) {
-            workbenchAssertionsText.setText(snapshot.assertionsText != null && !snapshot.assertionsText.isBlank()
-                    ? snapshot.assertionsText
-                    : "No assertions or extractions for this request.");
-            workbenchAssertionsText.setCaretPosition(0);
+            if (detailEntry.id == null || detailEntry.id.isBlank()) {
+                detailEntry.id = UUID.randomUUID().toString();
+            }
+            workbenchDetailPanel.showEntry(detailEntry);
+            if (snapshot.builtRequest != null) {
+                workbenchDetailPanel.setRequestMessage(snapshot.builtRequest);
+            }
+            if (snapshot.response != null) {
+                workbenchDetailPanel.setResponseMessage(snapshot.response);
+            }
         }
     }
 
     private void clearWorkbenchDetailPane() {
-        if (workbenchRequestEditor != null) {
-            try {
-                workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
-            }
-        }
-        if (workbenchResponseEditor != null) {
-            try {
-                workbenchResponseEditor.setResponse(HttpResponse.httpResponse());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
-            }
-        }
-        if (workbenchMetaText != null) {
-            workbenchMetaText.setText("");
-            workbenchMetaText.setCaretPosition(0);
-        }
-        if (workbenchScriptText != null) {
-            workbenchScriptText.setText("");
-            workbenchScriptText.setCaretPosition(0);
-        }
-        if (workbenchAssertionsText != null) {
-            workbenchAssertionsText.setText("");
-            workbenchAssertionsText.setCaretPosition(0);
+        if (workbenchDetailPanel != null) {
+            workbenchDetailPanel.clear();
         }
     }
 
@@ -1992,6 +1942,795 @@ public class ImporterPanel {
             }
         }
         return sb.toString().trim();
+    }
+
+    private HistoryEntry buildWorkbenchExecutionEntry(ApiCollection sentCollection,
+                                                      ApiRequest sentRequest,
+                                                      UniversalImporter.SingleSendResult result,
+                                                      String sendModeLabel,
+                                                      String failureReason,
+                                                      EnvironmentProfile activeEnvironment) {
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                sentCollection,
+                sentRequest,
+                activeEnvironment,
+                result != null ? result.executionResult : null,
+                1,
+                1,
+                Collections.emptyList());
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(sentCollection, sentRequest, activeEnvironment, null);
+        String resolvedUrl = result != null && result.resolvedUrl != null && !result.resolvedUrl.isBlank()
+                ? result.resolvedUrl
+                : resolver.resolve(sentRequest != null ? sentRequest.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = result != null && result.executionResult != null && result.executionResult.resolvedVariables != null
+                    ? new LinkedHashMap<>(result.executionResult.resolvedVariables)
+                    : resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = parseHost(resolvedUrl);
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = result != null && result.executionResult != null ? result.executionResult.scriptEngineName : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                sentCollection,
+                sentRequest,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                result != null && result.executionResult != null ? result.executionResult.scriptVariableMutations : Collections.emptyList(),
+                "Workbench",
+                false);
+        entry.scriptOutputSummaryText = buildWorkbenchScriptOutputText(result != null ? result.executionResult : null);
+        entry.assertionsSummaryText = buildWorkbenchAssertionsText(result != null ? result.executionResult : null);
+        if (failureReason != null && !failureReason.isBlank()) {
+            entry.errorMessage = failureReason;
+        }
+        entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+        return entry;
+    }
+
+    private HistoryEntry buildWorkbenchPreviewEntry(ApiCollection collection, ApiRequest request, String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(collection, request, activeEnvironment, null, 1, 1, Collections.emptyList());
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(collection, request, activeEnvironment, null);
+        String resolvedUrl = resolver.resolve(request != null ? request.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = parseHost(resolvedUrl);
+        entry.result = null;
+        entry.ensureDefaults();
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = sendModeLabel != null && !sendModeLabel.isBlank() ? sendModeLabel : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                collection,
+                request,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                Collections.emptyList(),
+                "Workbench preview",
+                true);
+        entry.scriptOutputSummaryText = "Not executed yet.";
+        entry.assertionsSummaryText = "Not executed yet.";
+        entry.resultClassification = "Not executed yet";
+        return entry;
+    }
+
+    private HistoryEntry buildRunnerHistoryEntry(ApiCollection collection, ApiRequest request, RunnerResult result, boolean preview) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, activeEnvironment, result);
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(collection, request, activeEnvironment, null);
+        String resolvedUrl = result != null && result.requestUrl != null && !result.requestUrl.isBlank()
+                ? result.requestUrl
+                : resolver.resolve(request != null ? request.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = result != null && result.resolvedVariables != null
+                    ? new LinkedHashMap<>(result.resolvedVariables)
+                    : resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = result != null && result.host != null && !result.host.isBlank() ? result.host : parseHost(resolvedUrl);
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = result != null ? result.scriptEngineName : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                collection,
+                request,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                result != null ? result.scriptVariableMutations : Collections.emptyList(),
+                "Runner",
+                preview);
+        entry.scriptOutputSummaryText = buildRunnerScriptOutputText(result, preview);
+        entry.assertionsSummaryText = buildRunnerAssertionsText(result, preview);
+        if (preview) {
+            entry.result = null;
+            entry.ensureDefaults();
+            entry.resultClassification = "Not executed yet";
+        } else {
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+        }
+        return entry;
+    }
+
+    private HistoryEntry buildRunnerQueuePreviewEntry(ApiCollection collection, ApiRequest request) {
+        return buildRunnerHistoryEntry(collection, request, null, true);
+    }
+
+    private HistoryEntry buildRunnerCompleteEntry(List<RunnerResult> results) {
+        HistoryEntry entry = new HistoryEntry();
+        entry.id = UUID.randomUUID().toString();
+        entry.timestamp = java.time.Instant.now();
+        entry.source = HistorySource.RUNNER;
+        entry.requestName = "Runner Complete";
+        entry.collectionName = "Runner";
+        entry.collectionId = "Runner";
+        entry.result = HistoryResult.SUCCESS;
+        entry.resultClassification = HistoryResult.SUCCESS.displayName();
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        int count = results != null ? results.size() : 0;
+        long success = results != null ? results.stream().filter(r -> r != null && r.success).count() : 0L;
+        long failure = count - success;
+        long extracted = results != null ? results.stream().mapToLong(r -> r != null && r.extractedVariables != null ? r.extractedVariables.size() : 0).sum() : 0L;
+        entry.variablesSummaryText = "Runner completed.\nTotal requests: " + count + "\nSuccessful: " + success + "\nFailed: " + failure + "\nExtracted variables: " + extracted;
+        entry.scriptOutputSummaryText = "Runner completed.\nSuccess: " + success + "/" + count;
+        entry.assertionsSummaryText = count > 0 ? "Final request count: " + count : "No runner requests executed.";
+        return entry;
+    }
+
+    private String buildRunnerScriptOutputText(RunnerResult result, boolean preview) {
+        if (result == null) {
+            return preview ? "Not executed yet." : "No script output for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Execution Source: ").append(result.executionSource != null ? result.executionSource : "RUNNER").append('\n');
+        sb.append("Script Engine: ").append(result.scriptEngineName != null ? result.scriptEngineName : "").append('\n');
+        sb.append("Flow Control: ").append(result.scriptFlowControl != null ? result.scriptFlowControl : "CONTINUE").append('\n');
+        sb.append("Flow Message: ").append(result.scriptFlowMessage != null ? result.scriptFlowMessage : "").append('\n');
+        sb.append('\n').append("Logs:").append('\n');
+        if (result.scriptLogs == null || result.scriptLogs.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var log : result.scriptLogs) {
+                if (log == null) {
+                    continue;
+                }
+                sb.append('[').append(log.level != null ? log.level.toUpperCase(Locale.ROOT) : "INFO").append("] ")
+                        .append(log.message != null ? log.message : "");
+                if (log.scriptName != null && !log.scriptName.isBlank()) {
+                    sb.append(" (script=").append(log.scriptName).append(')');
+                }
+                sb.append('\n');
+            }
+        }
+        sb.append('\n').append("Warnings:").append('\n');
+        if (result.scriptWarnings == null || result.scriptWarnings.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String warning : result.scriptWarnings) {
+                sb.append(warning != null ? warning : "").append('\n');
+            }
+        }
+        sb.append('\n').append("Errors:").append('\n');
+        if (result.scriptErrors == null || result.scriptErrors.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String error : result.scriptErrors) {
+                sb.append(error != null ? error : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildRunnerAssertionsText(RunnerResult result, boolean preview) {
+        if (result == null) {
+            return preview ? "Not executed yet." : "No assertions or extractions for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Assertions:").append('\n');
+        if (result.assertions == null || result.assertions.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (RunnerResult.AssertionResult assertion : result.assertions) {
+                if (assertion == null) {
+                    continue;
+                }
+                sb.append(assertion.passed ? "[PASS] " : "[FAIL] ")
+                        .append(assertion.name != null ? assertion.name : "")
+                        .append(" expected=").append(assertion.expected != null ? assertion.expected : "")
+                        .append(" actual=").append(assertion.actual != null ? assertion.actual : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Variable Mutations:").append('\n');
+        if (result.scriptVariableMutations == null || result.scriptVariableMutations.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (ScriptVariableMutation mutation : result.scriptVariableMutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append(mutation.sourceScriptName != null ? " script=" + mutation.sourceScriptName : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Extractions:").append('\n');
+        if (result.extractedVariables == null || result.extractedVariables.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (Map.Entry<String, String> entry : result.extractedVariables.entrySet()) {
+                sb.append(entry.getKey()).append(" = ").append(entry.getValue() != null ? entry.getValue() : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildRuntimeVariableSummaryText(ApiCollection collection,
+                                                   ApiRequest request,
+                                                   EnvironmentProfile activeEnvironment,
+                                                   Map<String, String> resolvedVariables,
+                                                   List<ScriptVariableMutation> mutations,
+                                                   String contextLabel,
+                                                   boolean preview) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(contextLabel != null && !contextLabel.isBlank() ? contextLabel : "Variables / Environment").append('\n');
+        sb.append("Active Environment: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append('\n');
+        if (preview) {
+            sb.append("State: Not executed yet.\n");
+        }
+        if (resolvedVariables == null || resolvedVariables.isEmpty()) {
+            sb.append(preview ? "No preview variables available." : "No resolved variables available.");
+        } else {
+            sb.append('\n').append("Resolved Variables / Environment:").append('\n');
+            List<String> keys = new ArrayList<>(resolvedVariables.keySet());
+            keys.sort(String.CASE_INSENSITIVE_ORDER);
+            for (String key : keys) {
+                if (key == null || key.isBlank()) {
+                    continue;
+                }
+                RuntimeResolverFactory.ResolutionTrace trace = RuntimeResolverFactory.inspect(collection, request, activeEnvironment, null, key);
+                String resolvedValue = maskVariablePreview(key, resolvedVariables.get(key));
+                sb.append("- ").append(key).append('\n');
+                sb.append("  resolved value / preview: ").append(resolvedValue != null && !resolvedValue.isBlank() ? resolvedValue : "").append('\n');
+                sb.append("  winning source: ").append(trace != null && trace.source != null ? trace.source : "unknown").append('\n');
+                sb.append("  shadowed sources: ").append(trace != null && trace.shadowedSource != null ? trace.shadowedSource : "none").append('\n');
+                sb.append("  collection value: ").append(displaySummaryValue(candidateValue(trace, "collection environment", "collection variables"))).append('\n');
+                sb.append("  folder value: ").append(displaySummaryValue(candidateValue(trace, "folder variables"))).append('\n');
+                sb.append("  active environment value: ").append(displaySummaryValue(candidateValue(trace, "active environment"))).append('\n');
+                sb.append("  runtime value: ").append(displaySummaryValue(candidateValue(trace, "collection runtime OAuth2", "collection runtime vars", "runtime overlay", "runtime/script", "runtime"))).append('\n');
+                sb.append("  request value: ").append(displaySummaryValue(candidateValue(trace, "request variables"))).append('\n');
+                sb.append("  auth/OAuth2 mapped value: ").append(displaySummaryValue(candidateValue(trace, "auth/runtime mapping"))).append('\n');
+                sb.append("  persistent: ").append(isPersistentSource(trace != null ? trace.source : null)).append('\n');
+            }
+        }
+        if (mutations != null && !mutations.isEmpty()) {
+            sb.append('\n').append("Variable Mutations:").append('\n');
+            for (ScriptVariableMutation mutation : mutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append("- ").append(mutation.key != null ? mutation.key : "").append('\n');
+                sb.append("  old value: ").append(displaySummaryValue(mutation.oldValue)).append('\n');
+                sb.append("  new value: ").append(displaySummaryValue(mutation.newValue)).append('\n');
+                sb.append("  scope: ").append(displaySummaryValue(mutation.scope)).append('\n');
+                sb.append("  persistent: ").append(mutation.persistent).append('\n');
+                sb.append("  mutation source: ").append(displaySummaryValue(mutation.sourceScriptName)).append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String candidateValue(RuntimeResolverFactory.ResolutionTrace trace, String... sourceFragments) {
+        if (trace == null || trace.candidates == null || trace.candidates.isEmpty()) {
+            return null;
+        }
+        String match = null;
+        for (RuntimeResolverFactory.ResolutionCandidate candidate : trace.candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            if (sourceMatches(candidate.source, sourceFragments) || sourceMatches(candidate.scope, sourceFragments) || sourceMatches(candidate.layer, sourceFragments)) {
+                match = candidate.value;
+            }
+        }
+        return match;
+    }
+
+    private boolean sourceMatches(String source, String... fragments) {
+        if (source == null || fragments == null || fragments.length == 0) {
+            return false;
+        }
+        String normalizedSource = source.toLowerCase(Locale.ROOT);
+        for (String fragment : fragments) {
+            if (fragment == null || fragment.isBlank()) {
+                continue;
+            }
+            if (normalizedSource.contains(fragment.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String maskVariablePreview(String key, String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalizedKey = key != null ? key.toLowerCase(Locale.ROOT) : "";
+        if (normalizedKey.contains("token")
+                || normalizedKey.contains("secret")
+                || normalizedKey.contains("password")
+                || normalizedKey.contains("auth")
+                || normalizedKey.contains("credential")
+                || normalizedKey.contains("key")
+                || normalizedKey.contains("private")
+                || normalizedKey.contains("passwd")
+                || normalizedKey.contains("pwd")
+                || normalizedKey.contains("apikey")) {
+            if (value.length() <= 6) {
+                return "***";
+            }
+            return value.substring(0, Math.min(6, value.length())) + "***";
+        }
+        if (value.length() > 200) {
+            return value.substring(0, 200) + "... (" + value.length() + " chars)";
+        }
+        return value;
+    }
+
+    private boolean isPersistentSource(String source) {
+        if (source == null || source.isBlank()) {
+            return false;
+        }
+        String normalized = source.toLowerCase(Locale.ROOT);
+        if (normalized.contains("request variables")
+                || normalized.contains("request")
+                || normalized.contains("runtime overlay")
+                || normalized.contains("auth/runtime mapping")) {
+            return false;
+        }
+        return true;
+    }
+
+    private String displaySummaryValue(String value) {
+        return value != null && !value.isBlank() ? value : "none";
+    }
+
+    private String buildSummaryTextForRunner(RunnerResult result) {
+        if (result == null) {
+            return "No runner results yet.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Request: ").append(result.requestName != null ? result.requestName : "").append('\n');
+        sb.append("Collection: ").append(result.collectionName != null ? result.collectionName : "").append('\n');
+        sb.append("Status: ").append(result.displayLogStatusLabel()).append('\n');
+        sb.append("Resolved URL: ").append(result.requestUrl != null ? result.requestUrl : "Not available").append('\n');
+        sb.append("Host: ").append(result.host != null ? result.host : "Not available").append('\n');
+        sb.append("Duration: ").append(result.responseTimeMs > 0 ? result.responseTimeMs + " ms" : "Not available").append('\n');
+        sb.append("Extracted Variables: ").append(result.extractedVariables != null ? result.extractedVariables.size() : 0).append('\n');
+        return sb.toString().trim();
+    }
+
+    private String htmlEscape(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    private String parseHost(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return null;
+        }
+        try {
+            return burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl).host;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private int nextRunnerExecutionSequence() {
+        return ++runnerExecutionSequence;
+    }
+
+    private RunnerExecutionTableModel.Entry createExecutionEntry(String type,
+                                                                 String state,
+                                                                 String requestName,
+                                                                 String source,
+                                                                 String method,
+                                                                 String status,
+                                                                 String resultLabel,
+                                                                 String duration,
+                                                                 String flow,
+                                                                 String message,
+                                                                 HistoryEntry detailEntry,
+                                                                 RunnerResult requestResult,
+                                                                 RunnerTimelineRow timelineRow,
+                                                                 String requestId,
+                                                                 String collectionName) {
+        return new RunnerExecutionTableModel.Entry(
+                nextRunnerExecutionSequence(),
+                java.time.Instant.now(),
+                type,
+                state,
+                requestName,
+                source,
+                method,
+                status,
+                resultLabel,
+                duration,
+                flow,
+                message,
+                detailEntry,
+                requestResult,
+                timelineRow,
+                requestId,
+                collectionName
+        );
+    }
+
+    private void indexRunnerResult(RunnerResult result) {
+        if (result == null) {
+            return;
+        }
+        if (result.requestId != null && !result.requestId.isBlank()) {
+            runnerResultById.put(result.requestId, result);
+        }
+        String nameKey = runnerResultKey(result.collectionName, result.requestName);
+        if (!nameKey.isBlank()) {
+            runnerResultByName.put(nameKey, result);
+        }
+        if (result.requestName != null && !result.requestName.isBlank()) {
+            runnerResultByName.putIfAbsent(result.requestName, result);
+        }
+    }
+
+    private String runnerResultKey(String collectionName, String requestName) {
+        String collection = collectionName != null ? collectionName.trim() : "";
+        String request = requestName != null ? requestName.trim() : "";
+        return collection + "\u0000" + request;
+    }
+
+    private int resolveRunnerQueueIndex(RunnerResult result) {
+        if (result == null) {
+            return -1;
+        }
+        if (result.requestId != null && !result.requestId.isBlank()) {
+            ApiRequest request = findRequestById(result.requestId);
+            int index = indexOfRunnerQueueRequest(request);
+            if (index >= 0) {
+                return index;
+            }
+        }
+        if (result.requestName != null && !result.requestName.isBlank()) {
+            for (int i = 0; i < runnerQueuedRequests.size(); i++) {
+                ApiRequest candidate = runnerQueuedRequests.get(i);
+                if (candidate == null) {
+                    continue;
+                }
+                boolean nameMatches = result.requestName.equals(candidate.name);
+                boolean collectionMatches = result.collectionName == null
+                        || result.collectionName.isBlank()
+                        || result.collectionName.equals(candidate.sourceCollection);
+                if (nameMatches && collectionMatches) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private RunnerResult findRunnerResultForTimeline(RunnerTimelineRow row) {
+        if (row == null) {
+            return null;
+        }
+        RunnerResult byName = runnerResultByName.get(runnerResultKey(row.collectionName, row.requestName));
+        if (byName != null) {
+            return byName;
+        }
+        if (row.requestName != null && !row.requestName.isBlank()) {
+            byName = runnerResultByName.get(row.requestName);
+            if (byName != null) {
+                return byName;
+            }
+        }
+        if (row.requestName != null && !row.requestName.isBlank()) {
+            for (RunnerResult candidate : runnerResultById.values()) {
+                if (candidate != null && row.requestName.equals(candidate.requestName)) {
+                    if (row.collectionName == null || row.collectionName.isBlank() || row.collectionName.equals(candidate.collectionName)) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private RunnerTimelineRow buildTimelineRow(RunnerResult result) {
+        RunnerTimelineRow row = new RunnerTimelineRow();
+        row.order = result != null ? Math.max(1, result.attemptNumber) : 0;
+        row.collectionName = result != null && result.collectionName != null ? result.collectionName : "";
+        row.requestName = result != null && result.requestName != null ? result.requestName : "";
+        row.status = result != null ? result.displayStatusLabel() : "";
+        row.timeMs = result != null ? result.responseTimeMs : 0L;
+        row.retries = result != null ? Math.max(0, result.attemptNumber - 1) : 0;
+        row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;
+        row.assertions = formatRunnerAssertionSummary(result);
+        return row;
+    }
+
+    private String formatRunnerAssertionSummary(RunnerResult result) {
+        if (result == null || result.assertions == null || result.assertions.isEmpty()) {
+            return "0/0";
+        }
+        int passed = 0;
+        int total = 0;
+        for (RunnerResult.AssertionResult assertion : result.assertions) {
+            if (assertion == null) {
+                continue;
+            }
+            total++;
+            if (assertion.passed) {
+                passed++;
+            }
+        }
+        return passed + "/" + total;
+    }
+
+    private RunnerTimelineRow buildTimelineRowFromExecutionEntry(RunnerExecutionTableModel.Entry entry) {
+        RunnerTimelineRow row = new RunnerTimelineRow();
+        row.order = entry != null ? entry.sequence : 0;
+        row.collectionName = entry != null && entry.collectionName != null ? entry.collectionName : "";
+        row.requestName = entry != null && entry.requestName != null ? entry.requestName : "";
+        row.status = entry != null && entry.result != null && !entry.result.isBlank() ? entry.result : (entry != null ? entry.state : "");
+        row.timeMs = entry != null ? parseDurationText(entry.duration) : 0L;
+        row.retries = entry != null && entry.requestResult != null ? Math.max(0, entry.requestResult.attemptNumber - 1) : 0;
+        row.varsChanged = entry != null && entry.requestResult != null && entry.requestResult.extractedVariables != null
+                ? entry.requestResult.extractedVariables.size()
+                : 0;
+        row.assertions = entry != null && entry.message != null ? entry.message : "";
+        return row;
+    }
+
+    private long parseDurationText(String duration) {
+        if (duration == null || duration.isBlank()) {
+            return 0L;
+        }
+        String normalized = duration.trim().toLowerCase(Locale.ROOT).replace("ms", "").trim();
+        try {
+            return Long.parseLong(normalized);
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestStart(RunnerResult result) {
+        ApiRequest request = result != null ? findRequestById(result.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, null, true);
+        return createExecutionEntry(
+                "REQUEST_STARTED",
+                "RUNNING",
+                result != null && result.requestName != null ? result.requestName : safeRequestName(request),
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection),
+                result != null && result.method != null ? result.method : (request != null && request.method != null ? request.method : "GET"),
+                "",
+                "Starting",
+                "",
+                "",
+                "Request started",
+                detailEntry,
+                result,
+                null,
+                result != null ? result.requestId : null,
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection)
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestResult(RunnerResult result) {
+        ApiRequest request = result != null ? findRequestById(result.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, result, false);
+        if (result != null) {
+            indexRunnerResult(result);
+        }
+        RunnerTimelineRow timelineRow = buildTimelineRow(result);
+        return createExecutionEntry(
+                "REQUEST_COMPLETED",
+                result != null && result.success ? "SUCCESS" : "FAILED",
+                result != null && result.requestName != null ? result.requestName : safeRequestName(request),
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection),
+                result != null && result.method != null ? result.method : (request != null && request.method != null ? request.method : "GET"),
+                result != null && result.statusCode > 0 ? String.valueOf(result.statusCode) : "",
+                result != null ? result.displayLogStatusLabel() : "",
+                result != null && result.responseTimeMs > 0 ? result.responseTimeMs + " ms" : "",
+                result != null && result.scriptFlowControl != null ? result.scriptFlowControl.name() : "",
+                result != null && result.errorMessage != null && !result.errorMessage.isBlank() ? result.errorMessage : (result != null ? result.displayLogStatusLabel() : ""),
+                detailEntry,
+                result,
+                timelineRow,
+                result != null ? result.requestId : null,
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection)
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromTimeline(RunnerTimelineRow row, RunnerResult associated) {
+        ApiRequest request = associated != null ? findRequestById(associated.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(row != null ? row.collectionName : null);
+        HistoryEntry detailEntry = associated != null
+                ? buildRunnerHistoryEntry(collection, request, associated, false)
+                : buildRunnerCompleteEntry(Collections.emptyList());
+        return createExecutionEntry(
+                "TIMELINE",
+                row != null && row.status != null ? row.status : (associated != null && associated.success ? "SUCCESS" : "INFO"),
+                row != null && row.requestName != null ? row.requestName : (associated != null && associated.requestName != null ? associated.requestName : ""),
+                row != null && row.collectionName != null ? row.collectionName : (associated != null && associated.collectionName != null ? associated.collectionName : safeCollectionName(collection)),
+                associated != null && associated.method != null ? associated.method : (request != null && request.method != null ? request.method : ""),
+                row != null && row.status != null ? row.status : "",
+                associated != null ? associated.displayLogStatusLabel() : (row != null && row.status != null ? row.status : ""),
+                row != null && row.timeMs > 0 ? row.timeMs + " ms" : "",
+                row != null && row.retries > 0 ? "retries=" + row.retries : "",
+                row != null && row.assertions != null ? row.assertions : "",
+                detailEntry,
+                associated,
+                row,
+                associated != null ? associated.requestId : null,
+                row != null && row.collectionName != null ? row.collectionName : (associated != null && associated.collectionName != null ? associated.collectionName : safeCollectionName(collection))
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromSkip(String requestName, String reason) {
+        ApiRequest request = null;
+        if (runnerExecutingQueueIndex >= 0 && runnerExecutingQueueIndex < runnerQueuedRequests.size()) {
+            request = runnerQueuedRequests.get(runnerExecutingQueueIndex);
+        }
+        if (request == null && requestName != null && !requestName.isBlank()) {
+            for (ApiRequest candidate : runnerQueuedRequests) {
+                if (candidate != null && requestName.equals(candidate.name)) {
+                    request = candidate;
+                    break;
+                }
+            }
+        }
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(request != null ? request.sourceCollection : null);
+        RunnerResult synthetic = new RunnerResult();
+        synthetic.requestName = requestName != null ? requestName : safeRequestName(request);
+        synthetic.requestId = request != null ? request.id : null;
+        synthetic.collectionName = request != null && request.sourceCollection != null ? request.sourceCollection : safeCollectionName(collection);
+        synthetic.folderPath = request != null ? request.path : null;
+        synthetic.method = request != null && request.method != null ? request.method : "GET";
+        synthetic.path = request != null ? request.path : null;
+        synthetic.host = request != null ? parseHost(request.url) : null;
+        synthetic.requestUrl = request != null ? request.url : null;
+        synthetic.success = true;
+        synthetic.scriptFlowControl = burp.scripts.ScriptFlowControl.SKIP_REQUEST;
+        synthetic.errorMessage = reason;
+        synthetic.attemptNumber = 1;
+        synthetic.totalAttempts = 1;
+        indexRunnerResult(synthetic);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, synthetic, false);
+        return createExecutionEntry(
+                "SKIPPED",
+                "SKIPPED",
+                synthetic.requestName,
+                synthetic.collectionName,
+                synthetic.method,
+                "SKIPPED",
+                synthetic.displayLogStatusLabel(),
+                "",
+                "SKIP_REQUEST",
+                reason != null && !reason.isBlank() ? reason : "Skipped by script",
+                detailEntry,
+                synthetic,
+                null,
+                synthetic.requestId,
+                synthetic.collectionName
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromDebug(String message) {
+        HistoryEntry detailEntry = new HistoryEntry();
+        detailEntry.id = UUID.randomUUID().toString();
+        detailEntry.timestamp = java.time.Instant.now();
+        detailEntry.source = HistorySource.RUNNER;
+        detailEntry.requestName = "Runner Debug";
+        detailEntry.result = HistoryResult.UNKNOWN;
+        detailEntry.resultClassification = "Debug";
+        detailEntry.scriptOutputSummaryText = message != null ? message : "";
+        detailEntry.assertionsSummaryText = "Debug event";
+        detailEntry.variablesSummaryText = "Debug event";
+        return createExecutionEntry(
+                "RUN_DEBUG",
+                "INFO",
+                "Runner Debug",
+                "Runner",
+                "",
+                "INFO",
+                "Debug",
+                "",
+                "",
+                message != null ? message : "",
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromError(String message) {
+        HistoryEntry detailEntry = new HistoryEntry();
+        detailEntry.id = UUID.randomUUID().toString();
+        detailEntry.timestamp = java.time.Instant.now();
+        detailEntry.source = HistorySource.RUNNER;
+        detailEntry.requestName = "Runner Error";
+        detailEntry.errorMessage = message;
+        detailEntry.result = HistoryResult.ERROR;
+        detailEntry.resultClassification = HistoryResult.ERROR.displayName();
+        detailEntry.scriptOutputSummaryText = message != null ? message : "";
+        detailEntry.assertionsSummaryText = "Runner error";
+        detailEntry.variablesSummaryText = "Runner error";
+        return createExecutionEntry(
+                "RUN_ERROR",
+                "ERROR",
+                "Runner Error",
+                "Runner",
+                "",
+                "ERROR",
+                HistoryResult.ERROR.displayName(),
+                "",
+                "",
+                message != null ? message : "",
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRunComplete(List<RunnerResult> results) {
+        HistoryEntry detailEntry = buildRunnerCompleteEntry(results);
+        String summary = detailEntry != null ? detailEntry.scriptOutputSummaryText : "Runner completed.";
+        return createExecutionEntry(
+                "RUN_COMPLETED",
+                "COMPLETED",
+                "Runner Complete",
+                "Runner",
+                "",
+                "DONE",
+                HistoryResult.SUCCESS.displayName(),
+                "",
+                "",
+                summary,
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
     }
 
     static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
@@ -2248,23 +2987,20 @@ public class ImporterPanel {
 
         panel.add(configPanel, BorderLayout.NORTH);
 
-        resultModel = new RunnerResultTableModel();
+        resultModel = new RunnerExecutionTableModel();
         resultTable = new JTable(resultModel);
-        resultTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        resultTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         resultTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        resultTable.setFillsViewportHeight(true);
+        SwingShortcutSupport.installTableShortcuts(resultTable);
         JScrollPane tableScroll = new JScrollPane(resultTable);
-        tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Results"));
-        tableScroll.setPreferredSize(new Dimension(350, 250));
-        tableScroll.setMinimumSize(new Dimension(200, 150));
+        tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Execution Table"));
+        tableScroll.setPreferredSize(new Dimension(520, 280));
+        tableScroll.setMinimumSize(new Dimension(260, 160));
+        tableScroll.getHorizontalScrollBar().setUnitIncrement(16);
 
         timelineModel = new RunnerTimelineTableModel();
         timelineTable = new JTable(timelineModel);
-        timelineTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
-        timelineTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane timelineScroll = new JScrollPane(timelineTable);
-        timelineScroll.setBorder(BorderFactory.createTitledBorder("Runner Timeline"));
-        timelineScroll.setPreferredSize(new Dimension(350, 180));
-        timelineScroll.setMinimumSize(new Dimension(200, 120));
 
         runnerQueueListModel = new DefaultListModel<>();
         runnerQueueList = new JList<>(runnerQueueListModel);
@@ -2273,41 +3009,46 @@ public class ImporterPanel {
             JLabel label = (JLabel) new DefaultListCellRenderer().getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             ApiRequest request = value;
             if (request != null) {
-                StringBuilder text = new StringBuilder();
-                text.append(request.name != null && !request.name.isBlank() ? request.name : "Request");
-                if (request.sourceCollection != null && !request.sourceCollection.isBlank()) {
-                    text.append(" [").append(request.sourceCollection).append("]");
+                label.setText(request.name != null && !request.name.isBlank() ? request.name : "Request");
+                boolean executing = index == runnerExecutingQueueIndex;
+                if (executing) {
+                    label.setFont(label.getFont().deriveFont(Font.BOLD));
+                    Border executionBorder = BorderFactory.createMatteBorder(0, 3, 0, 0,
+                            isSelected ? list.getSelectionForeground() : list.getSelectionBackground());
+                    label.setBorder(BorderFactory.createCompoundBorder(executionBorder,
+                            BorderFactory.createEmptyBorder(0, 4, 0, 0)));
+                    if (!isSelected) {
+                        label.setBackground(list.getSelectionBackground());
+                    }
                 }
-                if (request.path != null && !request.path.isBlank()) {
-                    text.append(" - ").append(request.path);
-                }
-                label.setText(text.toString());
+                String tooltip = buildRunnerQueueTooltip(request);
+                label.setToolTipText(tooltip);
             }
             return label;
+        });
+        runnerQueueList.setToolTipText("");
+        runnerQueueList.addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting()) {
+                return;
+            }
+            ApiRequest selectedQueueRequest = runnerQueueList.getSelectedValue();
+            showRunnerQueueSelection(selectedQueueRequest);
+        });
+        runnerQueueList.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                updateRunnerQueueTooltipForLocation(e.getPoint());
+            }
         });
         runnerQueueScrollPane = new JScrollPane(runnerQueueList);
         runnerQueueScrollPane.setBorder(BorderFactory.createTitledBorder("Runner Queue"));
         runnerQueueScrollPane.setPreferredSize(new Dimension(320, 360));
         runnerQueueScrollPane.setMinimumSize(new Dimension(220, 180));
 
-        runnerDetailTabs = new JTabbedPane();
-        detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        runnerDetailTabs.addTab("Request", detailRequestEditor.uiComponent());
+        runnerDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        runnerDetailTabs = runnerDetailPanel.getTabbedPane();
 
-        detailResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        runnerDetailTabs.addTab("Response", detailResponseEditor.uiComponent());
-
-        detailVarsText = new JTextArea();
-        detailVarsText.setEditable(false);
-        detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        runnerDetailTabs.addTab("Vars", new JScrollPane(detailVarsText));
-
-        JSplitPane resultsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, timelineScroll);
-        resultsSplit.setResizeWeight(0.70);
-        resultsSplit.setOneTouchExpandable(true);
-        resultsSplit.setContinuousLayout(true);
-
-        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, resultsSplit);
+        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, tableScroll);
         queueSplit.setResizeWeight(0.30);
         queueSplit.setOneTouchExpandable(true);
         queueSplit.setContinuousLayout(true);
@@ -2321,8 +3062,8 @@ public class ImporterPanel {
         installRunnerQueueTransferSupport();
         resultTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
-                RunnerResult r = resultModel.getResultAt(resultTable.getSelectedRow());
-                updateRunnerDetailPane(r);
+                RunnerExecutionTableModel.Entry row = resultModel.getEntryAt(resultTable.getSelectedRow());
+                updateRunnerDetailPane(row != null ? row.detailEntry : null);
             }
         });
 
@@ -6932,6 +7673,7 @@ public class ImporterPanel {
         List<ApiRequest> restoredQueue = restoreRunnerQueueFromIdentityKeys(state.runnerQueuedRequestIdentityKeys);
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(restoredQueue);
+        runnerQueueFresh = !restoredQueue.isEmpty();
         refreshRunnerQueueList(restoredQueue.isEmpty() ? -1 : 0);
         updateRunnerQueueUiState();
     }
@@ -9664,6 +10406,8 @@ public class ImporterPanel {
         }
         if (selected.isEmpty()) {
             runnerQueuedRequests.clear();
+            runnerQueueFresh = false;
+            runnerExecutingQueueIndex = -1;
             refreshRunnerQueueList(-1);
             updateRunnerQueueUiState();
             appendImportLog("No requests selected to run.");
@@ -9671,6 +10415,8 @@ public class ImporterPanel {
         }
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(selected);
+        runnerQueueFresh = true;
+        runnerExecutingQueueIndex = -1;
         refreshRunnerQueueList(0);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
@@ -9724,6 +10470,8 @@ public class ImporterPanel {
             }
             if (indexToSelect >= 0) {
                 selectRunnerQueueIndex(indexToSelect);
+            } else if (runnerQueueList != null) {
+                runnerQueueList.repaint();
             }
         };
         runOnEdtSync(update);
@@ -9765,10 +10513,66 @@ public class ImporterPanel {
         }
         if (index < 0 || index >= runnerQueueListModel.getSize()) {
             runnerQueueList.clearSelection();
+            runnerQueueList.repaint();
             return;
         }
         runnerQueueList.setSelectedIndex(index);
         runnerQueueList.ensureIndexIsVisible(index);
+        runnerQueueList.repaint();
+    }
+
+    private void showRunnerQueueSelection(ApiRequest request) {
+        if (runnerDetailPanel == null) {
+            return;
+        }
+        ApiCollection collection = request != null ? requestToCollectionMap.get(request) : null;
+        if (collection == null && request != null) {
+            collection = findCollectionByRequest(request);
+        }
+        if (request == null) {
+            runnerDetailPanel.clear();
+            return;
+        }
+        HistoryEntry entry = buildRunnerQueuePreviewEntry(collection, request);
+        runnerDetailPanel.showEntry(entry);
+    }
+
+    private String buildRunnerQueueTooltip(ApiRequest request) {
+        if (request == null) {
+            return null;
+        }
+        ApiCollection collection = requestToCollectionMap.get(request);
+        if (collection == null) {
+            collection = findCollectionByRequest(request);
+        }
+        StringBuilder sb = new StringBuilder("<html>");
+        sb.append("Collection: ").append(htmlEscape(collection != null && collection.name != null ? collection.name : safeCollectionName(null))).append("<br/>");
+        sb.append("Folder: ").append(htmlEscape(request != null ? RequestPathResolver.getRequestFolderPath(collection, request) : "")).append("<br/>");
+        sb.append("Method: ").append(htmlEscape(request != null && request.method != null ? request.method : "GET")).append("<br/>");
+        sb.append("URL Template: ").append(htmlEscape(request != null && request.url != null ? request.url : "")).append("<br/>");
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        sb.append("Active Environment: ").append(htmlEscape(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment"));
+        if (runnerExecutingQueueIndex >= 0 && runnerQueueList != null) {
+            int index = indexOfRunnerQueueRequest(request);
+            if (index == runnerExecutingQueueIndex) {
+                sb.append("<br/>State: Running");
+            }
+        }
+        sb.append("</html>");
+        return sb.toString();
+    }
+
+    private void updateRunnerQueueTooltipForLocation(Point point) {
+        if (runnerQueueList == null || point == null) {
+            return;
+        }
+        int index = runnerQueueList.locationToIndex(point);
+        if (index < 0 || index >= runnerQueueListModel.size()) {
+            runnerQueueList.setToolTipText(null);
+            return;
+        }
+        ApiRequest request = runnerQueueListModel.getElementAt(index);
+        runnerQueueList.setToolTipText(buildRunnerQueueTooltip(request));
     }
 
     private void runOnEdtSync(Runnable action) {
@@ -9817,6 +10621,10 @@ public class ImporterPanel {
     // Runner
     // ========================================================================
     private void startRunner(boolean showPreviewDialog) {
+        startRunner(showPreviewDialog, false);
+    }
+
+    private void startRunner(boolean showPreviewDialog, boolean stepMode) {
         List<ApiRequest> selected = new ArrayList<>(runnerQueuedRequests);
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests queued. Use Workbench > Actions > Run Checked first.");
@@ -9855,10 +10663,10 @@ public class ImporterPanel {
             return;
         }
 
-        startRunnerExecution(selected);
+        startRunnerExecution(selected, stepMode);
     }
 
-    private void startRunnerExecution(List<ApiRequest> selected) {
+    private void startRunnerExecution(List<ApiRequest> selected, boolean stepMode) {
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
         runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
         runner.setStopConditions(buildRunnerStopConditionsFromUi());
@@ -9869,6 +10677,10 @@ public class ImporterPanel {
         timelineModel.clear();
         runnerLog.setText("");
         runnerProgress.setValue(0);
+        runnerExecutingQueueIndex = -1;
+        runnerExecutionSequence = 0;
+        runnerResultById.clear();
+        runnerResultByName.clear();
 
         if (activeRunnerListener != null) {
             runner.removeListener(activeRunnerListener);
@@ -9881,28 +10693,68 @@ public class ImporterPanel {
                     setRunnerControlsRunning(true);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
+                    runnerQueueFresh = true;
+                    updateRunnerQueueUiState();
+                });
+            }
+            @Override public void onRequestStart(RunnerResult result) {
+                SwingUtilities.invokeLater(() -> {
+                    runnerExecutingQueueIndex = resolveRunnerQueueIndex(result);
+                    updateRunnerQueueUiState();
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestStart(result);
+                    resultModel.addEntry(entry);
+                    timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
+                    if (entry.detailEntry != null) {
+                        runnerDetailPanel.showEntry(entry.detailEntry);
+                    }
                 });
             }
             @Override public void onSkip(String name, String reason) {
-                SwingUtilities.invokeLater(() -> appendRunnerLog("Skipped: " + name + " (" + reason + ")"));
+                SwingUtilities.invokeLater(() -> {
+                    appendRunnerLog("Skipped: " + name + " (" + reason + ")");
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromSkip(name, reason);
+                    resultModel.addEntry(entry);
+                    timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
+                    if (entry.detailEntry != null) {
+                        runnerDetailPanel.showEntry(entry.detailEntry);
+                    }
+                });
             }
             @Override public void onRequestComplete(RunnerResult result) {
                 SwingUtilities.invokeLater(() -> {
-                    resultModel.addResult(result);
-                    runnerProgress.setValue(resultModel.getRowCount());
+                    if (result != null) {
+                        indexRunnerResult(result);
+                    }
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
+                    resultModel.addEntry(entry);
+                    if (timelineModel != null) {
+                        timelineModel.addRow(buildTimelineRow(result));
+                    }
+                    runnerProgress.setValue(resultModel.getRequestResultCount());
                     String status = result != null ? result.displayLogStatusLabel() : "FAIL";
-                    appendRunnerLog((resultModel.getRowCount()) + ". " + result.requestName + " -> " + status);
+                    appendRunnerLog((resultModel.getRequestResultCount()) + ". " + (result != null && result.requestName != null ? result.requestName : "Request") + " -> " + status);
                     if (!result.extractedVariables.isEmpty()) {
                         appendRunnerLog("   Extracted: " + result.extractedVariables);
                     }
+                    runnerExecutingQueueIndex = -1;
+                    updateRunnerQueueUiState();
+                    runnerDetailPanel.showEntry(entry.detailEntry);
                     setRunnerControlsRunning(runner.isRunning());
                 });
             }
             @Override public void onAttemptComplete(RunnerResult result) {
-                SwingUtilities.invokeLater(() -> recordRunnerHistoryAttempt(result));
+                SwingUtilities.invokeLater(() -> {
+                    if (result != null) {
+                        indexRunnerResult(result);
+                    }
+                    recordRunnerHistoryAttempt(result);
+                });
             }
             @Override public void onTimeline(RunnerTimelineRow row) {
-                SwingUtilities.invokeLater(() -> timelineModel.addRow(row));
+                SwingUtilities.invokeLater(() -> {
+                    timelineModel.addRow(row);
+                    resultModel.addEntry(buildExecutionRowFromTimeline(row, findRunnerResultForTimeline(row)));
+                });
             }
             @Override public void onComplete(List<RunnerResult> results) {
                 SwingUtilities.invokeLater(() -> {
@@ -9912,22 +10764,36 @@ public class ImporterPanel {
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
+                    runnerExecutingQueueIndex = -1;
+                    runnerQueueFresh = false;
+                    updateRunnerQueueUiState();
+                    runnerDetailPanel.showEntry(buildRunnerCompleteEntry(results));
                 });
             }
             @Override public void onDebug(String message) {
-                SwingUtilities.invokeLater(() -> appendRunnerLog(message));
+                SwingUtilities.invokeLater(() -> {
+                    appendRunnerLog(message);
+                    resultModel.addEntry(buildExecutionRowFromDebug(message));
+                });
             }
             @Override public void onError(String message) {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
+                    resultModel.addEntry(buildExecutionRowFromError(message));
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
+                    runnerExecutingQueueIndex = -1;
+                    updateRunnerQueueUiState();
                 });
             }
         };
         runner.addListener(activeRunnerListener);
 
-        runner.runCollections(loadedCollections, selected);
+        if (stepMode) {
+            runner.runCollections(loadedCollections, selected, true);
+        } else {
+            runner.runCollections(loadedCollections, selected);
+        }
     }
 
     private RunnerStopConditions buildRunnerStopConditionsFromUi() {
@@ -9957,7 +10823,7 @@ public class ImporterPanel {
             resumeRunnerBtn.setEnabled(running && paused);
         }
         if (stepRunnerBtn != null) {
-            stepRunnerBtn.setEnabled(running && paused);
+            stepRunnerBtn.setEnabled((running && paused) || (!running && !runnerQueuedRequests.isEmpty() && runnerQueueFresh));
         }
     }
 
@@ -9975,7 +10841,11 @@ public class ImporterPanel {
 
     private void stepRunnerFromUi() {
         appendRunnerLog("Runner stepping one request.");
-        runner.runNextOnly();
+        if (runner != null && runner.isRunning()) {
+            runner.runNextOnly();
+        } else {
+            startRunner(false, true);
+        }
         setRunnerControlsRunning(runner.isRunning());
     }
 
@@ -10036,22 +10906,34 @@ public class ImporterPanel {
             runnerLog.setText("");
         }
         runnerQueuedRequests.clear();
+        runnerQueueFresh = false;
+        runnerExecutingQueueIndex = -1;
+        runnerExecutionSequence = 0;
+        runnerResultById.clear();
+        runnerResultByName.clear();
         refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
         }
-        updateRunnerDetailPane(null);
+        clearRunnerDetailPane();
         setRunnerControlsRunning(false);
     }
 
     private void updateRunnerQueueUiState() {
         boolean hasQueue = !runnerQueuedRequests.isEmpty();
         boolean running = runner != null && runner.isRunning();
+        boolean paused = running && runner != null && runner.isPaused();
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(!running && hasQueue);
         }
+        if (stepRunnerBtn != null) {
+            stepRunnerBtn.setEnabled((running && paused) || (!running && hasQueue && runnerQueueFresh));
+        }
         if (runnerQueueListModel != null) {
             refreshRunnerQueueList(runnerQueueList != null ? runnerQueueList.getSelectedIndex() : -1);
+        }
+        if (runnerQueueList != null) {
+            runnerQueueList.repaint();
         }
     }
 
@@ -10580,71 +11462,20 @@ public class ImporterPanel {
         });
     }
 
-    private void updateRunnerDetailPane(RunnerResult r) {
-        if (r == null) {
-            if (detailRequestEditor != null) {
-                try {
-                    detailRequestEditor.setRequest(HttpRequest.httpRequest());
-                } catch (RuntimeException ignored) {
-                    // Tests may construct the panel without a Montoya object factory.
-                }
-            }
-        if (detailResponseEditor != null) {
-            try {
-                detailResponseEditor.setResponse(HttpResponse.httpResponse());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
-            }
+    private void updateRunnerDetailPane(HistoryEntry entry) {
+        if (runnerDetailPanel == null) {
+            return;
         }
-        detailVarsText.setText("");
-        return;
+        if (entry == null) {
+            clearRunnerDetailPane();
+            return;
+        }
+        runnerDetailPanel.showEntry(entry);
     }
-        String requestText = r.rawRequestText;
-        if (requestText == null || requestText.isBlank()) {
-            StringBuilder req = new StringBuilder();
-            req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\r\n");
-            req.append("Host: ").append(r.host != null ? r.host : "").append("\r\n");
-            if (r.requestHeaders != null) {
-                String[] lines = r.requestHeaders.split("\n");
-                for (int i = 1; i < lines.length; i++) {
-                    req.append(lines[i]).append("\r\n");
-                }
-            }
-            if (r.requestBody != null && !r.requestBody.isEmpty()) {
-                req.append("\r\n").append(r.requestBody);
-            }
-            requestText = req.toString();
-        }
-        if (detailRequestEditor != null) {
-            detailRequestEditor.setRequest(HttpRequest.httpRequest(requestText));
-        }
 
-        StringBuilder resp = new StringBuilder();
-        if (r.responseHeaders != null && !r.responseHeaders.trim().isEmpty()) {
-            resp.append(r.responseHeaders.trim());
-        } else {
-            int code = r.statusCode > 0 ? r.statusCode : 0;
-            resp.append("HTTP/1.1 ").append(code);
-        }
-        resp.append("\r\n\r\n");
-        if (r.responseBody != null && !r.responseBody.isEmpty()) {
-            resp.append(r.responseBody);
-        }
-        if (detailResponseEditor != null) {
-            detailResponseEditor.setResponse(HttpResponse.httpResponse(resp.toString()));
-        }
-
-        StringBuilder vars = new StringBuilder();
-        if (r.extractedVariables != null && !r.extractedVariables.isEmpty()) {
-            for (Map.Entry<String, String> entry : r.extractedVariables.entrySet()) {
-                vars.append(entry.getKey()).append(" = ").append(entry.getValue()).append("\n");
-            }
-        } else {
-            vars.append("No variables extracted.");
-        }
-        if (detailVarsText != null) {
-            detailVarsText.setText(vars.toString());
-            detailVarsText.setCaretPosition(0);
+    private void clearRunnerDetailPane() {
+        if (runnerDetailPanel != null) {
+            runnerDetailPanel.clear();
         }
     }
 

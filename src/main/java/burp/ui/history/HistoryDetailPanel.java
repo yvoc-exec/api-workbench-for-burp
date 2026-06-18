@@ -1,6 +1,8 @@
 package burp.ui.history;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
@@ -14,6 +16,7 @@ public class HistoryDetailPanel extends JPanel {
     private static final String NATIVE_CARD = "native";
     private static final String FALLBACK_CARD = "fallback";
 
+    private final JTabbedPane tabs = new JTabbedPane();
     private final JTextArea requestArea = new JTextArea();
     private final JTextArea responseArea = new JTextArea();
     private final JTextArea variablesArea = new JTextArea();
@@ -37,7 +40,6 @@ public class HistoryDetailPanel extends JPanel {
 
     public HistoryDetailPanel(MontoyaApi api) {
         setLayout(new BorderLayout());
-        JTabbedPane tabs = new JTabbedPane();
 
         NativeRequestViewer requestViewer = createRequestViewer(api);
         this.requestEditor = requestViewer.editor;
@@ -80,10 +82,10 @@ public class HistoryDetailPanel extends JPanel {
 
         tabs.addTab("Request", requestCardPanel);
         tabs.addTab("Response", responseCardPanel);
-        tabs.addTab("Variables / Environment", createFallbackScrollPane(variablesArea));
-        tabs.addTab("Assertions / Extraction", createFallbackScrollPane(assertionsArea));
-        tabs.addTab("Script Output", createFallbackScrollPane(scriptArea));
         tabs.addTab("Metadata", createFallbackScrollPane(metadataArea));
+        tabs.addTab("Variables / Environment", createFallbackScrollPane(variablesArea));
+        tabs.addTab("Script Output", createFallbackScrollPane(scriptArea));
+        tabs.addTab("Assertions / Extractions", createFallbackScrollPane(assertionsArea));
         add(tabs, BorderLayout.CENTER);
         clear();
     }
@@ -134,6 +136,34 @@ public class HistoryDetailPanel extends JPanel {
         assertionsArea.setCaretPosition(0);
         scriptArea.setCaretPosition(0);
         metadataArea.setCaretPosition(0);
+    }
+
+    public void setRequestMessage(HttpRequest request) {
+        if (requestEditor == null) {
+            return;
+        }
+        try {
+            requestEditor.setRequest(request != null ? request : HistoryNativeHttpMessageFactory.request(""));
+            requestCardLayout.show(requestCardPanel, NATIVE_CARD);
+            requestNativeViewerReason = null;
+        } catch (Throwable t) {
+            requestNativeViewerReason = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            requestCardLayout.show(requestCardPanel, FALLBACK_CARD);
+        }
+    }
+
+    public void setResponseMessage(HttpResponse response) {
+        if (responseEditor == null) {
+            return;
+        }
+        try {
+            responseEditor.setResponse(response != null ? response : HistoryNativeHttpMessageFactory.response(""));
+            responseCardLayout.show(responseCardPanel, NATIVE_CARD);
+            responseNativeViewerReason = null;
+        } catch (Throwable t) {
+            responseNativeViewerReason = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            responseCardLayout.show(responseCardPanel, FALLBACK_CARD);
+        }
     }
 
     public void clear() {
@@ -193,6 +223,10 @@ public class HistoryDetailPanel extends JPanel {
 
     public JTextArea getMetadataArea() {
         return metadataArea;
+    }
+
+    public JTabbedPane getTabbedPane() {
+        return tabs;
     }
 
     public boolean isRequestNativeViewerAvailable() {
@@ -263,10 +297,34 @@ public class HistoryDetailPanel extends JPanel {
     }
 
     private static String buildVariablesText(HistoryEntry entry) {
+        if (entry != null && entry.variablesSummaryText != null && !entry.variablesSummaryText.isBlank()) {
+            return entry.variablesSummaryText.trim();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("Environment ID: ").append(entry.environmentId != null ? entry.environmentId : "").append('\n');
         sb.append("Environment Name: ").append(entry.environmentName != null ? entry.environmentName : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", entry.unresolvedVariables != null ? entry.unresolvedVariables : java.util.List.of())).append('\n');
+        if (entry != null && entry.requestSnapshot != null && entry.requestSnapshot.resolvedVariables != null && !entry.requestSnapshot.resolvedVariables.isEmpty()) {
+            sb.append('\n').append("Resolved Variables:").append('\n');
+            entry.requestSnapshot.resolvedVariables.forEach((k, v) ->
+                    sb.append(k).append(" = ").append(v != null ? v : "").append('\n'));
+        }
+        if (entry != null && entry.scriptVariableMutations != null && !entry.scriptVariableMutations.isEmpty()) {
+            sb.append('\n').append("Variable Mutations:").append('\n');
+            entry.scriptVariableMutations.forEach(mutation -> {
+                if (mutation == null) {
+                    return;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append(mutation.sourceScriptName != null ? " script=" + mutation.sourceScriptName : "")
+                        .append('\n');
+            });
+        }
         sb.append('\n').append("Request Variables as Authored:").append('\n');
         if (entry.requestSnapshot != null && entry.requestSnapshot.requestVariablesAsAuthored != null) {
             if (entry.requestSnapshot.requestVariablesAsAuthored.isEmpty()) {
@@ -282,6 +340,9 @@ public class HistoryDetailPanel extends JPanel {
     }
 
     private static String buildAssertionsText(HistoryEntry entry) {
+        if (entry != null && entry.assertionsSummaryText != null && !entry.assertionsSummaryText.isBlank()) {
+            return entry.assertionsSummaryText.trim();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("Assertions:").append('\n');
         if (entry.assertions == null || entry.assertions.isEmpty()) {
@@ -319,8 +380,13 @@ public class HistoryDetailPanel extends JPanel {
     }
 
     private static String buildScriptText(HistoryEntry entry) {
+        if (entry != null && entry.scriptOutputSummaryText != null && !entry.scriptOutputSummaryText.isBlank()) {
+            return entry.scriptOutputSummaryText.trim();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("Script Engine: ").append(entry != null && entry.scriptEngineName != null ? entry.scriptEngineName : "").append('\n');
+        sb.append("Script Mode: ").append(entry != null && entry.scriptMode != null ? entry.scriptMode : "").append('\n');
+        sb.append("Script Dialect: ").append(entry != null && entry.scriptDialect != null ? entry.scriptDialect : "").append('\n');
         sb.append("Execution Source: ").append(entry != null && entry.executionSource != null ? entry.executionSource : "").append('\n');
         sb.append("Flow Control: ").append(entry != null && entry.scriptFlowControl != null ? entry.scriptFlowControl.name() : "").append('\n');
         sb.append("Flow Message: ").append(entry != null && entry.scriptFlowMessage != null ? entry.scriptFlowMessage : "").append('\n');
