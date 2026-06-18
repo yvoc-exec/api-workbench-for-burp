@@ -190,6 +190,8 @@ public class SharedRequestPipeline {
                 );
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
                 applyRuntimeMutations(scriptContext, scriptResult);
+                commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
+                        runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
                 if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
@@ -336,6 +338,8 @@ public class SharedRequestPipeline {
                         dependentRequestExecutor
                         );
                         applyRuntimeMutations(scriptContext, postResult);
+                        commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
+                                runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                         mergeScriptResult(result, postResult);
                         mergeScriptResult(scriptResult, postResult);
                         recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
@@ -371,25 +375,8 @@ public class SharedRequestPipeline {
                 }
             }
 
-            Map<String, String> changedVars = new LinkedHashMap<>();
-            for (Map.Entry<String, String> entry : scriptContext.entrySet()) {
-                String key = entry.getKey();
-                if (!beforeScriptContext.containsKey(key) || !Objects.equals(beforeScriptContext.get(key), entry.getValue())) {
-                    changedVars.put(key, entry.getValue());
-                }
-            }
-
-            // Commit script mutations back to collection runtime context via helper (fires change listeners)
-            // Guaranteed path: pre-script mutations persist even on HTTP failure or exception
-            if (runtimeVariableSink != null && runtimeOverlay != null) {
-                runtimeVariableSink.apply(col, changedVars, removedKeys);
-            } else if (col != null) {
-                col.applyRuntimeVarDelta(changedVars, removedKeys);
-            }
-            if (!changedVars.isEmpty() || !removedKeys.isEmpty()) {
-                recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
-                        col, req, activeEnvironment, "Runtime variables updated", "changed=" + changedVars.keySet() + " removed=" + removedKeys);
-            }
+            commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
+                    runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
         }
         return result;
     }
@@ -443,6 +430,43 @@ public class SharedRequestPipeline {
                 scriptContext.put(mutation.key, mutation.newValue);
             }
         }
+    }
+
+    private void commitRuntimeMutations(Map<String, String> scriptContext,
+                                        Map<String, String> baselineContext,
+                                        Set<String> baselineKeys,
+                                        Map<String, String> runtimeOverlay,
+                                        RuntimeVariableSink runtimeVariableSink,
+                                        ApiCollection col,
+                                        ApiRequest req,
+                                        EnvironmentProfile activeEnvironment,
+                                        ExecutionSource effectiveSource) {
+        if (scriptContext == null || baselineContext == null || baselineKeys == null) {
+            return;
+        }
+        Map<String, String> changedVars = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : scriptContext.entrySet()) {
+            String key = entry.getKey();
+            if (!baselineContext.containsKey(key) || !Objects.equals(baselineContext.get(key), entry.getValue())) {
+                changedVars.put(key, entry.getValue());
+            }
+        }
+        Set<String> removedKeys = new LinkedHashSet<>(baselineKeys);
+        removedKeys.removeAll(scriptContext.keySet());
+        if (changedVars.isEmpty() && removedKeys.isEmpty()) {
+            return;
+        }
+        if (runtimeVariableSink != null && runtimeOverlay != null) {
+            runtimeVariableSink.apply(col, changedVars, removedKeys);
+        } else if (col != null) {
+            col.applyRuntimeVarDelta(changedVars, removedKeys);
+        }
+        recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
+                col, req, activeEnvironment, "Runtime variables updated", "changed=" + changedVars.keySet() + " removed=" + removedKeys);
+        baselineContext.clear();
+        baselineContext.putAll(scriptContext);
+        baselineKeys.clear();
+        baselineKeys.addAll(scriptContext.keySet());
     }
 
     private void mergeScriptResult(ExecutionResult executionResult, ScriptExecutionResult scriptResult) {
