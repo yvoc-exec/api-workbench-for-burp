@@ -20,10 +20,23 @@ jobs:
       with:
         java-version: ${{ matrix.java }}
         distribution: 'temurin'
+    - name: Print Java and Maven versions
+      run: |
+        java -version
+        mvn -version
     - name: Build with Maven
       run: mvn -B clean package
     - name: Probe shaded runtime artifact
       run: java -cp target/*-jar-with-dependencies.jar burp.smoke.ScriptRuntimeProbe --require-full
+    - name: Upload surefire reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: surefire-reports-java${{ matrix.java }}
+        path: |
+          target/surefire-reports/**
+          target/*.dump
+          target/*.dumpstream
     - name: Upload API Workbench JAR
       uses: actions/upload-artifact@v4
       with:
