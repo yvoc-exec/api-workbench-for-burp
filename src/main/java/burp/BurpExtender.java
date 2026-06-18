@@ -150,7 +150,7 @@ public class BurpExtender implements BurpExtension {
     private burp.utils.ScriptModeDetector.DetectionResult createSmokeScriptResult() {
         return new burp.utils.ScriptModeDetector.DetectionResult(
                 burp.utils.ScriptMode.LIMITED,
-                "Smoke runtime requested; Nashorn probe skipped to avoid startup hang.",
+                "Smoke runtime requested; JavaScript probe skipped to avoid startup hang.",
                 Runtime.version().feature()
         );
     }

@@ -29,13 +29,26 @@ public class UnifiedScriptRuntime {
         return scriptMode != burp.utils.ScriptMode.DISABLED && sandboxEngine.isAvailable();
     }
 
+    public String getEngineName() {
+        return sandboxEngine != null ? sandboxEngine.getEngineName() : "Unavailable";
+    }
+
     public ScriptExecutionResult executePreRequest(ApiCollection collection,
                                                    ApiRequest request,
                                                    EnvironmentProfile activeEnvironment,
                                                    String source,
                                                    int attemptNumber) {
-        ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, source, attemptNumber);
-        context.runnerOnlyFlowControlsAllowed = !"Send".equalsIgnoreCase(source);
+        return executePreRequest(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber);
+    }
+
+    public ScriptExecutionResult executePreRequest(ApiCollection collection,
+                                                   ApiRequest request,
+                                                   EnvironmentProfile activeEnvironment,
+                                                   ExecutionSource executionSource,
+                                                   int attemptNumber) {
+        ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, executionSource, attemptNumber);
+        context.runnerOnlyFlowControlsAllowed = executionSource == ExecutionSource.RUNNER;
+        context.result.engineName = sandboxEngine.getEngineName();
         if (!isEnabled()) {
             context.warn("Script execution disabled or sandbox unavailable.", null, null);
             return context.result;
@@ -56,14 +69,28 @@ public class UnifiedScriptRuntime {
                                                      Map<String, List<String>> responseHeaders,
                                                      long responseTimeMs,
                                                      RunnerResult runnerResult) {
-        ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, source, attemptNumber);
+        return executePostResponse(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, responseText, statusCode, responseHeaders, responseTimeMs, runnerResult);
+    }
+
+    public ScriptExecutionResult executePostResponse(ApiCollection collection,
+                                                     ApiRequest request,
+                                                     EnvironmentProfile activeEnvironment,
+                                                     ExecutionSource executionSource,
+                                                     int attemptNumber,
+                                                     String responseText,
+                                                     int statusCode,
+                                                     Map<String, List<String>> responseHeaders,
+                                                     long responseTimeMs,
+                                                     RunnerResult runnerResult) {
+        ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, executionSource, attemptNumber);
         context.responseText = responseText;
         context.responseStatusCode = statusCode;
         context.responseTimeMs = responseTimeMs;
         context.responseHeaders = responseHeaders != null ? new LinkedHashMap<>(responseHeaders) : new LinkedHashMap<>();
         context.runnerResult = runnerResult;
         context.parsedResponseJson = parseJson(responseText);
-        context.runnerOnlyFlowControlsAllowed = !"Send".equalsIgnoreCase(source);
+        context.runnerOnlyFlowControlsAllowed = executionSource == ExecutionSource.RUNNER;
+        context.result.engineName = sandboxEngine.getEngineName();
         if (!isEnabled()) {
             context.warn("Script execution disabled or sandbox unavailable.", null, null);
             return context.result;
@@ -110,18 +137,22 @@ public class UnifiedScriptRuntime {
             }
         }
         if (request != null) {
-            if (request.scriptBlocks != null) {
-                for (ScriptBlock block : request.scriptBlocks) {
-                    if (block != null && block.enabled && block.phase == phase) {
-                        blocks.add(ScriptBlock.copyOf(block));
+            boolean hasNativeBlocks = hasNativeRequestBlocks(request.scriptBlocks, phase);
+            if (hasNativeBlocks) {
+                if (request.scriptBlocks != null) {
+                    for (ScriptBlock block : request.scriptBlocks) {
+                        if (block != null && block.enabled && block.phase == phase) {
+                            blocks.add(ScriptBlock.copyOf(block));
+                        }
                     }
                 }
-            }
-            if (phase == ScriptPhase.PRE_REQUEST && request.preRequestScripts != null) {
-                blocks.addAll(legacyBlocks(request.preRequestScripts, ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, request));
-            }
-            if (phase == ScriptPhase.POST_RESPONSE && request.postResponseScripts != null) {
-                blocks.addAll(legacyBlocks(request.postResponseScripts, ScriptDialect.LEGACY_NASHORN, phase, ScriptScope.REQUEST, request));
+            } else {
+                if (phase == ScriptPhase.PRE_REQUEST && request.preRequestScripts != null) {
+                    blocks.addAll(legacyBlocks(request.preRequestScripts, ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, request));
+                }
+                if (phase == ScriptPhase.POST_RESPONSE && request.postResponseScripts != null) {
+                    blocks.addAll(legacyBlocks(request.postResponseScripts, ScriptDialect.LEGACY_NASHORN, phase, ScriptScope.REQUEST, request));
+                }
             }
         }
         return blocks;
@@ -150,19 +181,56 @@ public class UnifiedScriptRuntime {
         ScriptBindingsFactory.NativeApi nativeApi = new ScriptBindingsFactory.NativeApi(context.api, context, requestBinding, responseBinding, executionBinding);
         ScriptBindingsFactory.ConsoleApi consoleApi = new ScriptBindingsFactory.ConsoleApi(context.api, context);
 
-        bindings.put("pm", postman);
-        bindings.put("bru", bruno);
-        bindings.put("insomnia", insomnia);
-        bindings.put("awb", nativeApi);
-        bindings.put("console", consoleApi);
-        bindings.put("req", bruno.req);
-        bindings.put("res", bruno.res);
-        bindings.put("request", postman.request);
-        bindings.put("response", postman.response);
-        bindings.put("responseCode", new ScriptBindingsFactory.ResponseCodeWrapper(context.responseStatusCode));
-        bindings.put("jsonData", context.parsedResponseJson);
-        bindings.put("responseBody", context.responseText);
+        ScriptDialect dialect = block.dialect != null ? block.dialect : ScriptDialect.LEGACY_NASHORN;
+        switch (dialect) {
+            case POSTMAN -> {
+                bindings.put("pm", postman);
+                bindings.put("console", consoleApi);
+            }
+            case BRUNO -> {
+                bindings.put("bru", bruno);
+                bindings.put("req", bruno.req);
+                bindings.put("res", bruno.res);
+                bindings.put("console", consoleApi);
+            }
+            case INSOMNIA -> {
+                bindings.put("insomnia", insomnia);
+                bindings.put("request", insomnia.request);
+                bindings.put("response", insomnia.response);
+                bindings.put("console", consoleApi);
+            }
+            case API_WORKBENCH -> {
+                bindings.put("awb", nativeApi);
+                bindings.put("console", consoleApi);
+            }
+            case LEGACY_NASHORN -> {
+                bindings.put("pm", postman);
+                bindings.put("bru", bruno);
+                bindings.put("insomnia", insomnia);
+                bindings.put("awb", nativeApi);
+                bindings.put("console", consoleApi);
+                bindings.put("req", bruno.req);
+                bindings.put("res", bruno.res);
+                bindings.put("request", postman.request);
+                bindings.put("response", postman.response);
+                bindings.put("responseCode", new ScriptBindingsFactory.ResponseCodeWrapper(context.responseStatusCode));
+                bindings.put("jsonData", context.parsedResponseJson);
+                bindings.put("responseBody", context.responseText);
+            }
+        }
         return bindings;
+    }
+
+    private static boolean hasNativeRequestBlocks(List<ScriptBlock> blocks, ScriptPhase phase) {
+        if (blocks == null || phase == null) {
+            return false;
+        }
+        for (ScriptBlock block : blocks) {
+            if (block != null && block.enabled && block.phase == phase && block.source != null && !block.source.isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<ScriptBlock> legacyBlocks(List<ApiRequest.Script> scripts,
@@ -235,5 +303,17 @@ public class UnifiedScriptRuntime {
             return "legacy";
         }
         return dialect.name().toLowerCase(Locale.ROOT);
+    }
+
+    public static ExecutionSource executionSourceFromString(String source) {
+        if (source == null || source.isBlank()) {
+            return ExecutionSource.WORKBENCH_SEND;
+        }
+        String normalized = source.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "runner" -> ExecutionSource.RUNNER;
+            case "build", "build_preview", "preview", "buildpreview" -> ExecutionSource.BUILD_PREVIEW;
+            default -> ExecutionSource.WORKBENCH_SEND;
+        };
     }
 }

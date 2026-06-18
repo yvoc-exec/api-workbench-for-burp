@@ -405,7 +405,7 @@ public class ScriptEngine {
             }
 
             public void equal(Object expected) {
-                boolean passed = Objects.equals(target, expected);
+                boolean passed = valuesEqual(target, expected);
                 if (result != null) {
                     result.assertions.add(new RunnerResult.AssertionResult(
                         "Equals " + expected, passed, String.valueOf(expected), String.valueOf(target)
@@ -418,6 +418,27 @@ public class ScriptEngine {
 
             public void eql(Object expected) {
                 equal(expected);
+            }
+
+            private boolean valuesEqual(Object actual, Object expected) {
+                if (actual instanceof Number && expected instanceof Number) {
+                    Number left = (Number) actual;
+                    Number right = (Number) expected;
+                    try {
+                        java.math.BigDecimal leftDecimal = new java.math.BigDecimal(left.toString());
+                        java.math.BigDecimal rightDecimal = new java.math.BigDecimal(right.toString());
+                        return leftDecimal.compareTo(rightDecimal) == 0;
+                    } catch (NumberFormatException ignored) {
+                        return Double.compare(left.doubleValue(), right.doubleValue()) == 0;
+                    }
+                }
+                if (actual instanceof Boolean || expected instanceof Boolean) {
+                    return Boolean.parseBoolean(String.valueOf(actual)) == Boolean.parseBoolean(String.valueOf(expected));
+                }
+                if (actual == null || expected == null) {
+                    return actual == expected;
+                }
+                return Objects.equals(actual, expected) || String.valueOf(actual).equals(String.valueOf(expected));
             }
         }
 

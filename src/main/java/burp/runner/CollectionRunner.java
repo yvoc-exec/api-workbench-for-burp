@@ -182,6 +182,8 @@ public class CollectionRunner {
                 fireOnStart("Runner", ordered.size());
                 int failedResultCount = 0;
                 boolean stoppedByCondition = false;
+                int[] flowControlJumps = new int[]{0};
+                int maxFlowControlJumps = Math.max(ordered.size() * 4, 20);
 
                 for (int i = 0; i < ordered.size() && !cancelled; i++) {
                     if (i > 0) {
@@ -252,6 +254,15 @@ public class CollectionRunner {
                             failedResultCount + "/" + activeStopConditions.stopAfterFailureCount);
                         stoppedByCondition = true;
                         break;
+                    }
+
+                    int nextIndex = applyFlowControl(ordered, i, result, flowControlJumps, maxFlowControlJumps);
+                    if (nextIndex == Integer.MIN_VALUE) {
+                        stoppedByCondition = true;
+                        break;
+                    }
+                    if (nextIndex >= 0) {
+                        i = nextIndex - 1;
                     }
                 }
 
@@ -379,18 +390,39 @@ public class CollectionRunner {
                 ExecutionResult exec;
                 if (pipeline == null) {
                     exec = null;
+                } else if (pipeline.getClass() != SharedRequestPipeline.class) {
+                    // Preserve compatibility with legacy test subclasses that override the older
+                    // execute overloads but not the explicit ExecutionSource variant.
+                    if (activeEnvironment == null && overlay == null && oauth2TokenSink == null && runtimeVariableSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects);
+                    } else if (activeEnvironment == null) {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                    } else {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
+                    }
+                    if (exec != null) {
+                        exec.executionSource = burp.scripts.ExecutionSource.RUNNER;
+                    }
                 } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER);
                 } else if (activeEnvironment == null) {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER);
                 } else if (overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER);
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     return null;
+                }
+                if (exec == null) {
+                    result.success = false;
+                    result.errorMessage = "Runner pipeline unavailable";
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
+                    break;
                 }
                 if (debugRawRequest && exec != null) {
                     String rawRequestText = exec.rawRequestText != null
@@ -403,13 +435,32 @@ public class CollectionRunner {
                     }
                 }
 
-                    if (cancelled || Thread.currentThread().isInterrupted()) {
-                        return null;
-                    }
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    return null;
+                }
 
-                if (exec.success && exec.response != null && exec.response.response() != null) {
+                copyScriptOutput(result, exec);
+                if (exec.assertions != null && !exec.assertions.isEmpty()) {
+                    result.assertions.addAll(exec.assertions);
+                }
+
+                if ((exec.scriptFlowControl == burp.scripts.ScriptFlowControl.STOP_RUN
+                        || exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST)
+                        && exec.response == null) {
+                    result.errorMessage = null;
+                    result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
+                    result.requestHeaders = exec.requestHeaders;
+                    result.requestBody = exec.requestBody;
+                    result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+                    return new RequestExecutionOutcome(result, attempts);
+                }
+
+                if (exec.response != null && exec.response.response() != null) {
                     var response = exec.response.response();
-                    result.success = true;
+                    result.success = exec.success;
                     result.statusCode = response.statusCode();
                     result.responseSize = response.body().length();
                     result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
@@ -445,9 +496,15 @@ public class CollectionRunner {
 
                     // Annotate sitemap entry for visibility
                     if (api != null) {
-                        Annotations annotations = Annotations.annotations(
-                                "[Runner] " + req.name, HighlightColor.CYAN);
-                        api.siteMap().add(exec.response.withAnnotations(annotations));
+                        try {
+                            Annotations annotations = Annotations.annotations(
+                                    "[Runner] " + req.name, HighlightColor.CYAN);
+                            api.siteMap().add(exec.response.withAnnotations(annotations));
+                        } catch (Throwable ignored) {
+                            // Unit tests and non-Burp environments do not always provide the Montoya
+                            // object factory needed by annotation helpers. The request/response still
+                            // completes; we simply skip sitemap annotation in that case.
+                        }
                     }
 
                     // Copy extracted vars and assertions for cross-request continuity
@@ -455,9 +512,6 @@ public class CollectionRunner {
                         copyExecutionVariablesToResultOnly(result, exec);
                     } else {
                         mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
-                    }
-                    if (!exec.assertions.isEmpty()) {
-                        result.assertions.addAll(exec.assertions);
                     }
 
                     result.attemptNumber = attempts;
@@ -571,6 +625,96 @@ public class CollectionRunner {
         if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
             result.extractedVariables.putAll(exec.extractedVars);
         }
+    }
+
+    static void copyScriptOutput(RunnerResult result, ExecutionResult exec) {
+        if (result == null || exec == null) {
+            return;
+        }
+        result.scriptEngineName = exec.scriptEngineName;
+        result.executionSource = exec.executionSource;
+        result.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : burp.scripts.ScriptFlowControl.CONTINUE;
+        result.scriptFlowMessage = exec.scriptFlowMessage;
+        result.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
+        result.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
+        if (exec.scriptLogs != null && !exec.scriptLogs.isEmpty()) {
+            result.scriptLogs.addAll(exec.scriptLogs);
+        }
+        if (exec.scriptWarnings != null && !exec.scriptWarnings.isEmpty()) {
+            result.scriptWarnings.addAll(exec.scriptWarnings);
+        }
+        if (exec.scriptErrors != null && !exec.scriptErrors.isEmpty()) {
+            result.scriptErrors.addAll(exec.scriptErrors);
+            result.success = false;
+        }
+        if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
+            result.scriptVariableMutations.addAll(exec.scriptVariableMutations);
+        }
+    }
+
+    private int applyFlowControl(List<ApiRequest> ordered,
+                                 int currentIndex,
+                                 RunnerResult result,
+                                 int[] flowControlJumps,
+                                 int maxFlowControlJumps) {
+        if (result == null || result.scriptFlowControl == null) {
+            return -1;
+        }
+        return switch (result.scriptFlowControl) {
+            case STOP_RUN -> Integer.MIN_VALUE;
+            case SET_NEXT_REQUEST -> {
+                if (flowControlJumps != null && flowControlJumps.length > 0 && flowControlJumps[0] >= maxFlowControlJumps) {
+                    fireOnError("Stopped after too many flow-control jumps");
+                    yield Integer.MIN_VALUE;
+                }
+                if (flowControlJumps != null && flowControlJumps.length > 0) {
+                    flowControlJumps[0]++;
+                }
+                int targetIndex = resolveNextRequestIndex(ordered, result.scriptFlowNextRequestName, result.scriptFlowNextRequestId);
+                if (targetIndex < 0) {
+                    fireOnDebug("Script requested next request \"" + safeFlowTarget(result) + "\" but no matching request was found.");
+                    yield -1;
+                }
+                yield targetIndex;
+            }
+            case RUN_REQUEST, SEND_AD_HOC_REQUEST -> {
+                fireOnDebug("Script flow control " + result.scriptFlowControl + " is recognized but not executed yet.");
+                yield -1;
+            }
+            default -> -1;
+        };
+    }
+
+    private int resolveNextRequestIndex(List<ApiRequest> ordered, String nextRequestName, String nextRequestId) {
+        if (ordered == null || ordered.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < ordered.size(); i++) {
+            ApiRequest request = ordered.get(i);
+            if (request == null) {
+                continue;
+            }
+            if (nextRequestId != null && !nextRequestId.isBlank() && nextRequestId.equals(request.id)) {
+                return i;
+            }
+            if (nextRequestName != null && !nextRequestName.isBlank() && nextRequestName.equals(request.name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String safeFlowTarget(RunnerResult result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.scriptFlowNextRequestName != null && !result.scriptFlowNextRequestName.isBlank()) {
+            return result.scriptFlowNextRequestName;
+        }
+        if (result.scriptFlowNextRequestId != null && !result.scriptFlowNextRequestId.isBlank()) {
+            return result.scriptFlowNextRequestId;
+        }
+        return "";
     }
 
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {
@@ -704,6 +848,16 @@ public class CollectionRunner {
             snapshot.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
             snapshot.rawRequestText = source.rawRequestText;
             snapshot.resolvedVariables = source.resolvedVariables != null ? new HashMap<>(source.resolvedVariables) : new HashMap<>();
+            snapshot.scriptEngineName = source.scriptEngineName;
+            snapshot.executionSource = source.executionSource;
+            snapshot.scriptLogs = source.scriptLogs != null ? new ArrayList<>(source.scriptLogs) : new ArrayList<>();
+            snapshot.scriptWarnings = source.scriptWarnings != null ? new ArrayList<>(source.scriptWarnings) : new ArrayList<>();
+            snapshot.scriptErrors = source.scriptErrors != null ? new ArrayList<>(source.scriptErrors) : new ArrayList<>();
+            snapshot.scriptVariableMutations = source.scriptVariableMutations != null ? new ArrayList<>(source.scriptVariableMutations) : new ArrayList<>();
+            snapshot.scriptFlowControl = source.scriptFlowControl;
+            snapshot.scriptFlowMessage = source.scriptFlowMessage;
+            snapshot.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
+            snapshot.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
         }
         if (exec != null) {
             if (exec.requestHeaders != null) {
@@ -730,6 +884,26 @@ public class CollectionRunner {
             if (exec.resolvedVariables != null && !exec.resolvedVariables.isEmpty()) {
                 snapshot.resolvedVariables = new HashMap<>(exec.resolvedVariables);
             }
+            if (exec.scriptEngineName != null) {
+                snapshot.scriptEngineName = exec.scriptEngineName;
+            }
+            snapshot.executionSource = exec.executionSource != null ? exec.executionSource : snapshot.executionSource;
+            if (exec.scriptLogs != null && !exec.scriptLogs.isEmpty()) {
+                snapshot.scriptLogs = new ArrayList<>(exec.scriptLogs);
+            }
+            if (exec.scriptWarnings != null && !exec.scriptWarnings.isEmpty()) {
+                snapshot.scriptWarnings = new ArrayList<>(exec.scriptWarnings);
+            }
+            if (exec.scriptErrors != null && !exec.scriptErrors.isEmpty()) {
+                snapshot.scriptErrors = new ArrayList<>(exec.scriptErrors);
+            }
+            if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
+                snapshot.scriptVariableMutations = new ArrayList<>(exec.scriptVariableMutations);
+            }
+            snapshot.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : snapshot.scriptFlowControl;
+            snapshot.scriptFlowMessage = exec.scriptFlowMessage != null ? exec.scriptFlowMessage : snapshot.scriptFlowMessage;
+            snapshot.scriptFlowNextRequestName = exec.scriptFlowNextRequestName != null ? exec.scriptFlowNextRequestName : snapshot.scriptFlowNextRequestName;
+            snapshot.scriptFlowNextRequestId = exec.scriptFlowNextRequestId != null ? exec.scriptFlowNextRequestId : snapshot.scriptFlowNextRequestId;
         }
         snapshot.attemptNumber = Math.max(1, attemptNumber);
         snapshot.totalAttempts = Math.max(1, totalAttempts);

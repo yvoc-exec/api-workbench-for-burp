@@ -7,6 +7,7 @@ import java.util.List;
 
 public class ScriptExecutionResult {
     public boolean success = true;
+    public String engineName = "Unavailable";
     public ScriptFlowControl flowControl = ScriptFlowControl.CONTINUE;
     public String nextRequestName;
     public String nextRequestId;

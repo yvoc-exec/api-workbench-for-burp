@@ -5,6 +5,9 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerResult;
+import burp.scripts.ScriptFlowControl;
+import burp.scripts.ScriptLogEntry;
+import burp.scripts.ScriptVariableMutation;
 import burp.ui.ImporterPanel;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -42,6 +45,16 @@ public class HistoryEntry {
     public List<String> unresolvedVariables = new ArrayList<>();
     public List<HistoryAssertionResult> assertions = new ArrayList<>();
     public List<HistoryExtractionResult> extractions = new ArrayList<>();
+    public String scriptEngineName;
+    public String executionSource;
+    public List<ScriptLogEntry> scriptLogs = new ArrayList<>();
+    public List<String> scriptWarnings = new ArrayList<>();
+    public List<String> scriptErrors = new ArrayList<>();
+    public List<ScriptVariableMutation> scriptVariableMutations = new ArrayList<>();
+    public ScriptFlowControl scriptFlowControl = ScriptFlowControl.CONTINUE;
+    public String scriptFlowMessage;
+    public String scriptFlowNextRequestName;
+    public String scriptFlowNextRequestId;
 
     public static HistoryEntry fromWorkbenchExecution(ApiCollection collection,
                                                       ApiRequest request,
@@ -80,6 +93,16 @@ public class HistoryEntry {
                     unresolvedVariables != null && !unresolvedVariables.isEmpty());
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
+            entry.scriptEngineName = exec.scriptEngineName;
+            entry.executionSource = exec.executionSource != null ? exec.executionSource.name() : null;
+            entry.scriptLogs = copyScriptLogs(exec.scriptLogs);
+            entry.scriptWarnings = exec.scriptWarnings != null ? new ArrayList<>(exec.scriptWarnings) : new ArrayList<>();
+            entry.scriptErrors = exec.scriptErrors != null ? new ArrayList<>(exec.scriptErrors) : new ArrayList<>();
+            entry.scriptVariableMutations = copyScriptMutations(exec.scriptVariableMutations);
+            entry.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : ScriptFlowControl.CONTINUE;
+            entry.scriptFlowMessage = exec.scriptFlowMessage;
+            entry.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
+            entry.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
@@ -112,9 +135,23 @@ public class HistoryEntry {
             entry.assertions = copyAssertions(result.assertions);
             entry.extractions = copyExtractions(result.extractedVariables);
             entry.unresolvedVariables = normalizeStrings(extractUnresolvedFromResult(result));
+            entry.scriptEngineName = result.scriptEngineName;
+            entry.executionSource = result.executionSource != null ? result.executionSource.name() : null;
+            entry.scriptLogs = copyScriptLogs(result.scriptLogs);
+            entry.scriptWarnings = result.scriptWarnings != null ? new ArrayList<>(result.scriptWarnings) : new ArrayList<>();
+            entry.scriptErrors = result.scriptErrors != null ? new ArrayList<>(result.scriptErrors) : new ArrayList<>();
+            entry.scriptVariableMutations = copyScriptMutations(result.scriptVariableMutations);
+            entry.scriptFlowControl = result.scriptFlowControl != null ? result.scriptFlowControl : ScriptFlowControl.CONTINUE;
+            entry.scriptFlowMessage = result.scriptFlowMessage;
+            entry.scriptFlowNextRequestName = result.scriptFlowNextRequestName;
+            entry.scriptFlowNextRequestId = result.scriptFlowNextRequestId;
             if (entry.requestSnapshot != null) {
                 entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
-                entry.requestSnapshot.rawRequestSentText = result.rawRequestText;
+                entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
+                        ? result.rawRequestText
+                        : (result.rawRequestBytes != null
+                        ? new String(result.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : null);
                 entry.requestSnapshot.resolvedUrl = result.requestUrl;
                 entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
                         ? new LinkedHashMap<>(result.resolvedVariables)
@@ -163,6 +200,16 @@ public class HistoryEntry {
         copy.unresolvedVariables = source.unresolvedVariables != null ? new ArrayList<>(source.unresolvedVariables) : new ArrayList<>();
         copy.assertions = copyHistoryAssertions(source.assertions);
         copy.extractions = copyHistoryExtractions(source.extractions);
+        copy.scriptEngineName = source.scriptEngineName;
+        copy.executionSource = source.executionSource;
+        copy.scriptLogs = copyScriptLogs(source.scriptLogs);
+        copy.scriptWarnings = source.scriptWarnings != null ? new ArrayList<>(source.scriptWarnings) : new ArrayList<>();
+        copy.scriptErrors = source.scriptErrors != null ? new ArrayList<>(source.scriptErrors) : new ArrayList<>();
+        copy.scriptVariableMutations = copyScriptMutations(source.scriptVariableMutations);
+        copy.scriptFlowControl = source.scriptFlowControl != null ? source.scriptFlowControl : ScriptFlowControl.CONTINUE;
+        copy.scriptFlowMessage = source.scriptFlowMessage;
+        copy.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
+        copy.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
         return copy;
     }
 
@@ -196,6 +243,21 @@ public class HistoryEntry {
         }
         if (extractions == null) {
             extractions = new ArrayList<>();
+        }
+        if (scriptLogs == null) {
+            scriptLogs = new ArrayList<>();
+        }
+        if (scriptWarnings == null) {
+            scriptWarnings = new ArrayList<>();
+        }
+        if (scriptErrors == null) {
+            scriptErrors = new ArrayList<>();
+        }
+        if (scriptVariableMutations == null) {
+            scriptVariableMutations = new ArrayList<>();
+        }
+        if (scriptFlowControl == null) {
+            scriptFlowControl = ScriptFlowControl.CONTINUE;
         }
         if (result == null) {
             result = HistoryResult.UNKNOWN;
@@ -297,6 +359,14 @@ public class HistoryEntry {
         sb.append("Response Size: ").append(responseSizeBytes).append(" bytes").append('\n');
         sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
         sb.append("Authored Template Available: ").append(requestSnapshot != null && requestSnapshot.authoredRequest != null ? "yes" : "no").append('\n');
+        sb.append("Script Engine: ").append(scriptEngineName != null ? scriptEngineName : "").append('\n');
+        sb.append("Execution Source: ").append(executionSource != null ? executionSource : "").append('\n');
+        sb.append("Script Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
+        sb.append("Script Flow Message: ").append(scriptFlowMessage != null ? scriptFlowMessage : "").append('\n');
+        sb.append("Script Logs: ").append(scriptLogs != null ? scriptLogs.size() : 0).append('\n');
+        sb.append("Script Warnings: ").append(scriptWarnings != null ? scriptWarnings.size() : 0).append('\n');
+        sb.append("Script Errors: ").append(scriptErrors != null ? scriptErrors.size() : 0).append('\n');
+        sb.append("Script Mutations: ").append(scriptVariableMutations != null ? scriptVariableMutations.size() : 0).append('\n');
         sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
         return sb.toString().trim();
@@ -423,6 +493,47 @@ public class HistoryEntry {
             if (copy != null) {
                 out.add(copy);
             }
+        }
+        return out;
+    }
+
+    private static List<ScriptLogEntry> copyScriptLogs(List<ScriptLogEntry> logs) {
+        List<ScriptLogEntry> out = new ArrayList<>();
+        if (logs == null) {
+            return out;
+        }
+        for (ScriptLogEntry log : logs) {
+            if (log == null) {
+                continue;
+            }
+            ScriptLogEntry copy = new ScriptLogEntry();
+            copy.level = log.level;
+            copy.message = log.message;
+            copy.scriptId = log.scriptId;
+            copy.scriptName = log.scriptName;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private static List<ScriptVariableMutation> copyScriptMutations(List<ScriptVariableMutation> mutations) {
+        List<ScriptVariableMutation> out = new ArrayList<>();
+        if (mutations == null) {
+            return out;
+        }
+        for (ScriptVariableMutation mutation : mutations) {
+            if (mutation == null) {
+                continue;
+            }
+            ScriptVariableMutation copy = new ScriptVariableMutation();
+            copy.key = mutation.key;
+            copy.oldValue = mutation.oldValue;
+            copy.newValue = mutation.newValue;
+            copy.scope = mutation.scope;
+            copy.persistent = mutation.persistent;
+            copy.sourceScriptId = mutation.sourceScriptId;
+            copy.sourceScriptName = mutation.sourceScriptName;
+            out.add(copy);
         }
         return out;
     }
