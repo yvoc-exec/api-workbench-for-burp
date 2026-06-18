@@ -9,6 +9,8 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.http.RequestOptions;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.RunnerStopConditions;
+import burp.models.RunnerTimelineRow;
 import burp.scripts.ScriptBlock;
 import burp.utils.RequestBuilder;
 import burp.utils.ScriptEngine;
@@ -21,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,11 +48,20 @@ class CollectionRunnerFlowControlBlockerTest {
         waitForRunnerToStop(harness.runner());
 
         assertThat(harness.sendCalls().get()).isEqualTo(1);
+        assertThat(harness.runner().getResults()).hasSize(1);
+        assertThat(harness.runner().getResults().get(0).success).isTrue();
+        assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.STOP_RUN);
+        assertThat(harness.runner().getResults().get(0).displayStatusLabel()).isEqualTo("Stopped by Script");
+        assertThat(harness.timelineRows()).hasSize(1);
+        assertThat(harness.timelineRows().get(0).status).isEqualTo("Stopped by Script");
     }
 
     @Test
     void skipRequestShouldSkipSendingTheCurrentRunnerRequest() throws Exception {
         FlowHarness harness = flowHarness();
+        RunnerStopConditions stopConditions = new RunnerStopConditions();
+        stopConditions.stopAfterFailureCount = 1;
+        harness.runner().setStopConditions(stopConditions);
         ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
                 scriptRequest("One", 1, harness.collectionName(), null),
                 scriptRequest("Two", 2, harness.collectionName(), """
@@ -62,6 +74,12 @@ class CollectionRunnerFlowControlBlockerTest {
         waitForRunnerToStop(harness.runner());
 
         assertThat(harness.sendCalls().get()).isEqualTo(2);
+        assertThat(harness.runner().getResults()).hasSize(3);
+        assertThat(harness.runner().getResults().get(1).success).isTrue();
+        assertThat(harness.runner().getResults().get(1).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SKIP_REQUEST);
+        assertThat(harness.runner().getResults().get(1).displayStatusLabel()).isEqualTo("Skipped by Script");
+        assertThat(harness.timelineRows()).hasSize(3);
+        assertThat(harness.timelineRows().get(1).status).isEqualTo("Skipped by Script");
     }
 
     @Test
@@ -79,11 +97,17 @@ class CollectionRunnerFlowControlBlockerTest {
         waitForRunnerToStop(harness.runner());
 
         assertThat(harness.sendCalls().get()).isEqualTo(2);
+        assertThat(harness.runner().getResults()).hasSize(2);
+        assertThat(harness.runner().getResults().get(0).success).isTrue();
+        assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SET_NEXT_REQUEST);
+        assertThat(harness.timelineRows()).hasSize(2);
+        assertThat(harness.timelineRows().get(0).status).isEqualTo("200");
     }
 
     private static FlowHarness flowHarness() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS);
         AtomicInteger sendCalls = new AtomicInteger();
+        CopyOnWriteArrayList<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();
         java.util.function.Function<org.mockito.invocation.InvocationOnMock, HttpRequestResponse> responder = invocation -> {
             sendCalls.incrementAndGet();
             return mockResponse();
@@ -97,7 +121,15 @@ class CollectionRunnerFlowControlBlockerTest {
         CollectionRunner runner = new CollectionRunner(api, pipeline, null);
         runner.setDelayMs(0);
         runner.setMaxRetries(0);
-        return new FlowHarness(api, runner, sendCalls, "FlowCollection");
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(burp.models.RunnerResult result) { }
+            @Override public void onComplete(List<burp.models.RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onTimeline(RunnerTimelineRow row) { timelineRows.add(row); }
+        });
+        return new FlowHarness(api, runner, sendCalls, timelineRows, "FlowCollection");
     }
 
     private static ApiCollection collectionWithThreeRequests(String collectionName,
@@ -153,8 +185,13 @@ class CollectionRunnerFlowControlBlockerTest {
             Thread.sleep(10);
         }
         assertThat(runner.isRunning()).isFalse();
+        try {
+            javax.swing.SwingUtilities.invokeAndWait(() -> { });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    private record FlowHarness(MontoyaApi api, CollectionRunner runner, AtomicInteger sendCalls, String collectionName) {
+    private record FlowHarness(MontoyaApi api, CollectionRunner runner, AtomicInteger sendCalls, CopyOnWriteArrayList<RunnerTimelineRow> timelineRows, String collectionName) {
     }
 }

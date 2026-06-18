@@ -17,8 +17,8 @@ public class GraalJsSandboxEngine {
 
     public GraalJsSandboxEngine() {
         boolean graalOk = false;
-        try {
-            graalOk = createGraalContext().getEngine() != null;
+        try (Context context = createGraalContext()) {
+            graalOk = context.getEngine() != null;
         } catch (Throwable ignored) {
             graalOk = false;
         }

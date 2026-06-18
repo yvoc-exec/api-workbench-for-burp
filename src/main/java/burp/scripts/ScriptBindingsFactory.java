@@ -57,6 +57,7 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void error(Object msg) {
             String text = msg != null ? msg.toString() : "null";
             if (context != null) {
@@ -961,6 +962,10 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public void runRequest(Object request) {
             context.warn("bru.runRequest is not executed in the sandbox yet.", null, null);
+            context.setFlowControl(ScriptFlowControl.RUN_REQUEST,
+                    request != null ? request.toString() : null,
+                    null,
+                    "bru.runRequest");
         }
 
         @HostAccess.Export
@@ -1082,6 +1087,10 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("awb.sendRequest is not executed in the sandbox yet.", null, null);
+            context.setFlowControl(ScriptFlowControl.SEND_AD_HOC_REQUEST,
+                    request != null ? request.toString() : null,
+                    null,
+                    "awb.sendRequest");
         }
     }
 
