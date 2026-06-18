@@ -167,6 +167,111 @@ class UnifiedScriptRuntimeTest {
         assertThat(activeEnvironment.variables).containsEntry("legacy_count", "1");
     }
 
+    @Test
+    void consoleErrorIsCapturedAsErrorLevelLogAndScriptError() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.format = "api-workbench";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-console-error";
+        request.name = "Console Error";
+        request.sourceCollection = "APIM";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.scriptBlocks = new ArrayList<>();
+        request.scriptBlocks.add(scriptBlock(
+                "request-pre",
+                ScriptDialect.POSTMAN,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST,
+                "console.error('bad thing');",
+                1));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Send", 1);
+
+        assertThat(result.success).isFalse();
+        assertThat(result.errors).contains("bad thing");
+        assertThat(result.logs).hasSize(1);
+        assertThat(result.logs.get(0).level).isEqualTo("error");
+        assertThat(result.logs.get(0).message).contains("bad thing");
+        assertThat(result.engineName).isIn("GraalJS", "Nashorn fallback", "Unavailable");
+    }
+
+    @Test
+    void brunoRunRequestProducesVisibleWarningWithoutFailing() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.format = "api-workbench";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-bruno-run";
+        request.name = "Bruno Run";
+        request.sourceCollection = "APIM";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.scriptBlocks = new ArrayList<>();
+        request.scriptBlocks.add(scriptBlock(
+                "request-pre",
+                ScriptDialect.BRUNO,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST,
+                "bru.runRequest('Child');",
+                1));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Runner", 1);
+
+        assertThat(result.success).isTrue();
+        assertThat(result.warnings).contains("bru.runRequest is not executed in the sandbox yet.");
+        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.RUN_REQUEST);
+        assertThat(result.message).isEqualTo("bru.runRequest");
+    }
+
+    @Test
+    void nativeSendAdHocRequestProducesVisibleWarningWithoutFailing() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        collection.format = "api-workbench";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-native-send";
+        request.name = "Native Send";
+        request.sourceCollection = "APIM";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.scriptBlocks = new ArrayList<>();
+        request.scriptBlocks.add(scriptBlock(
+                "request-pre",
+                ScriptDialect.API_WORKBENCH,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST,
+                "awb.execution.sendAdHocRequest('Child');",
+                1));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Runner", 1);
+
+        assertThat(result.success).isTrue();
+        assertThat(result.warnings).contains("sendAdHocRequest is recognized but not executed yet.");
+        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.SEND_AD_HOC_REQUEST);
+        assertThat(result.message).isEqualTo("sendAdHocRequest");
+    }
+
+    @Test
+    void graalSandboxEngineExecutesSimpleScriptAndBlocksHostClassAccess() throws Exception {
+        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+
+        assertThat(engine.getEngineName()).isIn("GraalJS", "Nashorn fallback", "Unavailable");
+        Object value = engine.execute("1 + 1", Map.of());
+        assertThat(value).isNotNull();
+        assertThat(((Number) value).intValue()).isEqualTo(2);
+
+        org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                () -> engine.execute("Java.type('java.lang.System');", Map.of()));
+    }
+
     private static ApiCollection collection() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

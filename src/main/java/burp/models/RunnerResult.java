@@ -48,6 +48,48 @@ public class RunnerResult {
     public int attemptNumber = 1;
     public int totalAttempts = 1;
 
+    public boolean isSkippedByScript() {
+        return scriptFlowControl == ScriptFlowControl.SKIP_REQUEST;
+    }
+
+    public boolean isStoppedByScript() {
+        return scriptFlowControl == ScriptFlowControl.STOP_RUN;
+    }
+
+    public boolean isIntentionalNoResponseFlowControl() {
+        return isSkippedByScript() || isStoppedByScript();
+    }
+
+    public String displayStatusLabel() {
+        if (isSkippedByScript()) {
+            return "Skipped by Script";
+        }
+        if (isStoppedByScript()) {
+            return "Stopped by Script";
+        }
+        if (success) {
+            return statusCode > 0 ? String.valueOf(statusCode) : "OK";
+        }
+        return "ERR";
+    }
+
+    public String displayLogStatusLabel() {
+        if (isSkippedByScript()) {
+            return success || errorMessage == null || errorMessage.isBlank()
+                    ? "SKIPPED by script"
+                    : "SKIPPED by script (" + errorMessage + ")";
+        }
+        if (isStoppedByScript()) {
+            return success || errorMessage == null || errorMessage.isBlank()
+                    ? "STOPPED by script"
+                    : "STOPPED by script (" + errorMessage + ")";
+        }
+        if (success) {
+            return statusCode > 0 ? "OK " + statusCode : "OK";
+        }
+        return "FAIL " + (errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Unknown error");
+    }
+
     public static class AssertionResult {
         public String name;
         public boolean passed;

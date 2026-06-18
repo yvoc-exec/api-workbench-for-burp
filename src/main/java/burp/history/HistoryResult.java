@@ -6,7 +6,8 @@ public enum HistoryResult {
     ERROR("Error"),
     ASSERTION_FAILURE("Assertion Failure"),
     MISSING_VARIABLE("Missing Variable"),
-    SKIPPED("Skipped"),
+    SKIPPED("Skipped by Script"),
+    STOPPED("Stopped by Script"),
     UNKNOWN("Unknown");
 
     private final String displayName;

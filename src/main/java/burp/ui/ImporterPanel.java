@@ -506,6 +506,7 @@ public class ImporterPanel {
                         info.activeEnvironmentName = active.displayName();
                         info.canEdit = true;
                         info.canCreate = true;
+                        info.message = "Edit target: Active Environment (persisted variable).";
                         return info;
                     }
                 }
@@ -520,6 +521,7 @@ public class ImporterPanel {
                     info.activeEnvironmentName = active != null ? active.displayName() : null;
                     info.canEdit = active != null;
                     info.canCreate = active != null;
+                    info.message = "Current value source: Runtime Overlay. Edit target: Active Environment (persisted variable).";
                     return info;
                 }
                 info.resolved = false;
@@ -530,7 +532,7 @@ public class ImporterPanel {
                 info.canEdit = active != null;
                 info.canCreate = active != null;
                 info.message = active != null
-                        ? "Create in Active Environment"
+                        ? "Create target: Active Environment (persisted variable)."
                         : "Select an Active Environment to edit or create variables.";
                 return info;
             }
@@ -9367,7 +9369,7 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     resultModel.addResult(result);
                     runnerProgress.setValue(resultModel.getRowCount());
-                    String status = result.success ? "OK " + result.statusCode : "FAIL " + result.errorMessage;
+                    String status = result != null ? result.displayLogStatusLabel() : "FAIL";
                     appendRunnerLog((resultModel.getRowCount()) + ". " + result.requestName + " -> " + status);
                     if (!result.extractedVariables.isEmpty()) {
                         appendRunnerLog("   Extracted: " + result.extractedVariables);

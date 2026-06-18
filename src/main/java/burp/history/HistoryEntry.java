@@ -87,10 +87,14 @@ public class HistoryEntry {
                         ? new LinkedHashMap<>(exec.resolvedVariables)
                         : new LinkedHashMap<>();
             }
-            entry.result = HistoryResult.from(exec.success,
-                    exec.errorMessage,
-                    hasFailedAssertion(exec.assertions),
-                    unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            if (isIntentionalNoResponseFlow(exec.scriptFlowControl, exec.response == null)) {
+                entry.result = historyResultForFlowControl(exec.scriptFlowControl);
+            } else {
+                entry.result = HistoryResult.from(exec.success,
+                        exec.errorMessage,
+                        hasFailedAssertion(exec.assertions),
+                        unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            }
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
             entry.scriptEngineName = exec.scriptEngineName;
@@ -157,8 +161,12 @@ public class HistoryEntry {
                         ? new LinkedHashMap<>(result.resolvedVariables)
                         : new LinkedHashMap<>();
             }
-            entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
-                    !entry.unresolvedVariables.isEmpty());
+            if (isIntentionalNoResponseFlow(result.scriptFlowControl, result.responseSize <= 0 && result.statusCode <= 0)) {
+                entry.result = historyResultForFlowControl(result.scriptFlowControl);
+            } else {
+                entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
+                        !entry.unresolvedVariables.isEmpty());
+            }
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
@@ -536,6 +544,20 @@ public class HistoryEntry {
             out.add(copy);
         }
         return out;
+    }
+
+    private static boolean isIntentionalNoResponseFlow(ScriptFlowControl flowControl, boolean noResponse) {
+        return noResponse && (flowControl == ScriptFlowControl.SKIP_REQUEST || flowControl == ScriptFlowControl.STOP_RUN);
+    }
+
+    private static HistoryResult historyResultForFlowControl(ScriptFlowControl flowControl) {
+        if (flowControl == ScriptFlowControl.SKIP_REQUEST) {
+            return HistoryResult.SKIPPED;
+        }
+        if (flowControl == ScriptFlowControl.STOP_RUN) {
+            return HistoryResult.STOPPED;
+        }
+        return HistoryResult.UNKNOWN;
     }
 
     private static List<String> extractUnresolvedFromResult(RunnerResult result) {

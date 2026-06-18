@@ -447,7 +447,10 @@ public class CollectionRunner {
                 if ((exec.scriptFlowControl == burp.scripts.ScriptFlowControl.STOP_RUN
                         || exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST)
                         && exec.response == null) {
-                    result.errorMessage = null;
+                    boolean hasScriptErrors = result.scriptErrors != null && !result.scriptErrors.isEmpty();
+                    result.success = !hasScriptErrors;
+                    result.errorMessage = hasScriptErrors ? String.join("; ", result.scriptErrors) : null;
+                    result.statusCode = 0;
                     result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
@@ -915,7 +918,7 @@ public class CollectionRunner {
         row.order = req != null ? req.sequenceOrder : 0;
         row.collectionName = col != null && col.name != null ? col.name : (req != null ? req.sourceCollection : "");
         row.requestName = req != null ? req.name : "";
-        row.status = result != null && result.success ? String.valueOf(result.statusCode) : "ERR";
+        row.status = result != null ? result.displayStatusLabel() : "";
         row.timeMs = result != null ? result.responseTimeMs : 0L;
         row.retries = Math.max(0, attempts - 1);
         row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;

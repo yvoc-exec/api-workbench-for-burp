@@ -5,6 +5,8 @@ import burp.history.HistoryResult;
 import burp.history.HistorySource;
 import burp.models.ApiCollection;
 import burp.models.RunnerResult;
+import burp.scripts.ScriptFlowControl;
+import burp.scripts.ScriptLogEntry;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
@@ -49,5 +51,42 @@ class RunnerHistoryCaptureTest {
         assertThat(entries.get(1).attemptNumber).isEqualTo(1);
         assertThat(entries.get(1).result).isEqualTo(HistoryResult.ASSERTION_FAILURE);
         assertThat(entries.get(1).errorMessage).contains("Missing variable");
+    }
+
+    @Test
+    void runnerHistoryCapturesScriptOutputAndFlowControlLabels() {
+        ApiCollection collection = HistoryTestFixtures.sampleCollection();
+        RunnerResult skipped = HistoryTestFixtures.sampleRunnerResult(1, 1, true, 0, null);
+        skipped.scriptFlowControl = ScriptFlowControl.SKIP_REQUEST;
+        skipped.scriptFlowMessage = "skipRequest";
+        skipped.responseSize = 0;
+        skipped.responseBodyLength = 0;
+        skipped.responseBody = null;
+        skipped.responseHeaders = null;
+        skipped.scriptLogs.add(new ScriptLogEntry("info", "skip log", "script-1", "skip"));
+        skipped.scriptWarnings.add("skip warning");
+        skipped.scriptErrors.add("skip error");
+
+        HistoryEntry skippedEntry = HistoryEntry.fromRunnerAttempt(collection, HistoryTestFixtures.sampleRequest(), HistoryTestFixtures.sampleEnvironment(), skipped);
+        assertThat(skippedEntry.result).isEqualTo(HistoryResult.SKIPPED);
+        assertThat(skippedEntry.resultDisplayName()).isEqualTo("Skipped by Script");
+        assertThat(skippedEntry.scriptLogs).hasSize(1);
+        assertThat(skippedEntry.scriptWarnings).contains("skip warning");
+        assertThat(skippedEntry.scriptErrors).contains("skip error");
+
+        RunnerResult stopped = HistoryTestFixtures.sampleRunnerResult(1, 1, true, 0, null);
+        stopped.scriptFlowControl = ScriptFlowControl.STOP_RUN;
+        stopped.scriptFlowMessage = "stopExecution";
+        stopped.responseSize = 0;
+        stopped.responseBodyLength = 0;
+        stopped.responseBody = null;
+        stopped.responseHeaders = null;
+        stopped.scriptLogs.add(new ScriptLogEntry("error", "stop log", "script-2", "stop"));
+
+        HistoryEntry stoppedEntry = HistoryEntry.fromRunnerAttempt(collection, HistoryTestFixtures.sampleRequest(), HistoryTestFixtures.sampleEnvironment(), stopped);
+        assertThat(stoppedEntry.result).isEqualTo(HistoryResult.STOPPED);
+        assertThat(stoppedEntry.resultDisplayName()).isEqualTo("Stopped by Script");
+        assertThat(stoppedEntry.scriptLogs).hasSize(1);
+        assertThat(stoppedEntry.scriptLogs.get(0).level).isEqualTo("error");
     }
 }

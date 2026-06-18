@@ -43,7 +43,7 @@ public class RunnerResultTableModel extends AbstractTableModel {
             case 1: return r.host != null ? r.host : "";
             case 2: return r.path != null ? r.path : "";
             case 3: return r.method != null ? r.method : "";
-            case 4: return r.success ? String.valueOf(r.statusCode) : "ERR";
+            case 4: return r.displayStatusLabel();
             case 5: return r.responseSize;
             case 6: return r.responseBodyLength;
             case 7: return r.extractedVariables.isEmpty() ? "" : String.valueOf(r.extractedVariables.size());

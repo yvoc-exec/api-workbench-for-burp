@@ -1090,6 +1090,9 @@ public class RequestEditorPanel extends JPanel {
         if (info != null && info.activeEnvironmentName != null && !info.activeEnvironmentName.isBlank()) {
             header.add(new JLabel("Active Env: " + info.activeEnvironmentName));
         }
+        if (info != null && info.message != null && !info.message.isBlank()) {
+            header.add(new JLabel(info.message));
+        }
         panel.add(header, BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
@@ -1105,14 +1108,15 @@ public class RequestEditorPanel extends JPanel {
         });
         actions.add(copyButton);
 
-        boolean runtimeOnly = info != null && info.scope != null && info.scope.toLowerCase(Locale.ROOT).contains("runtime");
         JButton editButton = new JButton(info != null && info.resolved
-                ? (runtimeOnly ? "Edit Runtime" : "Edit")
+                ? "Edit in Active Env"
                 : "Create in Active Env");
         editButton.setEnabled(info != null && variableActionBridge != null && variableActionBridge.hasActiveEnvironment()
                 && (info.resolved ? info.canEdit : info.canCreate));
         editButton.setToolTipText(editButton.isEnabled()
-                ? "Edit or create the variable after confirmation."
+                ? (info != null && info.resolved
+                ? "Edit the value in the Active Environment after confirmation."
+                : "Create the variable in the Active Environment after confirmation.")
                 : "No active environment selected.");
         editButton.addActionListener(e -> {
             boolean applied = info != null && info.resolved

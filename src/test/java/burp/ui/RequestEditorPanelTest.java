@@ -13,10 +13,12 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.Component;
 import java.awt.Container;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -238,6 +240,135 @@ class RequestEditorPanelTest {
         String policySection = start >= 0 && end > start ? resolved.substring(start, end) : resolved;
         assertThat(policySection).contains("suppressedAutoHeaders=authorization");
         assertThat(policySection).doesNotContain("secret-token");
+    }
+
+    @Test
+    void variablePopupLabelMatchesActualActiveEnvironmentEditTarget() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setVariableActionBridge(testVariableBridge(true));
+
+        RequestEditorPanel.VariableHoverInfo info = resolvedHoverInfo("token", "runtime overlay", "Runtime Overlay", "Dev", "abc123");
+        JPopupMenu popup = invokePopup(panel, info);
+
+        JButton editButton = findButton((Container) popup.getComponent(0), "Edit in Active Env");
+        assertThat(editButton).isNotNull();
+        assertThat(editButton.isEnabled()).isTrue();
+    }
+
+    @Test
+    void variablePopupConfirmationControlsMutations() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        AtomicInteger updates = new AtomicInteger();
+        AtomicReference<String> lastKey = new AtomicReference<>();
+        AtomicReference<String> lastValue = new AtomicReference<>();
+        panel.setVariableActionBridge(new RequestEditorPanel.VariableActionBridge() {
+            @Override
+            public RequestEditorPanel.VariableHoverInfo inspect(String key) {
+                return null;
+            }
+
+            @Override
+            public boolean hasActiveEnvironment() {
+                return true;
+            }
+
+            @Override
+            public String activeEnvironmentName() {
+                return "Dev";
+            }
+
+            @Override
+            public boolean updateActiveEnvironment(String key, String value, boolean createIfMissing, boolean persist) {
+                updates.incrementAndGet();
+                lastKey.set(key);
+                lastValue.set(value);
+                return true;
+            }
+
+            @Override
+            public void refreshEnvironmentUi() {
+            }
+        });
+        panel.setVariableDialogProvider(new RequestEditorPanel.VariableDialogProvider() {
+            @Override
+            public String prompt(Component parent, String title, String message, String initialValue) {
+                return "new-value";
+            }
+
+            @Override
+            public boolean confirm(Component parent, String title, String message) {
+                return false;
+            }
+
+            @Override
+            public void info(Component parent, String title, String message) {
+            }
+        });
+
+        RequestEditorPanel.VariableHoverInfo editInfo = resolvedHoverInfo("token", "active environment", "Active Environment", "Dev", "old-value");
+        boolean editApplied = invokePromptAndApply(panel, "promptAndApplyVariableEdit", editInfo);
+        assertThat(editApplied).isFalse();
+        assertThat(updates.get()).isZero();
+
+        RequestEditorPanel.VariableHoverInfo createInfo = unresolvedHoverInfo("missing", "Dev");
+        boolean createApplied = invokePromptAndApply(panel, "promptAndApplyVariableCreate", createInfo);
+        assertThat(createApplied).isFalse();
+        assertThat(updates.get()).isZero();
+        assertThat(lastKey.get()).isNull();
+        assertThat(lastValue.get()).isNull();
+
+        panel.setVariableDialogProvider(new RequestEditorPanel.VariableDialogProvider() {
+            @Override
+            public String prompt(Component parent, String title, String message, String initialValue) {
+                return "confirmed-value";
+            }
+
+            @Override
+            public boolean confirm(Component parent, String title, String message) {
+                return true;
+            }
+
+            @Override
+            public void info(Component parent, String title, String message) {
+            }
+        });
+
+        assertThat(invokePromptAndApply(panel, "promptAndApplyVariableEdit", editInfo)).isTrue();
+        assertThat(invokePromptAndApply(panel, "promptAndApplyVariableCreate", createInfo)).isTrue();
+        assertThat(updates.get()).isEqualTo(2);
+        assertThat(lastKey.get()).isEqualTo("missing");
+        assertThat(lastValue.get()).isEqualTo("confirmed-value");
+    }
+
+    @Test
+    void variablePopupHoverAndCopyDoNotDirtyTheEditor() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setVariableActionBridge(testVariableBridge(true));
+        panel.markClean();
+        RequestEditorPanel.VariableHoverInfo info = resolvedHoverInfo("token", "runtime overlay", "Runtime Overlay", "Dev", "abc123");
+
+        assertThat(panel.isDirty()).isFalse();
+        JPopupMenu popup = invokePopup(panel, info);
+        assertThat(panel.isDirty()).isFalse();
+
+        JButton copyButton = findButton((Container) popup.getComponent(0), "Copy Value");
+        assertThat(copyButton).isNotNull();
+        copyButton.doClick();
+        assertThat(panel.isDirty()).isFalse();
+    }
+
+    @Test
+    void variablePopupWithoutActiveEnvironmentDisablesMutationActions() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setVariableActionBridge(testVariableBridge(false));
+
+        RequestEditorPanel.VariableHoverInfo info = unresolvedHoverInfo("missing", null);
+        JPopupMenu popup = invokePopup(panel, info);
+
+        JButton editButton = findButton((Container) popup.getComponent(0), "Create in Active Env");
+        assertThat(editButton).isNotNull();
+        assertThat(editButton.isEnabled()).isFalse();
+        assertThat(editButton.getToolTipText()).contains("No active environment selected");
     }
 
     @Test
@@ -635,5 +766,80 @@ class RequestEditorPanelTest {
             }
         }
         return null;
+    }
+
+    private static RequestEditorPanel.VariableActionBridge testVariableBridge(boolean hasActiveEnvironment) {
+        return new RequestEditorPanel.VariableActionBridge() {
+            @Override
+            public RequestEditorPanel.VariableHoverInfo inspect(String key) {
+                return null;
+            }
+
+            @Override
+            public boolean hasActiveEnvironment() {
+                return hasActiveEnvironment;
+            }
+
+            @Override
+            public String activeEnvironmentName() {
+                return hasActiveEnvironment ? "Dev" : null;
+            }
+
+            @Override
+            public boolean updateActiveEnvironment(String key, String value, boolean createIfMissing, boolean persist) {
+                return hasActiveEnvironment;
+            }
+
+            @Override
+            public void refreshEnvironmentUi() {
+            }
+        };
+    }
+
+    private static RequestEditorPanel.VariableHoverInfo resolvedHoverInfo(String key,
+                                                                         String scope,
+                                                                         String source,
+                                                                         String envName,
+                                                                         String value) {
+        RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
+        info.key = key;
+        info.resolved = true;
+        info.value = value;
+        info.scope = scope;
+        info.source = source;
+        info.activeEnvironmentName = envName;
+        info.canEdit = true;
+        info.canCreate = true;
+        info.message = "Current value source: " + source + ". Edit target: Active Environment (persisted variable).";
+        return info;
+    }
+
+    private static RequestEditorPanel.VariableHoverInfo unresolvedHoverInfo(String key, String envName) {
+        RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
+        info.key = key;
+        info.resolved = false;
+        info.value = null;
+        info.scope = "unknown";
+        info.source = "unresolved";
+        info.activeEnvironmentName = envName;
+        info.canEdit = envName != null;
+        info.canCreate = envName != null;
+        info.message = envName != null
+                ? "Create target: Active Environment (persisted variable)."
+                : "Select an Active Environment to edit or create variables.";
+        return info;
+    }
+
+    private static JPopupMenu invokePopup(RequestEditorPanel panel, RequestEditorPanel.VariableHoverInfo info) throws Exception {
+        Method method = RequestEditorPanel.class.getDeclaredMethod("buildVariablePopup", javax.swing.text.JTextComponent.class, RequestEditorPanel.VariableHoverInfo.class);
+        method.setAccessible(true);
+        JTextField field = new JTextField("{{" + info.key + "}}");
+        return (JPopupMenu) method.invoke(panel, field, info);
+    }
+
+    private static boolean invokePromptAndApply(RequestEditorPanel panel, String methodName, RequestEditorPanel.VariableHoverInfo info) throws Exception {
+        Method method = RequestEditorPanel.class.getDeclaredMethod(methodName, RequestEditorPanel.VariableHoverInfo.class);
+        method.setAccessible(true);
+        return (boolean) method.invoke(panel, info);
     }
 }
