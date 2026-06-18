@@ -2042,6 +2042,8 @@ public class ImporterPanel {
         environmentTableModel.addTableModelListener(e -> markEnvironmentDirty());
         environmentTable = RequestEditorTableSupport.createEditableTable(environmentTableModel);
         RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
+        installEnvironmentSaveShortcut(environmentRawArea);
+        installEnvironmentSaveShortcut(environmentTable);
 
         environmentEditorCardPanel = new JPanel(new CardLayout());
         environmentEditorCardPanel.add(new JScrollPane(environmentRawArea), "raw");
@@ -4653,7 +4655,11 @@ public class ImporterPanel {
         }
         InputMap inputMap = component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT);
         ActionMap actionMap = component.getActionMap();
-        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK);
+        int mask = environmentSaveShortcutMask();
+        if (component instanceof JTextArea || component instanceof javax.swing.text.JTextComponent) {
+            inputMap = component.getInputMap(JComponent.WHEN_FOCUSED);
+        }
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, mask);
         inputMap.put(saveKey, "environment-save");
         actionMap.put("environment-save", new AbstractAction() {
             @Override
@@ -4661,6 +4667,11 @@ public class ImporterPanel {
                 commitEnvironmentEditorToSelectedProfile();
             }
         });
+    }
+
+    private int environmentSaveShortcutMask() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return osName.contains("mac") ? InputEvent.META_DOWN_MASK : InputEvent.CTRL_DOWN_MASK;
     }
 
     private void commitEnvironmentEditorToSelectedProfile() {
