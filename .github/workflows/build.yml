@@ -3,8 +3,8 @@ name: Build API Workbench JAR
 
 on:
   push:
-    branches: [ main, master ]
   workflow_dispatch:
+  pull_request:
 
 jobs:
   build:
@@ -24,17 +24,39 @@ jobs:
       run: |
         java -version
         mvn -version
-    - name: Build with Maven
+    - name: Run Maven tests
+      run: mvn -B clean test
+    - name: Build shaded JAR
       run: mvn -B clean package
+    - name: Verify shaded JAR exists and is non-trivially sized
+      run: |
+        jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
+        if [ -z "$jar" ]; then
+          echo "Missing shaded JAR output"
+          exit 1
+        fi
+        if [ ! -s "$jar" ]; then
+          echo "Shaded JAR exists but is empty"
+          exit 1
+        fi
+        size=$(stat -c%s "$jar")
+        echo "Shaded JAR: $jar ($size bytes)"
+        if [ "$size" -lt 1000000 ]; then
+          echo "Shaded JAR is unexpectedly small"
+          exit 1
+        fi
     - name: Probe shaded runtime artifact
-      run: java -cp target/*-jar-with-dependencies.jar burp.smoke.ScriptRuntimeProbe --require-full
-    - name: Upload surefire reports
+      run: |
+        jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
+        java -cp "$jar" burp.smoke.ScriptRuntimeProbe --require-full
+    - name: Upload surefire and failsafe reports
       if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: surefire-reports-java${{ matrix.java }}
         path: |
           target/surefire-reports/**
+          target/failsafe-reports/**
           target/*.dump
           target/*.dumpstream
     - name: Upload API Workbench JAR
