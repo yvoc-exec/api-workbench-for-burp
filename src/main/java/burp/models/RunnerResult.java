@@ -1,5 +1,10 @@
 package burp.models;
 
+import burp.scripts.ExecutionSource;
+import burp.scripts.ScriptFlowControl;
+import burp.scripts.ScriptLogEntry;
+import burp.scripts.ScriptVariableMutation;
+
 import java.util.*;
 
 /**
@@ -30,6 +35,16 @@ public class RunnerResult {
     public Map<String, String> extractedVariables = new HashMap<>();
     public Map<String, String> resolvedVariables = new HashMap<>();
     public List<AssertionResult> assertions = new ArrayList<>();
+    public String scriptEngineName;
+    public ExecutionSource executionSource;
+    public List<ScriptLogEntry> scriptLogs = new ArrayList<>();
+    public List<String> scriptWarnings = new ArrayList<>();
+    public List<String> scriptErrors = new ArrayList<>();
+    public List<ScriptVariableMutation> scriptVariableMutations = new ArrayList<>();
+    public ScriptFlowControl scriptFlowControl = ScriptFlowControl.CONTINUE;
+    public String scriptFlowMessage;
+    public String scriptFlowNextRequestName;
+    public String scriptFlowNextRequestId;
     public int attemptNumber = 1;
     public int totalAttempts = 1;
 

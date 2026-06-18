@@ -21,6 +21,7 @@ public class ScriptExecutionContext {
     public final MontoyaApi api;
     public final VariableScopeStore variableStore;
     public final ScriptExecutionResult result = new ScriptExecutionResult();
+    public final ExecutionSource executionSource;
     public final String source;
     public final int attemptNumber;
     public final List<String> unresolvedVariables = new ArrayList<>();
@@ -39,9 +40,34 @@ public class ScriptExecutionContext {
     public ScriptExecutionContext(ApiCollection collection,
                                   ApiRequest originalRequest,
                                   EnvironmentProfile activeEnvironment,
+                                  ExecutionSource executionSource,
+                                  int attemptNumber) {
+        this(null, collection, originalRequest, activeEnvironment, executionSource, attemptNumber);
+    }
+
+    public ScriptExecutionContext(ApiCollection collection,
+                                  ApiRequest originalRequest,
+                                  EnvironmentProfile activeEnvironment,
                                   String source,
                                   int attemptNumber) {
-        this(null, collection, originalRequest, activeEnvironment, source, attemptNumber);
+        this(collection, originalRequest, activeEnvironment, UnifiedScriptRuntime.executionSourceFromString(source), attemptNumber);
+    }
+
+    public ScriptExecutionContext(MontoyaApi api,
+                                  ApiCollection collection,
+                                  ApiRequest originalRequest,
+                                  EnvironmentProfile activeEnvironment,
+                                  ExecutionSource executionSource,
+                                  int attemptNumber) {
+        this.api = api;
+        this.collection = collection;
+        this.originalRequest = originalRequest;
+        this.request = copyRequest(originalRequest);
+        this.activeEnvironment = activeEnvironment;
+        this.variableStore = new VariableScopeStore(collection, this.request, activeEnvironment);
+        this.executionSource = executionSource != null ? executionSource : ExecutionSource.WORKBENCH_SEND;
+        this.source = this.executionSource.name();
+        this.attemptNumber = Math.max(1, attemptNumber);
     }
 
     public ScriptExecutionContext(MontoyaApi api,
@@ -50,14 +76,7 @@ public class ScriptExecutionContext {
                                   EnvironmentProfile activeEnvironment,
                                   String source,
                                   int attemptNumber) {
-        this.api = api;
-        this.collection = collection;
-        this.originalRequest = originalRequest;
-        this.request = copyRequest(originalRequest);
-        this.activeEnvironment = activeEnvironment;
-        this.variableStore = new VariableScopeStore(collection, this.request, activeEnvironment);
-        this.source = source != null ? source : "Send";
-        this.attemptNumber = Math.max(1, attemptNumber);
+        this(api, collection, originalRequest, activeEnvironment, UnifiedScriptRuntime.executionSourceFromString(source), attemptNumber);
     }
 
     public VariableResolver resolver() {

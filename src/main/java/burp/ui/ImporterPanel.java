@@ -489,6 +489,84 @@ public class ImporterPanel {
         requestEditor = new RequestEditorPanel();
         requestEditor.setRequestBuilder(requestBuilder);
         requestEditor.setSendControlsEnabled(false);
+        requestEditor.setVariableActionBridge(new RequestEditorPanel.VariableActionBridge() {
+            @Override
+            public RequestEditorPanel.VariableHoverInfo inspect(String key) {
+                RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
+                info.key = key;
+                EnvironmentProfile active = getActiveEnvironment();
+                if (active != null) {
+                    active.ensureDefaults();
+                    String activeValue = active.variables != null ? active.variables.get(key) : null;
+                    if (activeValue != null) {
+                        info.resolved = true;
+                        info.value = activeValue;
+                        info.scope = "active environment";
+                        info.source = "Active Environment";
+                        info.activeEnvironmentName = active.displayName();
+                        info.canEdit = true;
+                        info.canCreate = true;
+                        return info;
+                    }
+                }
+                ApiCollection collection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+                Map<String, String> runtimeOverlay = collection != null ? getEffectiveRuntimeVarsForRequestContext(collection) : Collections.emptyMap();
+                String runtimeValue = runtimeOverlay != null ? runtimeOverlay.get(key) : null;
+                if (runtimeValue != null) {
+                    info.resolved = true;
+                    info.value = runtimeValue;
+                    info.scope = "runtime overlay";
+                    info.source = "Runtime Overlay";
+                    info.activeEnvironmentName = active != null ? active.displayName() : null;
+                    info.canEdit = active != null;
+                    info.canCreate = active != null;
+                    return info;
+                }
+                info.resolved = false;
+                info.value = null;
+                info.scope = "unknown";
+                info.source = "unresolved";
+                info.activeEnvironmentName = active != null ? active.displayName() : null;
+                info.canEdit = active != null;
+                info.canCreate = active != null;
+                info.message = active != null
+                        ? "Create in Active Environment"
+                        : "Select an Active Environment to edit or create variables.";
+                return info;
+            }
+
+            @Override
+            public boolean hasActiveEnvironment() {
+                return getActiveEnvironment() != null;
+            }
+
+            @Override
+            public String activeEnvironmentName() {
+                EnvironmentProfile active = getActiveEnvironment();
+                return active != null ? active.displayName() : null;
+            }
+
+            @Override
+            public boolean updateActiveEnvironment(String key, String value, boolean createIfMissing, boolean persist) {
+                EnvironmentProfile active = getActiveEnvironment();
+                if (active == null || key == null || key.isBlank()) {
+                    return false;
+                }
+                Map<String, String> changed = new LinkedHashMap<>();
+                changed.put(key, value != null ? value : "");
+                applyRuntimeVariableDeltaToActiveEnvironment(requestEditor != null ? requestEditor.getCurrentCollection() : null,
+                        changed,
+                        Collections.emptySet());
+                return true;
+            }
+
+            @Override
+            public void refreshEnvironmentUi() {
+                syncActiveEnvironmentToEditors();
+                updateEnvironmentUiState();
+                notifyWorkspaceChangedImmediately();
+            }
+        });
         requestEditor.setTrackedHeaderStateChangeListener(() -> {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();

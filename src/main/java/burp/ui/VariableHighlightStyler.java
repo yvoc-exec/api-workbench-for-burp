@@ -12,9 +12,9 @@ import java.util.List;
 public final class VariableHighlightStyler {
     private static final String HIGHLIGHT_KEY = "awb.variable.highlight.tags";
     private static final Highlighter.HighlightPainter RESOLVED_PAINTER =
-            new DefaultHighlighter.DefaultHighlightPainter(new Color(188, 235, 188));
+            new DefaultHighlighter.DefaultHighlightPainter(resolveResolvedColor());
     private static final Highlighter.HighlightPainter UNRESOLVED_PAINTER =
-            new DefaultHighlighter.DefaultHighlightPainter(new Color(255, 205, 205));
+            new DefaultHighlighter.DefaultHighlightPainter(resolveUnresolvedColor());
 
     private VariableHighlightStyler() {
     }
@@ -76,5 +76,25 @@ public final class VariableHighlightStyler {
             highlighter.removeAllHighlights();
         }
         component.putClientProperty(HIGHLIGHT_KEY, new ArrayList<>());
+    }
+
+    private static Color resolveResolvedColor() {
+        return blendThemeColor(UIManager.getColor("TextField.selectionBackground"), new Color(124, 196, 124));
+    }
+
+    private static Color resolveUnresolvedColor() {
+        return blendThemeColor(UIManager.getColor("TextField.selectionBackground"), new Color(230, 150, 150));
+    }
+
+    private static Color blendThemeColor(Color themeColor, Color semanticFallback) {
+        Color base = themeColor != null ? themeColor : semanticFallback;
+        int red = clamp((base.getRed() + semanticFallback.getRed()) / 2);
+        int green = clamp((base.getGreen() + semanticFallback.getGreen()) / 2);
+        int blue = clamp((base.getBlue() + semanticFallback.getBlue()) / 2);
+        return new Color(red, green, blue);
+    }
+
+    private static int clamp(int value) {
+        return Math.max(0, Math.min(255, value));
     }
 }

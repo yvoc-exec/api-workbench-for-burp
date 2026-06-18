@@ -3,6 +3,7 @@ package burp.scripts;
 import burp.api.montoya.MontoyaApi;
 import burp.models.ApiRequest;
 import burp.parser.VariableResolver;
+import org.graalvm.polyglot.HostAccess;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -45,6 +46,7 @@ public final class ScriptBindingsFactory {
             this.context = context;
         }
 
+        @HostAccess.Export
         public void log(Object msg) {
             String text = msg != null ? msg.toString() : "null";
             if (context != null) {
@@ -88,6 +90,7 @@ public final class ScriptBindingsFactory {
             this.scopeLabel = scopeLabel;
         }
 
+        @HostAccess.Export
         public String get(String key) {
             if (context == null || key == null) {
                 return "";
@@ -96,19 +99,23 @@ public final class ScriptBindingsFactory {
             return value != null ? value : "";
         }
 
+        @HostAccess.Export
         public boolean has(String key) {
             return context != null && key != null && context.variableStore.has(key);
         }
 
+        @HostAccess.Export
         public void set(String key, Object value) {
             set(key, value, null);
         }
 
+        @HostAccess.Export
         public void set(String key, Object value, Object options) {
             boolean persist = persistDefault || optionsIndicatesPersist(options);
             applySet(key, value != null ? value.toString() : "", persist);
         }
 
+        @HostAccess.Export
         public void unset(String key) {
             applyUnset(key, persistDefault);
         }
@@ -154,18 +161,51 @@ public final class ScriptBindingsFactory {
                     return Boolean.parseBoolean(persist.toString());
                 }
             }
+            if (options instanceof org.graalvm.polyglot.Value value) {
+                if (value.hasMember("persist")) {
+                    try {
+                        return value.getMember("persist").asBoolean();
+                    } catch (Exception ignored) {
+                        Object raw = value.getMember("persist");
+                        return raw != null && Boolean.parseBoolean(raw.toString());
+                    }
+                }
+            }
+            try {
+                java.lang.reflect.Method hasMember = options.getClass().getMethod("hasMember", String.class);
+                java.lang.reflect.Method getMember = options.getClass().getMethod("getMember", String.class);
+                Object hasPersist = hasMember.invoke(options, "persist");
+                if (hasPersist instanceof Boolean b && b) {
+                    Object persist = getMember.invoke(options, "persist");
+                    if (persist instanceof Boolean bool) {
+                        return bool;
+                    }
+                    if (persist != null) {
+                        return Boolean.parseBoolean(persist.toString());
+                    }
+                }
+            } catch (Exception ignored) {
+            }
             return false;
         }
     }
 
     public static class RequestApi {
+        @HostAccess.Export
         public String method;
+        @HostAccess.Export
         public String url;
+        @HostAccess.Export
         public HeaderApi headers;
+        @HostAccess.Export
         public BodyApi body;
+        @HostAccess.Export
         public AuthApi auth;
+        @HostAccess.Export
         public String name;
+        @HostAccess.Export
         public String path;
+        @HostAccess.Export
         public String sourceCollection;
         public RequestApi() {
         }
@@ -217,6 +257,7 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public String get(String name) {
             if (name == null) {
                 return "";
@@ -229,10 +270,12 @@ public final class ScriptBindingsFactory {
             return "";
         }
 
+        @HostAccess.Export
         public boolean has(String name) {
             return findIndex(name) >= 0;
         }
 
+        @HostAccess.Export
         public void add(String name, String value) {
             if (name == null || name.isBlank()) {
                 return;
@@ -240,6 +283,7 @@ public final class ScriptBindingsFactory {
             entries.add(new ApiRequest.Header(name, value != null ? value : ""));
         }
 
+        @HostAccess.Export
         public void upsert(String name, String value) {
             if (name == null || name.isBlank()) {
                 return;
@@ -252,6 +296,7 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void remove(String name) {
             if (name == null || name.isBlank()) {
                 return;
@@ -259,6 +304,7 @@ public final class ScriptBindingsFactory {
             entries.removeIf(header -> header != null && header.key != null && header.key.equalsIgnoreCase(name));
         }
 
+        @HostAccess.Export
         public List<ApiRequest.Header> toHeaders() {
             List<ApiRequest.Header> out = new ArrayList<>();
             for (ApiRequest.Header header : entries) {
@@ -285,9 +331,13 @@ public final class ScriptBindingsFactory {
     }
 
     public static final class BodyApi {
+        @HostAccess.Export
         public String mode;
+        @HostAccess.Export
         public String raw;
+        @HostAccess.Export
         public String contentType;
+        @HostAccess.Export
         public GraphQLApi graphql;
 
         BodyApi(ApiRequest.Body source) {
@@ -317,7 +367,9 @@ public final class ScriptBindingsFactory {
     }
 
     public static final class GraphQLApi {
+        @HostAccess.Export
         public String query;
+        @HostAccess.Export
         public String variables;
 
         GraphQLApi(ApiRequest.Body.GraphQL source) {
@@ -336,8 +388,10 @@ public final class ScriptBindingsFactory {
     }
 
     public static final class AuthApi {
+        @HostAccess.Export
         public String type;
-        public final Map<String, String> properties = new LinkedHashMap<>();
+        @HostAccess.Export
+        public final ScriptMapView properties = new ScriptMapView();
 
         AuthApi(ApiRequest.Auth source) {
             if (source != null) {
@@ -360,9 +414,13 @@ public final class ScriptBindingsFactory {
     }
 
     public static class ResponseApi {
+        @HostAccess.Export
         public int code;
+        @HostAccess.Export
         public String status;
+        @HostAccess.Export
         public long responseTime;
+        @HostAccess.Export
         public HeaderLookup headers;
         private final Object parsedJson;
         private final String text;
@@ -376,16 +434,19 @@ public final class ScriptBindingsFactory {
             this.headers = new HeaderLookup(headers);
         }
 
+        @HostAccess.Export
         public String text() {
             return text;
         }
 
+        @HostAccess.Export
         public Object json() {
-            return parsedJson;
+            return new ScriptJsonValue(parsedJson);
         }
     }
 
     public static final class ResponseCodeWrapper {
+        @HostAccess.Export
         public int code;
 
         ResponseCodeWrapper(int code) {
@@ -407,6 +468,7 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public String get(String name) {
             if (name == null) {
                 return "";
@@ -419,14 +481,17 @@ public final class ScriptBindingsFactory {
             return "";
         }
 
+        @HostAccess.Export
         public boolean has(String name) {
             return find(name) != null;
         }
 
+        @HostAccess.Export
         public Map<String, List<String>> asMap() {
             return new LinkedHashMap<>(headers);
         }
 
+        @HostAccess.Export
         public List<HeaderEntry> all() {
             List<HeaderEntry> out = new ArrayList<>();
             for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
@@ -442,6 +507,7 @@ public final class ScriptBindingsFactory {
             return out;
         }
 
+        @HostAccess.Export
         public HeaderEntry find(String name) {
             if (name == null) {
                 return null;
@@ -457,7 +523,9 @@ public final class ScriptBindingsFactory {
     }
 
     public static final class HeaderEntry {
+        @HostAccess.Export
         public final String key;
+        @HostAccess.Export
         public final String value;
 
         HeaderEntry(String key, String value) {
@@ -479,10 +547,14 @@ public final class ScriptBindingsFactory {
             this.scriptName = scriptName;
         }
 
+        @HostAccess.Export
         public final ExpectApi to = this;
+        @HostAccess.Export
         public final ExpectApi be = this;
+        @HostAccess.Export
         public final ExpectApi have = this;
 
+        @HostAccess.Export
         public void status(int expected) {
             int actual = extractStatusCode(target);
             boolean passed = actual == expected;
@@ -494,10 +566,12 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void have_status(int expected) {
             status(expected);
         }
 
+        @HostAccess.Export
         public void header(String name) {
             boolean passed = hasHeader(name);
             ScriptAssertionResult assertion = new ScriptAssertionResult("Header: " + name, passed, "present", passed ? "present" : "missing");
@@ -508,10 +582,12 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void have_header(String name) {
             header(name);
         }
 
+        @HostAccess.Export
         public void property(String name) {
             boolean passed = hasProperty(target, name);
             ScriptAssertionResult assertion = new ScriptAssertionResult("Property: " + name, passed, "present", passed ? "present" : "missing");
@@ -522,8 +598,9 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void equal(Object expected) {
-            boolean passed = Objects.equals(target, expected);
+            boolean passed = valuesEqual(target, expected);
             ScriptAssertionResult assertion = new ScriptAssertionResult("Equals " + expected, passed, String.valueOf(expected), String.valueOf(target));
             assertion.scriptId = scriptId;
             context.addAssertion(assertion);
@@ -532,8 +609,59 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void eql(Object expected) {
             equal(expected);
+        }
+
+        private boolean valuesEqual(Object actual, Object expected) {
+            actual = unwrap(actual);
+            expected = unwrap(expected);
+            if (actual instanceof Number && expected instanceof Number) {
+                Number left = (Number) actual;
+                Number right = (Number) expected;
+                try {
+                    java.math.BigDecimal leftDecimal = new java.math.BigDecimal(left.toString());
+                    java.math.BigDecimal rightDecimal = new java.math.BigDecimal(right.toString());
+                    return leftDecimal.compareTo(rightDecimal) == 0;
+                } catch (NumberFormatException ignored) {
+                    return Double.compare(left.doubleValue(), right.doubleValue()) == 0;
+                }
+            }
+            if (actual instanceof Boolean || expected instanceof Boolean) {
+                return Boolean.parseBoolean(String.valueOf(actual)) == Boolean.parseBoolean(String.valueOf(expected));
+            }
+            if (actual == null || expected == null) {
+                return actual == expected;
+            }
+            return Objects.equals(actual, expected) || String.valueOf(actual).equals(String.valueOf(expected));
+        }
+
+        private Object unwrap(Object value) {
+            if (value instanceof org.graalvm.polyglot.Value polyValue) {
+                try {
+                    if (polyValue.isNull()) {
+                        return null;
+                    }
+                    if (polyValue.isBoolean()) {
+                        return polyValue.asBoolean();
+                    }
+                    if (polyValue.isNumber()) {
+                        try {
+                            return polyValue.as(Object.class);
+                        } catch (Exception ignored) {
+                            return polyValue.asDouble();
+                        }
+                    }
+                    if (polyValue.isString()) {
+                        return polyValue.asString();
+                    }
+                    return polyValue.as(Object.class);
+                } catch (Exception ignored) {
+                    return polyValue.toString();
+                }
+            }
+            return value;
         }
 
         private boolean hasHeader(String name) {
@@ -593,11 +721,17 @@ public final class ScriptBindingsFactory {
     }
 
     public static class PostmanApi {
+        @HostAccess.Export
         public final VariableScopeApi environment;
+        @HostAccess.Export
         public final VariableScopeApi collectionVariables;
+        @HostAccess.Export
         public final VariableScopeApi variables;
+        @HostAccess.Export
         public final RequestApi request;
+        @HostAccess.Export
         public final ExecutionApi execution;
+        @HostAccess.Export
         public ResponseApi response;
         private final ScriptExecutionContext context;
         private final MontoyaApi api;
@@ -617,11 +751,13 @@ public final class ScriptBindingsFactory {
             this.response = sharedResponse != null ? sharedResponse : new ResponseApi(context.responseStatusCode, context.responseText, context.responseHeaders, context.parsedResponseJson, context.responseTimeMs);
         }
 
+        @HostAccess.Export
         public ExpectApi expect(Object target) {
             return new ExpectApi(target, context, null, null);
         }
 
-        public void test(String name, Runnable fn) {
+        @HostAccess.Export
+        public void test(String name, Object fn) {
             String assertionName = name != null ? name : "pm.test";
             if (fn == null) {
                 ScriptAssertionResult assertion = new ScriptAssertionResult(assertionName, false, "callback", "null");
@@ -630,7 +766,7 @@ public final class ScriptBindingsFactory {
             }
             int before = context.result.assertions.size();
             try {
-                fn.run();
+                invokeCallback(fn);
                 if (context.result.assertions.size() == before) {
                     context.addAssertion(new ScriptAssertionResult(assertionName, true, "no exception", "no exception"));
                 }
@@ -644,20 +780,93 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("pm.sendRequest is not executed in the sandbox yet.", null, null);
+        }
+
+        private void invokeCallback(Object fn) throws Throwable {
+            if (fn instanceof Runnable runnable) {
+                runnable.run();
+                return;
+            }
+            if (fn instanceof org.graalvm.polyglot.Value value) {
+                if (value.canExecute()) {
+                    value.execute();
+                    return;
+                }
+            }
+            Throwable lastError = null;
+            for (String methodName : java.util.List.of("execute", "call", "apply", "invoke", "run")) {
+                for (java.lang.reflect.Method method : fn.getClass().getMethods()) {
+                    if (!method.getName().equals(methodName)) {
+                        continue;
+                    }
+                    try {
+                        Object[] args = buildCallbackArguments(method);
+                        if (args == null) {
+                            continue;
+                        }
+                        method.setAccessible(true);
+                        method.invoke(fn, args);
+                        return;
+                    } catch (java.lang.reflect.InvocationTargetException ite) {
+                        if (ite.getTargetException() != null) {
+                            throw ite.getTargetException();
+                        }
+                        throw ite;
+                    } catch (Throwable t) {
+                        lastError = t;
+                    }
+                }
+            }
+            if (lastError != null) {
+                throw lastError;
+            }
+            throw new IllegalArgumentException("Unsupported callback type: " + fn.getClass().getName());
+        }
+
+        private Object[] buildCallbackArguments(java.lang.reflect.Method method) {
+            if (method == null) {
+                return null;
+            }
+            int parameterCount = method.getParameterCount();
+            if (parameterCount == 0) {
+                return new Object[0];
+            }
+            if (parameterCount == 1 && method.isVarArgs()) {
+                Class<?> arrayType = method.getParameterTypes()[0];
+                Class<?> componentType = arrayType != null ? arrayType.getComponentType() : Object.class;
+                Object emptyArray = java.lang.reflect.Array.newInstance(componentType != null ? componentType : Object.class, 0);
+                return new Object[]{emptyArray};
+            }
+            if (parameterCount == 1 && method.getParameterTypes()[0].isArray()) {
+                Class<?> componentType = method.getParameterTypes()[0].getComponentType();
+                Object emptyArray = java.lang.reflect.Array.newInstance(componentType != null ? componentType : Object.class, 0);
+                return new Object[]{emptyArray};
+            }
+            return null;
         }
     }
 
     public static class BrunoApi {
+        @HostAccess.Export
         public final VariableScopeApi reqScope;
+        @HostAccess.Export
         public final VariableScopeApi envScope;
+        @HostAccess.Export
         public final VariableScopeApi collectionScope;
+        @HostAccess.Export
         public final VariableScopeApi folderScope;
+        @HostAccess.Export
         public final VariableScopeApi requestScope;
+        @HostAccess.Export
         public final VariableScopeApi localScope;
+        @HostAccess.Export
         public final RequestApi req;
+        @HostAccess.Export
         public final ResponseApi res;
+        @HostAccess.Export
         public final BrunoApi bru = this;
         private final ScriptExecutionContext context;
         private final MontoyaApi api;
@@ -679,85 +888,121 @@ public final class ScriptBindingsFactory {
             this.res = sharedResponse != null ? sharedResponse : new ResponseApi(context.responseStatusCode, context.responseText, context.responseHeaders, context.parsedResponseJson, context.responseTimeMs);
         }
 
+        @HostAccess.Export
         public String getVar(String key) {
             return reqScope.get(key);
         }
 
+        @HostAccess.Export
         public void setVar(String key, Object value) {
             reqScope.set(key, value);
         }
 
+        @HostAccess.Export
         public String getEnvVar(String key) {
             return envScope.get(key);
         }
 
+        @HostAccess.Export
         public void setEnvVar(String key, Object value) {
             envScope.set(key, value);
         }
 
+        @HostAccess.Export
         public void setEnvVar(String key, Object value, Object options) {
             envScope.set(key, value, options);
         }
 
+        @HostAccess.Export
         public String getCollectionVar(String key) {
             return collectionScope.get(key);
         }
 
+        @HostAccess.Export
         public void setCollectionVar(String key, Object value) {
             collectionScope.set(key, value);
         }
 
+        @HostAccess.Export
         public String getFolderVar(String key) {
             return folderScope.get(key);
         }
 
+        @HostAccess.Export
         public void setFolderVar(String key, Object value) {
             folderScope.set(key, value);
         }
 
+        @HostAccess.Export
         public String getRequestVar(String key) {
             return requestScope.get(key);
         }
 
+        @HostAccess.Export
         public void setRequestVar(String key, Object value) {
             requestScope.set(key, value);
         }
 
+        @HostAccess.Export
         public ExpectApi expect(Object target) {
             return new ExpectApi(target, context, null, null);
         }
 
-        public void test(String name, Runnable fn) {
+        @HostAccess.Export
+        public void test(String name, Object fn) {
             new PostmanApi(api, context).test(name, fn);
         }
 
+        @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("bru.sendRequest is not executed in the sandbox yet.", null, null);
         }
 
+        @HostAccess.Export
         public void runRequest(Object request) {
             context.warn("bru.runRequest is not executed in the sandbox yet.", null, null);
         }
 
+        @HostAccess.Export
         public void setNextRequest(String name) {
+            if (context != null && !context.runnerOnlyFlowControlsAllowed) {
+                context.warn("bru.setNextRequest is ignored in single Send mode.", null, null);
+                return;
+            }
             context.setFlowControl(ScriptFlowControl.SET_NEXT_REQUEST, name, null, "bru.setNextRequest");
         }
 
+        @HostAccess.Export
         public void skipRequest() {
+            if (context != null && !context.runnerOnlyFlowControlsAllowed) {
+                context.warn("bru.skipRequest is ignored in single Send mode.", null, null);
+                return;
+            }
             context.setFlowControl(ScriptFlowControl.SKIP_REQUEST, null, null, "bru.skipRequest");
         }
 
+        @HostAccess.Export
         public void stopExecution() {
+            if (context != null && !context.runnerOnlyFlowControlsAllowed) {
+                context.warn("bru.stopExecution is ignored in single Send mode.", null, null);
+                return;
+            }
             context.setFlowControl(ScriptFlowControl.STOP_RUN, null, null, "bru.stopExecution");
         }
     }
 
     public static class InsomniaApi {
+        @HostAccess.Export
         public final VariableScopeApi environment;
+        @HostAccess.Export
         public final VariableScopeApi baseEnvironment;
+        @HostAccess.Export
         public final VariableScopeApi collectionVariables;
+        @HostAccess.Export
         public final VariableScopeApi variables;
+        @HostAccess.Export
         public final RequestApi request;
+        @HostAccess.Export
         public final ResponseApi response;
         private final ScriptExecutionContext context;
         private final MontoyaApi api;
@@ -777,25 +1022,34 @@ public final class ScriptBindingsFactory {
             this.response = sharedResponse != null ? sharedResponse : new ResponseApi(context.responseStatusCode, context.responseText, context.responseHeaders, context.parsedResponseJson, context.responseTimeMs);
         }
 
+        @HostAccess.Export
         public ExpectApi expect(Object target) {
             return new ExpectApi(target, context, null, null);
         }
 
-        public void test(String name, Runnable fn) {
+        @HostAccess.Export
+        public void test(String name, Object fn) {
             new PostmanApi(api, context).test(name, fn);
         }
 
+        @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("insomnia.sendRequest is not executed in the sandbox yet.", null, null);
         }
     }
 
     public static class NativeApi {
+        @HostAccess.Export
         public final VariableScopeApi variables;
+        @HostAccess.Export
         public final VariableScopeApi environment;
+        @HostAccess.Export
         public final VariableScopeApi collection;
+        @HostAccess.Export
         public final RequestApi request;
+        @HostAccess.Export
         public final ResponseApi response;
+        @HostAccess.Export
         public final ExecutionApi execution;
         private final ScriptExecutionContext context;
         private final MontoyaApi api;
@@ -815,14 +1069,17 @@ public final class ScriptBindingsFactory {
             this.execution = sharedExecution != null ? sharedExecution : new ExecutionApi(context);
         }
 
+        @HostAccess.Export
         public ExpectApi expect(Object target) {
             return new ExpectApi(target, context, null, null);
         }
 
-        public void test(String name, Runnable fn) {
+        @HostAccess.Export
+        public void test(String name, Object fn) {
             new PostmanApi(api, context).test(name, fn);
         }
 
+        @HostAccess.Export
         public void sendRequest(Object request) {
             context.warn("awb.sendRequest is not executed in the sandbox yet.", null, null);
         }
@@ -835,6 +1092,7 @@ public final class ScriptBindingsFactory {
             this.context = context;
         }
 
+        @HostAccess.Export
         public void setNextRequest(String name) {
             if (context != null && !context.runnerOnlyFlowControlsAllowed) {
                 context.warn("setNextRequest is ignored in single Send mode.", null, null);
@@ -845,6 +1103,7 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void skipRequest() {
             if (context != null && !context.runnerOnlyFlowControlsAllowed) {
                 context.warn("skipRequest is ignored in single Send mode.", null, null);
@@ -855,22 +1114,125 @@ public final class ScriptBindingsFactory {
             }
         }
 
+        @HostAccess.Export
         public void stopExecution() {
+            if (context != null && !context.runnerOnlyFlowControlsAllowed) {
+                context.warn("stopExecution is ignored in single Send mode.", null, null);
+                return;
+            }
             if (context != null) {
                 context.setFlowControl(ScriptFlowControl.STOP_RUN, null, null, "stopExecution");
             }
         }
 
+        @HostAccess.Export
         public void runRequest(String name) {
             if (context != null) {
+                context.warn("runRequest is recognized but not executed yet.", null, null);
                 context.setFlowControl(ScriptFlowControl.RUN_REQUEST, name, null, "runRequest");
             }
         }
 
+        @HostAccess.Export
         public void sendAdHocRequest(String name) {
             if (context != null) {
+                context.warn("sendAdHocRequest is recognized but not executed yet.", null, null);
                 context.setFlowControl(ScriptFlowControl.SEND_AD_HOC_REQUEST, name, null, "sendAdHocRequest");
             }
+        }
+    }
+
+    public static final class ScriptMapView extends LinkedHashMap<String, String> {
+        public ScriptMapView() {
+        }
+
+        public ScriptMapView(Map<String, String> source) {
+            if (source != null) {
+                putAll(source);
+            }
+        }
+
+        @HostAccess.Export
+        @Override
+        public String get(Object key) {
+            String value = super.get(key);
+            return value != null ? value : "";
+        }
+
+        @HostAccess.Export
+        public String getOrDefault(String key, String defaultValue) {
+            return super.getOrDefault(key, defaultValue);
+        }
+
+        @HostAccess.Export
+        public boolean has(String key) {
+            return containsKey(key);
+        }
+
+        @HostAccess.Export
+        public void set(String key, Object value) {
+            if (key == null || key.isBlank()) {
+                return;
+            }
+            put(key, value != null ? value.toString() : "");
+        }
+
+        @HostAccess.Export
+        public void unset(String key) {
+            if (key != null) {
+                remove(key);
+            }
+        }
+    }
+
+    public static final class ScriptJsonValue {
+        private final Object value;
+
+        ScriptJsonValue(Object value) {
+            this.value = value;
+        }
+
+        @HostAccess.Export
+        public Object get(String key) {
+            Object raw = read(key);
+            return wrap(raw);
+        }
+
+        @HostAccess.Export
+        public boolean has(String key) {
+            return read(key) != null;
+        }
+
+        @HostAccess.Export
+        public Object raw() {
+            return value;
+        }
+
+        @HostAccess.Export
+        public String text() {
+            return value == null ? "" : value.toString();
+        }
+
+        private Object read(String key) {
+            if (value instanceof Map<?, ?> map) {
+                return map.get(key);
+            }
+            if (value instanceof List<?> list) {
+                try {
+                    int index = Integer.parseInt(key);
+                    return index >= 0 && index < list.size() ? list.get(index) : null;
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private Object wrap(Object raw) {
+            if (raw instanceof Map<?, ?> || raw instanceof List<?>) {
+                return new ScriptJsonValue(raw);
+            }
+            return raw;
         }
     }
 

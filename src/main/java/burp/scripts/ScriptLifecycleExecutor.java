@@ -14,6 +14,7 @@ public class ScriptLifecycleExecutor {
         if (context == null || blocks == null || blocks.isEmpty()) {
             return result;
         }
+        result.engineName = sandboxEngine != null ? sandboxEngine.getEngineName() : "Unavailable";
         for (ScriptBlock block : blocks) {
             if (block == null || !block.enabled || block.source == null || block.source.isBlank()) {
                 continue;

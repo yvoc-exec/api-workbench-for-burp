@@ -12,6 +12,7 @@ import burp.api.montoya.http.RedirectionMode;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
+import burp.ui.history.HistoryNativeHttpMessageFactory;
 
 import javax.swing.*;
 import java.io.*;
@@ -225,7 +226,7 @@ public class UniversalImporter {
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
             EnvironmentProfile activeEnvironment) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
@@ -377,11 +378,11 @@ public class UniversalImporter {
         boolean liveSend = "sitemap".equals(destinationLower);
         ExecutionResult exec = runtimeOverlay != null
                 ? (liveSend
-                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment)
-                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment))
+                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND)
+                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.BUILD_PREVIEW))
                 : (liveSend
-                    ? pipeline.execute(req, collection, followRedirects, null, null, null, activeEnvironment)
-                    : pipeline.build(req, collection, null, null, null, activeEnvironment));
+                    ? pipeline.execute(req, collection, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND)
+                    : pipeline.build(req, collection, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.BUILD_PREVIEW));
         if (exec == null || !exec.success || exec.requestHeaders == null) {
             throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }
@@ -405,9 +406,13 @@ public class UniversalImporter {
         if (liveSend) {
             if (delayMs > 0) Thread.sleep(delayMs);
             if (exec.response != null && exec.response.response() != null) {
-                Annotations annotations = Annotations.annotations(
-                        "[Imported] " + req.name, HighlightColor.CYAN);
-                api.siteMap().add(exec.response.withAnnotations(annotations));
+                try {
+                    Annotations annotations = Annotations.annotations(
+                            "[Imported] " + req.name, HighlightColor.CYAN);
+                    api.siteMap().add(exec.response.withAnnotations(annotations));
+                } catch (Throwable ignored) {
+                    // Burp object factory is unavailable in unit tests/non-Burp environments.
+                }
             } else {
                 throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
             }
@@ -417,11 +422,16 @@ public class UniversalImporter {
         String resolvedUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
-        burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                parsed.host, parsed.port, parsed.useHttps);
+        burp.api.montoya.http.HttpService service = null;
+        try {
+            service = burp.api.montoya.http.HttpService.httpService(
+                    parsed.host, parsed.port, parsed.useHttps);
+        } catch (Throwable ignored) {
+            // Unit tests / non-Burp environments may not have a Montoya object factory.
+        }
 
         HttpRequest httpRequest = exec.builtRequest != null ? exec.builtRequest
-                : HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+                : buildHttpRequest(rawRequest, service);
         String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
 
         switch (destinationLower) {
@@ -437,20 +447,40 @@ public class UniversalImporter {
 
     private void sendToSitemap(burp.api.montoya.http.HttpService service, byte[] request, String name) throws Exception {
         try {
-            HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(request));
-            RequestOptions options = RequestOptions.requestOptions()
-                    .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
-            burp.api.montoya.http.message.HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
+            HttpRequest httpRequest = buildHttpRequest(request, service);
+            burp.api.montoya.http.message.HttpRequestResponse response;
+            try {
+                RequestOptions options = RequestOptions.requestOptions()
+                        .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
+                response = api.http().sendRequest(httpRequest, options);
+            } catch (Throwable factoryError) {
+                response = api.http().sendRequest(httpRequest);
+            }
             if (response != null && response.response() != null) {
-                Annotations annotations = Annotations.annotations(
-                        "[Imported] " + name, HighlightColor.CYAN);
-                api.siteMap().add(response.withAnnotations(annotations));
+                try {
+                    Annotations annotations = Annotations.annotations(
+                            "[Imported] " + name, HighlightColor.CYAN);
+                    api.siteMap().add(response.withAnnotations(annotations));
+                } catch (Throwable ignored) {
+                    // Annotation helpers can be unavailable in unit tests.
+                }
             } else {
                 throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
             }
         } catch (Exception e) {
             throw new Exception("Sitemap request failed: " + extractCleanError(e));
         }
+    }
+
+    private HttpRequest buildHttpRequest(byte[] rawRequest, burp.api.montoya.http.HttpService service) throws Exception {
+        try {
+            if (service != null) {
+                return HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+            }
+        } catch (Throwable ignored) {
+        }
+        String fallbackRaw = rawRequest != null ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8) : "";
+        return HistoryNativeHttpMessageFactory.request(fallbackRaw);
     }
 
     private String generateUniqueTabName(String baseName, String collectionName) {

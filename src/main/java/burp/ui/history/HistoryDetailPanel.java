@@ -17,6 +17,7 @@ public class HistoryDetailPanel extends JPanel {
     private final JTextArea responseArea = new JTextArea();
     private final JTextArea variablesArea = new JTextArea();
     private final JTextArea assertionsArea = new JTextArea();
+    private final JTextArea scriptArea = new JTextArea();
     private final JTextArea metadataArea = new JTextArea();
     private final CardLayout requestCardLayout = new CardLayout();
     private final JPanel requestCardPanel = new JPanel(requestCardLayout);
@@ -67,12 +68,14 @@ public class HistoryDetailPanel extends JPanel {
         configureTextArea(responseArea);
         configureTextArea(variablesArea);
         configureTextArea(assertionsArea);
+        configureTextArea(scriptArea);
         configureTextArea(metadataArea);
 
         tabs.addTab("Request", requestCardPanel);
         tabs.addTab("Response", responseCardPanel);
         tabs.addTab("Variables / Environment", createFallbackScrollPane(variablesArea));
         tabs.addTab("Assertions / Extraction", createFallbackScrollPane(assertionsArea));
+        tabs.addTab("Script Output", createFallbackScrollPane(scriptArea));
         tabs.addTab("Metadata", createFallbackScrollPane(metadataArea));
         add(tabs, BorderLayout.CENTER);
         clear();
@@ -118,9 +121,11 @@ public class HistoryDetailPanel extends JPanel {
 
         variablesArea.setText(buildVariablesText(entry));
         assertionsArea.setText(buildAssertionsText(entry));
+        scriptArea.setText(buildScriptText(entry));
         metadataArea.setText(entry.toMetadataText());
         variablesArea.setCaretPosition(0);
         assertionsArea.setCaretPosition(0);
+        scriptArea.setCaretPosition(0);
         metadataArea.setCaretPosition(0);
     }
 
@@ -129,6 +134,7 @@ public class HistoryDetailPanel extends JPanel {
         responseArea.setText("");
         variablesArea.setText("");
         assertionsArea.setText("");
+        scriptArea.setText("");
         metadataArea.setText("");
 
         if (requestEditor != null) {
@@ -172,6 +178,10 @@ public class HistoryDetailPanel extends JPanel {
 
     public JTextArea getAssertionsArea() {
         return assertionsArea;
+    }
+
+    public JTextArea getScriptArea() {
+        return scriptArea;
     }
 
     public JTextArea getMetadataArea() {
@@ -295,6 +305,67 @@ public class HistoryDetailPanel extends JPanel {
                         .append(extraction.value != null ? extraction.value : "")
                         .append(extraction.source != null ? " (source=" + extraction.source + ")" : "")
                         .append(extraction.message != null ? " " + extraction.message : "")
+                        .append('\n');
+            });
+        }
+        return sb.toString().trim();
+    }
+
+    private static String buildScriptText(HistoryEntry entry) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Script Engine: ").append(entry != null && entry.scriptEngineName != null ? entry.scriptEngineName : "").append('\n');
+        sb.append("Execution Source: ").append(entry != null && entry.executionSource != null ? entry.executionSource : "").append('\n');
+        sb.append("Flow Control: ").append(entry != null && entry.scriptFlowControl != null ? entry.scriptFlowControl.name() : "").append('\n');
+        sb.append("Flow Message: ").append(entry != null && entry.scriptFlowMessage != null ? entry.scriptFlowMessage : "").append('\n');
+        sb.append('\n').append("Logs:").append('\n');
+        if (entry == null || entry.scriptLogs == null || entry.scriptLogs.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            entry.scriptLogs.forEach(log -> {
+                if (log == null) {
+                    return;
+                }
+                sb.append('[').append(log.level != null ? log.level.toUpperCase() : "INFO").append("] ")
+                        .append(log.message != null ? log.message : "");
+                if (log.scriptName != null && !log.scriptName.isBlank()) {
+                    sb.append(" (script=").append(log.scriptName).append(')');
+                }
+                if (log.scriptId != null && !log.scriptId.isBlank()) {
+                    sb.append(" (id=").append(log.scriptId).append(')');
+                }
+                sb.append('\n');
+            });
+        }
+
+        sb.append('\n').append("Warnings:").append('\n');
+        if (entry == null || entry.scriptWarnings == null || entry.scriptWarnings.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            entry.scriptWarnings.forEach(warning -> sb.append(warning != null ? warning : "").append('\n'));
+        }
+
+        sb.append('\n').append("Errors:").append('\n');
+        if (entry == null || entry.scriptErrors == null || entry.scriptErrors.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            entry.scriptErrors.forEach(error -> sb.append(error != null ? error : "").append('\n'));
+        }
+
+        sb.append('\n').append("Variable Mutations:").append('\n');
+        if (entry == null || entry.scriptVariableMutations == null || entry.scriptVariableMutations.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            entry.scriptVariableMutations.forEach(mutation -> {
+                if (mutation == null) {
+                    return;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append(mutation.sourceScriptName != null ? " script=" + mutation.sourceScriptName : "")
                         .append('\n');
             });
         }
