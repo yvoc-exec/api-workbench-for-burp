@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 import java.awt.Component;
 import java.awt.Container;
 import java.lang.reflect.Field;
@@ -253,6 +254,10 @@ class RequestEditorPanelTest {
         JButton editButton = findButton((Container) popup.getComponent(0), "Edit in Active Env");
         assertThat(editButton).isNotNull();
         assertThat(editButton.isEnabled()).isTrue();
+        assertThat(findLabel((Container) popup.getComponent(0), "Status: Resolved")).isNotNull();
+        assertThat(findLabel((Container) popup.getComponent(0), "Scope: runtime overlay")).isNotNull();
+        assertThat(findLabel((Container) popup.getComponent(0), "Source: Runtime Overlay")).isNotNull();
+        assertThat(findLabel((Container) popup.getComponent(0), "Source: unresolved")).isNull();
     }
 
     @Test
@@ -358,6 +363,49 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void variableHoverSupportDoesNotInstallNativeTooltip() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        JTextPane field = new JTextPane();
+        field.setText("{{token}}");
+
+        Method install = RequestEditorPanel.class.getDeclaredMethod("installVariableHoverSupport", javax.swing.text.JTextComponent.class);
+        install.setAccessible(true);
+        install.invoke(panel, field);
+
+        assertThat(field.getToolTipText()).isNull();
+        assertThat(field.getClientProperty("awb.variable.hover.installed")).isEqualTo(Boolean.TRUE);
+    }
+
+    @Test
+    void variablePopupTracksMouseOnPopupContent() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        JTextPane field = new JTextPane();
+        field.setText("{{token}}");
+        field.setSize(240, 28);
+        panel.setVariableActionBridge(testVariableBridge(true));
+
+        Method install = RequestEditorPanel.class.getDeclaredMethod("installVariableHoverSupport", javax.swing.text.JTextComponent.class);
+        install.setAccessible(true);
+        install.invoke(panel, field);
+
+        Field mapField = RequestEditorPanel.class.getDeclaredField("variableHoverSupports");
+        mapField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<JTextComponent, ?> supportMap = (Map<JTextComponent, ?>) mapField.get(panel);
+        Object support = supportMap.get(field);
+        assertThat(support).isNotNull();
+
+        RequestEditorPanel.VariableHoverInfo info = resolvedHoverInfo("token", "active environment", "Active Environment", "Dev", "abc123");
+        Method show = RequestEditorPanel.class.getDeclaredMethod("showVariablePopup", javax.swing.text.JTextComponent.class, RequestEditorPanel.VariableHoverInfo.class, java.awt.Point.class, support.getClass());
+        show.setAccessible(true);
+        show.invoke(panel, field, info, new java.awt.Point(8, 8), support);
+
+        JPopupMenu popup = (JPopupMenu) field.getClientProperty("awb.variable.popup");
+        assertThat(popup).isNotNull();
+        assertThat(((Container) popup.getComponent(0)).getMouseListeners()).isNotEmpty();
+    }
+
+    @Test
     void variablePopupWithoutActiveEnvironmentDisablesMutationActions() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setVariableActionBridge(testVariableBridge(false));
@@ -368,7 +416,11 @@ class RequestEditorPanelTest {
         JButton editButton = findButton((Container) popup.getComponent(0), "Create in Active Env");
         assertThat(editButton).isNotNull();
         assertThat(editButton.isEnabled()).isFalse();
-        assertThat(editButton.getToolTipText()).contains("No active environment selected");
+        assertThat(editButton.getToolTipText()).contains("No Active Environment selected");
+        assertThat(findLabel((Container) popup.getComponent(0), "Source: No Active Environment selected")).isNotNull();
+        assertThat(findLabel((Container) popup.getComponent(0), "Editable: No Active Environment selected")).isNotNull();
+        assertThat(findLabel((Container) popup.getComponent(0), "No Active Environment selected. Select or import an environment"))
+                .isNotNull();
     }
 
     @Test
@@ -679,10 +731,10 @@ class RequestEditorPanelTest {
         return (JTabbedPane) f.get(panel);
     }
 
-    private static JTextField urlField(RequestEditorPanel panel) throws Exception {
+    private static JTextComponent urlField(RequestEditorPanel panel) throws Exception {
         Field f = RequestEditorPanel.class.getDeclaredField("urlField");
         f.setAccessible(true);
-        return (JTextField) f.get(panel);
+        return (JTextComponent) f.get(panel);
     }
 
     private static String resolvedView(RequestEditorPanel panel) throws Exception {
@@ -768,6 +820,21 @@ class RequestEditorPanelTest {
         return null;
     }
 
+    private static JLabel findLabel(Container root, String textFragment) {
+        for (Component c : root.getComponents()) {
+            if (c instanceof JLabel label && label.getText() != null && label.getText().contains(textFragment)) {
+                return label;
+            }
+            if (c instanceof Container) {
+                JLabel found = findLabel((Container) c, textFragment);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
     private static RequestEditorPanel.VariableActionBridge testVariableBridge(boolean hasActiveEnvironment) {
         return new RequestEditorPanel.VariableActionBridge() {
             @Override
@@ -810,7 +877,7 @@ class RequestEditorPanelTest {
         info.activeEnvironmentName = envName;
         info.canEdit = true;
         info.canCreate = true;
-        info.message = "Current value source: " + source + ". Edit target: Active Environment (persisted variable).";
+        info.message = "Resolved from " + source + ". Edit target: Active Environment (persisted variable).";
         return info;
     }
 
@@ -819,14 +886,14 @@ class RequestEditorPanelTest {
         info.key = key;
         info.resolved = false;
         info.value = null;
-        info.scope = "unknown";
-        info.source = "unresolved";
+        info.scope = "not found";
+        info.source = envName != null ? "Active Environment" : "No Active Environment selected";
         info.activeEnvironmentName = envName;
         info.canEdit = envName != null;
         info.canCreate = envName != null;
         info.message = envName != null
-                ? "Create target: Active Environment (persisted variable)."
-                : "Select an Active Environment to edit or create variables.";
+                ? "No value found. Create target: Active Environment (persisted variable)."
+                : "No Active Environment selected. Select or import an environment to edit or create persisted variables.";
         return info;
     }
 

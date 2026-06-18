@@ -9,17 +9,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['17', '21', '25']
     steps:
     - uses: actions/checkout@v4
-    - name: Set up JDK 17
+    - name: Set up JDK ${{ matrix.java }}
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: ${{ matrix.java }}
         distribution: 'temurin'
     - name: Build with Maven
-      run: mvn clean package
+      run: mvn -B clean package
+    - name: Probe shaded runtime artifact
+      run: java -cp target/*-jar-with-dependencies.jar burp.smoke.ScriptRuntimeProbe --require-full
     - name: Upload API Workbench JAR
       uses: actions/upload-artifact@v4
       with:
-        name: api-workbench-for-burp-jar
+        name: api-workbench-for-burp-jar-java${{ matrix.java }}
         path: target/*-jar-with-dependencies.jar

@@ -512,7 +512,7 @@ public class ImporterPanel {
                         info.activeEnvironmentName = active.displayName();
                         info.canEdit = true;
                         info.canCreate = true;
-                        info.message = "Edit target: Active Environment (persisted variable).";
+                        info.message = "Resolved from Active Environment. Edit target: Active Environment (persisted variable).";
                         return info;
                     }
                 }
@@ -527,19 +527,21 @@ public class ImporterPanel {
                     info.activeEnvironmentName = active != null ? active.displayName() : null;
                     info.canEdit = active != null;
                     info.canCreate = active != null;
-                    info.message = "Current value source: Runtime Overlay. Edit target: Active Environment (persisted variable).";
+                    info.message = active != null
+                            ? "Resolved from Runtime Overlay. Edit target: Active Environment (persisted variable)."
+                            : "Resolved from Runtime Overlay. Select an Active Environment to edit or create persisted variables.";
                     return info;
                 }
                 info.resolved = false;
                 info.value = null;
-                info.scope = "unknown";
-                info.source = "unresolved";
+                info.scope = "not found";
+                info.source = active != null ? "Active Environment" : "No Active Environment selected";
                 info.activeEnvironmentName = active != null ? active.displayName() : null;
                 info.canEdit = active != null;
                 info.canCreate = active != null;
                 info.message = active != null
-                        ? "Create target: Active Environment (persisted variable)."
-                        : "Select an Active Environment to edit or create variables.";
+                        ? "No value found. Create target: Active Environment (persisted variable)."
+                        : "No Active Environment selected. Select or import an environment to edit or create persisted variables.";
                 return info;
             }
 

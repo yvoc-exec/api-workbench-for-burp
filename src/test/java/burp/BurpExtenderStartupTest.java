@@ -37,6 +37,7 @@ class BurpExtenderStartupTest {
         var userInterface = api.userInterface();
         verify(extension).setName("API Workbench for Burp");
         assertThat(capture.output).contains("Extension core initialized; scheduling API Workbench UI registration...");
+        assertThat(capture.output.stream().anyMatch(line -> line.startsWith("  Script engine: "))).isTrue();
         assertThat(capture.output).contains("API Workbench UI init starting...");
         assertThat(capture.output).contains("Creating WorkspaceStateService...");
         assertThat(capture.output).contains("Creating UniversalImporter...");

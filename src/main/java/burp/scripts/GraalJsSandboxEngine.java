@@ -14,16 +14,17 @@ public class GraalJsSandboxEngine {
     private final boolean graalAvailable;
     private final boolean nashornFallbackAvailable;
     private final String engineName;
+    private final String initializationFailure;
+    private final String graalFailure;
+    private final String nashornFailure;
 
     public GraalJsSandboxEngine() {
-        boolean graalOk = false;
-        try (Context context = createGraalContext()) {
-            graalOk = context.getEngine() != null;
-        } catch (Throwable ignored) {
-            graalOk = false;
-        }
-        this.graalAvailable = graalOk;
-        this.nashornFallbackAvailable = !graalOk && createNashornEngine() != null;
+        ProbeOutcome graalProbe = probeGraalJs();
+        this.graalAvailable = graalProbe.available;
+        this.graalFailure = graalProbe.failure;
+        ProbeOutcome nashornProbe = graalAvailable ? ProbeOutcome.unavailable(null) : probeNashornFallback();
+        this.nashornFallbackAvailable = !graalAvailable && nashornProbe.available;
+        this.nashornFailure = nashornProbe.failure;
         if (graalAvailable) {
             this.engineName = "GraalJS";
         } else if (nashornFallbackAvailable) {
@@ -31,14 +32,37 @@ public class GraalJsSandboxEngine {
         } else {
             this.engineName = "Unavailable";
         }
+        this.initializationFailure = graalAvailable
+                ? null
+                : buildInitializationFailure(graalFailure, nashornFailure);
     }
 
     public boolean isAvailable() {
         return graalAvailable || nashornFallbackAvailable;
     }
 
+    public boolean isGraalAvailable() {
+        return graalAvailable;
+    }
+
+    public boolean isNashornFallbackAvailable() {
+        return nashornFallbackAvailable;
+    }
+
     public String getEngineName() {
         return engineName;
+    }
+
+    public String getInitializationFailure() {
+        return initializationFailure;
+    }
+
+    public String getGraalFailure() {
+        return graalFailure;
+    }
+
+    public String getNashornFailure() {
+        return nashornFailure;
     }
 
     public Object execute(String source, Map<String, Object> bindings) throws Exception {
@@ -51,7 +75,7 @@ public class GraalJsSandboxEngine {
         if (nashornFallbackAvailable) {
             return executeWithNashorn(source, bindings);
         }
-        throw new IllegalStateException("No JavaScript engine available");
+        throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
     }
 
     private Object executeWithGraal(String source, Map<String, Object> bindings) throws Exception {
@@ -100,6 +124,37 @@ public class GraalJsSandboxEngine {
                 .build();
     }
 
+    private ProbeOutcome probeGraalJs() {
+        try (Context context = createGraalContext()) {
+            if (context.getEngine() == null) {
+                return ProbeOutcome.unavailable("GraalJS engine could not be initialized.");
+            }
+            Value result = context.eval("js", "1 + 1");
+            if (!isProbeSuccess(result)) {
+                return ProbeOutcome.unavailable("GraalJS probe returned unexpected result: " + describeValue(result));
+            }
+            return ProbeOutcome.available();
+        } catch (Throwable t) {
+            return ProbeOutcome.unavailable("GraalJS initialization failed: " + describeThrowable(t));
+        }
+    }
+
+    private ProbeOutcome probeNashornFallback() {
+        try {
+            javax.script.ScriptEngine engine = createNashornEngine();
+            if (engine == null) {
+                return ProbeOutcome.unavailable("No Nashorn or JavaScript engine found");
+            }
+            Object result = engine.eval("1 + 1");
+            if (!"2".equals(String.valueOf(result))) {
+                return ProbeOutcome.unavailable("Nashorn eval returned unexpected result: " + result);
+            }
+            return ProbeOutcome.available();
+        } catch (Throwable t) {
+            return ProbeOutcome.unavailable("Nashorn fallback initialization failed: " + describeThrowable(t));
+        }
+    }
+
     private javax.script.ScriptEngine createNashornEngine() {
         try {
             javax.script.ScriptEngineManager manager = new javax.script.ScriptEngineManager();
@@ -114,6 +169,78 @@ public class GraalJsSandboxEngine {
             return factory.getScriptEngine(new DenyAllClassFilter());
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    private boolean isProbeSuccess(Value value) {
+        try {
+            return value != null && value.fitsInInt() && value.asInt() == 2;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private String describeValue(Value value) {
+        if (value == null) {
+            return "null";
+        }
+        try {
+            if (value.isNull()) {
+                return "null";
+            }
+            if (value.fitsInInt()) {
+                return Integer.toString(value.asInt());
+            }
+            Object asObject = value.as(Object.class);
+            return String.valueOf(asObject);
+        } catch (Throwable t) {
+            return value.getMetaObject() != null ? value.getMetaObject().toString() : value.toString();
+        }
+    }
+
+    private String describeThrowable(Throwable throwable) {
+        if (throwable == null) {
+            return "unknown error";
+        }
+        String message = throwable.getMessage();
+        if (message == null || message.isBlank()) {
+            message = throwable.getClass().getSimpleName();
+        }
+        return message;
+    }
+
+    private String buildInitializationFailure(String graalFailure, String nashornFailure) {
+        StringBuilder sb = new StringBuilder();
+        if (graalFailure != null && !graalFailure.isBlank()) {
+            sb.append("GraalJS unavailable: ").append(graalFailure.trim());
+        }
+        if (nashornFailure != null && !nashornFailure.isBlank()) {
+            if (sb.length() > 0) {
+                sb.append("; ");
+            }
+            sb.append("Nashorn fallback unavailable: ").append(nashornFailure.trim());
+        }
+        if (sb.length() == 0) {
+            sb.append("No JavaScript runtime available");
+        }
+        return sb.toString();
+    }
+
+    private static final class ProbeOutcome {
+        final boolean available;
+        final String failure;
+
+        private ProbeOutcome(boolean available, String failure) {
+            this.available = available;
+            this.failure = failure;
+        }
+
+        static ProbeOutcome available() {
+            return new ProbeOutcome(true, null);
+        }
+
+        static ProbeOutcome unavailable(String failure) {
+            return new ProbeOutcome(false, failure);
         }
     }
 

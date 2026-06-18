@@ -2,7 +2,10 @@ package burp.ui;
 
 import org.junit.jupiter.api.Test;
 
-import javax.swing.JTextArea;
+import javax.swing.JTextPane;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.StyledDocument;
+import javax.swing.text.StyleConstants;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,13 +31,18 @@ class VariableTokenScannerTest {
     }
 
     @Test
-    void highlightStylerDoesNotMutateComponentText() {
-        JTextArea area = new JTextArea("curl {{token}}");
+    void highlightStylerUsesForegroundColorAndDoesNotMutateComponentText() {
+        JTextPane area = new JTextPane();
+        area.setText("curl {{token}}");
         Map<String, String> variables = Map.of("token", "abc123");
 
         VariableHighlightStyler.apply(area, area.getText(), variables);
 
         assertThat(area.getText()).isEqualTo("curl {{token}}");
-        assertThat(area.getHighlighter().getHighlights()).isNotEmpty();
+        StyledDocument document = area.getStyledDocument();
+        AttributeSet base = document.getCharacterElement(0).getAttributes();
+        AttributeSet token = document.getCharacterElement(area.getText().indexOf("{{token}}") + 2).getAttributes();
+        assertThat(StyleConstants.getForeground(token)).isNotEqualTo(StyleConstants.getForeground(base));
+        assertThat(area.getHighlighter().getHighlights()).isEmpty();
     }
 }
