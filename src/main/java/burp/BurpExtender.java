@@ -8,6 +8,7 @@ import burp.smoke.SmokeRuntimeResult;
 import burp.ui.ImporterPanel;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import java.awt.GraphicsEnvironment;
 import javax.swing.*;
 import java.io.PrintWriter;
 import java.io.IOException;
@@ -82,11 +83,16 @@ public class BurpExtender implements BurpExtension {
         }
         writeSmokeLifecycleMarker("bootstrap-schedule-complete");
 
-        SwingUtilities.invokeLater(() -> {
+        Runnable uiInit = () -> {
             writeSmokeLifecycleMarker("initialize-ui-call-start");
             initializeUi(api, scriptResult);
             writeSmokeLifecycleMarker("initialize-ui-call-complete");
-        });
+        };
+        if (GraphicsEnvironment.isHeadless()) {
+            uiInit.run();
+        } else {
+            SwingUtilities.invokeLater(uiInit);
+        }
 
         api.extension().registerUnloadingHandler(() -> {
             if (importer != null) {
