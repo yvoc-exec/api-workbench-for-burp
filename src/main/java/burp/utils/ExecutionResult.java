@@ -4,6 +4,7 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.models.RunnerResult;
 import burp.scripts.ExecutionSource;
+import burp.scripts.ScriptDependentRequestResult;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
@@ -39,8 +40,16 @@ public class ExecutionResult {
     public final List<String> scriptWarnings = new ArrayList<>();
     public final List<String> scriptErrors = new ArrayList<>();
     public final List<ScriptVariableMutation> scriptVariableMutations = new ArrayList<>();
+    public final List<ScriptDependentRequestResult> scriptDependentRequestResults = new ArrayList<>();
     public ScriptFlowControl scriptFlowControl = ScriptFlowControl.CONTINUE;
     public String scriptFlowMessage;
     public String scriptFlowNextRequestName;
     public String scriptFlowNextRequestId;
+    public int dependentRequestCount;
+    public boolean dependentExecution;
+    public boolean adHocExecution;
+    public String parentRequestName;
+    public String parentRequestId;
+    public int dependentDepth;
+    public boolean triggeredByScript;
 }

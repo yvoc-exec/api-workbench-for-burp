@@ -18,6 +18,14 @@ import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 import burp.utils.SharedRequestPipeline;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
+import burp.scripts.ScriptExecutionContext;
+import burp.scripts.ScriptAdHocRequest;
+import burp.scripts.ScriptDependentRequestExecutor;
+import burp.scripts.ScriptDependentRequestResult;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -174,6 +182,7 @@ public class CollectionRunner {
         }
 
         List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
+        RunnerDependentRequestExecutor dependentRequestExecutor = new RunnerDependentRequestExecutor(sourceCollections, reqToColMap, colMap);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         activeExecutor = executor;
@@ -215,7 +224,7 @@ public class CollectionRunner {
                         break;
                     }
 
-                    RequestExecutionOutcome outcome = executeRequest(req, col);
+                    RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
                     if (outcome == null || outcome.result == null || cancelled || Thread.currentThread().isInterrupted()) {
                         break;
                     }
@@ -355,13 +364,26 @@ public class CollectionRunner {
         return req.auth.type + source;
     }
 
-    private RequestExecutionOutcome executeRequest(ApiRequest req, ApiCollection col) {
+    private RequestExecutionOutcome executeRequest(ApiRequest req,
+                                                   ApiCollection col,
+                                                   ScriptDependentRequestExecutor dependentRequestExecutor,
+                                                   boolean dependentExecution,
+                                                   boolean adHocExecution,
+                                                   String parentRequestName,
+                                                   String parentRequestId,
+                                                   int dependentDepth) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
         result.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
         result.folderPath = col != null ? RequestPathResolver.getRequestFolderPath(col, req) : req.path;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
+        result.dependentExecution = dependentExecution;
+        result.adHocExecution = adHocExecution;
+        result.parentRequestName = parentRequestName;
+        result.parentRequestId = parentRequestId;
+        result.dependentDepth = dependentDepth;
+        result.triggeredByScript = dependentExecution || adHocExecution;
 
         if (pipeline == null) {
             result.success = false;
@@ -395,22 +417,32 @@ public class CollectionRunner {
                     // execute overloads but not the explicit ExecutionSource variant.
                     if (activeEnvironment == null && overlay == null && oauth2TokenSink == null && runtimeVariableSink == null) {
                         exec = pipeline.execute(req, col, followRedirects);
+                    } else if (activeEnvironment == null && runtimeVariableSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink);
                     } else if (activeEnvironment == null) {
                         exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                    } else if (overlay == null && oauth2TokenSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects, null, null, runtimeVariableSink, activeEnvironment);
                     } else {
                         exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
                     }
                     if (exec != null) {
                         exec.executionSource = burp.scripts.ExecutionSource.RUNNER;
+                        if (runtimeVariableSink != null && exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
+                            Set<String> removedKeys = exec.removedVars != null
+                                    ? new LinkedHashSet<>(exec.removedVars)
+                                    : Collections.emptySet();
+                            runtimeVariableSink.apply(col, exec.extractedVars, removedKeys);
+                        }
                     }
                 } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 } else if (activeEnvironment == null) {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 } else if (overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
@@ -457,6 +489,10 @@ public class CollectionRunner {
                     result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
                     result.attemptNumber = attempts;
                     result.totalAttempts = maxAttempts;
+                    recordRunnerDiagnostic(result,
+                            exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? DiagnosticSeverity.INFO : DiagnosticSeverity.WARNING,
+                            exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? "Skipped by script" : "Stopped by script",
+                            "Flow Control: " + exec.scriptFlowControl);
                     fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
                     return new RequestExecutionOutcome(result, attempts);
                 }
@@ -653,6 +689,20 @@ public class CollectionRunner {
         if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
             result.scriptVariableMutations.addAll(exec.scriptVariableMutations);
         }
+        if (exec.scriptDependentRequestResults != null && !exec.scriptDependentRequestResults.isEmpty()) {
+            result.scriptDependentRequestResults.addAll(exec.scriptDependentRequestResults);
+        }
+        if (exec.dependentRequestCount > 0) {
+            result.dependentRequestCount += exec.dependentRequestCount;
+        } else if (exec.scriptDependentRequestResults != null && !exec.scriptDependentRequestResults.isEmpty()) {
+            result.dependentRequestCount += exec.scriptDependentRequestResults.size();
+        }
+        result.dependentExecution = exec.dependentExecution;
+        result.adHocExecution = exec.adHocExecution;
+        result.parentRequestName = exec.parentRequestName;
+        result.parentRequestId = exec.parentRequestId;
+        result.dependentDepth = exec.dependentDepth;
+        result.triggeredByScript = exec.triggeredByScript;
     }
 
     private int applyFlowControl(List<ApiRequest> ordered,
@@ -664,7 +714,10 @@ public class CollectionRunner {
             return -1;
         }
         return switch (result.scriptFlowControl) {
-            case STOP_RUN -> Integer.MIN_VALUE;
+            case STOP_RUN -> {
+                recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Runner stopped by script", "Flow Control: STOP_RUN");
+                yield Integer.MIN_VALUE;
+            }
             case SET_NEXT_REQUEST -> {
                 if (flowControlJumps != null && flowControlJumps.length > 0 && flowControlJumps[0] >= maxFlowControlJumps) {
                     fireOnError("Stopped after too many flow-control jumps");
@@ -676,16 +729,39 @@ public class CollectionRunner {
                 int targetIndex = resolveNextRequestIndex(ordered, result.scriptFlowNextRequestName, result.scriptFlowNextRequestId);
                 if (targetIndex < 0) {
                     fireOnDebug("Script requested next request \"" + safeFlowTarget(result) + "\" but no matching request was found.");
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Next request target not found", "Flow Control: SET_NEXT_REQUEST");
                     yield -1;
                 }
+                recordRunnerDiagnostic(result, DiagnosticSeverity.INFO, "Next request selected by script", "Flow Control: SET_NEXT_REQUEST -> " + safeFlowTarget(result));
                 yield targetIndex;
             }
             case RUN_REQUEST, SEND_AD_HOC_REQUEST -> {
-                fireOnDebug("Script flow control " + result.scriptFlowControl + " is recognized but not executed yet.");
+                if (result.dependentRequestCount > 0 || (result.scriptDependentRequestResults != null && !result.scriptDependentRequestResults.isEmpty())) {
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.INFO, "Dependent request executed by script", "Flow Control: " + result.scriptFlowControl);
+                    yield -1;
+                }
+                String warning = "Script flow control " + result.scriptFlowControl + " is recognized but not executed yet.";
+                recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, warning, warning);
+                fireOnDebug(warning);
                 yield -1;
             }
             default -> -1;
         };
+    }
+
+    private void recordRunnerDiagnostic(RunnerResult result, DiagnosticSeverity severity, String message, String details) {
+        DiagnosticEvent event = DiagnosticEvent.of(DiagnosticOperation.RUNNER_RUN, severity, "CollectionRunner", message);
+        if (result != null) {
+            event.collectionName = result.collectionName;
+            event.requestName = result.requestName;
+            event.requestId = result.requestId;
+            event.folderPath = result.folderPath;
+            event.executionSource = result.executionSource;
+            event.scriptDialect = null;
+            event.scriptPhase = null;
+        }
+        event.withDetails(details);
+        DiagnosticStore.getInstance().record(event);
     }
 
     private int resolveNextRequestIndex(List<ApiRequest> ordered, String nextRequestName, String nextRequestId) {
@@ -718,6 +794,245 @@ public class CollectionRunner {
             return result.scriptFlowNextRequestId;
         }
         return "";
+    }
+
+    private final class RunnerDependentRequestExecutor implements ScriptDependentRequestExecutor {
+        private static final int MAX_DEPENDENT_DEPTH = 3;
+        private static final int MAX_DEPENDENT_REQUESTS = 20;
+
+        private final Map<String, ApiRequest> requestById = new LinkedHashMap<>();
+        private final Map<String, List<ApiRequest>> requestByName = new LinkedHashMap<>();
+        private final Map<ApiRequest, ApiCollection> requestCollections;
+        private final Map<String, ApiCollection> collectionsByName;
+        private final Deque<String> requestStack = new ArrayDeque<>();
+        private int dependentDepth = 0;
+        private int dependentCount = 0;
+
+        private RunnerDependentRequestExecutor(List<ApiCollection> sourceCollections,
+                                               Map<ApiRequest, ApiCollection> requestCollections,
+                                               Map<String, ApiCollection> collectionsByName) {
+            this.requestCollections = requestCollections != null ? requestCollections : new IdentityHashMap<>();
+            this.collectionsByName = collectionsByName != null ? collectionsByName : new HashMap<>();
+            if (sourceCollections != null) {
+                for (ApiCollection collection : sourceCollections) {
+                    if (collection == null || collection.requests == null) {
+                        continue;
+                    }
+                    for (ApiRequest request : collection.requests) {
+                        if (request == null) {
+                            continue;
+                        }
+                        if (request.id != null && !request.id.isBlank()) {
+                            requestById.putIfAbsent(request.id, request);
+                        }
+                        if (request.name != null && !request.name.isBlank()) {
+                            requestByName.computeIfAbsent(request.name, k -> new ArrayList<>()).add(request);
+                        }
+                    }
+                }
+            }
+        }
+
+        @Override
+        public ScriptDependentRequestResult runRequest(ScriptExecutionContext context, String targetNameOrId) {
+            if (context == null) {
+                return ScriptDependentRequestResult.failure("runRequest is recognized but no script context is available.");
+            }
+            if (context.executionSource != burp.scripts.ExecutionSource.RUNNER) {
+                return ScriptDependentRequestResult.ignored("runRequest is ignored outside Runner mode.");
+            }
+            ApiRequest target = resolveRequest(targetNameOrId);
+                if (target == null) {
+                    String message = "Dependent request target not found: " + safeLabel(targetNameOrId);
+                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                    return ScriptDependentRequestResult.failure(message);
+                }
+                String stackKey = dependentKey(target);
+                if (requestStack.contains(stackKey)) {
+                    String message = "Dependent request recursion detected: " + stackKey;
+                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                    return ScriptDependentRequestResult.failure(message);
+                }
+                if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
+                    String message = "Dependent request depth limit reached.";
+                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                    return ScriptDependentRequestResult.failure(message);
+                }
+                if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
+                    String message = "Dependent request count limit reached.";
+                    CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                    return ScriptDependentRequestResult.failure(message);
+                }
+            dependentDepth++;
+            dependentCount++;
+            requestStack.push(stackKey);
+            try {
+                ApiCollection targetCollection = requestCollections.get(target);
+                if (targetCollection == null && target.sourceCollection != null) {
+                    targetCollection = collectionsByName.get(target.sourceCollection);
+                }
+                RequestExecutionOutcome outcome = executeRequest(target,
+                        targetCollection,
+                        this,
+                        true,
+                        false,
+                        context.request != null ? context.request.name : null,
+                        context.request != null ? context.request.id : null,
+                        dependentDepth);
+                RunnerResult child = outcome != null ? outcome.result : null;
+                if (child == null) {
+                    return ScriptDependentRequestResult.failure("Dependent request execution produced no result.");
+                }
+                child.dependentExecution = true;
+                child.triggeredByScript = true;
+                child.parentRequestName = context.request != null ? context.request.name : null;
+                child.parentRequestId = context.request != null ? context.request.id : null;
+                child.dependentDepth = dependentDepth;
+                results.add(child);
+                fireOnRequestComplete(child);
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                CollectionRunner.this.recordRunnerDiagnostic(child,
+                        child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
+                        child.dependentExecution ? "Dependent request executed" : "Request executed",
+                        "dependent=" + child.dependentExecution + " depth=" + child.dependentDepth);
+
+                ScriptDependentRequestResult dependentResult = new ScriptDependentRequestResult();
+                dependentResult.executed = true;
+                dependentResult.success = child.success;
+                dependentResult.message = child.errorMessage != null && !child.errorMessage.isBlank()
+                        ? child.errorMessage
+                        : "runRequest";
+                dependentResult.targetNameOrId = targetNameOrId;
+                dependentResult.resolvedRequestName = child.requestName;
+                dependentResult.resolvedRequestId = child.requestId;
+                dependentResult.parentRequestName = context.request != null ? context.request.name : null;
+                dependentResult.parentRequestId = context.request != null ? context.request.id : null;
+                dependentResult.depth = dependentDepth;
+                dependentResult.runnerResult = child;
+                return dependentResult;
+            } finally {
+                requestStack.pop();
+                dependentDepth = Math.max(0, dependentDepth - 1);
+            }
+        }
+
+        @Override
+        public ScriptDependentRequestResult sendAdHocRequest(ScriptExecutionContext context, ScriptAdHocRequest request) {
+            if (context == null) {
+                return ScriptDependentRequestResult.failure("sendAdHocRequest is recognized but no script context is available.");
+            }
+            if (context.executionSource != burp.scripts.ExecutionSource.RUNNER) {
+                return ScriptDependentRequestResult.ignored("sendAdHocRequest is ignored outside Runner mode.");
+            }
+            if (request == null || request.url == null || request.url.isBlank()) {
+                String message = "sendAdHocRequest requires a URL.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
+                String message = "Dependent request depth limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
+                String message = "Dependent request count limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            dependentDepth++;
+            dependentCount++;
+            requestStack.push("ad-hoc:" + dependentCount);
+            try {
+                ApiRequest target = request.toApiRequest();
+                ApiCollection targetCollection = context.collection;
+                RequestExecutionOutcome outcome = executeRequest(target,
+                        targetCollection,
+                        this,
+                        true,
+                        true,
+                        context.request != null ? context.request.name : null,
+                        context.request != null ? context.request.id : null,
+                        dependentDepth);
+                RunnerResult child = outcome != null ? outcome.result : null;
+                if (child == null) {
+                    return ScriptDependentRequestResult.failure("Ad-hoc request execution produced no result.");
+                }
+                child.dependentExecution = true;
+                child.adHocExecution = true;
+                child.triggeredByScript = true;
+                child.parentRequestName = context.request != null ? context.request.name : null;
+                child.parentRequestId = context.request != null ? context.request.id : null;
+                child.dependentDepth = dependentDepth;
+                results.add(child);
+                fireOnRequestComplete(child);
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                CollectionRunner.this.recordRunnerDiagnostic(child,
+                        child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
+                        child.adHocExecution ? "Ad-hoc request executed" : "Request executed",
+                        "adHoc=" + child.adHocExecution + " depth=" + child.dependentDepth);
+
+                ScriptDependentRequestResult dependentResult = new ScriptDependentRequestResult();
+                dependentResult.executed = true;
+                dependentResult.success = child.success;
+                dependentResult.message = child.errorMessage != null && !child.errorMessage.isBlank()
+                        ? child.errorMessage
+                        : "sendAdHocRequest";
+                dependentResult.targetNameOrId = request.name != null && !request.name.isBlank() ? request.name : request.url;
+                dependentResult.resolvedRequestName = child.requestName;
+                dependentResult.resolvedRequestId = child.requestId;
+                dependentResult.parentRequestName = context.request != null ? context.request.name : null;
+                dependentResult.parentRequestId = context.request != null ? context.request.id : null;
+                dependentResult.depth = dependentDepth;
+                dependentResult.adHoc = true;
+                dependentResult.runnerResult = child;
+                return dependentResult;
+            } finally {
+                requestStack.pop();
+                dependentDepth = Math.max(0, dependentDepth - 1);
+            }
+        }
+
+        private ApiRequest resolveRequest(String targetNameOrId) {
+            if (targetNameOrId == null || targetNameOrId.isBlank()) {
+                return null;
+            }
+            ApiRequest byId = requestById.get(targetNameOrId);
+            if (byId != null) {
+                return byId;
+            }
+            List<ApiRequest> byName = requestByName.get(targetNameOrId);
+            if (byName != null && !byName.isEmpty()) {
+                return byName.get(0);
+            }
+            for (Map.Entry<String, ApiRequest> entry : requestById.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
+                    return entry.getValue();
+                }
+            }
+            for (Map.Entry<String, List<ApiRequest>> entry : requestByName.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
+                    return entry.getValue().isEmpty() ? null : entry.getValue().get(0);
+                }
+            }
+            return null;
+        }
+
+        private String dependentKey(ApiRequest request) {
+            if (request == null) {
+                return "";
+            }
+            if (request.id != null && !request.id.isBlank()) {
+                return request.id;
+            }
+            if (request.name != null && !request.name.isBlank()) {
+                return request.name;
+            }
+            return "";
+        }
+
+        private String safeLabel(String value) {
+            return value != null && !value.isBlank() ? value : "unknown";
+        }
     }
 
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {

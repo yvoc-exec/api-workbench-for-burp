@@ -21,7 +21,7 @@ import java.util.function.Consumer;
 
 public class HistoryPanel extends JPanel {
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
-    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.";
+    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.";
 
     private final HistoryStore historyStore;
     private final HistoryExportService exportService;

@@ -224,9 +224,9 @@ class UnifiedScriptRuntimeTest {
         ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Runner", 1);
 
         assertThat(result.success).isTrue();
-        assertThat(result.warnings).contains("bru.runRequest is not executed in the sandbox yet.");
-        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.RUN_REQUEST);
-        assertThat(result.message).isEqualTo("bru.runRequest");
+        assertThat(result.warnings).contains("runRequest is recognized but no dependent executor is available.");
+        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.CONTINUE);
+        assertThat(result.message).isNull();
     }
 
     @Test
@@ -254,9 +254,9 @@ class UnifiedScriptRuntimeTest {
         ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Runner", 1);
 
         assertThat(result.success).isTrue();
-        assertThat(result.warnings).contains("sendAdHocRequest is recognized but not executed yet.");
-        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.SEND_AD_HOC_REQUEST);
-        assertThat(result.message).isEqualTo("sendAdHocRequest");
+        assertThat(result.warnings).contains("sendAdHocRequest is recognized but no dependent executor is available.");
+        assertThat(result.flowControl).isEqualTo(ScriptFlowControl.CONTINUE);
+        assertThat(result.message).isNull();
     }
 
     @Test

@@ -15,9 +15,11 @@ public class ScriptExecutionResult {
     public final List<ScriptLogEntry> logs = new ArrayList<>();
     public final List<ScriptAssertionResult> assertions = new ArrayList<>();
     public final List<ScriptVariableMutation> variableMutations = new ArrayList<>();
+    public final List<ScriptDependentRequestResult> dependentRequestResults = new ArrayList<>();
     public final List<String> warnings = new ArrayList<>();
     public final List<String> errors = new ArrayList<>();
     public ApiRequest mutatedRequest;
+    public int dependentRequestCount;
 
     public boolean hasScriptErrors() {
         return !errors.isEmpty();

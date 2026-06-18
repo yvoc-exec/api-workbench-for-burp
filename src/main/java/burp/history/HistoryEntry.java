@@ -8,6 +8,10 @@ import burp.models.RunnerResult;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.ui.ImporterPanel;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -110,6 +114,10 @@ public class HistoryEntry {
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
+            DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
+                    "Workbench history captured")
+                    .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
+                            + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         } else {
             entry.result = HistoryResult.from(false, null, false, unresolvedVariables != null && !unresolvedVariables.isEmpty());
         }
@@ -173,6 +181,10 @@ public class HistoryEntry {
             if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
                 entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
             }
+            DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
+                    "Runner history captured")
+                    .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
+                            + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         }
         if (entry.responseSnapshot == null && entry.statusCode <= 0 && entry.errorMessage != null && !entry.errorMessage.isBlank()) {
             entry.result = HistoryResult.ERROR;
@@ -367,6 +379,7 @@ public class HistoryEntry {
         sb.append("Response Size: ").append(responseSizeBytes).append(" bytes").append('\n');
         sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
         sb.append("Authored Template Available: ").append(requestSnapshot != null && requestSnapshot.authoredRequest != null ? "yes" : "no").append('\n');
+        sb.append("Preferred Request View: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "Raw Sent" : "Authored Template").append('\n');
         sb.append("Script Engine: ").append(scriptEngineName != null ? scriptEngineName : "").append('\n');
         sb.append("Execution Source: ").append(executionSource != null ? executionSource : "").append('\n');
         sb.append("Script Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');

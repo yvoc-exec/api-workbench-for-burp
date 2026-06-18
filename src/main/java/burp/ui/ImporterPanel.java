@@ -17,6 +17,10 @@ import burp.history.HistoryResult;
 import burp.history.HistorySource;
 import burp.history.HistoryRequestSnapshot;
 import burp.history.HistoryResponseSnapshot;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.SharedRequestPipeline;
@@ -55,6 +59,7 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.datatransfer.StringSelection;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
@@ -125,6 +130,7 @@ public class ImporterPanel {
     private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
+    private JCheckBox diagnosticsIncludeDebugBox;
     private HistoryPanel historyPanel;
 
     // Runner tab
@@ -910,6 +916,13 @@ public class ImporterPanel {
         }
         entry.ensureDefaults();
         historyStore.addEntry(entry);
+        recordDiagnostic(
+                DiagnosticOperation.HISTORY_CAPTURE,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "History entry captured",
+                "historyId=" + entry.id + "\nrawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent()) +
+                        "\nauthoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null));
         if (historyPanel != null) {
             historyPanel.refreshFromStore(entry.id);
         }
@@ -920,6 +933,12 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.LOAD_IN_WORKBENCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Loading history entry into Workbench",
+                "historyId=" + entry.id + "\nrequest=" + entry.requestDisplayName());
         if (requestEditor != null && requestEditor.isDirty() && !historyLoadResultNotifier.confirmReplaceCurrentRequest(mainPanel)) {
             return;
         }
@@ -967,6 +986,12 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.REPLAY,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Replaying history entry",
+                "historyId=" + entry.id + "\nrequest=" + entry.requestDisplayName());
         HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
         ApiRequest request = entry.requestSnapshot.toApiRequest();
         List<ApiCollection> collectionsForAnalysis = context != null && context.collection != null
@@ -2956,6 +2981,7 @@ public class ImporterPanel {
             commitEnvironmentEditorToSelectedProfile();
         }
         commitOAuth2ConfigUiToActiveEnvironment();
+        String previousEnvironmentId = activeEnvironmentId;
         activeEnvironmentId = environmentId;
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
@@ -2969,6 +2995,15 @@ public class ImporterPanel {
         syncOAuth2EnvironmentControls();
         syncOAuth2UiState(true);
         syncActiveEnvironmentToEditors();
+        if (!Objects.equals(previousEnvironmentId, activeEnvironmentId)) {
+            recordDiagnostic(
+                    DiagnosticOperation.ENVIRONMENT_SWITCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Active environment switched",
+                    "from=" + (previousEnvironmentId != null ? previousEnvironmentId : "none") +
+                            "\nto=" + (activeEnvironmentId != null ? activeEnvironmentId : "none"));
+        }
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
     }
 
@@ -3020,6 +3055,14 @@ public class ImporterPanel {
         }
 
         if (changed) {
+            recordDiagnostic(
+                    DiagnosticOperation.ENVIRONMENT_SWITCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Runtime variables applied to active environment",
+                    "collection=" + (collection != null && collection.name != null ? collection.name : "none") +
+                            "\nchangedKeys=" + (changedVars != null ? String.join(", ", changedVars.keySet()) : "") +
+                            "\nremovedKeys=" + (removedKeys != null ? String.join(", ", removedKeys) : ""));
             SwingUtilities.invokeLater(() -> {
                 renderSelectedEnvironmentIntoEditor();
                 syncActiveEnvironmentToEditors();
@@ -3091,6 +3134,13 @@ public class ImporterPanel {
         EnvironmentProfile active = getActiveEnvironment();
         Map<String, String> stored = new LinkedHashMap<>();
         if (active == null || entry == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token store skipped",
+                    "activeEnvironment=" + (active != null ? active.displayName() : "none") +
+                            "\nhasEntry=" + (entry != null));
             return stored;
         }
         String accessBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("accessToken") : null;
@@ -3121,6 +3171,14 @@ public class ImporterPanel {
         }
         if (!stored.isEmpty()) {
             active.ensureDefaults();
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token stored in active environment",
+                    "environment=" + active.displayName() +
+                            "\nstoredKeys=" + String.join(", ", stored.keySet()) +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
             notifyWorkspaceChangedImmediately();
         }
         return stored;
@@ -3134,6 +3192,12 @@ public class ImporterPanel {
             if (oauth2Panel != null) {
                 oauth2Panel.setLastAcquiredToken(null);
             }
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token clear skipped",
+                    "activeEnvironment=none");
             return;
         }
 
@@ -3157,6 +3221,13 @@ public class ImporterPanel {
         updateEnvironmentUiState();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         setOAuth2AutosaveStatus("Cleared OAuth2 token variables from Active Environment \"" + active.displayName() + "\".", Color.GRAY);
+        recordDiagnostic(
+                DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "OAuth2 token outputs cleared",
+                "environment=" + active.displayName() +
+                        "\nremovedKeys=" + String.join(", ", keysToRemove));
         if (oauth2Panel != null) {
             oauth2Panel.setLastAcquiredToken(null);
         }
@@ -4714,6 +4785,12 @@ public class ImporterPanel {
         if (activeEnvironment == null) {
             appendImportLog("OAuth2 token fetch requires an active environment.");
             setOAuth2AutosaveStatus("Create or select an Active Environment before fetching tokens.", Color.GRAY);
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token fetch requires active environment",
+                    "collection=" + (collection != null && collection.name != null ? collection.name : "none"));
             return;
         }
 
@@ -4732,9 +4809,24 @@ public class ImporterPanel {
             renderSelectedEnvironmentIntoEditor(true);
             setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
             appendImportLog("OAuth2 token auto-bound to active environment \"" + activeEnvironment.displayName() + "\".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token auto-bound to active environment",
+                    "environment=" + activeEnvironment.displayName() +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none") +
+                            "\nstoredKeys=" + String.join(", ", stored.keySet()));
         } else {
             setOAuth2AutosaveStatus("Token acquired. Click Bind Token to choose target variables.", new Color(150, 90, 0));
             appendImportLog("OAuth2 token acquired for active environment \"" + activeEnvironment.displayName() + "\".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token acquired",
+                    "environment=" + activeEnvironment.displayName() +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
         }
         notifyWorkspaceChangedImmediately();
     }
@@ -4744,6 +4836,12 @@ public class ImporterPanel {
         TokenStore.TokenEntry entry = oauth2Panel != null ? oauth2Panel.getLastAcquiredToken() : null;
         if (active == null || entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
             appendImportLog("Bind Token: acquire a token first and select an Active Environment.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Bind token skipped",
+                    "activeEnvironment=" + (active != null ? active.displayName() : "none"));
             return;
         }
 
@@ -4942,6 +5040,13 @@ public class ImporterPanel {
         notifyWorkspaceChangedImmediately();
         setOAuth2AutosaveStatus("OAuth2 token bound to active environment \"" + active.displayName() + "\".", new Color(0, 128, 0));
         appendImportLog("OAuth2 token bound to active environment \"" + active.displayName() + "\".");
+        recordDiagnostic(
+                DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "OAuth2 token bound to active environment",
+                "environment=" + active.displayName() +
+                        "\nbindings=" + String.join(", ", active.oauth2.outputBindings.values()));
     }
 
     private Map<String, String> filterOAuth2ConfigVars(Map<String, String> oauth2Vars) {
@@ -5318,6 +5423,12 @@ public class ImporterPanel {
     }
 
     private void importCollectionFilesDroppedOnRequestTreeAsync(List<File> files) {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection drop import started",
+                "fileCount=" + (files != null ? files.size() : 0));
         SwingWorker<DropImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected DropImportResult doInBackground() {
@@ -5330,6 +5441,12 @@ public class ImporterPanel {
                     applyCollectionDropImportResult(get());
                 } catch (Exception e) {
                     appendImportLog("Drop import failed: " + e.getMessage());
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.ERROR,
+                            "ImporterPanel",
+                            "Collection drop import failed",
+                            "error=" + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
                 }
             }
         };
@@ -5340,6 +5457,12 @@ public class ImporterPanel {
         DropImportResult result = new DropImportResult();
         if (files == null || files.isEmpty()) {
             result.messages.add("No files were dropped.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Collection drop import skipped",
+                    "reason=empty file list");
             return result;
         }
 
@@ -5354,19 +5477,44 @@ public class ImporterPanel {
                 if (parser == null) {
                     result.failedCount++;
                     result.messages.add("Skipped unsupported file: " + file.getName());
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.WARNING,
+                            "ImporterPanel",
+                            "Collection file skipped",
+                            "file=" + file.getName() + "\nreason=unsupported");
                     continue;
                 }
                 ApiCollection collection = parser.parse(file);
                 if (collection == null) {
                     result.failedCount++;
                     result.messages.add("Failed to import " + file.getName() + ": parser returned no collection.");
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.WARNING,
+                            "ImporterPanel",
+                            "Collection file produced no collection",
+                            "file=" + file.getName());
                     continue;
                 }
                 result.importedCollections.add(collection);
                 result.messages.add("Imported collection candidate from " + file.getName() + ": " + collection.name);
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.INFO,
+                        "ImporterPanel",
+                        "Collection file parsed",
+                        "file=" + file.getName() +
+                                "\ncollection=" + (collection.name != null ? collection.name : ""));
             } catch (Exception e) {
                 result.failedCount++;
                 result.messages.add("Failed to import " + file.getName() + ": " + e.getMessage());
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.ERROR,
+                        "ImporterPanel",
+                        "Collection file import failed",
+                        "file=" + file.getName() + "\nerror=" + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
             }
         }
         return result;
@@ -5384,6 +5532,12 @@ public class ImporterPanel {
         if (result.importedCollections.isEmpty()) {
             result.importedCount = 0;
             appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection drop import completed",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -5408,6 +5562,12 @@ public class ImporterPanel {
         if (appended.isEmpty()) {
             result.importedCount = 0;
             appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection drop import completed",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -5420,6 +5580,12 @@ public class ImporterPanel {
             }
         });
         appendImportLog("Drop import complete: " + appended.size() + " imported, " + result.failedCount + " failed.");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection drop import completed",
+                "imported=" + appended.size() + "\nfailed=" + result.failedCount);
     }
 
     private void showRemoveCollectionsDialog() {
@@ -7235,6 +7401,12 @@ public class ImporterPanel {
     }
 
     private void handleEnvironmentImport() {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment import started",
+                "activeEnvironment=" + (getActiveEnvironment() != null ? getActiveEnvironment().displayName() : "none"));
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Import Environment");
         chooser.setFileFilter(new FileNameExtensionFilter("Environment files", "json", "bru", "env"));
@@ -7249,12 +7421,24 @@ public class ImporterPanel {
             List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
             if (imported == null || imported.isEmpty()) {
                 appendImportLog("No environment profiles found in " + file.getName() + ".");
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.WARNING,
+                        "ImporterPanel",
+                        "Environment import produced no profiles",
+                        "file=" + file.getName());
                 return;
             }
             addImportedEnvironmentProfiles(imported, file.getName());
         } catch (Exception e) {
             String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Environment import failed: " + message);
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Environment import failed",
+                    "file=" + file.getName() + "\nerror=" + message);
             if (!GraphicsEnvironment.isHeadless()) {
                 JOptionPane.showMessageDialog(mainPanel,
                         "Environment import failed:\n" + message,
@@ -7270,6 +7454,12 @@ public class ImporterPanel {
     }
 
     private void importEnvironmentFilesDroppedAsync(List<File> files) {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment drop import started",
+                "fileCount=" + (files != null ? files.size() : 0));
         SwingWorker<EnvironmentDropImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected EnvironmentDropImportResult doInBackground() {
@@ -7345,6 +7535,12 @@ public class ImporterPanel {
     private void applyEnvironmentDropImportResult(EnvironmentDropImportResult result) {
         if (result == null) {
             appendImportLog("Environment drop import complete: 0 imported, 0 failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Environment drop import completed without result",
+                    "imported=0 failed=0");
             return;
         }
         for (String message : result.messages) {
@@ -7352,6 +7548,12 @@ public class ImporterPanel {
         }
         if (result.importedProfiles.isEmpty()) {
             appendImportLog("Environment drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Environment drop import finished",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -7393,6 +7595,12 @@ public class ImporterPanel {
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
         appendImportLog("Environment drop import complete: " + result.importedCount + " imported, " + result.failedCount + " failed.");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment drop import completed",
+                "imported=" + result.importedCount + "\nfailed=" + result.failedCount);
     }
 
     private String uniqueEnvironmentNameForDrop(String desiredName,
@@ -7461,6 +7669,13 @@ public class ImporterPanel {
         syncActiveEnvironmentToEditors();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Imported " + imported.size() + " environment profile(s) from " + sourceName + ".");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment profiles imported",
+                "source=" + sourceName +
+                        "\ncount=" + imported.size());
         if (firstImported != null) {
             appendImportLog("Active environment set to imported environment \"" + firstImported.displayName() + "\".");
         }
@@ -7571,9 +7786,21 @@ public class ImporterPanel {
         if (collection == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection export started",
+                "collection=" + collectionDisplayName(collection));
         persistCurrentRequestEditorState();
         CollectionExportSelection selection = showCollectionExportDialog(collection);
         if (selection == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Collection export cancelled",
+                    "collection=" + collectionDisplayName(collection));
             return;
         }
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
@@ -7608,9 +7835,24 @@ public class ImporterPanel {
                 message.append(" Warnings: ").append(String.join(" | ", result.warnings));
             }
             appendImportLog(message.toString());
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection export completed",
+                    "collection=" + collectionDisplayName(collection) +
+                            "\nformat=" + selection.format +
+                            "\noutput=" + selection.outputPath);
         } catch (ExportException e) {
             String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Collection export failed: " + reason);
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Collection export failed",
+                    "collection=" + collectionDisplayName(collection) +
+                            "\nerror=" + reason);
             JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -7660,8 +7902,20 @@ public class ImporterPanel {
         if (selected == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment export started",
+                "environment=" + selected.displayName());
         EnvironmentExportSelection selection = showEnvironmentExportDialog(selected);
         if (selection == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Environment export cancelled",
+                    "environment=" + selected.displayName());
             return;
         }
         try {
@@ -7672,9 +7926,24 @@ public class ImporterPanel {
                 message.append(" Warnings: ").append(String.join(" | ", result.warnings));
             }
             appendImportLog(message.toString());
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Environment export completed",
+                    "environment=" + selected.displayName() +
+                            "\nformat=" + selection.format +
+                            "\noutput=" + selection.outputPath);
         } catch (ExportException e) {
             String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Environment export failed: " + reason);
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Environment export failed",
+                    "environment=" + selected.displayName() +
+                            "\nerror=" + reason);
             JOptionPane.showMessageDialog(mainPanel, "Environment export failed: " + reason, "Export Environment", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -8435,10 +8704,19 @@ public class ImporterPanel {
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         JButton refreshButton = new JButton("Refresh Snapshot");
         refreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
-        JButton exportButton = new JButton("Export");
+        JButton clearButton = new JButton("Clear Session Diagnostics");
+        clearButton.addActionListener(e -> clearDiagnosticsSnapshot());
+        JButton copyButton = new JButton("Copy Sanitized Report");
+        copyButton.addActionListener(e -> copyDiagnosticsSnapshot());
+        JButton exportButton = new JButton("Export Sanitized Report");
         exportButton.addActionListener(e -> exportDiagnosticsSnapshot());
+        diagnosticsIncludeDebugBox = new JCheckBox("Include Debug");
+        diagnosticsIncludeDebugBox.setToolTipText("Include debug diagnostics in the snapshot and exported report.");
         buttons.add(refreshButton);
+        buttons.add(clearButton);
+        buttons.add(copyButton);
         buttons.add(exportButton);
+        buttons.add(diagnosticsIncludeDebugBox);
         panel.add(buttons, BorderLayout.NORTH);
 
         return panel;
@@ -8450,6 +8728,19 @@ public class ImporterPanel {
         }
         diagnosticsArea.setText(buildDiagnosticsSnapshot());
         diagnosticsArea.setCaretPosition(0);
+    }
+
+    void clearDiagnosticsSnapshot() {
+        DiagnosticStore.getInstance().clear();
+        refreshDiagnosticsSnapshot();
+    }
+
+    void copyDiagnosticsSnapshot() {
+        if (diagnosticsArea == null) {
+            return;
+        }
+        StringSelection selection = new StringSelection(buildDiagnosticsSnapshot());
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
     }
 
     String buildDiagnosticsSnapshot() {
@@ -8489,6 +8780,12 @@ public class ImporterPanel {
 
         appendDiagnosticsSectionHeader(sb, "Warnings / Notes");
         appendWarnings(sb);
+        sb.append('\n');
+        appendDiagnosticsSectionHeader(sb, "Diagnostics Summary");
+        appendDiagnosticsLine(sb, "diagnostics.summary", DiagnosticStore.getInstance().compactSummary());
+        sb.append('\n');
+        appendDiagnosticsSectionHeader(sb, "Diagnostics Events");
+        sb.append(DiagnosticStore.getInstance().sanitizedReport(diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected()));
         return sb.toString();
     }
 
@@ -8778,6 +9075,13 @@ public class ImporterPanel {
             diagnosticsArea.setText(snapshot);
             diagnosticsArea.setCaretPosition(0);
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Diagnostics snapshot exported",
+                "includeDebug=" + (diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected()) +
+                        "\nlength=" + snapshot.length());
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Export Diagnostics Snapshot");
         chooser.setSelectedFile(new File("diagnostics-snapshot.txt"));
@@ -9733,6 +10037,12 @@ public class ImporterPanel {
     private void populateOAuth2FromRequest(ApiRequest req) {
         if (req == null) {
             appendImportLog("Populate OAuth2: Request selection is empty.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 skipped",
+                    "reason=empty request");
             return;
         }
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
@@ -9747,6 +10057,12 @@ public class ImporterPanel {
                         "Active Environment Required",
                         JOptionPane.WARNING_MESSAGE);
             }
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 requires active environment",
+                    "request=" + req.name);
             return;
         }
 
@@ -9759,6 +10075,12 @@ public class ImporterPanel {
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
         if (extracted.isEmpty()) {
             appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 found no relevant fields",
+                    "request=" + req.name);
             return;
         }
 
@@ -9781,6 +10103,22 @@ public class ImporterPanel {
         List<String> unresolved = collectUnresolvedOAuth2PopulateVariables(extracted);
         if (!unresolved.isEmpty()) {
             appendImportLog("Populate OAuth2: Unresolved variable(s) remain: " + String.join(", ", unresolved) + ".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 unresolved variables",
+                    "request=" + req.name +
+                            "\nunresolved=" + String.join(", ", unresolved));
+        } else {
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Populate OAuth2 completed",
+                    "request=" + req.name +
+                            "\ncollection=" + collectionName +
+                            "\nfields=" + extracted.size());
         }
     }
 
@@ -10001,6 +10339,22 @@ public class ImporterPanel {
             importLog.append(msg + "\n");
             importLog.setCaretPosition(importLog.getDocument().getLength());
         });
+    }
+
+    private void recordDiagnostic(DiagnosticOperation operation,
+                                  DiagnosticSeverity severity,
+                                  String sourceArea,
+                                  String message,
+                                  String details) {
+        DiagnosticEvent event = DiagnosticEvent.of(operation, severity, sourceArea, message);
+        event.collectionName = safeCollectionName(requestEditor != null ? requestEditor.getCurrentCollection() : null);
+        event.requestName = safeRequestName(requestEditor != null ? requestEditor.getCurrentRequest() : null);
+        event.requestId = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().id : null;
+        event.folderPath = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().path : null;
+        EnvironmentProfile active = getActiveEnvironment();
+        event.environmentName = active != null ? active.displayName() : null;
+        event.details = details;
+        DiagnosticStore.getInstance().record(event);
     }
 
     public void appendRunnerLog(String msg) {

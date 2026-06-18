@@ -38,7 +38,16 @@ public class UnifiedScriptRuntime {
                                                    EnvironmentProfile activeEnvironment,
                                                    String source,
                                                    int attemptNumber) {
-        return executePreRequest(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber);
+        return executePreRequest(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, null);
+    }
+
+    public ScriptExecutionResult executePreRequest(ApiCollection collection,
+                                                   ApiRequest request,
+                                                   EnvironmentProfile activeEnvironment,
+                                                   String source,
+                                                   int attemptNumber,
+                                                   ScriptDependentRequestExecutor dependentRequestExecutor) {
+        return executePreRequest(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, dependentRequestExecutor);
     }
 
     public ScriptExecutionResult executePreRequest(ApiCollection collection,
@@ -46,7 +55,17 @@ public class UnifiedScriptRuntime {
                                                    EnvironmentProfile activeEnvironment,
                                                    ExecutionSource executionSource,
                                                    int attemptNumber) {
+        return executePreRequest(collection, request, activeEnvironment, executionSource, attemptNumber, null);
+    }
+
+    public ScriptExecutionResult executePreRequest(ApiCollection collection,
+                                                   ApiRequest request,
+                                                   EnvironmentProfile activeEnvironment,
+                                                   ExecutionSource executionSource,
+                                                   int attemptNumber,
+                                                   ScriptDependentRequestExecutor dependentRequestExecutor) {
         ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, executionSource, attemptNumber);
+        context.dependentRequestExecutor = dependentRequestExecutor;
         context.runnerOnlyFlowControlsAllowed = executionSource == ExecutionSource.RUNNER;
         context.result.engineName = sandboxEngine.getEngineName();
         if (!isEnabled()) {
@@ -69,7 +88,21 @@ public class UnifiedScriptRuntime {
                                                      Map<String, List<String>> responseHeaders,
                                                      long responseTimeMs,
                                                      RunnerResult runnerResult) {
-        return executePostResponse(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, responseText, statusCode, responseHeaders, responseTimeMs, runnerResult);
+        return executePostResponse(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, responseText, statusCode, responseHeaders, responseTimeMs, runnerResult, null);
+    }
+
+    public ScriptExecutionResult executePostResponse(ApiCollection collection,
+                                                     ApiRequest request,
+                                                     EnvironmentProfile activeEnvironment,
+                                                     String source,
+                                                     int attemptNumber,
+                                                     String responseText,
+                                                     int statusCode,
+                                                     Map<String, List<String>> responseHeaders,
+                                                     long responseTimeMs,
+                                                     RunnerResult runnerResult,
+                                                     ScriptDependentRequestExecutor dependentRequestExecutor) {
+        return executePostResponse(collection, request, activeEnvironment, executionSourceFromString(source), attemptNumber, responseText, statusCode, responseHeaders, responseTimeMs, runnerResult, dependentRequestExecutor);
     }
 
     public ScriptExecutionResult executePostResponse(ApiCollection collection,
@@ -82,7 +115,22 @@ public class UnifiedScriptRuntime {
                                                      Map<String, List<String>> responseHeaders,
                                                      long responseTimeMs,
                                                      RunnerResult runnerResult) {
+        return executePostResponse(collection, request, activeEnvironment, executionSource, attemptNumber, responseText, statusCode, responseHeaders, responseTimeMs, runnerResult, null);
+    }
+
+    public ScriptExecutionResult executePostResponse(ApiCollection collection,
+                                                     ApiRequest request,
+                                                     EnvironmentProfile activeEnvironment,
+                                                     ExecutionSource executionSource,
+                                                     int attemptNumber,
+                                                     String responseText,
+                                                     int statusCode,
+                                                     Map<String, List<String>> responseHeaders,
+                                                     long responseTimeMs,
+                                                     RunnerResult runnerResult,
+                                                     ScriptDependentRequestExecutor dependentRequestExecutor) {
         ScriptExecutionContext context = new ScriptExecutionContext(api, collection, request, activeEnvironment, executionSource, attemptNumber);
+        context.dependentRequestExecutor = dependentRequestExecutor;
         context.responseText = responseText;
         context.responseStatusCode = statusCode;
         context.responseTimeMs = responseTimeMs;

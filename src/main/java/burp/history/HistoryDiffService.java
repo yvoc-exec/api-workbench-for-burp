@@ -5,6 +5,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
+import burp.scripts.ScriptLogEntry;
+import burp.scripts.ScriptVariableMutation;
+
 public class HistoryDiffService {
     public String diff(HistoryEntry left, HistoryEntry right) {
         StringBuilder sb = new StringBuilder();
@@ -21,10 +24,14 @@ public class HistoryDiffService {
         appendField(sb, "Status", left != null ? String.valueOf(left.statusCode) : "", right != null ? String.valueOf(right.statusCode) : "");
         appendField(sb, "Duration", left != null ? left.durationMillis + "ms" : "", right != null ? right.durationMillis + "ms" : "");
         appendField(sb, "Size", left != null ? left.historySizeLabel() : "", right != null ? right.historySizeLabel() : "");
+        appendField(sb, "Execution Source", value(left != null ? left.executionSource : null), value(right != null ? right.executionSource : null));
+        appendField(sb, "Script Engine", value(left != null ? left.scriptEngineName : null), value(right != null ? right.scriptEngineName : null));
+        appendField(sb, "Flow Control", value(left != null && left.scriptFlowControl != null ? left.scriptFlowControl.name() : null), value(right != null && right.scriptFlowControl != null ? right.scriptFlowControl.name() : null));
 
         sb.append("\n=== Request ===\n");
         appendBlock(sb, "Method", left != null && left.requestSnapshot != null ? left.requestSnapshot.method : null, right != null && right.requestSnapshot != null ? right.requestSnapshot.method : null);
         appendBlock(sb, "URL Template", left != null && left.requestSnapshot != null ? left.requestSnapshot.urlTemplate : null, right != null && right.requestSnapshot != null ? right.requestSnapshot.urlTemplate : null);
+        appendBlock(sb, "Raw Sent Request", left != null && left.requestSnapshot != null ? left.requestSnapshot.preferredRawRequestText() : null, right != null && right.requestSnapshot != null ? right.requestSnapshot.preferredRawRequestText() : null);
         appendBlock(sb, "Headers", left != null && left.requestSnapshot != null ? left.requestSnapshot.displayHeaderBlock() : null, right != null && right.requestSnapshot != null ? right.requestSnapshot.displayHeaderBlock() : null);
         appendBlock(sb, "Body", prettyPrintMaybeJson(left != null && left.requestSnapshot != null ? left.requestSnapshot.displayBodyText() : null), prettyPrintMaybeJson(right != null && right.requestSnapshot != null ? right.requestSnapshot.displayBodyText() : null));
 
@@ -37,6 +44,10 @@ public class HistoryDiffService {
         appendBlock(sb, "Unresolved Variables", joinList(left != null ? left.unresolvedVariables : List.of()), joinList(right != null ? right.unresolvedVariables : List.of()));
         appendBlock(sb, "Assertions", assertionsText(left), assertionsText(right));
         appendBlock(sb, "Extractions", extractionsText(left), extractionsText(right));
+        appendBlock(sb, "Script Logs", scriptLogsText(left), scriptLogsText(right));
+        appendBlock(sb, "Script Warnings", joinList(left != null ? left.scriptWarnings : List.of()), joinList(right != null ? right.scriptWarnings : List.of()));
+        appendBlock(sb, "Script Errors", joinList(left != null ? left.scriptErrors : List.of()), joinList(right != null ? right.scriptErrors : List.of()));
+        appendBlock(sb, "Script Mutations", scriptMutationsText(left), scriptMutationsText(right));
         return sb.toString().trim();
     }
 
@@ -121,6 +132,41 @@ public class HistoryDiffService {
             lines.add((extraction.name != null ? extraction.name : "") + "=" + value(extraction.value)
                     + (extraction.source != null ? " source=" + extraction.source : "")
                     + (extraction.message != null ? " message=" + extraction.message : ""));
+        }
+        return String.join("\n", lines);
+    }
+
+    private static String scriptLogsText(HistoryEntry entry) {
+        if (entry == null || entry.scriptLogs == null || entry.scriptLogs.isEmpty()) {
+            return "";
+        }
+        List<String> lines = new ArrayList<>();
+        for (ScriptLogEntry log : entry.scriptLogs) {
+            if (log == null) {
+                continue;
+            }
+            lines.add("[" + value(log.level != null ? log.level.toUpperCase(Locale.ROOT) : "INFO") + "] " + value(log.message)
+                    + (log.scriptName != null ? " script=" + log.scriptName : "")
+                    + (log.scriptId != null ? " id=" + log.scriptId : ""));
+        }
+        return String.join("\n", lines);
+    }
+
+    private static String scriptMutationsText(HistoryEntry entry) {
+        if (entry == null || entry.scriptVariableMutations == null || entry.scriptVariableMutations.isEmpty()) {
+            return "";
+        }
+        List<String> lines = new ArrayList<>();
+        for (ScriptVariableMutation mutation : entry.scriptVariableMutations) {
+            if (mutation == null) {
+                continue;
+            }
+            lines.add((mutation.scope != null ? mutation.scope : "")
+                    + ": " + value(mutation.key)
+                    + " old=" + value(mutation.oldValue)
+                    + " new=" + value(mutation.newValue)
+                    + " persistent=" + mutation.persistent
+                    + (mutation.sourceScriptName != null ? " script=" + mutation.sourceScriptName : ""));
         }
         return String.join("\n", lines);
     }
