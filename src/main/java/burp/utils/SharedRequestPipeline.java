@@ -389,22 +389,19 @@ public class SharedRequestPipeline {
                                                            Map<String, String> runtimeOverlay,
                                                            EnvironmentProfile activeEnvironment) {
         Map<String, String> overlay = new LinkedHashMap<>();
-        boolean hasOverlaySource = false;
-        if (activeEnvironment != null) {
-            overlay.putAll(activeEnvironment.toRuntimeOverlay());
-            hasOverlaySource = true;
-        }
-        if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
-            overlay.putAll(runtimeOverlay);
-            hasOverlaySource = true;
-        }
-        if (!hasOverlaySource && collection != null) {
+        if (collection != null) {
             if (collection.runtimeOAuth2 != null && !collection.runtimeOAuth2.isEmpty()) {
                 overlay.putAll(collection.runtimeOAuth2);
             }
             if (collection.runtimeVars != null && !collection.runtimeVars.isEmpty()) {
                 overlay.putAll(collection.runtimeVars);
             }
+        }
+        if (activeEnvironment != null) {
+            overlay.putAll(activeEnvironment.toRuntimeOverlay());
+        }
+        if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
+            overlay.putAll(runtimeOverlay);
         }
         return overlay;
     }

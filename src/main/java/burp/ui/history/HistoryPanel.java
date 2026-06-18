@@ -2,6 +2,7 @@ package burp.ui.history;
 
 import burp.history.*;
 import burp.api.montoya.MontoyaApi;
+import burp.ui.SwingShortcutSupport;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -270,6 +271,7 @@ public class HistoryPanel extends JPanel {
         table.setFillsViewportHeight(true);
         table.setRowSelectionAllowed(true);
         table.setColumnSelectionAllowed(false);
+        SwingShortcutSupport.installTableShortcuts(table);
 
         tableScrollPane.setPreferredSize(new Dimension(820, 280));
         tableScrollPane.setMinimumSize(new Dimension(460, 220));

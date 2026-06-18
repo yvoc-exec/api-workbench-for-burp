@@ -14,6 +14,7 @@ public final class DiagnosticStore implements DiagnosticSink {
     private static final int MAX_EVENTS = 1000;
 
     private final List<DiagnosticEvent> events = new CopyOnWriteArrayList<>();
+    private volatile boolean captureEnabled = false;
 
     private DiagnosticStore() {
     }
@@ -22,9 +23,17 @@ public final class DiagnosticStore implements DiagnosticSink {
         return INSTANCE;
     }
 
+    public boolean isCaptureEnabled() {
+        return captureEnabled;
+    }
+
+    public void setCaptureEnabled(boolean captureEnabled) {
+        this.captureEnabled = captureEnabled;
+    }
+
     @Override
     public void record(DiagnosticEvent event) {
-        if (event == null) {
+        if (event == null || !captureEnabled) {
             return;
         }
         events.add(event);

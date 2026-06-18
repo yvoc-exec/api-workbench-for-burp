@@ -25,6 +25,7 @@ public class WorkspaceState {
     public List<String> expandedTreePathKeys = new ArrayList<>();
     public Map<String, String> requestTreePaths = new LinkedHashMap<>();
     public List<HistoryEntry> historyEntries = new ArrayList<>();
+    public boolean diagnosticsCaptureEnabled = false;
     public Boolean workbenchRepeaterSelected;
     public Boolean workbenchSitemapSelected;
     public Boolean workbenchIntruderSelected;
@@ -70,6 +71,7 @@ public class WorkspaceState {
         copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
         copy.historyEntries = copyHistoryEntries(source.historyEntries);
+        copy.diagnosticsCaptureEnabled = source.diagnosticsCaptureEnabled;
         copy.workbenchRepeaterSelected = source.workbenchRepeaterSelected;
         copy.workbenchSitemapSelected = source.workbenchSitemapSelected;
         copy.workbenchIntruderSelected = source.workbenchIntruderSelected;

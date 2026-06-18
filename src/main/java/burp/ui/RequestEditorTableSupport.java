@@ -20,6 +20,7 @@ final class RequestEditorTableSupport {
         JTable table = new JTable(model);
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        SwingShortcutSupport.installTableShortcuts(table);
         return table;
     }
 

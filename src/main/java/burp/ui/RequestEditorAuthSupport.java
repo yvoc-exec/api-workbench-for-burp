@@ -110,6 +110,7 @@ final class RequestEditorAuthSupport {
         JTextField field = new JTextField();
         field.setEnabled(!readOnly);
         field.getDocument().addDocumentListener(new SimpleDocumentListener(authUi.refreshResolvedMirror));
+        SwingShortcutSupport.installTextComponentShortcuts(field);
         authUi.authFields.put(key, field);
         authUi.authFieldsPanel.add(field);
     }

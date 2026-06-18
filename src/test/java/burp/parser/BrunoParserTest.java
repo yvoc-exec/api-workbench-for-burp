@@ -12,6 +12,10 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -425,5 +429,82 @@ class BrunoParserTest {
         assertThat(collection.requests).isEmpty();
         assertThat(collection.variables).extracting(variable -> variable.key + "=" + variable.value)
                 .contains("baseUrl=https://collection.example.test");
+    }
+
+    @Test
+    void brunoZipArchiveParsesLikeFolderImport() throws Exception {
+        Path zip = createBrunoZip("bruno-archive", Map.of(
+                "MyCollection/bruno.json", """
+                        {
+                          "name": "Zipped Bruno",
+                          "vars": {
+                            "baseUrl": "https://zip.example.test"
+                          }
+                        }
+                        """,
+                "MyCollection/folder/GetUsers.bru", """
+                        meta {
+                          name: Get Users
+                          type: http
+                          seq: 1
+                        }
+
+                        get {
+                          url: {{baseUrl}}/users
+                        }
+                        """
+        ));
+
+        BrunoParser parser = new BrunoParser();
+        assertThat(parser.canParse(zip.toFile())).isTrue();
+
+        ApiCollection collection = parser.parse(zip.toFile());
+
+        assertThat(collection.name).isEqualTo("Zipped Bruno");
+        assertThat(collection.environment).containsEntry("baseUrl", "https://zip.example.test");
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).path).isEqualTo("folder/Get Users");
+    }
+
+    @Test
+    void brunoZipArchiveIgnoresZipSlipEntries() throws Exception {
+        Path zip = createBrunoZip("bruno-slip", new LinkedHashMap<>() {{
+            put("../../escape.txt", "nope");
+            put("MyCollection/bruno.json", """
+                    {
+                      "name": "Safe Bruno"
+                    }
+                    """);
+            put("MyCollection/folder/GetUsers.bru", """
+                    meta {
+                      name: Get Users
+                      type: http
+                      seq: 1
+                    }
+
+                    get {
+                      url: https://api.example.test/users
+                    }
+                    """);
+        }});
+
+        ApiCollection collection = new BrunoParser().parse(zip.toFile());
+
+        assertThat(collection.name).isEqualTo("Safe Bruno");
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).name).isEqualTo("Get Users");
+    }
+
+    private static Path createBrunoZip(String prefix, Map<String, String> entries) throws Exception {
+        Path zip = Files.createTempFile(Path.of("target"), prefix, ".zip").toAbsolutePath().normalize();
+        try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(zip), StandardCharsets.UTF_8)) {
+            for (Map.Entry<String, String> entry : entries.entrySet()) {
+                out.putNextEntry(new ZipEntry(entry.getKey()));
+                out.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+        }
+        zip.toFile().deleteOnExit();
+        return zip;
     }
 }

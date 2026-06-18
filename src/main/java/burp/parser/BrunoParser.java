@@ -11,6 +11,8 @@ import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import javax.script.*;
 
 /**
@@ -39,8 +41,14 @@ public class BrunoParser implements CollectionParser {
                 return false;
             }
         }
-        // Or a single .bru file
-        return file.getName().endsWith(".bru");
+        String lowerName = file.getName().toLowerCase(Locale.ROOT);
+        if (lowerName.endsWith(".bru")) {
+            return true;
+        }
+        if (lowerName.endsWith(".zip")) {
+            return looksLikeBrunoZip(file);
+        }
+        return false;
     }
 
     @Override
@@ -48,74 +56,226 @@ public class BrunoParser implements CollectionParser {
         ApiCollection collection = new ApiCollection();
         collection.format = "bruno";
         collection.name = file.getName().replace(".bru", "");
-
-        if (file.isDirectory()) {
-            parseBrunoDirectory(file, collection);
-        } else {
-            String content = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
-            if (looksLikeRequestBru(content)) {
-                ApiRequest req = parseBruFile(file, "");
-                if (req != null) {
-                    req.sourceCollection = collection.name;
-                    collection.requests.add(req);
+        Path extractedZipRoot = null;
+        try {
+            if (isBrunoZip(file)) {
+                extractedZipRoot = Files.createTempDirectory("bruno-import-");
+                extractBrunoZip(file.toPath(), extractedZipRoot);
+                Path brunoRoot = determineBrunoRoot(extractedZipRoot);
+                if (brunoRoot == null) {
+                    brunoRoot = extractedZipRoot;
                 }
+                parseBrunoDirectory(brunoRoot.toFile(), collection);
+                loadBrunoJsonIfPresent(brunoRoot.toFile(), collection);
+            } else if (file.isDirectory()) {
+                parseBrunoDirectory(file, collection);
+                loadBrunoJsonIfPresent(file, collection);
             } else {
-                Map<String, String> vars = parseVarsBlock(content);
-                putCollectionVariables(collection, vars);
+                String content = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+                if (looksLikeRequestBru(content)) {
+                    ApiRequest req = parseBruFile(file, "");
+                    if (req != null) {
+                        req.sourceCollection = collection.name;
+                        collection.requests.add(req);
+                    }
+                } else {
+                    Map<String, String> vars = parseVarsBlock(content);
+                    putCollectionVariables(collection, vars);
+                }
+                loadBrunoJsonIfPresent(file.getParentFile(), collection);
+            }
+
+            for (ApiRequest request : collection.requests) {
+                if (request != null) {
+                    request.sourceCollection = collection.name;
+                }
+            }
+            AuthInheritanceResolver.recomputeCollectionAuth(collection);
+            return collection;
+        } finally {
+            if (extractedZipRoot != null) {
+                deleteRecursivelyQuietly(extractedZipRoot);
             }
         }
+    }
 
-        // Load bruno.json for collection metadata and global vars if present
-        File brunoJson = new File(file.isDirectory() ? file : file.getParentFile(), "bruno.json");
-        if (brunoJson.exists()) {
-            try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(brunoJson), java.nio.charset.StandardCharsets.UTF_8)) {
-                com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
-                if (obj.has("name")) {
-                    collection.name = obj.get("name").getAsString();
+    private boolean isBrunoZip(File file) {
+        if (file == null || !file.isFile()) {
+            return false;
+        }
+        return file.getName().toLowerCase(Locale.ROOT).endsWith(".zip") && looksLikeBrunoZip(file);
+    }
+
+    private boolean looksLikeBrunoZip(File file) {
+        if (file == null || !file.isFile()) {
+            return false;
+        }
+        try (ZipInputStream zin = new ZipInputStream(Files.newInputStream(file.toPath()))) {
+            ZipEntry entry;
+            while ((entry = zin.getNextEntry()) != null) {
+                if (entry == null || entry.isDirectory()) {
+                    continue;
                 }
-                // Parse common env-like config keys into collection.environment
-                String[] envKeys = {"vars", "variables", "env"};
-                for (String envKey : envKeys) {
-                    if (obj.has(envKey) && obj.get(envKey).isJsonObject()) {
-                        com.google.gson.JsonObject envObj = obj.getAsJsonObject(envKey);
-                        for (Map.Entry<String, com.google.gson.JsonElement> entry : envObj.entrySet()) {
+                String entryName = entry.getName() != null ? entry.getName().replace('\\', '/').toLowerCase(Locale.ROOT) : "";
+                if (entryName.endsWith(".bru") || entryName.endsWith("bruno.json")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
+        return false;
+    }
+
+    private void extractBrunoZip(Path zipPath, Path targetDir) throws IOException {
+        if (zipPath == null || targetDir == null) {
+            return;
+        }
+        Files.createDirectories(targetDir);
+        try (ZipInputStream zin = new ZipInputStream(Files.newInputStream(zipPath))) {
+            ZipEntry entry;
+            while ((entry = zin.getNextEntry()) != null) {
+                Path out = targetDir.resolve(entry.getName()).normalize();
+                if (!out.startsWith(targetDir)) {
+                    continue;
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(out);
+                } else {
+                    Path parent = out.getParent();
+                    if (parent != null) {
+                        Files.createDirectories(parent);
+                    }
+                    Files.copy(zin, out, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private Path determineBrunoRoot(Path extractedRoot) throws IOException {
+        if (extractedRoot == null || !Files.isDirectory(extractedRoot)) {
+            return extractedRoot;
+        }
+        Path current = extractedRoot;
+        while (current != null && Files.isDirectory(current)) {
+            if (hasImmediateBrunoMetadata(current)) {
+                return current;
+            }
+            List<Path> childDirectories = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(current)) {
+                for (Path child : stream) {
+                    if (child != null && Files.isDirectory(child)) {
+                        childDirectories.add(child);
+                    }
+                }
+            }
+            if (childDirectories.size() != 1) {
+                return current;
+            }
+            current = childDirectories.get(0);
+        }
+        return current;
+    }
+
+    private boolean hasImmediateBrunoMetadata(Path directory) throws IOException {
+        if (directory == null || !Files.isDirectory(directory)) {
+            return false;
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+            for (Path child : stream) {
+                if (child == null || Files.isDirectory(child)) {
+                    continue;
+                }
+                String lowerName = child.getFileName() != null ? child.getFileName().toString().toLowerCase(Locale.ROOT) : "";
+                if (lowerName.endsWith(".bru") || "bruno.json".equals(lowerName)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void loadBrunoJsonIfPresent(File root, ApiCollection collection) {
+        if (root == null || collection == null) {
+            return;
+        }
+        File brunoJson = findBrunoJson(root);
+        if (brunoJson == null || !brunoJson.exists()) {
+            return;
+        }
+        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(brunoJson), java.nio.charset.StandardCharsets.UTF_8)) {
+            com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseReader(reader).getAsJsonObject();
+            if (obj.has("name")) {
+                collection.name = obj.get("name").getAsString();
+            }
+            String[] envKeys = {"vars", "variables", "env"};
+            for (String envKey : envKeys) {
+                if (obj.has(envKey) && obj.get(envKey).isJsonObject()) {
+                    com.google.gson.JsonObject envObj = obj.getAsJsonObject(envKey);
+                    for (Map.Entry<String, com.google.gson.JsonElement> entry : envObj.entrySet()) {
+                        com.google.gson.JsonElement value = entry.getValue();
+                        if (value != null && !value.isJsonNull()) {
+                            if (value.isJsonPrimitive()) {
+                                collection.environment.put(entry.getKey(), value.getAsString());
+                            } else {
+                                collection.environment.put(entry.getKey(), value.toString());
+                            }
+                        }
+                    }
+                }
+            }
+            if (obj.has("presets") && obj.get("presets").isJsonObject()) {
+                com.google.gson.JsonObject presets = obj.getAsJsonObject("presets");
+                for (String presetKey : presets.keySet()) {
+                    if (presets.get(presetKey).isJsonObject()) {
+                        com.google.gson.JsonObject preset = presets.getAsJsonObject(presetKey);
+                        for (Map.Entry<String, com.google.gson.JsonElement> entry : preset.entrySet()) {
                             com.google.gson.JsonElement value = entry.getValue();
-                            if (value != null && !value.isJsonNull()) {
-                                if (value.isJsonPrimitive()) {
-                                    collection.environment.put(entry.getKey(), value.getAsString());
-                                } else {
-                                    collection.environment.put(entry.getKey(), value.toString());
-                                }
-                            }
-                        }
-                    }
-                }
-                // Also check for a top-level "presets" or "default" block with vars
-                if (obj.has("presets") && obj.get("presets").isJsonObject()) {
-                    com.google.gson.JsonObject presets = obj.getAsJsonObject("presets");
-                    for (String presetKey : presets.keySet()) {
-                        if (presets.get(presetKey).isJsonObject()) {
-                            com.google.gson.JsonObject preset = presets.getAsJsonObject(presetKey);
-                            for (Map.Entry<String, com.google.gson.JsonElement> entry : preset.entrySet()) {
-                                com.google.gson.JsonElement value = entry.getValue();
-                                if (value != null && !value.isJsonNull() && value.isJsonPrimitive()) {
-                                    collection.environment.putIfAbsent(entry.getKey(), value.getAsString());
-                                }
+                            if (value != null && !value.isJsonNull() && value.isJsonPrimitive()) {
+                                collection.environment.putIfAbsent(entry.getKey(), value.getAsString());
                             }
                         }
                     }
                 }
             }
+        } catch (Exception ignored) {
+            // Best effort only.
         }
+    }
 
-        for (ApiRequest request : collection.requests) {
-            if (request != null) {
-                request.sourceCollection = collection.name;
-            }
+    private File findBrunoJson(File root) {
+        if (root == null) {
+            return null;
         }
-        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+        File direct = new File(root, "bruno.json");
+        if (direct.exists()) {
+            return direct;
+        }
+        try (java.util.stream.Stream<Path> paths = Files.walk(root.toPath())) {
+            return paths
+                    .filter(path -> path != null && path.getFileName() != null && "bruno.json".equalsIgnoreCase(path.getFileName().toString()))
+                    .map(Path::toFile)
+                    .findFirst()
+                    .orElse(null);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
 
-        return collection;
+    private void deleteRecursivelyQuietly(Path root) {
+        if (root == null) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (Exception ignored) {
+                }
+            });
+        } catch (Exception ignored) {
+            // Best effort only.
+        }
     }
 
     private void parseBrunoDirectory(File root, ApiCollection collection) throws IOException {
@@ -615,5 +775,5 @@ public class BrunoParser implements CollectionParser {
     public String getFormatName() { return "Bruno"; }
 
     @Override
-    public String[] getSupportedExtensions() { return new String[]{"bru"}; }
+    public String[] getSupportedExtensions() { return new String[]{"bru", "zip"}; }
 }

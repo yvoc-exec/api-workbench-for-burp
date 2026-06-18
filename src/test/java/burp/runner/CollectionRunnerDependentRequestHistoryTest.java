@@ -22,9 +22,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CollectionRunnerDependentRequestHistoryTest {
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore diagnostics = DiagnosticStore.getInstance();
+        diagnostics.setCaptureEnabled(false);
+        diagnostics.clear();
+    }
+
     @Test
     void dependentChildHistoryPreservesRawRequestScriptOutputAndHistoryDiagnostics() {
-        DiagnosticStore.getInstance().clear();
+        DiagnosticStore diagnostics = DiagnosticStore.getInstance();
+        diagnostics.setCaptureEnabled(true);
+        diagnostics.clear();
 
         AtomicInteger sendCount = new AtomicInteger();
         CollectionRunner runner = RunnerScriptTestFixtures.newRunner(
@@ -107,7 +116,7 @@ class CollectionRunnerDependentRequestHistoryTest {
         assertThat(childHistory.scriptVariableMutations).isNotEmpty();
         assertThat(childHistory.executionSource).isEqualTo("RUNNER");
 
-        assertThat(DiagnosticStore.getInstance().snapshot())
+        assertThat(diagnostics.snapshot())
                 .anySatisfy(event -> {
                     assertThat(event.operation).isEqualTo(DiagnosticOperation.HISTORY_CAPTURE);
                     assertThat(event.severity).isEqualTo(DiagnosticSeverity.INFO);
@@ -115,6 +124,5 @@ class CollectionRunnerDependentRequestHistoryTest {
                     assertThat(event.details).contains("rawRequestAvailable=true");
                 });
 
-        DiagnosticStore.getInstance().clear();
     }
 }

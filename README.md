@@ -444,6 +444,14 @@ Expected output:
 
 For deeper validation notes and targeted test references, see [Testing Guide](docs/testing.md).
 
+### Reduced manual QA suite v3
+
+Use the focused manual QA materials for the stabilized runtime / resolver pass:
+
+- [Reduced Manual QA Flow](REDUCED-MANUAL-QA-FLOW.md)
+- [Environment vs Collection Precedence](ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md)
+- `api-workbench-live-public-test-suite-v3-focused.zip`
+
 ## More documentation
 
 - [Operator Guide](OPERATOR_GUIDE.md)
