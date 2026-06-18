@@ -13,6 +13,7 @@ import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 import burp.ui.ImporterPanel;
+import burp.utils.HttpUtils;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
@@ -59,6 +60,15 @@ public class HistoryEntry {
     public String scriptFlowMessage;
     public String scriptFlowNextRequestName;
     public String scriptFlowNextRequestId;
+    public String finalResolvedUrl;
+    public String host;
+    public String scriptMode;
+    public String scriptDialect;
+    public String resultClassification;
+    public String variablesSummaryText;
+    public String scriptOutputSummaryText;
+    public String assertionsSummaryText;
+    public String metadataSummaryText;
 
     public static HistoryEntry fromWorkbenchExecution(ApiCollection collection,
                                                       ApiRequest request,
@@ -94,11 +104,14 @@ public class HistoryEntry {
             if (isIntentionalNoResponseFlow(exec.scriptFlowControl, exec.response == null)) {
                 entry.result = historyResultForFlowControl(exec.scriptFlowControl);
             } else {
-                entry.result = HistoryResult.from(exec.success,
+            entry.result = HistoryResult.from(exec.success,
                         exec.errorMessage,
                         hasFailedAssertion(exec.assertions),
                         unresolvedVariables != null && !unresolvedVariables.isEmpty());
             }
+            entry.finalResolvedUrl = exec.resolvedUrl;
+            entry.host = parseHost(exec.resolvedUrl);
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
             entry.scriptEngineName = exec.scriptEngineName;
@@ -114,6 +127,7 @@ public class HistoryEntry {
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
                     "Workbench history captured")
                     .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
@@ -157,6 +171,9 @@ public class HistoryEntry {
             entry.scriptFlowMessage = result.scriptFlowMessage;
             entry.scriptFlowNextRequestName = result.scriptFlowNextRequestName;
             entry.scriptFlowNextRequestId = result.scriptFlowNextRequestId;
+            entry.finalResolvedUrl = result.requestUrl;
+            entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(result.requestUrl);
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSnapshot != null) {
                 entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
                 entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
@@ -178,6 +195,7 @@ public class HistoryEntry {
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
                 entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
             }
@@ -230,6 +248,15 @@ public class HistoryEntry {
         copy.scriptFlowMessage = source.scriptFlowMessage;
         copy.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
         copy.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
+        copy.finalResolvedUrl = source.finalResolvedUrl;
+        copy.host = source.host;
+        copy.scriptMode = source.scriptMode;
+        copy.scriptDialect = source.scriptDialect;
+        copy.resultClassification = source.resultClassification;
+        copy.variablesSummaryText = source.variablesSummaryText;
+        copy.scriptOutputSummaryText = source.scriptOutputSummaryText;
+        copy.assertionsSummaryText = source.assertionsSummaryText;
+        copy.metadataSummaryText = source.metadataSummaryText;
         return copy;
     }
 
@@ -281,6 +308,9 @@ public class HistoryEntry {
         }
         if (result == null) {
             result = HistoryResult.UNKNOWN;
+        }
+        if (resultClassification == null && result != null) {
+            resultClassification = result.displayName();
         }
     }
 
@@ -360,30 +390,37 @@ public class HistoryEntry {
     }
 
     public String toMetadataText() {
+        if (metadataSummaryText != null && !metadataSummaryText.isBlank()) {
+            return metadataSummaryText.trim();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("History ID: ").append(id != null ? id : "").append('\n');
-        sb.append("Timestamp: ").append(timeDisplay()).append('\n');
+        sb.append("Created / Executed Timestamp: ").append(timeDisplay()).append('\n');
         sb.append("Source: ").append(source != null ? source.displayName() : "").append('\n');
-        sb.append("Attempt: ").append(attemptDisplay()).append('\n');
-        sb.append("Collection ID: ").append(collectionId != null ? collectionId : "").append('\n');
-        sb.append("Collection Name: ").append(collectionName != null ? collectionName : "").append('\n');
-        sb.append("Folder Path: ").append(folderPath != null ? folderPath : "").append('\n');
-        sb.append("Request ID: ").append(requestId != null ? requestId : "").append('\n');
+        sb.append("Collection: ").append(collectionName != null ? collectionName : "").append('\n');
+        sb.append("Folder / Request Path: ").append(folderPath != null ? folderPath : "").append('\n');
         sb.append("Request Name: ").append(requestName != null ? requestName : "").append('\n');
-        sb.append("Environment ID: ").append(environmentId != null ? environmentId : "").append('\n');
-        sb.append("Environment Name: ").append(environmentName != null ? environmentName : "").append('\n');
-        sb.append("Result: ").append(resultDisplayName()).append('\n');
-        sb.append("Status Code: ").append(statusCode > 0 ? statusCode : "").append('\n');
-        sb.append("Duration: ").append(durationMillis).append(" ms").append('\n');
-        sb.append("Request Size: ").append(requestSizeBytes).append(" bytes").append('\n');
-        sb.append("Response Size: ").append(responseSizeBytes).append(" bytes").append('\n');
+        sb.append("Method: ").append(requestSnapshot != null && requestSnapshot.method != null ? requestSnapshot.method : "").append('\n');
+        sb.append("URL Template: ").append(requestSnapshot != null && requestSnapshot.urlTemplate != null ? requestSnapshot.urlTemplate : "").append('\n');
+        sb.append("Final Resolved URL: ").append(finalResolvedUrl != null && !finalResolvedUrl.isBlank() ? finalResolvedUrl : "Not yet sent").append('\n');
+        sb.append("Host: ").append(host != null && !host.isBlank() ? host : "Not yet sent").append('\n');
+        sb.append("Active Environment: ").append(environmentName != null ? environmentName : "No Environment").append('\n');
+        sb.append("Auth Mode / Auth Source: ").append(resolveAuthLabel()).append('\n');
+        sb.append("Execution Source: ").append(executionSource != null && !executionSource.isBlank() ? executionSource : "Not yet sent").append('\n');
+        sb.append("Execution Attempt: ").append(isExecuted() ? attemptDisplay() : "Not yet sent").append('\n');
+        sb.append("Runner Attempt Number: ").append(source == HistorySource.RUNNER ? attemptDisplay() : (isExecuted() ? "Not applicable" : "Not yet sent")).append('\n');
+        sb.append("Status Code: ").append(statusCode > 0 ? statusCode : "Not yet sent").append('\n');
+        sb.append("Duration: ").append(durationMillis > 0 ? durationMillis + " ms" : "Not yet sent").append('\n');
+        sb.append("Request Size: ").append(requestSizeBytes > 0 ? requestSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Response Size: ").append(responseSizeBytes > 0 ? responseSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Result Classification: ").append(resultClassification != null && !resultClassification.isBlank() ? resultClassification : (isExecuted() ? resultDisplayName() : "Not yet sent")).append('\n');
+        sb.append("Script Engine: ").append(displayValue(scriptEngineName)).append('\n');
+        sb.append("Script Mode: ").append(displayValue(scriptMode)).append('\n');
+        sb.append("Script Dialect: ").append(displayValue(scriptDialect)).append('\n');
+        sb.append("Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
+        sb.append("Flow Message: ").append(scriptFlowMessage != null ? scriptFlowMessage : "").append('\n');
         sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
-        sb.append("Authored Template Available: ").append(requestSnapshot != null && requestSnapshot.authoredRequest != null ? "yes" : "no").append('\n');
-        sb.append("Preferred Request View: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "Raw Sent" : "Authored Template").append('\n');
-        sb.append("Script Engine: ").append(scriptEngineName != null ? scriptEngineName : "").append('\n');
-        sb.append("Execution Source: ").append(executionSource != null ? executionSource : "").append('\n');
-        sb.append("Script Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
-        sb.append("Script Flow Message: ").append(scriptFlowMessage != null ? scriptFlowMessage : "").append('\n');
+        sb.append("Response Available: ").append(responseSnapshot != null && responseSnapshot.hasBody() ? "yes" : "no").append('\n');
         sb.append("Script Logs: ").append(scriptLogs != null ? scriptLogs.size() : 0).append('\n');
         sb.append("Script Warnings: ").append(scriptWarnings != null ? scriptWarnings.size() : 0).append('\n');
         sb.append("Script Errors: ").append(scriptErrors != null ? scriptErrors.size() : 0).append('\n');
@@ -391,6 +428,49 @@ public class HistoryEntry {
         sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
         return sb.toString().trim();
+    }
+
+    private String displayValue(String value) {
+        if (value != null && !value.isBlank()) {
+            return value;
+        }
+        return isExecuted() ? "Not available" : "Not yet sent";
+    }
+
+    public boolean isExecuted() {
+        if (result != null && result != HistoryResult.UNKNOWN) {
+            return true;
+        }
+        return (statusCode > 0)
+                || durationMillis > 0
+                || (responseSnapshot != null && responseSnapshot.hasBody())
+                || (finalResolvedUrl != null && !finalResolvedUrl.isBlank())
+                || (requestSnapshot != null && requestSnapshot.hasRawRequestSent());
+    }
+
+    private String resolveAuthLabel() {
+        String authType = requestSnapshot != null ? requestSnapshot.authType : null;
+        if (authType == null || authType.isBlank()) {
+            return isExecuted() ? "Not yet sent" : "Not yet sent";
+        }
+        StringBuilder sb = new StringBuilder(authType);
+        if (requestSnapshot != null && requestSnapshot.authoredRequest != null
+                && requestSnapshot.authoredRequest.authSource != null
+                && !requestSnapshot.authoredRequest.authSource.isBlank()) {
+            sb.append(" (").append(requestSnapshot.authoredRequest.authSource).append(")");
+        }
+        return sb.toString();
+    }
+
+    private static String parseHost(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return null;
+        }
+        try {
+            return HttpUtils.parseTargetForRequest(resolvedUrl).host;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static HistoryEntry createBase(HistorySource source,

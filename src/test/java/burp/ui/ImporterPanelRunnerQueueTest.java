@@ -476,14 +476,25 @@ class ImporterPanelRunnerQueueTest {
 
         awaitCondition("blank-url runner result", () -> {
             try {
-                return resultModel(panel).getRowCount() == 1;
+                return resultModel(panel).getEntries().stream()
+                        .anyMatch(entry -> entry != null
+                                && entry.requestResult != null
+                                && entry.requestResult.errorMessage != null
+                                && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"));
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         });
         drainEdt();
 
-        RunnerResult result = resultModel(panel).getResultAt(0);
+        RunnerExecutionTableModel.Entry resultEntry = resultModel(panel).getEntries().stream()
+                .filter(entry -> entry != null
+                        && entry.requestResult != null
+                        && entry.requestResult.errorMessage != null
+                        && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"))
+                .findFirst()
+                .orElseThrow();
+        RunnerResult result = resultEntry.requestResult;
         assertThat(result.success).isFalse();
         assertThat(result.errorMessage).contains("Request URL cannot be null or empty");
         assertThat(runnerLog(panel).getText()).contains("FAIL").contains("Request URL cannot be null or empty");
@@ -652,8 +663,8 @@ class ImporterPanelRunnerQueueTest {
         return (JList<?>) privateField(panel, "runnerQueueList");
     }
 
-    private static RunnerResultTableModel resultModel(ImporterPanel panel) throws Exception {
-        return (RunnerResultTableModel) privateField(panel, "resultModel");
+    private static RunnerExecutionTableModel resultModel(ImporterPanel panel) throws Exception {
+        return (RunnerExecutionTableModel) privateField(panel, "resultModel");
     }
 
     private static RunnerTimelineTableModel timelineModel(ImporterPanel panel) throws Exception {
