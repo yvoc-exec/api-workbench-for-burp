@@ -114,10 +114,18 @@ public class AuthorizationCodeHandler {
     }
 
     private static boolean isLoopbackHost(String host) {
-        return "localhost".equalsIgnoreCase(host)
-                || "127.0.0.1".equals(host)
-                || "::1".equals(host)
-                || "[::1]".equals(host);
+        if (host == null || host.isBlank()) {
+            return false;
+        }
+        String candidate = host;
+        if (candidate.startsWith("[") && candidate.endsWith("]") && candidate.length() > 2) {
+            candidate = candidate.substring(1, candidate.length() - 1);
+        }
+        try {
+            return InetAddress.getByName(candidate).isLoopbackAddress();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private CompletableFuture<String> startCallbackListener(String expectedState, CallbackEndpoint endpoint) {

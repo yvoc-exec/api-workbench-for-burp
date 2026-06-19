@@ -302,6 +302,7 @@ public class ImporterPanel {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.oauth2Panel.setTokenAcquiredCollectionSupplier(() -> null);
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
+        this.oauth2Panel.setTokenAcquiredEnvironmentIdSupplier(this::getActiveEnvironmentId);
         this.importer = importer;
         this.runner = runner;
         if (this.runner != null) {
@@ -3823,6 +3824,18 @@ public class ImporterPanel {
         return null;
     }
 
+    private EnvironmentProfile findEnvironmentById(String environmentId) {
+        if (environmentId == null || environmentProfiles.isEmpty()) {
+            return null;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null && Objects.equals(environmentId, profile.id)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
     private boolean hasActiveEnvironment() {
         return getActiveEnvironment() != null;
     }
@@ -4005,25 +4018,28 @@ public class ImporterPanel {
         return normalized;
     }
 
-    private void applyOAuth2ConfigToActiveEnvironment(Map<String, String> configVars) {
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active == null) {
+    private void applyOAuth2ConfigToEnvironment(EnvironmentProfile environment, Map<String, String> configVars) {
+        if (environment == null) {
             return;
         }
-        active.ensureDefaults();
-        String preservedClientAuth = active.oauth2 != null && active.oauth2.config != null
-                ? active.oauth2.config.get("oauth2_client_auth")
+        environment.ensureDefaults();
+        String preservedClientAuth = environment.oauth2 != null && environment.oauth2.config != null
+                ? environment.oauth2.config.get("oauth2_client_auth")
                 : null;
-        active.oauth2.config.clear();
+        environment.oauth2.config.clear();
         if (configVars != null && !configVars.isEmpty()) {
-            active.oauth2.config.putAll(configVars);
+            environment.oauth2.config.putAll(configVars);
         }
         if (preservedClientAuth != null && !preservedClientAuth.isBlank()) {
-            active.oauth2.config.put("oauth2_client_auth", preservedClientAuth);
+            environment.oauth2.config.put("oauth2_client_auth", preservedClientAuth);
         }
-        active.oauth2.ensureDefaults();
+        environment.oauth2.ensureDefaults();
         oauth2ConfigDirty = false;
-        renderedOAuth2ConfigEnvironmentId = active.id;
+        renderedOAuth2ConfigEnvironmentId = environment.id;
+    }
+
+    private void applyOAuth2ConfigToActiveEnvironment(Map<String, String> configVars) {
+        applyOAuth2ConfigToEnvironment(getActiveEnvironment(), configVars);
     }
 
     private void commitOAuth2ConfigUiToActiveEnvironment() {
@@ -4051,58 +4067,63 @@ public class ImporterPanel {
         }
     }
 
-    private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
-        EnvironmentProfile active = getActiveEnvironment();
+    private Map<String, String> storeOAuth2TokenInEnvironment(ApiCollection collection,
+                                                              EnvironmentProfile environment,
+                                                              burp.auth.TokenStore.TokenEntry entry) {
         Map<String, String> stored = new LinkedHashMap<>();
-        if (active == null || entry == null) {
+        if (environment == null || entry == null) {
             recordDiagnostic(
                     DiagnosticOperation.OAUTH2_TOKEN_FETCH,
                     DiagnosticSeverity.WARNING,
                     "ImporterPanel",
                     "OAuth2 token store skipped",
-                    "activeEnvironment=" + (active != null ? active.displayName() : "none") +
+                    "activeEnvironment=" + (environment != null ? environment.displayName() : "none") +
                             "\nhasEntry=" + (entry != null));
             return stored;
         }
-        String accessBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("accessToken") : null;
-        String refreshBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("refreshToken") : null;
-        String tokenTypeBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("tokenType") : null;
-        String expiresInBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("expiresIn") : null;
+        String accessBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("accessToken") : null;
+        String refreshBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("refreshToken") : null;
+        String tokenTypeBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("tokenType") : null;
+        String expiresInBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("expiresIn") : null;
 
         if (entry.accessToken != null && !entry.accessToken.isBlank()) {
             String key = accessBinding != null && !accessBinding.isBlank() ? accessBinding : "oauth2_access_token";
-            active.variables.put(key, entry.accessToken);
+            environment.variables.put(key, entry.accessToken);
             stored.put(key, entry.accessToken);
         }
         if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
             String key = refreshBinding != null && !refreshBinding.isBlank() ? refreshBinding : "oauth2_refresh_token";
-            active.variables.put(key, entry.refreshToken);
+            environment.variables.put(key, entry.refreshToken);
             stored.put(key, entry.refreshToken);
         }
         if (entry.tokenType != null && !entry.tokenType.isBlank()) {
             String key = tokenTypeBinding != null && !tokenTypeBinding.isBlank() ? tokenTypeBinding : "oauth2_token_type";
-            active.variables.put(key, entry.tokenType);
+            environment.variables.put(key, entry.tokenType);
             stored.put(key, entry.tokenType);
         }
         if (entry.expiresAt > 0) {
             long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
             String key = expiresInBinding != null && !expiresInBinding.isBlank() ? expiresInBinding : "oauth2_expires_in";
-            active.variables.put(key, String.valueOf(expiresInSeconds));
+            environment.variables.put(key, String.valueOf(expiresInSeconds));
             stored.put(key, String.valueOf(expiresInSeconds));
         }
         if (!stored.isEmpty()) {
-            active.ensureDefaults();
+            environment.ensureDefaults();
             recordDiagnostic(
                     DiagnosticOperation.OAUTH2_TOKEN_FETCH,
                     DiagnosticSeverity.INFO,
                     "ImporterPanel",
                     "OAuth2 token stored in active environment",
-                    "environment=" + active.displayName() +
+                    "environment=" + environment.displayName() +
                             "\nstoredKeys=" + String.join(", ", stored.keySet()) +
                             "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
             notifyWorkspaceChangedImmediately();
         }
         return stored;
+    }
+
+    private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
+        return storeOAuth2TokenInEnvironment(collection, getActiveEnvironment(), entry);
     }
 
     private void clearActiveEnvironmentOAuth2TokenOutputs() {
@@ -5706,13 +5727,15 @@ public class ImporterPanel {
 
     private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
                                            ApiCollection collection,
-                                           Map<String, String> oauth2Vars) {
+                                           Map<String, String> oauth2Vars,
+                                           String environmentId,
+                                           boolean autoBindRequested) {
         if (entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
             return;
         }
 
-        EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        if (activeEnvironment == null) {
+        EnvironmentProfile targetEnvironment = environmentId != null ? findEnvironmentById(environmentId) : getActiveEnvironment();
+        if (targetEnvironment == null) {
             appendImportLog("OAuth2 token fetch requires an active environment.");
             setOAuth2AutosaveStatus("Create or select an Active Environment before fetching tokens.", Color.GRAY);
             recordDiagnostic(
@@ -5724,38 +5747,46 @@ public class ImporterPanel {
             return;
         }
 
-        applyOAuth2ConfigToActiveEnvironment(filterOAuth2ConfigVars(oauth2Vars));
+        applyOAuth2ConfigToEnvironment(targetEnvironment, filterOAuth2ConfigVars(oauth2Vars));
         oauth2Panel.setLastAcquiredToken(entry);
 
-        boolean autoBind = oauth2Panel.isAutoBindSelected();
+        boolean autoBind = autoBindRequested;
         Map<String, String> stored = Collections.emptyMap();
         if (autoBind) {
-            stored = storeOAuth2TokenInActiveEnvironment(collection, entry);
+            stored = storeOAuth2TokenInEnvironment(collection, targetEnvironment, entry);
         }
 
-        syncActiveEnvironmentToEditors();
-        updateEnvironmentUiState();
+        boolean targetStillActive = Objects.equals(activeEnvironmentId, targetEnvironment.id);
+        if (targetStillActive) {
+            syncActiveEnvironmentToEditors();
+            updateEnvironmentUiState();
+        }
         if (autoBind && stored != null && !stored.isEmpty()) {
-            renderSelectedEnvironmentIntoEditor(true);
-            setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
-            appendImportLog("OAuth2 token auto-bound to active environment \"" + activeEnvironment.displayName() + "\".");
+            if (targetStillActive) {
+                renderSelectedEnvironmentIntoEditor(true);
+            }
+            setOAuth2AutosaveStatus("Token values saved to " + targetEnvironment.displayName() + ".", new Color(0, 128, 0));
+            appendImportLog("OAuth2 token auto-bound to active environment \"" + targetEnvironment.displayName() + "\".");
             recordDiagnostic(
                     DiagnosticOperation.OAUTH2_TOKEN_FETCH,
                     DiagnosticSeverity.INFO,
                     "ImporterPanel",
                     "OAuth2 token auto-bound to active environment",
-                    "environment=" + activeEnvironment.displayName() +
+                    "environment=" + targetEnvironment.displayName() +
                             "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none") +
                             "\nstoredKeys=" + String.join(", ", stored.keySet()));
         } else {
-            setOAuth2AutosaveStatus("Token acquired. Click Bind Token to choose target variables.", new Color(150, 90, 0));
-            appendImportLog("OAuth2 token acquired for active environment \"" + activeEnvironment.displayName() + "\".");
+            String statusMessage = targetStillActive
+                    ? "Token acquired. Click Bind Token to choose target variables."
+                    : "Token acquired for " + targetEnvironment.displayName() + ". Re-select that environment to bind token values.";
+            setOAuth2AutosaveStatus(statusMessage, new Color(150, 90, 0));
+            appendImportLog("OAuth2 token acquired for active environment \"" + targetEnvironment.displayName() + "\".");
             recordDiagnostic(
                     DiagnosticOperation.OAUTH2_TOKEN_FETCH,
                     DiagnosticSeverity.INFO,
                     "ImporterPanel",
                     "OAuth2 token acquired",
-                    "environment=" + activeEnvironment.displayName() +
+                    "environment=" + targetEnvironment.displayName() +
                             "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
         }
         notifyWorkspaceChangedImmediately();
