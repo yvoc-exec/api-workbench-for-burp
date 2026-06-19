@@ -147,6 +147,7 @@ public class PostmanParser implements CollectionParser {
             if (item.has("request") && item.get("request").isJsonObject()) {
                 JsonObject reqObj = item.getAsJsonObject("request");
                 ApiRequest req = parseRequest(reqObj, name, currentPath, nextInherited);
+                req.id = firstNonBlank(getString(item, "id", ""), getString(reqObj, "id", ""));
                 req.sourceCollection = collection.name;
 
                 // Item-level events take priority; fall back to request-level events
@@ -611,6 +612,18 @@ public class PostmanParser implements CollectionParser {
             if (elem.isJsonPrimitive()) return elem.getAsString();
         }
         return defaultValue;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**

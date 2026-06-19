@@ -123,6 +123,9 @@ public final class PostmanCollectionExporter {
                                             boolean resolve,
                                             List<String> warnings) {
         JsonObject item = new JsonObject();
+        if (request != null && request.id != null && !request.id.isBlank()) {
+            item.addProperty("id", request.id);
+        }
         VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
         item.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
         JsonObject req = new JsonObject();

@@ -24,10 +24,8 @@ jobs:
       run: |
         java -version
         mvn -version
-    - name: Run Maven tests
-      run: mvn -B clean test
-    - name: Build shaded JAR
-      run: mvn -B clean package
+    - name: Run Maven verify with JaCoCo coverage
+      run: mvn -B clean verify
     - name: Verify shaded JAR exists and is non-trivially sized
       run: |
         jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
@@ -49,11 +47,21 @@ jobs:
       run: |
         jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
         java -cp "$jar" burp.smoke.ScriptRuntimeProbe --require-full
+    - name: Upload JaCoCo reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: jacoco-reports-java${{ matrix.java }}
+        if-no-files-found: warn
+        path: |
+          target/site/jacoco/**
+          target/jacoco.exec
     - name: Upload surefire and failsafe reports
-      if: failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: surefire-reports-java${{ matrix.java }}
+        if-no-files-found: warn
         path: |
           target/surefire-reports/**
           target/failsafe-reports/**
