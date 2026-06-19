@@ -6,7 +6,11 @@ import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.HttpService;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import java.net.URI;
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 
 public class ClientCredentialsHandler {
@@ -32,37 +36,26 @@ public class ClientCredentialsHandler {
                 throw new Exception("OAuth2 client_auth=basic requires oauth2_client_id and oauth2_client_secret");
             }
         }
-
-        HttpService service = HttpService.httpService(extractHost(config.tokenUrl), extractPort(config.tokenUrl), config.tokenUrl.startsWith("https"));
-        String path = extractPath(config.tokenUrl);
-        String authHeader = "";
+        String authHeaderValue = null;
         if ("basic".equals(mode)) {
             String creds = config.clientId + ":" + config.clientSecret;
             String basic = java.util.Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
-            authHeader = "Authorization: Basic " + basic + "\r\n";
+            authHeaderValue = "Basic " + basic;
         }
-        String requestStr = "POST " + path + " HTTP/1.1\r\n" +
-                "Host: " + service.host() + (service.port() != 443 && service.port() != 80 ? ":" + service.port() : "") + "\r\n" +
-                "Content-Type: application/x-www-form-urlencoded\r\n" +
-                authHeader +
-                "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n" +
-                "\r\n" + body;
+        TokenEndpointResponse response = sendTokenRequest(config, body, api, authHeaderValue);
 
-        HttpRequest request = HttpRequest.httpRequest(service, ByteArray.byteArray(requestStr.getBytes(StandardCharsets.UTF_8)));
-        var response = api.http().sendRequest(request);
-
-        if (response.response() == null) {
+        if (response.body == null) {
             throw new Exception("No response from token endpoint");
         }
 
-        String respBody = response.response().bodyToString();
+        String respBody = response.body;
         JsonObject json;
         try {
             json = JsonParser.parseString(respBody).getAsJsonObject();
         } catch (Exception e) {
             String preview = respBody.length() > 200 ? respBody.substring(0, 200) + "..." : respBody;
             throw new Exception("OAuth2 token endpoint returned non-JSON response (status: " +
-                    response.response().statusCode() + "): " + preview);
+                    response.statusCode + "): " + preview);
         }
 
         if (json.has("error")) {
@@ -87,6 +80,66 @@ public class ClientCredentialsHandler {
         }
 
         return entry;
+    }
+
+    private static TokenEndpointResponse sendTokenRequest(OAuth2Config config,
+                                                          String body,
+                                                          MontoyaApi api,
+                                                          String authHeaderValue) throws Exception {
+        if (api != null) {
+            try {
+                return sendTokenRequestViaMontoya(config, body, api, authHeaderValue);
+            } catch (NullPointerException e) {
+                if (!isMissingMontoyaFactory(e)) {
+                    throw e;
+                }
+            }
+        }
+        return sendTokenRequestViaJdk(config, body, authHeaderValue);
+    }
+
+    private static TokenEndpointResponse sendTokenRequestViaMontoya(OAuth2Config config,
+                                                                    String body,
+                                                                    MontoyaApi api,
+                                                                    String authHeaderValue) {
+        HttpService service = HttpService.httpService(extractHost(config.tokenUrl), extractPort(config.tokenUrl), config.tokenUrl.startsWith("https"));
+        String path = extractPath(config.tokenUrl);
+        String authHeader = authHeaderValue != null && !authHeaderValue.isBlank()
+                ? "Authorization: " + authHeaderValue + "\r\n"
+                : "";
+        String requestStr = "POST " + path + " HTTP/1.1\r\n" +
+                "Host: " + service.host() + (service.port() != 443 && service.port() != 80 ? ":" + service.port() : "") + "\r\n" +
+                "Content-Type: application/x-www-form-urlencoded\r\n" +
+                authHeader +
+                "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n" +
+                "\r\n" + body;
+
+        HttpRequest request = HttpRequest.httpRequest(service, ByteArray.byteArray(requestStr.getBytes(StandardCharsets.UTF_8)));
+        var response = api.http().sendRequest(request);
+        return response.response() == null
+                ? new TokenEndpointResponse(0, null)
+                : new TokenEndpointResponse(response.response().statusCode(), response.response().bodyToString());
+    }
+
+    private static TokenEndpointResponse sendTokenRequestViaJdk(OAuth2Config config,
+                                                                String body,
+                                                                String authHeaderValue) throws Exception {
+        HttpClient client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        java.net.http.HttpRequest.Builder requestBuilder = java.net.http.HttpRequest.newBuilder(URI.create(config.tokenUrl))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        if (authHeaderValue != null && !authHeaderValue.isBlank()) {
+            requestBuilder.header("Authorization", authHeaderValue);
+        }
+        var response = client.send(requestBuilder.build(), BodyHandlers.ofString(StandardCharsets.UTF_8));
+        return new TokenEndpointResponse(response.statusCode(), response.body());
+    }
+
+    private static boolean isMissingMontoyaFactory(NullPointerException e) {
+        String message = e.getMessage();
+        return message != null && message.contains("ObjectFactoryLocator.FACTORY");
     }
 
     static String normalizeClientAuthMode(OAuth2Config config) {
@@ -149,5 +202,8 @@ public class ClientCredentialsHandler {
             String query = u.getQuery();
             return path + (query != null ? "?" + query : "");
         } catch (Exception e) { return "/"; }
+    }
+
+    private record TokenEndpointResponse(int statusCode, String body) {
     }
 }

@@ -7,12 +7,14 @@ import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Central OAuth2 token lifecycle manager.
  * Integrates with VariableResolver to inject tokens into requests.
  */
 public class OAuth2Manager {
+    private static final ConcurrentHashMap<String, Object> TOKEN_LOCKS = new ConcurrentHashMap<>();
     private final MontoyaApi api;
 
     public OAuth2Manager(MontoyaApi api) {
@@ -75,28 +77,35 @@ public class OAuth2Manager {
             return entry;
         }
 
-        // Try refresh first if we have a refresh token
-        if (entry != null && entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-            try {
-                api.logging().logToOutput("OAuth2 token expired. Attempting refresh...");
-                recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token refresh started", "key=" + key);
-                config.refreshToken = entry.refreshToken;
-                config.grantType = OAuth2Config.GrantType.REFRESH_TOKEN;
-                entry = new RefreshTokenHandler().execute(config, api);
-                TokenStore.store(key, entry);
-                recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token refresh completed",
-                        "key=" + key + "\nexpiresAt=" + entry.expiresAt);
+        Object lock = TOKEN_LOCKS.computeIfAbsent(key, ignored -> new Object());
+        synchronized (lock) {
+            entry = TokenStore.get(key);
+            if (entry != null && entry.isValid(config.tokenExpiryBuffer)) {
                 return entry;
-            } catch (Exception e) {
-                api.logging().logToOutput("Refresh failed: " + e.getMessage() + ". Re-authenticating...");
-                recordDiagnostic(DiagnosticSeverity.WARNING, "OAuth2 token refresh failed",
-                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             }
-        }
 
-        // Full re-auth
-        recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token re-authentication started", "key=" + key);
-        return acquireToken(config);
+            // Try refresh first if we have a refresh token
+            if (entry != null && entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                try {
+                    api.logging().logToOutput("OAuth2 token expired. Attempting refresh...");
+                    recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token refresh started", "key=" + key);
+                    OAuth2Config refreshConfig = copyForRefresh(config, entry.refreshToken);
+                    entry = new RefreshTokenHandler().execute(refreshConfig, api);
+                    TokenStore.store(key, entry);
+                    recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token refresh completed",
+                            "key=" + key + "\nexpiresAt=" + entry.expiresAt);
+                    return entry;
+                } catch (Exception e) {
+                    api.logging().logToOutput("Refresh failed: " + e.getMessage() + ". Re-authenticating...");
+                    recordDiagnostic(DiagnosticSeverity.WARNING, "OAuth2 token refresh failed",
+                            e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                }
+            }
+
+            // Full re-auth
+            recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token re-authentication started", "key=" + key);
+            return acquireToken(config);
+        }
     }
 
     /**
@@ -134,5 +143,23 @@ public class OAuth2Manager {
         DiagnosticEvent event = DiagnosticEvent.of(DiagnosticOperation.OAUTH2_TOKEN_FETCH, severity, "OAuth2Manager", message);
         event.details = details;
         DiagnosticStore.getInstance().record(event);
+    }
+
+    private static OAuth2Config copyForRefresh(OAuth2Config source, String refreshToken) {
+        OAuth2Config copy = new OAuth2Config();
+        copy.grantType = OAuth2Config.GrantType.REFRESH_TOKEN;
+        copy.tokenUrl = source.tokenUrl;
+        copy.authUrl = source.authUrl;
+        copy.redirectUri = source.redirectUri;
+        copy.clientId = source.clientId;
+        copy.clientSecret = source.clientSecret;
+        copy.username = source.username;
+        copy.password = source.password;
+        copy.scope = source.scope;
+        copy.refreshToken = refreshToken;
+        copy.usePkce = source.usePkce;
+        copy.tokenExpiryBuffer = source.tokenExpiryBuffer;
+        copy.clientAuth = source.clientAuth;
+        return copy;
     }
 }

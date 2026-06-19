@@ -18,7 +18,11 @@ public class OAuth2Panel extends JPanel {
         void onVariablesChanged(Map<String, String> vars, boolean replaceMode);
     }
     public interface TokenAcquiredListener {
-        void onTokenAcquired(TokenStore.TokenEntry entry, ApiCollection collection, Map<String, String> oauth2Vars);
+        void onTokenAcquired(TokenStore.TokenEntry entry,
+                             ApiCollection collection,
+                             Map<String, String> oauth2Vars,
+                             String environmentId,
+                             boolean autoBind);
     }
     public interface ClearTokensListener {
         void onClearTokensRequested();
@@ -49,6 +53,7 @@ public class OAuth2Panel extends JPanel {
     private TokenAcquiredListener tokenAcquiredListener;
     private ClearTokensListener clearTokensListener;
     private Supplier<ApiCollection> tokenAcquiredCollectionSupplier;
+    private Supplier<String> tokenAcquiredEnvironmentIdSupplier;
 
     public OAuth2Panel(OAuth2Manager manager) {
         this.manager = manager;
@@ -245,6 +250,9 @@ public class OAuth2Panel extends JPanel {
             return;
         }
         ApiCollection targetCollection = tokenAcquiredCollectionSupplier != null ? tokenAcquiredCollectionSupplier.get() : null;
+        String targetEnvironmentId = tokenAcquiredEnvironmentIdSupplier != null ? tokenAcquiredEnvironmentIdSupplier.get() : null;
+        Map<String, String> requestedVarsSnapshot = new HashMap<>(getVariables());
+        boolean autoBindAtRequest = autoBindCheck != null && autoBindCheck.isSelected();
         appendRequestSummary(config);
 
         SwingWorker<TokenStore.TokenEntry, String> worker = new SwingWorker<>() {
@@ -271,23 +279,13 @@ public class OAuth2Panel extends JPanel {
                     }
                     tokenPreviewField.setText(entry.accessToken);
                     appendResponseSummary(entry);
-                    Map<String, String> vars = getVariables();
-                    vars.put("oauth2_access_token", entry.accessToken);
-                    if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
-                        vars.put("oauth2_refresh_token", entry.refreshToken);
-                    }
-                    if (entry.tokenType != null && !entry.tokenType.isBlank()) {
-                        vars.put("oauth2_token_type", entry.tokenType);
-                    }
-                    if (entry.scope != null && !entry.scope.isBlank()) {
-                        vars.put("oauth2_scope", entry.scope);
-                    }
-                    if (entry.expiresAt > 0) {
-                        long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
-                        vars.put("oauth2_expires_in", String.valueOf(expiresInSeconds));
-                    }
                     if (tokenAcquiredListener != null) {
-                        tokenAcquiredListener.onTokenAcquired(entry, targetCollection, vars);
+                        tokenAcquiredListener.onTokenAcquired(
+                                entry,
+                                targetCollection,
+                                requestedVarsSnapshot,
+                                targetEnvironmentId,
+                                autoBindAtRequest);
                     }
                 } catch (Exception e) {
                     updateStatus("FAILED: " + e.getMessage());
@@ -303,6 +301,10 @@ public class OAuth2Panel extends JPanel {
 
     public void setTokenAcquiredCollectionSupplier(Supplier<ApiCollection> supplier) {
         this.tokenAcquiredCollectionSupplier = supplier;
+    }
+
+    public void setTokenAcquiredEnvironmentIdSupplier(Supplier<String> supplier) {
+        this.tokenAcquiredEnvironmentIdSupplier = supplier;
     }
 
     public TokenStore.TokenEntry getLastAcquiredToken() {

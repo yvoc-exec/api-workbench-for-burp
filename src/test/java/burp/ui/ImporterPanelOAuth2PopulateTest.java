@@ -20,6 +20,8 @@ import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -455,10 +457,12 @@ class ImporterPanelOAuth2PopulateTest {
 
         TokenStore.TokenEntry entry = token("auto-bind-off-token");
         invokePrivate(panel, "handleOAuth2TokenAcquired",
-                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class},
+                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class, String.class, boolean.class},
                 entry,
                 null,
-                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"));
+                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"),
+                active.id,
+                false);
         drainEdt();
 
         assertThat(active.variables).doesNotContainKey("oauth2_access_token");
@@ -479,10 +483,12 @@ class ImporterPanelOAuth2PopulateTest {
 
         TokenStore.TokenEntry entry = token("auto-bind-on-token");
         invokePrivate(panel, "handleOAuth2TokenAcquired",
-                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class},
+                new Class<?>[]{TokenStore.TokenEntry.class, ApiCollection.class, Map.class, String.class, boolean.class},
                 entry,
                 null,
-                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"));
+                Map.of("oauth2_client_id", "client-id", "oauth2_token_url", "https://auth.example.test/token"),
+                active.id,
+                true);
         drainEdt();
 
         assertThat(active.variables).containsEntry("token", "auto-bind-on-token");
@@ -585,7 +591,60 @@ class ImporterPanelOAuth2PopulateTest {
                 .containsEntry("oauth2_token_url", "https://draft.example.test/token");
     }
 
+    @Test
+    void asyncAcquireBindsTokenToOriginEnvironmentEvenAfterSelectionSwitch() throws Exception {
+        OAuth2Manager manager = Mockito.mock(OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS);
+        CountDownLatch acquireStarted = new CountDownLatch(1);
+        CountDownLatch releaseAcquire = new CountDownLatch(1);
+        Mockito.when(manager.acquireToken(Mockito.any())).thenAnswer(invocation -> {
+            acquireStarted.countDown();
+            assertThat(releaseAcquire.await(5, TimeUnit.SECONDS)).isTrue();
+            return token("switch-safe-token");
+        });
+
+        ImporterPanel panel = newPanel(manager);
+        EnvironmentProfile uat = environment("UAT");
+        uat.oauth2.outputBindings.put("accessToken", "token");
+        EnvironmentProfile prd = environment("PRD");
+        prd.oauth2.outputBindings.put("accessToken", "token");
+        prd.variables.put("token", "prd-token");
+        panel.replaceEnvironmentProfiles(List.of(uat, prd));
+        panel.setActiveEnvironmentId(uat.id);
+        drainEdt();
+
+        OAuth2Panel oauth2Panel = oauth2Panel(panel);
+        oauth2Panel.populateFromOAuth2Map(Map.of(
+                "oauth2_grant", "client_credentials",
+                "oauth2_client_id", "client-id",
+                "oauth2_client_secret", "client-secret",
+                "oauth2_token_url", "https://auth.example.test/token",
+                "oauth2_scope", "api.read"));
+        drainEdt();
+        SwingUtilities.invokeAndWait(() -> oauth2Panel.getAutoBindCheckBox().setSelected(true));
+        JButton acquireBtn = (JButton) privateField(oauth2Panel, "acquireBtn");
+        SwingUtilities.invokeAndWait(acquireBtn::doClick);
+
+        assertThat(acquireStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        panel.setActiveEnvironmentId(prd.id);
+        drainEdt();
+        releaseAcquire.countDown();
+
+        waitForCondition(() -> "switch-safe-token".equals(uat.variables.get("token")), 5_000L);
+
+        assertThat(uat.variables).containsEntry("token", "switch-safe-token");
+        assertThat(prd.variables).containsEntry("token", "prd-token");
+        assertThat(uat.oauth2.config)
+                .containsEntry("oauth2_client_id", "client-id")
+                .containsEntry("oauth2_token_url", "https://auth.example.test/token");
+        assertThat(prd.oauth2.config).doesNotContainKey("oauth2_client_id");
+        assertThat(panel.getActiveEnvironmentId()).isEqualTo(prd.id);
+    }
+
     private ImporterPanel newPanel() throws Exception {
+        return newPanel(Mockito.mock(OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS));
+    }
+
+    private ImporterPanel newPanel(OAuth2Manager oauth2Manager) throws Exception {
         burp.UniversalImporter importer = Mockito.mock(burp.UniversalImporter.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
         Mockito.when(requestEditor.uiComponent()).thenReturn(new JPanel());
@@ -593,7 +652,6 @@ class ImporterPanelOAuth2PopulateTest {
         HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
         Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
         Mockito.when(importer.getApi().userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
-        OAuth2Manager oauth2Manager = Mockito.mock(OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS);
         CollectionRunner runner = new CollectionRunner(null);
         return new ImporterPanel(importer, runner, oauth2Manager, burp.utils.ScriptMode.DISABLED);
     }
@@ -664,6 +722,19 @@ class ImporterPanelOAuth2PopulateTest {
         method.invoke(panel, arg1, arg2, arg3);
     }
 
+    private static void invokePrivate(ImporterPanel panel,
+                                      String methodName,
+                                      Class<?>[] parameterTypes,
+                                      Object arg1,
+                                      Object arg2,
+                                      Object arg3,
+                                      Object arg4,
+                                      Object arg5) throws Exception {
+        Method method = ImporterPanel.class.getDeclaredMethod(methodName, parameterTypes);
+        method.setAccessible(true);
+        method.invoke(panel, arg1, arg2, arg3, arg4, arg5);
+    }
+
     private static void invokePrivate(ImporterPanel panel, String methodName) throws Exception {
         Method method = ImporterPanel.class.getDeclaredMethod(methodName);
         method.setAccessible(true);
@@ -716,5 +787,17 @@ class ImporterPanelOAuth2PopulateTest {
             Thread.sleep(50L);
         }
         throw new AssertionError("Timed out waiting for status text: " + expected + "\nCurrent text:\n" + statusArea.getText());
+    }
+
+    private static void waitForCondition(java.util.concurrent.Callable<Boolean> condition, long timeoutMillis) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            drainEdt();
+            if (condition.call()) {
+                return;
+            }
+            Thread.sleep(25L);
+        }
+        throw new AssertionError("Timed out waiting for condition");
     }
 }
