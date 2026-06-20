@@ -13,6 +13,7 @@ public class WorkspaceStateService {
     }
 
     private final StringStore store;
+    private final Object ioLock = new Object();
 
     public WorkspaceStateService(MontoyaApi api) {
         this(api != null ? new MontoyaStringStore(api.persistence() != null ? api.persistence().extensionData() : null) : null);
@@ -30,21 +31,26 @@ public class WorkspaceStateService {
         if (store == null) {
             return new WorkspaceState();
         }
-        return WorkspaceStateJson.fromJson(store.get(KEY));
+        synchronized (ioLock) {
+            return WorkspaceStateJson.fromJson(store.get(KEY));
+        }
     }
 
     public void save(WorkspaceState state) {
         if (store == null) {
             return;
         }
-        store.set(KEY, WorkspaceStateJson.toJson(state));
+        WorkspaceState snapshot = WorkspaceState.copyOf(state);
+        saveJson(WorkspaceStateJson.toJson(snapshot));
     }
 
     public void saveJson(String json) {
         if (store == null) {
             return;
         }
-        store.set(KEY, json != null ? json : "");
+        synchronized (ioLock) {
+            store.set(KEY, json != null ? json : "");
+        }
     }
 
     private static class MontoyaStringStore implements StringStore {

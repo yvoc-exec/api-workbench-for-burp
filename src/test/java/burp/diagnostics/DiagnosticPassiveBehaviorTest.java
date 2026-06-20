@@ -4,15 +4,38 @@ import burp.exporter.EnvironmentExportFormat;
 import burp.exporter.EnvironmentExportOptions;
 import burp.exporter.EnvironmentExportService;
 import burp.history.HistoryEntry;
+import burp.models.ApiCollection;
+import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RunnerResult;
+import burp.runner.CollectionRunner;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
+import burp.scripts.ScriptVariableMutation;
 import burp.testsupport.HistoryTestFixtures;
+import burp.testsupport.RunnerScriptTestFixtures;
+import burp.utils.EnvironmentImportService;
+import burp.utils.ExecutionResult;
+import burp.utils.RequestBuilder;
+import burp.utils.ScriptEngine;
+import burp.utils.ScriptMode;
+import burp.utils.SharedRequestPipeline;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -28,74 +51,265 @@ class DiagnosticPassiveBehaviorTest {
     }
 
     @Test
-    void diagnosticsToggleDoesNotChangeHistoryCaptureOutputs() {
-        burp.utils.ExecutionResult execution = HistoryTestFixtures.sampleWorkbenchExecutionResult();
-        execution.scriptWarnings.add("warn");
+    void diagnosticsToggleDoesNotChangeRequestRunnerHistoryOrEnvironmentOutputs() throws Exception {
+        PassiveScenarioSnapshot captureOff = captureScenario(false, "capture-off");
+        PassiveScenarioSnapshot captureOn = captureScenario(true, "capture-on");
 
-        DiagnosticStore.getInstance().setCaptureEnabled(false);
-        HistoryEntry disabled = HistoryEntry.fromWorkbenchExecution(
-                HistoryTestFixtures.sampleCollection(),
-                HistoryTestFixtures.sampleRequest(),
-                HistoryTestFixtures.sampleEnvironment(),
-                execution,
-                1,
-                1,
-                List.of("missing"));
+        assertThat(captureOff.workbenchRawRequestBytes).containsExactly(captureOn.workbenchRawRequestBytes);
+        assertThat(captureOff.workbenchResponseStatus).isEqualTo(captureOn.workbenchResponseStatus);
+        assertThat(captureOff.workbenchResponseBody).isEqualTo(captureOn.workbenchResponseBody);
+        assertThat(captureOff.workbenchEnvironmentVariables).isEqualTo(captureOn.workbenchEnvironmentVariables);
+        assertVariableMutationsEquivalent(captureOff.workbenchMutations, captureOn.workbenchMutations);
+        assertThat(captureOff.runnerEnvironmentVariables).isEqualTo(captureOn.runnerEnvironmentVariables);
 
-        DiagnosticStore.getInstance().clear();
-        DiagnosticStore.getInstance().setCaptureEnabled(true);
-        HistoryEntry enabled = HistoryEntry.fromWorkbenchExecution(
-                HistoryTestFixtures.sampleCollection(),
-                HistoryTestFixtures.sampleRequest(),
-                HistoryTestFixtures.sampleEnvironment(),
-                execution,
-                1,
-                1,
-                List.of("missing"));
+        assertHistoryEquivalent(captureOff.historyEntry, captureOn.historyEntry);
+        assertRunnerEquivalent(captureOff.runnerResult, captureOn.runnerResult);
 
-        assertEquivalent(disabled, enabled);
+        assertEnvironmentEquivalent(captureOff.importedEnvironment, captureOn.importedEnvironment);
+        assertThat(captureOff.exportedEnvironmentJson).isEqualTo(captureOn.exportedEnvironmentJson);
+        assertThat(captureOff.oauth2Bindings).isEqualTo(captureOn.oauth2Bindings);
     }
 
-    @Test
-    void diagnosticsToggleDoesNotChangeEnvironmentImportOrExportResults() throws Exception {
-        Path envFile = tempDir.resolve("uat.env");
+    private PassiveScenarioSnapshot captureScenario(boolean captureEnabled, String filePrefix) throws Exception {
+        DiagnosticStore store = DiagnosticStore.getInstance();
+        store.clear();
+        store.setCaptureEnabled(captureEnabled);
+
+        Path envFile = tempDir.resolve("diagnostics-passive.api-workbench.environment.json");
         Files.writeString(envFile, """
-                base_url=https://api.example.test
-                token=abc123
+                {
+                  "id": "diag-passive-env",
+                  "name": "Diagnostics Passive",
+                  "variables": {
+                    "base_url": "https://api.example.test",
+                    "token": "seed-token",
+                    "password": "seed-password"
+                  },
+                  "oauth2": {
+                    "config": {
+                      "oauth2_grant": "client_credentials",
+                      "oauth2_client_id": "client-123",
+                      "oauth2_token_url": "https://auth.example.test/token"
+                    },
+                    "outputBindings": {
+                      "accessToken": "token",
+                      "refreshToken": "refresh_token"
+                    }
+                  }
+                }
                 """);
 
-        DiagnosticStore.getInstance().setCaptureEnabled(false);
-        List<EnvironmentProfile> importedDisabled = burp.utils.EnvironmentImportService.importEnvironment(envFile.toFile());
+        List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(envFile.toFile());
+        assertThat(imported).hasSize(1);
+        EnvironmentProfile importedEnvironment = imported.get(0);
 
-        DiagnosticStore.getInstance().setCaptureEnabled(true);
-        List<EnvironmentProfile> importedEnabled = burp.utils.EnvironmentImportService.importEnvironment(envFile.toFile());
+        Path exportedPath = tempDir.resolve(filePrefix + ".exported.api-workbench.environment.json");
+        new EnvironmentExportService().exportEnvironment(
+                importedEnvironment,
+                new EnvironmentExportOptions(EnvironmentExportFormat.API_WORKBENCH_JSON, exportedPath));
+        String exportedEnvironmentJson = Files.readString(exportedPath);
 
-        assertThat(importedDisabled).hasSize(1);
-        assertThat(importedEnabled).hasSize(1);
-        assertThat(importedDisabled.get(0).name).isEqualTo(importedEnabled.get(0).name);
-        assertThat(importedDisabled.get(0).sourceFormat).isEqualTo(importedEnabled.get(0).sourceFormat);
-        assertThat(importedDisabled.get(0).sourceFileName).isEqualTo(importedEnabled.get(0).sourceFileName);
-        assertThat(importedDisabled.get(0).variables).isEqualTo(importedEnabled.get(0).variables);
-        assertThat(importedDisabled.get(0).oauth2.config).isEqualTo(importedEnabled.get(0).oauth2.config);
-        assertThat(importedDisabled.get(0).oauth2.outputBindings).isEqualTo(importedEnabled.get(0).oauth2.outputBindings);
+        ApiCollection workbenchCollection = newCollection("Diagnostics Workbench");
+        ApiRequest workbenchRequest = scriptedRequest(workbenchCollection.name);
+        workbenchCollection.requests.add(workbenchRequest);
+        EnvironmentProfile workbenchEnvironment = importedEnvironment.copy();
 
-        EnvironmentProfile profile = importedEnabled.get(0);
-        Path outputDisabled = tempDir.resolve("uat-disabled.api-workbench.environment.json");
-        Path outputEnabled = tempDir.resolve("uat-enabled.api-workbench.environment.json");
+        AtomicInteger sendCount = new AtomicInteger();
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                RunnerScriptTestFixtures.mockRunnerApi(
+                        sendCount,
+                        new java.util.concurrent.CopyOnWriteArrayList<>(),
+                        () -> RunnerScriptTestFixtures.mockResponse(201, "{\"session\":\"resp-123\"}", "application/json")),
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null);
 
-        new EnvironmentExportService().exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.API_WORKBENCH_JSON, outputDisabled));
-        String exportedDisabled = Files.readString(outputDisabled);
+        ExecutionResult execution = pipeline.execute(
+                workbenchRequest,
+                workbenchCollection,
+                true,
+                workbenchEnvironment.toRuntimeOverlay(),
+                null,
+                (collection, changedVars, removedKeys) -> applyEnvironmentDelta(workbenchEnvironment, changedVars, removedKeys),
+                workbenchEnvironment);
 
-        DiagnosticStore.getInstance().setCaptureEnabled(true);
-        new EnvironmentExportService().exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.API_WORKBENCH_JSON, outputEnabled));
-        String exportedEnabled = Files.readString(outputEnabled);
+        assertThat(sendCount.get()).isEqualTo(1);
+        HistoryEntry historyEntry = HistoryEntry.fromWorkbenchExecution(
+                workbenchCollection,
+                workbenchRequest,
+                workbenchEnvironment,
+                execution,
+                1,
+                1,
+                List.of());
 
-        assertThat(exportedDisabled).contains("base_url");
-        assertThat(exportedDisabled).contains("token");
-        assertThat(exportedDisabled).isEqualTo(exportedEnabled);
+        ApiCollection runnerCollection = newCollection("Diagnostics Runner");
+        ApiRequest runnerRequest = scriptedRequest(runnerCollection.name);
+        runnerCollection.requests.add(runnerRequest);
+        EnvironmentProfile runnerEnvironment = importedEnvironment.copy();
+
+        SharedRequestPipeline runnerPipeline = new SharedRequestPipeline(
+                RunnerScriptTestFixtures.mockRunnerApi(
+                        new AtomicInteger(),
+                        new java.util.concurrent.CopyOnWriteArrayList<>(),
+                        () -> RunnerScriptTestFixtures.mockResponse(201, "{\"session\":\"resp-123\"}", "application/json")),
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null);
+        CollectionRunner runner = new CollectionRunner(null, runnerPipeline, null);
+        runner.setDelayMs(0);
+        runner.setMaxRetries(0);
+        runner.setRuntimeOverlayProvider(collection -> runnerEnvironment.toRuntimeOverlay());
+        runner.setActiveEnvironmentProvider(collection -> runnerEnvironment);
+        runner.setRuntimeVariableSink((collection, changedVars, removedKeys) ->
+                applyEnvironmentDelta(runnerEnvironment, changedVars, removedKeys));
+        runner.runCollections(List.of(runnerCollection), List.of(runnerRequest));
+        waitForRunnerToStop(runner);
+
+        List<RunnerResult> results = runner.getResults();
+        assertThat(results).hasSize(1);
+
+        PassiveScenarioSnapshot snapshot = new PassiveScenarioSnapshot();
+        snapshot.workbenchRawRequestBytes = execution.rawRequestBytes != null ? execution.rawRequestBytes.clone() : null;
+        snapshot.workbenchResponseStatus = execution.response != null && execution.response.response() != null
+                ? execution.response.response().statusCode()
+                : -1;
+        snapshot.workbenchResponseBody = execution.response != null && execution.response.response() != null
+                ? execution.response.response().bodyToString()
+                : null;
+        snapshot.workbenchEnvironmentVariables = new LinkedHashMap<>(workbenchEnvironment.variables);
+        snapshot.workbenchMutations = copyMutations(execution.scriptVariableMutations);
+        snapshot.historyEntry = historyEntry;
+        snapshot.runnerResult = results.get(0);
+        snapshot.runnerEnvironmentVariables = new LinkedHashMap<>(runnerEnvironment.variables);
+        snapshot.importedEnvironment = importedEnvironment.copy();
+        snapshot.exportedEnvironmentJson = exportedEnvironmentJson;
+        snapshot.oauth2Bindings = new LinkedHashMap<>(importedEnvironment.oauth2.outputBindings);
+        return snapshot;
     }
 
-    private static void assertEquivalent(HistoryEntry left, HistoryEntry right) {
+    private static void applyEnvironmentDelta(EnvironmentProfile environment,
+                                              Map<String, String> changedVars,
+                                              Set<String> removedKeys) {
+        if (environment == null) {
+            return;
+        }
+        if (removedKeys != null) {
+            for (String key : removedKeys) {
+                environment.variables.remove(key);
+            }
+        }
+        if (changedVars != null) {
+            environment.variables.putAll(changedVars);
+        }
+    }
+
+    private static ApiCollection newCollection(String name) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = name;
+        collection.format = "api-workbench";
+        collection.environment.put("base_url", "https://collection.example.test");
+        return collection;
+    }
+
+    private static ApiRequest scriptedRequest(String collectionName) {
+        ApiRequest request = HistoryTestFixtures.sampleRequest();
+        request.sourceCollection = collectionName;
+        request.headers = new ArrayList<>(request.headers);
+        request.scriptBlocks = new ArrayList<>();
+        request.scriptBlocks.add(scriptBlock(
+                "pre-1",
+                ScriptPhase.PRE_REQUEST,
+                """
+                        pm.environment.set('trace_id', 'trace-001');
+                        pm.request.headers.upsert('X-Trace', pm.environment.get('trace_id'));
+                        """));
+        request.scriptBlocks.add(scriptBlock(
+                "post-1",
+                ScriptPhase.POST_RESPONSE,
+                """
+                        pm.environment.set('session', pm.response.json().get('session'));
+                        pm.environment.set('last_status', String(pm.response.code));
+                        console.log('diagnostic-passive');
+                        """));
+        return request;
+    }
+
+    private static ScriptBlock scriptBlock(String id, ScriptPhase phase, String source) {
+        ScriptBlock block = new ScriptBlock();
+        block.id = id;
+        block.phase = phase;
+        block.scope = ScriptScope.REQUEST;
+        block.dialect = ScriptDialect.POSTMAN;
+        block.source = source;
+        block.enabled = true;
+        return block;
+    }
+
+    private static List<ScriptVariableMutation> copyMutations(List<ScriptVariableMutation> source) {
+        List<ScriptVariableMutation> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (ScriptVariableMutation mutation : source) {
+            if (mutation == null) {
+                continue;
+            }
+            ScriptVariableMutation item = new ScriptVariableMutation();
+            item.key = mutation.key;
+            item.oldValue = mutation.oldValue;
+            item.newValue = mutation.newValue;
+            item.scope = mutation.scope;
+            item.persistent = mutation.persistent;
+            item.sourceScriptId = mutation.sourceScriptId;
+            item.sourceScriptName = mutation.sourceScriptName;
+            copy.add(item);
+        }
+        return copy;
+    }
+
+    private static void waitForRunnerToStop(CollectionRunner runner) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (runner != null && runner.isRunning() && System.nanoTime() < deadline) {
+            Thread.sleep(10L);
+        }
+        assertThat(runner).isNotNull();
+        assertThat(runner.isRunning()).isFalse();
+    }
+
+    private static void assertEnvironmentEquivalent(EnvironmentProfile left, EnvironmentProfile right) {
+        assertThat(left.name).isEqualTo(right.name);
+        assertThat(left.sourceFormat).isEqualTo(right.sourceFormat);
+        assertThat(left.sourceFileName).isEqualTo(right.sourceFileName);
+        assertThat(left.variables).isEqualTo(right.variables);
+        assertThat(left.oauth2.config).isEqualTo(right.oauth2.config);
+        assertThat(left.oauth2.outputBindings).isEqualTo(right.oauth2.outputBindings);
+    }
+
+    private static void assertRunnerEquivalent(RunnerResult left, RunnerResult right) {
+        assertThat(left.requestId).isEqualTo(right.requestId);
+        assertThat(left.requestName).isEqualTo(right.requestName);
+        assertThat(left.collectionName).isEqualTo(right.collectionName);
+        assertThat(left.method).isEqualTo(right.method);
+        assertThat(left.requestUrl).isEqualTo(right.requestUrl);
+        assertThat(left.requestHeaders).isEqualTo(right.requestHeaders);
+        assertThat(left.requestBody).isEqualTo(right.requestBody);
+        assertThat(left.rawRequestBytes).containsExactly(right.rawRequestBytes);
+        assertThat(left.rawRequestText).isEqualTo(right.rawRequestText);
+        assertThat(left.success).isEqualTo(right.success);
+        assertThat(left.statusCode).isEqualTo(right.statusCode);
+        assertThat(left.responseHeaders).isEqualTo(right.responseHeaders);
+        assertThat(left.responseBody).isEqualTo(right.responseBody);
+        assertThat(left.errorMessage).isEqualTo(right.errorMessage);
+        assertThat(left.extractedVariables).isEqualTo(right.extractedVariables);
+        assertThat(left.resolvedVariables).isEqualTo(right.resolvedVariables);
+        assertThat(left.scriptWarnings).isEqualTo(right.scriptWarnings);
+        assertThat(left.scriptErrors).isEqualTo(right.scriptErrors);
+        assertThat(left.scriptLogs).usingRecursiveFieldByFieldElementComparator().containsExactlyElementsOf(right.scriptLogs);
+        assertVariableMutationsEquivalent(left.scriptVariableMutations, right.scriptVariableMutations);
+    }
+
+    private static void assertHistoryEquivalent(HistoryEntry left, HistoryEntry right) {
         assertThat(left.source).isEqualTo(right.source);
         assertThat(left.attemptNumber).isEqualTo(right.attemptNumber);
         assertThat(left.totalAttempts).isEqualTo(right.totalAttempts);
@@ -103,8 +317,11 @@ class DiagnosticPassiveBehaviorTest {
         assertThat(left.requestName).isEqualTo(right.requestName);
         assertThat(left.environmentName).isEqualTo(right.environmentName);
         assertThat(left.requestSnapshot.preferredRawRequestText()).isEqualTo(right.requestSnapshot.preferredRawRequestText());
-        assertThat(left.requestSnapshot.rawRequestSent).isEqualTo(right.requestSnapshot.rawRequestSent);
+        assertThat(left.requestSnapshot.rawRequestSent).containsExactly(right.requestSnapshot.rawRequestSent);
+        assertThat(left.requestSnapshot.resolvedUrl).isEqualTo(right.requestSnapshot.resolvedUrl);
         assertThat(left.requestSnapshot.resolvedVariables).isEqualTo(right.requestSnapshot.resolvedVariables);
+        assertThat(left.responseSnapshot.statusCode).isEqualTo(right.responseSnapshot.statusCode);
+        assertThat(left.responseSnapshot.bodyAsText()).isEqualTo(right.responseSnapshot.bodyAsText());
         assertThat(left.responseSnapshot.displayHeaderBlock()).isEqualTo(right.responseSnapshot.displayHeaderBlock());
         assertThat(left.statusCode).isEqualTo(right.statusCode);
         assertThat(left.result).isEqualTo(right.result);
@@ -112,8 +329,29 @@ class DiagnosticPassiveBehaviorTest {
         assertThat(left.finalResolvedUrl).isEqualTo(right.finalResolvedUrl);
         assertThat(left.host).isEqualTo(right.host);
         assertThat(left.unresolvedVariables).isEqualTo(right.unresolvedVariables);
+        assertThat(left.assertions).usingRecursiveFieldByFieldElementComparator().containsExactlyElementsOf(right.assertions);
+        assertThat(left.extractions).usingRecursiveFieldByFieldElementComparator().containsExactlyElementsOf(right.extractions);
         assertThat(left.scriptWarnings).isEqualTo(right.scriptWarnings);
         assertThat(left.scriptErrors).isEqualTo(right.scriptErrors);
-        assertThat(left.scriptVariableMutations).hasSize(right.scriptVariableMutations.size());
+        assertVariableMutationsEquivalent(left.scriptVariableMutations, right.scriptVariableMutations);
+    }
+
+    private static void assertVariableMutationsEquivalent(List<ScriptVariableMutation> left,
+                                                          List<ScriptVariableMutation> right) {
+        assertThat(left).usingRecursiveFieldByFieldElementComparator().containsExactlyElementsOf(right);
+    }
+
+    private static final class PassiveScenarioSnapshot {
+        private byte[] workbenchRawRequestBytes;
+        private int workbenchResponseStatus;
+        private String workbenchResponseBody;
+        private Map<String, String> workbenchEnvironmentVariables;
+        private List<ScriptVariableMutation> workbenchMutations;
+        private HistoryEntry historyEntry;
+        private RunnerResult runnerResult;
+        private Map<String, String> runnerEnvironmentVariables;
+        private EnvironmentProfile importedEnvironment;
+        private String exportedEnvironmentJson;
+        private Map<String, String> oauth2Bindings;
     }
 }
