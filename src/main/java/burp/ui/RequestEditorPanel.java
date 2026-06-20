@@ -1181,26 +1181,35 @@ public class RequestEditorPanel extends JPanel {
         if (label == null) {
             return;
         }
-        label.setFont(UIManager.getFont("Table.font"));
+        Font tableFont = UIManager.getFont("Table.font");
+        if (tableFont != null) {
+            label.setFont(tableFont);
+        }
         if (isSelected) {
             return;
         }
         if (headersTable != null && isHeaderRowDisabled(headersTable.convertRowIndexToModel(row))) {
-            label.setForeground(new Color(110, 110, 110));
-            label.setFont(label.getFont().deriveFont(Font.ITALIC));
+            label.setForeground(VariableStatusColors.disabled(headersTable));
+            Font disabledFont = VariableStatusColors.disabledFont(label.getFont());
+            if (disabledFont != null) {
+                label.setFont(disabledFont);
+            }
             return;
         }
         var resolver = buildCurrentResolver();
         List<VariableTokenScanner.VariableToken> tokens = VariableTokenScanner.scan(text, resolver.getVariables());
         if (tokens.isEmpty()) {
-            label.setForeground(UIManager.getColor("Table.foreground"));
+            Color foreground = headersTable != null ? headersTable.getForeground() : UIManager.getColor("Table.foreground");
+            if (foreground != null) {
+                label.setForeground(foreground);
+            }
             return;
         }
         boolean unresolved = tokens.stream().anyMatch(token -> token == null || !token.isResolved());
         if (unresolved) {
-            label.setForeground(new Color(176, 38, 38));
+            label.setForeground(VariableStatusColors.unresolved(headersTable));
         } else {
-            label.setForeground(new Color(0, 110, 0));
+            label.setForeground(VariableStatusColors.resolved(headersTable));
         }
     }
 

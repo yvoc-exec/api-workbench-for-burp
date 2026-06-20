@@ -20,6 +20,7 @@ import java.awt.event.MouseEvent;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -581,8 +582,13 @@ class RequestEditorPanelTest {
                 .getTableCellRendererComponent(table, table.getValueAt(unresolvedRow, 1), false, false, unresolvedRow, 1))
                 .getForeground();
 
-        assertThat(resolvedColor).isEqualTo(new java.awt.Color(0, 110, 0));
-        assertThat(unresolvedColor).isEqualTo(new java.awt.Color(176, 38, 38));
+        assertThat(resolvedColor).isEqualTo(VariableStatusColors.resolved(table));
+        assertThat(unresolvedColor).isEqualTo(VariableStatusColors.unresolved(table));
+        assertThat(resolvedColor).isNotEqualTo(unresolvedColor);
+
+        JLabel selectedResolvedLabel = (JLabel) table.getCellRenderer(resolvedRow, 1)
+                .getTableCellRendererComponent(table, table.getValueAt(resolvedRow, 1), true, false, resolvedRow, 1);
+        assertThat(selectedResolvedLabel.getForeground()).isEqualTo(table.getSelectionForeground());
 
         RequestEditorPanel disabledPanel = new RequestEditorPanel();
         disabledPanel.setRequestBuilder(new RequestBuilder(null));
@@ -606,8 +612,49 @@ class RequestEditorPanelTest {
         int disabledRow = findHeaderRow(disabledTable, "X-Disabled");
         JLabel disabledLabel = (JLabel) disabledTable.getCellRenderer(disabledRow, 1)
                 .getTableCellRendererComponent(disabledTable, disabledTable.getValueAt(disabledRow, 1), false, false, disabledRow, 1);
-        assertThat(disabledLabel.getForeground()).isEqualTo(new java.awt.Color(110, 110, 110));
-        assertThat(disabledLabel.getFont().getStyle()).isEqualTo(Font.ITALIC);
+        assertThat(disabledLabel.getForeground()).isEqualTo(VariableStatusColors.disabled(disabledTable));
+        assertThat(disabledLabel.getForeground()).isNotEqualTo(resolvedColor);
+        assertThat(disabledLabel.getForeground()).isNotEqualTo(unresolvedColor);
+        assertThat(disabledLabel.getFont().isItalic()).isTrue();
+    }
+
+    @Test
+    void semanticHeaderVariableColorsRemainAvailableAcrossThemeDefaults() {
+        withUiColors(Map.of(
+                "Actions.Green", new java.awt.Color(0x12, 0x8A, 0x30),
+                "Actions.Red", new java.awt.Color(0xC4, 0x2B, 0x1C),
+                "Label.disabledForeground", new java.awt.Color(0x7A, 0x7A, 0x7A),
+                "Table.background", java.awt.Color.WHITE,
+                "Table.foreground", java.awt.Color.BLACK
+        ), () -> {
+            JTable lightTable = new JTable();
+            assertThat(VariableStatusColors.resolved(lightTable)).isEqualTo(new java.awt.Color(0x12, 0x8A, 0x30));
+            assertThat(VariableStatusColors.unresolved(lightTable)).isEqualTo(new java.awt.Color(0xC4, 0x2B, 0x1C));
+            assertThat(VariableStatusColors.disabled(lightTable)).isEqualTo(new java.awt.Color(0x7A, 0x7A, 0x7A));
+        });
+
+        Map<String, java.awt.Color> darkThemeColors = new LinkedHashMap<>();
+        darkThemeColors.put("Actions.Green", null);
+        darkThemeColors.put("Actions.Red", null);
+        darkThemeColors.put("Label.disabledForeground", null);
+        darkThemeColors.put("Label.disabledText", null);
+        darkThemeColors.put("TextField.inactiveForeground", null);
+        darkThemeColors.put("Table.background", new java.awt.Color(0x2B, 0x2B, 0x2B));
+        darkThemeColors.put("Table.foreground", new java.awt.Color(0xE6, 0xE6, 0xE6));
+        withUiColors(darkThemeColors, () -> {
+            JTable darkTable = new JTable();
+            java.awt.Color resolved = VariableStatusColors.resolved(darkTable);
+            java.awt.Color unresolved = VariableStatusColors.unresolved(darkTable);
+            java.awt.Color disabled = VariableStatusColors.disabled(darkTable);
+            assertThat(resolved).isNotNull();
+            assertThat(unresolved).isNotNull();
+            assertThat(disabled).isNotNull();
+            assertThat(resolved).isNotEqualTo(unresolved);
+            assertThat(disabled).isNotEqualTo(resolved);
+            assertThat(disabled).isNotEqualTo(unresolved);
+            assertThat(VariableStatusColors.disabledFont(darkTable.getFont())).isNotNull();
+            assertThat(VariableStatusColors.disabledFont(darkTable.getFont()).isItalic()).isTrue();
+        });
     }
 
     @Test
@@ -954,6 +1001,29 @@ class RequestEditorPanelTest {
         Field f = RequestEditorPanel.class.getDeclaredField("resolvedViewArea");
         f.setAccessible(true);
         return ((JTextArea) f.get(panel)).getText();
+    }
+
+    private static void withUiColors(Map<String, java.awt.Color> replacements, Runnable assertions) {
+        Map<String, Object> previous = new LinkedHashMap<>();
+        try {
+            for (Map.Entry<String, java.awt.Color> entry : replacements.entrySet()) {
+                previous.put(entry.getKey(), UIManager.get(entry.getKey()));
+                if (entry.getValue() == null) {
+                    UIManager.getDefaults().remove(entry.getKey());
+                } else {
+                    UIManager.put(entry.getKey(), entry.getValue());
+                }
+            }
+            assertions.run();
+        } finally {
+            for (Map.Entry<String, Object> entry : previous.entrySet()) {
+                if (entry.getValue() == null) {
+                    UIManager.getDefaults().remove(entry.getKey());
+                } else {
+                    UIManager.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
     }
 
     private static void removeHeaderRow(RequestEditorPanel panel, String key) throws Exception {

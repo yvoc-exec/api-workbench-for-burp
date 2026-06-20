@@ -16,6 +16,7 @@ import burp.models.RunnerResult;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import burp.ui.dnd.EnvironmentDragPayload;
+import burp.ui.history.HistoryDetailPanel;
 import burp.utils.ScriptMode;
 import burp.utils.WorkspaceStateService;
 import burp.ui.tree.CollectionTreeNode;
@@ -25,6 +26,7 @@ import org.mockito.Mockito;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
+import javax.swing.JTable;
 import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JTextArea;
@@ -78,6 +80,23 @@ class ImporterPanelRunnerQueueTest {
         assertThat(timelineModel(panel).getRowCount()).isZero();
         assertThat(runnerLog(panel).getText()).isEmpty();
         assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isFalse();
+    }
+
+    @Test
+    void clearingRunnerResultSelectionClearsDetailPaneAsSelectionListenerBehavior() throws Exception {
+        ImporterPanel panel = newPanel();
+        RunnerResultHelper.addDummyRunnerData(panel);
+
+        JTable resultTable = panel.getRunnerResultTableForTests();
+        HistoryDetailPanel detailPanel = panel.getRunnerDetailPanelForTests();
+
+        SwingUtilities.invokeAndWait(() -> resultTable.setRowSelectionInterval(0, 0));
+        drainEdt();
+        assertThat(detailPanel.getMetadataArea().getText()).isNotBlank();
+
+        SwingUtilities.invokeAndWait(resultTable::clearSelection);
+        drainEdt();
+        assertThat(detailPanel.getMetadataArea().getText()).isBlank();
     }
 
     @Test
