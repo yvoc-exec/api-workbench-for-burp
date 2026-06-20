@@ -155,3 +155,58 @@ Ranking is evidence-based from missed-branch and missed-line totals, then filter
 
 - One early pre-change `mvn -B clean test` run surfaced a non-reproduced Mockito stub error in `HistorySendToRepeaterActionTest`. Every subsequent focused and full validation run in this pass completed successfully, so the issue is recorded here as a possible flake risk rather than a current failing baseline.
 - No production source files under `src/main/java` were changed in this pass.
+
+## Current validated snapshot after Passes 8-13
+
+This section captures the latest successful validation state after the test-hardening passes completed.
+
+### Validation summary
+
+| Item | Value |
+|---|---:|
+| Executed tests | 792 |
+| Failures | 0 |
+| Errors | 0 |
+| Skipped | 0 |
+| ScriptRuntimeProbe | PASS |
+| Mutation score | 55% |
+| Enforced PIT floor | 54% |
+
+### Overall coverage
+
+| Counter | Coverage |
+|---|---:|
+| Line | 62.8% |
+| Branch | 45.2% |
+
+### Selected package coverage
+
+| Package | Line | Branch |
+|---|---:|---:|
+| `burp.auth` | 74.1% | 57.7% |
+| `burp.history` | 87.2% | 64.0% |
+| `burp.diagnostics` | 83.8% | 55.8% |
+| `burp.parser` | 74.1% | 52.7% |
+| `burp.exporter` | 81.5% | 56.9% |
+| `burp.runner` | 81.0% | 58.3% |
+| `burp.ui` | 62.6% | 43.3% |
+| `burp.ui.history` | 67.6% | 41.6% |
+| `burp.ui.tree` | 74.6% | 57.2% |
+| `burp.utils` | 72.6% | 55.0% |
+
+### Current enforced floors
+
+The repository now uses conservative non-regression floors in `pom.xml` derived from the latest measured run:
+
+- Overall: `0.61` line / `0.43` branch
+- `burp.auth`: `0.73` line / `0.57` branch
+- `burp.history`: `0.74` line / `0.51` branch
+- `burp.diagnostics`: `0.76` line / `0.44` branch
+- `burp.parser`: `0.73` line / `0.52` branch
+- `burp.exporter`: `0.80` line / `0.56` branch
+- `burp.runner`: `0.80` line / `0.58` branch
+- `burp.scripts`: `0.58` line / `0.37` branch
+- `burp.ui`: `0.62` line / `0.43` branch
+- `burp.ui.history`: `0.67` line / `0.41` branch
+- `burp.ui.tree`: `0.65` line / `0.49` branch
+- `burp.utils`: `0.71` line / `0.53` branch

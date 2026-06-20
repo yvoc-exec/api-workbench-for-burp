@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "historyEntries": [
+    {
+      "id": "hist-current-1",
+      "timestamp": "2026-06-15T01:00:00Z",
+      "source": "WORKBENCH",
+      "attemptNumber": 1,
+      "totalAttempts": 1,
+      "collectionName": "APIM",
+      "requestName": "Login",
+      "environmentName": "Dev",
+      "requestSnapshot": {
+        "method": "POST",
+        "urlTemplate": "{{base_url}}/login",
+        "rawRequestSentText": "POST /login HTTP/1.1\r\nHost: api.example.test\r\n\r\n"
+      },
+      "statusCode": 200,
+      "durationMillis": 123,
+      "result": "SUCCESS"
+    },
+    {
+      "id": "hist-current-2",
+      "timestamp": "2026-06-15T01:01:00Z",
+      "source": "RUNNER",
+      "attemptNumber": 2,
+      "totalAttempts": 4,
+      "collectionName": "APIM",
+      "requestName": "Users",
+      "environmentName": "QA",
+      "requestSnapshot": {
+        "method": "GET",
+        "urlTemplate": "{{base_url}}/users/{{id}}"
+      },
+      "statusCode": 500,
+      "durationMillis": 456,
+      "result": "ERROR",
+      "errorMessage": "boom"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "futureRootField": "ignored",
+  "collections": [
+    {
+      "name": "Future",
+      "unknownCollectionField": "ignored",
+      "requests": [
+        {
+          "name": "Future Request",
+          "method": "DELETE",
+          "url": "https://api.example.test/future",
+          "unknownRequestField": 123
+        }
+      ]
+    }
+  ],
+  "historyEntries": [
+    {
+      "id": "hist-future",
+      "timestamp": "2026-06-15T03:00:00Z",
+      "source": "WORKBENCH",
+      "requestName": "Future Request",
+      "requestSnapshot": {
+        "method": "DELETE",
+        "urlTemplate": "https://api.example.test/future"
+      }
+    }
+  ]
+}

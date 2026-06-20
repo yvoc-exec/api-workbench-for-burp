@@ -414,9 +414,7 @@ public class CollectionRunner {
                 Map<String, String> overlay = runtimeOverlayFor(col);
                 EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
                 ExecutionResult exec;
-                if (pipeline == null) {
-                    exec = null;
-                } else if (pipeline.getClass() != SharedRequestPipeline.class) {
+                if (pipeline.getClass() != SharedRequestPipeline.class) {
                     // Preserve compatibility with legacy test subclasses that override the older
                     // execute overloads but not the explicit ExecutionSource variant.
                     if (activeEnvironment == null && overlay == null && oauth2TokenSink == null && runtimeVariableSink == null) {

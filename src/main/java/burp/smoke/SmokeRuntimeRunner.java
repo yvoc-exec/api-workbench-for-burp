@@ -239,7 +239,7 @@ public final class SmokeRuntimeRunner {
                     sendCollection = firstCollectionWithPath(sendState.collections, "/health", "/users", "/echo", "/headers", "/auth/bearer", "/status/404", "/delay");
                 }
                 EnvironmentProfile sendEnvironment = activeEnvironment;
-                Map<String, String> runtimeOverlay = sendEnvironment != null ? sendEnvironment.toRuntimeOverlay() : activeEnvironment.toRuntimeOverlay();
+                Map<String, String> runtimeOverlay = sendEnvironment.toRuntimeOverlay();
                 runWorkbenchSendChecks(result, sendCollection, runtimeOverlay);
             } else {
                 result.skipped("workbench.send.health", "Workbench sends were skipped because the local API or active environment was unavailable.");
@@ -3588,7 +3588,7 @@ public final class SmokeRuntimeRunner {
         state.selectedRequestCollectionName = collection.name;
         state.selectedRequestIdentityKey = requestIndex >= 0
                 ? workspaceRequestIdentityKey(collection.name, request, requestIndex)
-                : workspaceRequestIdentityKey(collection.name, request, request != null ? request.sequenceOrder : -1);
+                : workspaceRequestIdentityKey(collection.name, request, request.sequenceOrder);
         state.selectedRequestName = request.name;
         state.selectedRequestPath = request.path;
     }
@@ -3610,7 +3610,7 @@ public final class SmokeRuntimeRunner {
             int requestIndex = findRequestIndexInCollection(collection, request);
             state.runnerQueuedRequestIdentityKeys.add(requestIndex >= 0
                     ? workspaceRequestIdentityKey(collectionName, request, requestIndex)
-                    : workspaceRequestIdentityKey(collectionName, request, request != null ? request.sequenceOrder : -1));
+                    : workspaceRequestIdentityKey(collectionName, request, request.sequenceOrder));
         }
     }
 

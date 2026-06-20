@@ -251,7 +251,6 @@ final class CollectionExportSupport {
             case "oauth2" -> {
                 scheme.addProperty("type", "oauth2");
                 JsonObject flows = new JsonObject();
-                JsonObject flow = new JsonObject();
                 String grantType = resolve(firstNonBlank(auth.properties, "grantType", "grant_type"), resolver, resolve);
                 if ("authorization_code".equalsIgnoreCase(grantType) || "authorizationcode".equalsIgnoreCase(grantType)) {
                     JsonObject authorizationCode = new JsonObject();

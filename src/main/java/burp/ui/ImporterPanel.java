@@ -529,16 +529,16 @@ public class ImporterPanel {
                         burp.utils.RuntimeResolverFactory.inspect(collection, requestEditor != null ? requestEditor.getCurrentRequest() : null, active, runtimeOverlay, key);
                 RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
                 info.key = key;
-                info.resolved = trace != null && trace.resolved;
-                info.value = trace != null ? trace.value : null;
-                info.scope = trace != null && trace.scope != null ? trace.scope : (info.resolved ? "resolved" : "not found");
-                info.source = trace != null && trace.source != null ? trace.source : (active != null ? "Active Environment" : "No Active Environment selected");
-                info.shadowedSource = trace != null ? trace.shadowedSource : null;
-                info.shadowedValue = trace != null ? trace.shadowedValue : null;
-                info.activeEnvironmentName = trace != null && trace.activeEnvironmentName != null ? trace.activeEnvironmentName : (active != null ? active.displayName() : null);
+                info.resolved = trace.resolved;
+                info.value = trace.value;
+                info.scope = trace.scope != null ? trace.scope : (info.resolved ? "resolved" : "not found");
+                info.source = trace.source != null ? trace.source : (active != null ? "Active Environment" : "No Active Environment selected");
+                info.shadowedSource = trace.shadowedSource;
+                info.shadowedValue = trace.shadowedValue;
+                info.activeEnvironmentName = trace.activeEnvironmentName != null ? trace.activeEnvironmentName : (active != null ? active.displayName() : null);
                 info.canEdit = active != null;
                 info.canCreate = active != null;
-                info.message = trace != null && trace.message != null ? trace.message : (active != null
+                info.message = trace.message != null ? trace.message : (active != null
                         ? "No value found. Create target: Active Environment (persisted variable)."
                         : "No Active Environment selected. Select or import an environment to edit or create persisted variables.");
                 return info;
@@ -663,8 +663,12 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        ApiRequest liveRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
-        ApiCollection col = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+        if (requestEditor == null) {
+            appendImportLog("No request loaded in editor.");
+            return;
+        }
+        ApiRequest liveRequest = requestEditor.getCurrentRequest();
+        ApiCollection col = requestEditor.getCurrentCollection();
         requestEditor.commitAllEdits();
         ApiRequest edited = requestEditor.buildRequestFromUI();
         if (edited == null || liveRequest == null) {
@@ -2210,15 +2214,15 @@ public class ImporterPanel {
                 String resolvedValue = maskVariablePreview(key, resolvedVariables.get(key));
                 sb.append("- ").append(key).append('\n');
                 sb.append("  resolved value / preview: ").append(resolvedValue != null && !resolvedValue.isBlank() ? resolvedValue : "").append('\n');
-                sb.append("  winning source: ").append(trace != null && trace.source != null ? trace.source : "unknown").append('\n');
-                sb.append("  shadowed sources: ").append(trace != null && trace.shadowedSource != null ? trace.shadowedSource : "none").append('\n');
+                sb.append("  winning source: ").append(trace.source != null ? trace.source : "unknown").append('\n');
+                sb.append("  shadowed sources: ").append(trace.shadowedSource != null ? trace.shadowedSource : "none").append('\n');
                 sb.append("  collection value: ").append(displaySummaryValue(candidateValue(trace, "collection environment", "collection variables"))).append('\n');
                 sb.append("  folder value: ").append(displaySummaryValue(candidateValue(trace, "folder variables"))).append('\n');
                 sb.append("  active environment value: ").append(displaySummaryValue(candidateValue(trace, "active environment"))).append('\n');
                 sb.append("  runtime value: ").append(displaySummaryValue(candidateValue(trace, "collection runtime OAuth2", "collection runtime vars", "runtime overlay", "runtime/script", "runtime"))).append('\n');
                 sb.append("  request value: ").append(displaySummaryValue(candidateValue(trace, "request variables"))).append('\n');
                 sb.append("  auth/OAuth2 mapped value: ").append(displaySummaryValue(candidateValue(trace, "auth/runtime mapping"))).append('\n');
-                sb.append("  persistent: ").append(isPersistentSource(trace != null ? trace.source : null)).append('\n');
+                sb.append("  persistent: ").append(isPersistentSource(trace.source)).append('\n');
             }
         }
         if (mutations != null && !mutations.isEmpty()) {
@@ -10578,9 +10582,9 @@ public class ImporterPanel {
         }
         StringBuilder sb = new StringBuilder("<html>");
         sb.append("Collection: ").append(htmlEscape(collection != null && collection.name != null ? collection.name : safeCollectionName(null))).append("<br/>");
-        sb.append("Folder: ").append(htmlEscape(request != null ? RequestPathResolver.getRequestFolderPath(collection, request) : "")).append("<br/>");
-        sb.append("Method: ").append(htmlEscape(request != null && request.method != null ? request.method : "GET")).append("<br/>");
-        sb.append("URL Template: ").append(htmlEscape(request != null && request.url != null ? request.url : "")).append("<br/>");
+        sb.append("Folder: ").append(htmlEscape(RequestPathResolver.getRequestFolderPath(collection, request))).append("<br/>");
+        sb.append("Method: ").append(htmlEscape(request.method != null ? request.method : "GET")).append("<br/>");
+        sb.append("URL Template: ").append(htmlEscape(request.url != null ? request.url : "")).append("<br/>");
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         sb.append("Active Environment: ").append(htmlEscape(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment"));
         if (runnerExecutingQueueIndex >= 0 && runnerQueueList != null) {

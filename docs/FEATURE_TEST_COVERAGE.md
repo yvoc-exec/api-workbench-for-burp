@@ -60,3 +60,33 @@ These areas have many meaningful tests, but they also own much of the remaining 
 2. **Pass 4 should be substantial, not cosmetic**: multi-format script behavior is present but still only `PARTIAL` from a coverage standpoint.
 3. **Auth/OAuth2 deserves a focused pass or sub-pass** because low package coverage is concentrated in live grant handlers, not just helper classes.
 4. **Pass 3 will need model-level UI hardening** for Runner tables/state machines because several renderer/table classes are still untested or near-untested.
+
+## Passes 8-13 update
+
+The inventory above captures the earlier baseline pass. The following addendum reflects the latest hardening run and the new tests added during Passes 8-13.
+
+### New high-value test areas
+
+| Feature area | Updated quality | Key new tests added or strengthened | Main behavior now covered | Remaining gaps |
+|---|---|---|---|---|
+| OAuth2 / auth | `GOOD` | `OAuth2GrantHandlerIntegrationTest`, `OAuth2ManagerTest`, `TokenStoreTest`, `AuthorizationCodeHandlerTest`, `OAuth2ConfigTest`, `ImporterPanelOAuth2AcquireTest`, `ImporterPanelOAuth2PopulateTest`, `EnvironmentRuntimeMutationIntegrationTest`, `EnvironmentWorkspacePersistenceTest` | Deterministic localhost grant flows, token lifecycle, refresh coordination, runtime overlays, secret-safe binding, and environment-switch behavior. | Full browser-mediated authorization-code cancellation and a few redirect/timeout variants remain thin. |
+| History | `GOOD` | `HistoryRequestSnapshotTest`, `HistoryEntryCompatibilityTest`, `HistoryPersistenceCompatibilityTest`, `HistoryStoreConcurrencyTest`, `HistoryCompareDialogUiIT`, `HistorySendToRepeaterActionTest` | Raw/authored request preservation, compatibility fixtures, concurrent store operations, compare dialog behavior, and replay/Repeater handoff safety. | Some compare/replay edge cases and larger persistence matrices still deserve follow-on attention. |
+| Environment / diagnostics | `GOOD` | `DiagnosticPassiveBehaviorTest`, `DiagnosticStoreConcurrencyTest`, `DiagnosticWorkspacePersistenceTest`, `SecretLeakageSurfaceTest`, `EnvironmentRuntimeMutationIntegrationTest`, `EnvironmentWorkspacePersistenceTest` | Runtime vs persisted environment state, passive diagnostics, bounded retention, secret redaction, and export safety. | Additional long-running UI-driven diagnostics flows are still mostly manual. |
+| Workspace / request tree | `GOOD` | `WorkspaceCompatibilityFixtureTest`, `WorkspaceConcurrentSaveTest`, `WorkspaceFailureRecoveryTest`, `RequestTreeTransferHandlerTest`, `EnvironmentEditorShortcutUiIT` | Save/load safety, concurrent save behavior, drag/drop payloads, and environment editor keyboard save behavior. | More real-display tree interactions and stale-editor edge cases remain desirable. |
+| UI interaction | `GOOD` | `HistoryCompareDialogUiIT`, `EnvironmentEditorShortcutUiIT` | Small stable Swing interaction coverage behind `-Pui-tests`. | Full manual UX polish, complex multi-window flows, and host-specific visual checks remain manual. |
+| Security / non-functional | `GOOD` | `BrunoParserZipSafetyTest`, `YamlResourceLimitTest`, `RequestBuilderSecurityTest`, `ExportWriteFailureTest`, `WorkspacePerformanceIT` | ZIP slip/traversal safety, recursive YAML bounds, header/URL sanitization, export failure safety, and large workspace performance smoke coverage. | More negative-input matrices and resource-leak checks remain useful, but the current suite is materially stronger. |
+| Governance / CI | `GOOD` | `ui-tests`, `performance-tests`, `static-analysis`, `mutation-tests` profiles and workflows | Linux/Windows matrix, Xvfb UI job, SpotBugs check, PIT workflow, and report upload plumbing. | PIT still runs long; current enforced threshold is a non-regression floor, not the aspirational target. |
+
+### Current measured coverage snapshot
+
+- Overall: 62.8% line / 45.2% branch
+- `burp.auth`: 74.1% line / 57.7% branch
+- `burp.history`: 87.2% line / 64.0% branch
+- `burp.diagnostics`: 83.8% line / 55.8% branch
+- `burp.parser`: 74.1% line / 52.7% branch
+- `burp.exporter`: 81.5% line / 56.9% branch
+- `burp.runner`: 81.0% line / 58.3% branch
+- `burp.ui`: 62.6% line / 43.3% branch
+- `burp.ui.history`: 67.6% line / 41.6% branch
+- `burp.ui.tree`: 74.6% line / 57.2% branch
+- `burp.utils`: 72.6% line / 55.0% branch

@@ -1,6 +1,7 @@
 package burp.utils;
 
 import java.net.URL;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 public class HttpUtils {
@@ -151,6 +152,9 @@ public class HttpUtils {
         int hashIdx = resolvedUrl.indexOf('#');
         String url = hashIdx >= 0 ? resolvedUrl.substring(0, hashIdx) : resolvedUrl;
         url = url.trim();
+        if (isUnsafeUrlScheme(url)) {
+            throw new IllegalArgumentException("Unsupported URL scheme: " + resolvedUrl);
+        }
 
         // 1) Explicit scheme: http:// or https://
         String lower = url.toLowerCase();
@@ -190,6 +194,17 @@ public class HttpUtils {
 
         // 4) Schemeless host[:port]/path or host[:port]
         return parseHostPortPath(url, false);
+    }
+
+    private static boolean isUnsafeUrlScheme(String url) {
+        if (url == null) {
+            return false;
+        }
+        String lower = url.toLowerCase(Locale.ROOT);
+        return lower.startsWith("javascript:")
+                || lower.startsWith("data:")
+                || lower.startsWith("file:")
+                || lower.startsWith("ftp:");
     }
 
     private static ParsedTarget parseHostPortPath(String input, boolean fromSchemeRelative) {

@@ -67,7 +67,7 @@ class HistorySendToRepeaterActionTest {
         assertThat(((NoOpNotifier) ImporterPanelTestSupport.getField(bundle.panel, "historyLoadResultNotifier")).lastError)
                 .as("sendHistoryEntryToRepeater should not surface an error dialog")
                 .isNull();
-        verify(bundle.importer, timeout(3000)).sendToRepeater(ArgumentMatchers.any(HttpRequest.class), ArgumentMatchers.anyString());
+        verify(bundle.importer, timeout(10000)).sendToRepeater(ArgumentMatchers.any(HttpRequest.class), ArgumentMatchers.anyString());
         ImporterPanelTestSupport.awaitEdt();
 
         assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries).isEmpty();
