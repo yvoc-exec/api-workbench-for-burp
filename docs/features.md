@@ -81,10 +81,10 @@ For the full details, see [Replay History Guide](replay-history.md).
 - Shadowing and active-environment precedence.
 - Clear unresolved-variable handling before send, export, or runner execution.
 
-## Smoke and testing
+## Validation and testing
 
-- Opt-in runtime smoke mode for local QA only.
-- Evidence snapshots for startup, tree, environment, and runner phases.
-- Log scan reporting for unexpected issues.
-- Local tester repo workflow for repeatable validation.
-- Manual checks still needed for visual drag/drop confirmation and other UI-focused review steps.
+- Normal unit and integration validation through the Maven test and verify flows.
+- Swing Robot UI coverage behind the `ui-tests` Maven profile and Xvfb CI support.
+- Standalone packaged `ScriptRuntimeProbe` checks for script-engine availability.
+- Live Burp validation is external/manual. The production extension no longer embeds an Automated Tester runtime hook.
+- Manual checks still help with visual drag/drop confirmation and other host-specific UI review steps.

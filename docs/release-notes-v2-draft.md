@@ -8,13 +8,13 @@ This document is a draft summary only. It is not a release tag and does not crea
 - Request tree state preservation across refresh and rebuild operations.
 - Environment switching and variable resolution improvements.
 - Runner queue preview, reorder, remove, clear, and execution workflows.
-- Runtime smoke mode with evidence snapshots and log-scan reporting.
-- UI evidence snapshot support for startup and workflow validation.
-- Documentation refresh for pentester-focused usage, testing, and smoke-mode safety.
+- Standalone packaged script-runtime probe validation for build and runtime checks.
+- Live Burp validation is external/manual; the production extension no longer embeds an Automated Tester runtime hook.
+- Documentation refresh for pentester-focused usage and testing guidance.
 
 ## What this means for operators
 
 - Less time rebuilding API requests manually.
 - Easier organization of imported collections inside Burp.
 - Better confidence when validating request-tree and runner-state changes.
-- Clearer local QA evidence for the separate smoke workflow.
+- Clearer validation boundaries between automated repository checks and external/manual live Burp verification.

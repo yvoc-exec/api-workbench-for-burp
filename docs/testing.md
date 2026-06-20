@@ -47,23 +47,17 @@ Useful targeted cases include:
 
 When your Burp setup supports saving and reopening a project, confirm that the History tab restores from workspace data as part of manual validation.
 
-## Runtime smoke tester repo
+## Live Burp validation boundary
 
-The separate `Automated Tester for API Workbench` repository is the script-driven runtime smoke harness.
+Live Burp validation is external/manual. The production extension no longer embeds an Automated Tester runtime hook.
 
-Primary command from the tester repo root:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-runtime-smoke.ps1
-```
-
-The tester produces JSON, Markdown, evidence-snapshot, and log-scan reports. Those reports are the source of truth for the smoke workflow.
+If you use the separate `Automated Tester for API Workbench` repository, treat it as external tooling with its own instructions and reports rather than as a built-in extension startup path.
 
 ## Community-only testing limits
 
-The local smoke workflow is designed around Burp Suite Community Edition.
+Manual live-Burp validation can still be done with Burp Suite Community Edition.
 
-It intentionally skips Burp Pro/project restore validation and does not try to automate full mouse-driven drag/drop or other purely visual interactions.
+It intentionally does not try to automate full mouse-driven drag/drop or other purely visual interactions.
 
 ## Manual checks still needed
 
@@ -72,4 +66,4 @@ Manual review remains useful for:
 - Visual drag/drop confirmation.
 - Confirmation of state persistence after complex UI changes.
 - Checking that generated evidence and logs are safe to share.
-- Following up on items listed in the smoke report's manual checklist.
+- Following up on findings from manual live-Burp validation or external harness runs.
