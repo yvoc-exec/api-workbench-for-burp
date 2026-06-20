@@ -45,4 +45,56 @@ class VariableTokenScannerTest {
         assertThat(StyleConstants.getForeground(token)).isNotEqualTo(StyleConstants.getForeground(base));
         assertThat(area.getHighlighter().getHighlights()).isEmpty();
     }
+
+    @Test
+    void scanSupportsCustomResolutionPredicatesAndNormalizesKeys() {
+        List<VariableTokenScanner.VariableToken> tokens = VariableTokenScanner.scan(
+                "GET {{  base_url  }}/{{missing}}",
+                key -> "base_url".equals(key) ? "https://api.example.test" : null,
+                key -> "base_url".equals(key)
+        );
+
+        assertThat(tokens).hasSize(2);
+        assertThat(tokens.get(0).rawText).isEqualTo("{{  base_url  }}");
+        assertThat(tokens.get(0).key).isEqualTo("base_url");
+        assertThat(tokens.get(0).isResolved()).isTrue();
+        assertThat(tokens.get(0).value).isEqualTo("https://api.example.test");
+        assertThat(tokens.get(1).key).isEqualTo("missing");
+        assertThat(tokens.get(1).isResolved()).isFalse();
+        assertThat(VariableTokenScanner.normalizeKey("  spaced.key  ")).isEqualTo("spaced.key");
+        assertThat(VariableTokenScanner.normalizeKey(null)).isNull();
+    }
+
+    @Test
+    void tokenAtHonorsBoundsAndRejectsInvalidOffsets() {
+        String text = "before {{token}} after";
+        Map<String, String> variables = Map.of("token", "abc123");
+
+        VariableTokenScanner.VariableToken tokenAtStart = VariableTokenScanner.tokenAt(text, text.indexOf("{{token}}"), variables);
+        VariableTokenScanner.VariableToken tokenAtEnd = VariableTokenScanner.tokenAt(text, text.indexOf("{{token}}") + "{{token}}".length(), variables);
+
+        assertThat(tokenAtStart).isNotNull();
+        assertThat(tokenAtStart.key).isEqualTo("token");
+        assertThat(tokenAtEnd).isEqualTo(tokenAtStart);
+        assertThat(VariableTokenScanner.tokenAt(text, -1, variables)).isNull();
+        assertThat(VariableTokenScanner.tokenAt(text, text.length() + 1, variables)).isNull();
+        assertThat(VariableTokenScanner.tokenAt("", 0, variables)).isNull();
+        assertThat(VariableTokenScanner.tokenAt(null, 0, variables)).isNull();
+    }
+
+    @Test
+    void variableTokenEqualityAndHashCodeIncludeResolutionState() {
+        VariableTokenScanner.VariableToken resolvedA = new VariableTokenScanner.VariableToken(
+                0, 9, "{{token}}", "token", VariableResolutionStatus.RESOLVED, "abc123");
+        VariableTokenScanner.VariableToken resolvedB = new VariableTokenScanner.VariableToken(
+                0, 9, "{{token}}", "token", VariableResolutionStatus.RESOLVED, "abc123");
+        VariableTokenScanner.VariableToken unresolved = new VariableTokenScanner.VariableToken(
+                0, 9, "{{token}}", "token", VariableResolutionStatus.UNRESOLVED, null);
+
+        assertThat(resolvedA).isEqualTo(resolvedB);
+        assertThat(resolvedA.hashCode()).isEqualTo(resolvedB.hashCode());
+        assertThat(resolvedA).isNotEqualTo(unresolved);
+        assertThat(resolvedA).isNotEqualTo("token");
+        assertThat(resolvedA).isEqualTo(resolvedA);
+    }
 }

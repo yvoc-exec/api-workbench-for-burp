@@ -20,6 +20,7 @@ import burp.history.HistoryResponseSnapshot;
 import burp.diagnostics.DiagnosticEvent;
 import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticSanitizer;
 import burp.diagnostics.DiagnosticStore;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.ExecutionResult;
@@ -135,6 +136,12 @@ public class ImporterPanel {
     private JTextArea diagnosticsArea;
     private JCheckBox diagnosticsIncludeDebugBox;
     private JCheckBox diagnosticsCaptureBox;
+    private JButton diagnosticsRefreshButton;
+    private JButton diagnosticsClearButton;
+    private JButton diagnosticsCopyButton;
+    private DefaultListModel<DiagnosticEvent> diagnosticsEventListModel;
+    private JList<DiagnosticEvent> diagnosticsEventList;
+    private JTextArea diagnosticsEventDetailArea;
     private HistoryPanel historyPanel;
 
     // Runner tab
@@ -3066,10 +3073,16 @@ public class ImporterPanel {
 
         installRunnerQueueTransferSupport();
         resultTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
-                RunnerExecutionTableModel.Entry row = resultModel.getEntryAt(resultTable.getSelectedRow());
-                updateRunnerDetailPane(row != null ? row.detailEntry : null);
+            if (e.getValueIsAdjusting()) {
+                return;
             }
+            int selectedRow = resultTable.getSelectedRow();
+            if (selectedRow < 0) {
+                updateRunnerDetailPane(null);
+                return;
+            }
+            RunnerExecutionTableModel.Entry row = resultModel.getEntryAt(selectedRow);
+            updateRunnerDetailPane(row != null ? row.detailEntry : null);
         });
 
         JPanel bottomPanel = new JPanel();
@@ -3130,12 +3143,24 @@ public class ImporterPanel {
     private class TreeMouseListener extends MouseAdapter {
         @Override
         public void mousePressed(MouseEvent e) {
+            maybeClearTreeSelectionOnBackgroundClick(e);
             maybeShowTreeContextMenu(e);
         }
 
         @Override
         public void mouseReleased(MouseEvent e) {
+            maybeClearTreeSelectionOnBackgroundClick(e);
             maybeShowTreeContextMenu(e);
+        }
+    }
+
+    private void maybeClearTreeSelectionOnBackgroundClick(MouseEvent e) {
+        if (requestTree == null || e == null || e.isPopupTrigger() || !SwingUtilities.isLeftMouseButton(e)) {
+            return;
+        }
+        TreePath path = requestTree.getPathForLocation(e.getX(), e.getY());
+        if (path == null && requestTree.getSelectionPath() != null) {
+            requestTree.clearSelection();
         }
     }
 
@@ -9659,6 +9684,36 @@ public class ImporterPanel {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
+        diagnosticsEventListModel = new DefaultListModel<>();
+        diagnosticsEventList = new JList<>(diagnosticsEventListModel);
+        diagnosticsEventList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        diagnosticsEventList.setCellRenderer((list, value, index, isSelected, cellHasFocus) -> {
+            JLabel label = (JLabel) new DefaultListCellRenderer()
+                    .getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            if (value != null) {
+                label.setText(DiagnosticSanitizer.sanitizeText(value.summaryLine()));
+            }
+            return label;
+        });
+        diagnosticsEventList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                showSelectedDiagnosticEvent();
+            }
+        });
+        JScrollPane eventScrollPane = new JScrollPane(diagnosticsEventList);
+        eventScrollPane.setBorder(BorderFactory.createTitledBorder("Recorded Events"));
+
+        diagnosticsEventDetailArea = new JTextArea(10, 42);
+        diagnosticsEventDetailArea.setEditable(false);
+        diagnosticsEventDetailArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(diagnosticsEventDetailArea);
+        JScrollPane detailScrollPane = new JScrollPane(diagnosticsEventDetailArea);
+        detailScrollPane.setBorder(BorderFactory.createTitledBorder("Selected Event"));
+
+        JSplitPane eventSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, eventScrollPane, detailScrollPane);
+        eventSplit.setResizeWeight(0.45);
+        eventSplit.setOneTouchExpandable(true);
+
         diagnosticsArea = new JTextArea(24, 100);
         diagnosticsArea.setEditable(false);
         diagnosticsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
@@ -9669,7 +9724,12 @@ public class ImporterPanel {
 
         JScrollPane scrollPane = new JScrollPane(diagnosticsArea);
         scrollPane.setBorder(BorderFactory.createTitledBorder("Snapshot"));
-        panel.add(scrollPane, BorderLayout.CENTER);
+
+        JSplitPane diagnosticsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, eventSplit, scrollPane);
+        diagnosticsSplit.setResizeWeight(0.42);
+        diagnosticsSplit.setOneTouchExpandable(true);
+        diagnosticsSplit.setContinuousLayout(true);
+        panel.add(diagnosticsSplit, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         diagnosticsCaptureBox = new JCheckBox();
@@ -9680,24 +9740,26 @@ public class ImporterPanel {
             refreshDiagnosticsSnapshot();
             notifyWorkspaceChangedImmediately();
         });
-        JButton refreshButton = new JButton("Refresh Snapshot");
-        refreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
-        JButton clearButton = new JButton("Clear Session Diagnostics");
-        clearButton.addActionListener(e -> clearDiagnosticsSnapshot());
-        JButton copyButton = new JButton("Copy Sanitized Report");
-        copyButton.addActionListener(e -> copyDiagnosticsSnapshot());
+        diagnosticsRefreshButton = new JButton("Refresh Snapshot");
+        diagnosticsRefreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
+        diagnosticsClearButton = new JButton("Clear Session Diagnostics");
+        diagnosticsClearButton.addActionListener(e -> clearDiagnosticsSnapshot());
+        diagnosticsCopyButton = new JButton("Copy Sanitized Report");
+        diagnosticsCopyButton.addActionListener(e -> copyDiagnosticsSnapshot());
         JButton exportButton = new JButton("Export Sanitized Report");
         exportButton.addActionListener(e -> exportDiagnosticsSnapshot());
         diagnosticsIncludeDebugBox = new JCheckBox("Include Debug");
         diagnosticsIncludeDebugBox.setToolTipText("Include debug diagnostics in the snapshot and exported report.");
+        diagnosticsIncludeDebugBox.addActionListener(e -> refreshDiagnosticsSnapshot());
         buttons.add(diagnosticsCaptureBox);
-        buttons.add(refreshButton);
-        buttons.add(clearButton);
-        buttons.add(copyButton);
+        buttons.add(diagnosticsRefreshButton);
+        buttons.add(diagnosticsClearButton);
+        buttons.add(diagnosticsCopyButton);
         buttons.add(exportButton);
         buttons.add(diagnosticsIncludeDebugBox);
         panel.add(buttons, BorderLayout.NORTH);
 
+        refreshDiagnosticsSnapshot();
         return panel;
     }
 
@@ -9718,6 +9780,7 @@ public class ImporterPanel {
         }
         diagnosticsArea.setText(buildDiagnosticsSnapshot());
         diagnosticsArea.setCaretPosition(0);
+        refreshDiagnosticsEventViews();
     }
 
     void clearDiagnosticsSnapshot() {
@@ -9726,11 +9789,96 @@ public class ImporterPanel {
     }
 
     void copyDiagnosticsSnapshot() {
-        if (diagnosticsArea == null) {
+        StringSelection selection = new StringSelection(buildSanitizedDiagnosticsReport());
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+    }
+
+    private void refreshDiagnosticsEventViews() {
+        if (diagnosticsEventListModel == null) {
             return;
         }
-        StringSelection selection = new StringSelection(buildDiagnosticsSnapshot());
-        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+        String selectedId = null;
+        DiagnosticEvent selectedEvent = diagnosticsEventList != null ? diagnosticsEventList.getSelectedValue() : null;
+        if (selectedEvent != null) {
+            selectedId = selectedEvent.operationId;
+        }
+        diagnosticsEventListModel.clear();
+        List<DiagnosticEvent> filtered = filteredDiagnosticEvents();
+        int selectionIndex = -1;
+        for (int i = 0; i < filtered.size(); i++) {
+            DiagnosticEvent event = filtered.get(i);
+            diagnosticsEventListModel.addElement(event);
+            if (selectedId != null && event != null && Objects.equals(selectedId, event.operationId)) {
+                selectionIndex = i;
+            }
+        }
+        if (diagnosticsEventList != null) {
+            if (selectionIndex >= 0) {
+                diagnosticsEventList.setSelectedIndex(selectionIndex);
+                diagnosticsEventList.ensureIndexIsVisible(selectionIndex);
+            } else {
+                diagnosticsEventList.clearSelection();
+            }
+        }
+        showSelectedDiagnosticEvent();
+    }
+
+    private List<DiagnosticEvent> filteredDiagnosticEvents() {
+        boolean includeDebug = diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected();
+        List<DiagnosticEvent> filtered = new ArrayList<>();
+        for (DiagnosticEvent event : DiagnosticStore.getInstance().snapshot()) {
+            if (event == null) {
+                continue;
+            }
+            if (!includeDebug && event.severity == DiagnosticSeverity.DEBUG) {
+                continue;
+            }
+            filtered.add(event);
+        }
+        return filtered;
+    }
+
+    private void showSelectedDiagnosticEvent() {
+        if (diagnosticsEventDetailArea == null) {
+            return;
+        }
+        DiagnosticEvent event = diagnosticsEventList != null ? diagnosticsEventList.getSelectedValue() : null;
+        diagnosticsEventDetailArea.setText(event != null ? buildDiagnosticEventDetail(event) : "");
+        diagnosticsEventDetailArea.setCaretPosition(0);
+    }
+
+    private String buildDiagnosticEventDetail(DiagnosticEvent event) {
+        if (event == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        appendDiagnosticsLine(sb, "timestamp", event.timestamp);
+        appendDiagnosticsLine(sb, "severity", event.severity);
+        appendDiagnosticsLine(sb, "operation", event.operation);
+        appendDiagnosticsLine(sb, "sourceArea", event.sourceArea);
+        appendDiagnosticsLine(sb, "collection", event.collectionName);
+        appendDiagnosticsLine(sb, "request", event.requestName);
+        appendDiagnosticsLine(sb, "requestId", event.requestId);
+        appendDiagnosticsLine(sb, "environment", event.environmentName);
+        appendDiagnosticsLine(sb, "message", DiagnosticSanitizer.sanitizeText(event.message != null ? event.message : ""));
+        if (event.details != null && !event.details.isBlank()) {
+            sb.append('\n').append("details").append("=\n")
+                    .append(DiagnosticSanitizer.sanitizeText(event.details))
+                    .append('\n');
+        }
+        if (event.attributes != null && !event.attributes.isEmpty()) {
+            sb.append('\n').append("attributes").append("=\n");
+            event.attributes.forEach((key, value) -> sb.append(key)
+                    .append('=')
+                    .append(DiagnosticSanitizer.sanitizeText(value))
+                    .append('\n'));
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildSanitizedDiagnosticsReport() {
+        return DiagnosticStore.getInstance().sanitizedReport(
+                diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected());
     }
 
     String buildDiagnosticsSnapshot() {
@@ -10064,7 +10212,7 @@ public class ImporterPanel {
     }
 
     private void exportDiagnosticsSnapshot() {
-        String snapshot = buildDiagnosticsSnapshot();
+        String snapshot = buildSanitizedDiagnosticsReport();
         if (diagnosticsArea != null) {
             diagnosticsArea.setText(snapshot);
             diagnosticsArea.setCaretPosition(0);
@@ -11513,6 +11661,32 @@ public class ImporterPanel {
             runnerDetailPanel.clear();
         }
     }
+
+    RequestEditorPanel getRequestEditorForTests() { return requestEditor; }
+    JTree getRequestTreeForTests() { return requestTree; }
+    HistoryPanel getHistoryPanelForTests() { return historyPanel; }
+    HistoryDetailPanel getWorkbenchDetailPanelForTests() { return workbenchDetailPanel; }
+    JTable getRunnerResultTableForTests() { return resultTable; }
+    JList<ApiRequest> getRunnerQueueListForTests() { return runnerQueueList; }
+    HistoryDetailPanel getRunnerDetailPanelForTests() { return runnerDetailPanel; }
+    JButton getStartRunnerButtonForTests() { return startRunnerBtn; }
+    JButton getPauseRunnerButtonForTests() { return pauseRunnerBtn; }
+    JButton getResumeRunnerButtonForTests() { return resumeRunnerBtn; }
+    JButton getStepRunnerButtonForTests() { return stepRunnerBtn; }
+    JButton getCancelRunnerButtonForTests() { return cancelRunnerBtn; }
+    JCheckBox getDiagnosticsCaptureBoxForTests() { return diagnosticsCaptureBox; }
+    JCheckBox getDiagnosticsIncludeDebugBoxForTests() { return diagnosticsIncludeDebugBox; }
+    JButton getDiagnosticsRefreshButtonForTests() { return diagnosticsRefreshButton; }
+    JButton getDiagnosticsClearButtonForTests() { return diagnosticsClearButton; }
+    JButton getDiagnosticsCopyButtonForTests() { return diagnosticsCopyButton; }
+    JList<DiagnosticEvent> getDiagnosticsEventListForTests() { return diagnosticsEventList; }
+    JTextArea getDiagnosticsEventDetailAreaForTests() { return diagnosticsEventDetailArea; }
+    JTextArea getDiagnosticsSnapshotAreaForTests() { return diagnosticsArea; }
+    JComboBox<EnvironmentRef> getWorkbenchEnvironmentComboForTests() { return workbenchEnvironmentCombo; }
+    JComboBox<EnvironmentRef> getEnvironmentComboForTests() { return environmentCombo; }
+    JButton getActionsButtonForTests() { return actionsBtn; }
+    JTextArea getImportLogAreaForTests() { return importLog; }
+    void queueRunnerRequestsForTests(List<ApiRequest> selected) { queueRunnerRequests(selected != null ? selected : Collections.emptyList()); }
 
     public JPanel getPanel() { return mainPanel; }
     public JTabbedPane getTabbedPane() { return tabbedPane; }

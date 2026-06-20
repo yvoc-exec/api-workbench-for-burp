@@ -69,9 +69,12 @@ public class RequestEditorPanel extends JPanel {
     private VariableDialogProvider variableDialogProvider = new SwingVariableDialogProvider();
     private final Map<JTextComponent, VariableHoverSupport> variableHoverSupports = new IdentityHashMap<>();
     private static final String VARIABLE_HOVER_INSTALLED_PROPERTY = "awb.variable.hover.installed";
+    private static final String VARIABLE_POPUP_PROPERTY = "awb.variable.popup";
+    private static final int HEADER_DISABLED_MODEL_COLUMN = 2;
     private static final int VARIABLE_HOVER_DELAY_MS = 650;
     private static final int VARIABLE_HOVER_HIDE_DELAY_MS = 850;
     private boolean updatingVariableStyles = false;
+    private HeaderVariableHoverSupport headerVariableHoverSupport;
 
     // Send action callback
     public interface SendActionListener {
@@ -273,11 +276,17 @@ public class RequestEditorPanel extends JPanel {
 
     private JPanel createHeadersPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        headersModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        headersModel = new DefaultTableModel(new Object[]{"Key", "Value", "Disabled"}, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == HEADER_DISABLED_MODEL_COLUMN ? Boolean.class : String.class;
+            }
+        };
         headersTable = RequestEditorTableSupport.createEditableTable(headersModel);
+        headersTable.removeColumn(headersTable.getColumnModel().getColumn(HEADER_DISABLED_MODEL_COLUMN));
         installHeaderVariableSupport();
         panel.add(new JScrollPane(headersTable), BorderLayout.CENTER);
-        panel.add(RequestEditorTableSupport.createAddRemovePanel(headersTable, headersModel, () -> new Object[]{"", ""}), BorderLayout.SOUTH);
+        panel.add(RequestEditorTableSupport.createAddRemovePanel(headersTable, headersModel, () -> new Object[]{"", "", Boolean.FALSE}), BorderLayout.SOUTH);
         RequestEditorStateMapper.ensureStarterRow(headersModel);
         return panel;
     }
@@ -414,6 +423,7 @@ public class RequestEditorPanel extends JPanel {
     public void clearRequest() {
         currentCollection = null;
         currentRequest = null;
+        hideAllVariablePopups();
         resetDerivedHeaderMaterializationState();
         materializedAutoHeaders.clear();
         loadingRequest = true;
@@ -453,6 +463,7 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void refreshAll() {
+        hideAllVariablePopups();
         syncAuthorizationHeaderFromCurrentAuth();
         syncContentTypeHeaderFromCurrentBody();
         refreshVariableHighlights();
@@ -953,7 +964,13 @@ public class RequestEditorPanel extends JPanel {
         VariableHoverInfo info = resolveVariableHoverInfo(component, e);
         if (info == null) {
             if (support != null) {
-                support.hidePopup();
+                if (isPointerInsideVisiblePopup(component)) {
+                    support.cancelHidePopup();
+                } else if (popupForComponent(component) != null) {
+                    support.scheduleHidePopup();
+                } else {
+                    support.hidePopup();
+                }
             }
             return;
         }
@@ -1128,34 +1145,49 @@ public class RequestEditorPanel extends JPanel {
         if (headersTable == null) {
             return;
         }
-        headersTable.setDefaultRenderer(Object.class, new javax.swing.table.DefaultTableCellRenderer() {
+        headerVariableHoverSupport = new HeaderVariableHoverSupport(headersTable);
+        javax.swing.table.DefaultTableCellRenderer renderer = new javax.swing.table.DefaultTableCellRenderer() {
             @Override
             public java.awt.Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 JLabel label = (JLabel) super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 String text = value != null ? value.toString() : "";
-                applyHeaderVariableStyle(label, text, isSelected);
+                applyHeaderVariableStyle(label, text, row, isSelected);
                 return label;
             }
-        });
+        };
+        headersTable.setDefaultRenderer(String.class, renderer);
+        headersTable.setDefaultRenderer(Object.class, renderer);
         headersTable.addMouseMotionListener(new MouseMotionAdapter() {
             @Override
             public void mouseMoved(MouseEvent e) {
                 updateHeaderTooltip(e);
+                if (headerVariableHoverSupport != null) {
+                    updateHeaderHoverState(e, headerVariableHoverSupport);
+                }
             }
         });
         headersTable.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseExited(MouseEvent e) {
                 headersTable.setToolTipText(null);
+                if (headerVariableHoverSupport != null) {
+                    headerVariableHoverSupport.scheduleHidePopup();
+                }
             }
         });
     }
 
-    private void applyHeaderVariableStyle(JLabel label, String text, boolean isSelected) {
+    private void applyHeaderVariableStyle(JLabel label, String text, int row, boolean isSelected) {
         if (label == null) {
             return;
         }
+        label.setFont(UIManager.getFont("Table.font"));
         if (isSelected) {
+            return;
+        }
+        if (headersTable != null && isHeaderRowDisabled(headersTable.convertRowIndexToModel(row))) {
+            label.setForeground(new Color(110, 110, 110));
+            label.setFont(label.getFont().deriveFont(Font.ITALIC));
             return;
         }
         var resolver = buildCurrentResolver();
@@ -1172,43 +1204,45 @@ public class RequestEditorPanel extends JPanel {
         }
     }
 
+    private void updateHeaderHoverState(MouseEvent e, HeaderVariableHoverSupport support) {
+        if (headersTable == null || e == null || currentRequest == null) {
+            if (support != null) {
+                support.hidePopup();
+            }
+            return;
+        }
+        HeaderVariableHover hover = resolveHeaderVariableHover(e);
+        if (hover == null) {
+            if (support != null) {
+                if (isPointerInsideVisiblePopup(headersTable)) {
+                    support.cancelHidePopup();
+                } else if (popupForComponent(headersTable) != null) {
+                    support.scheduleHidePopup();
+                } else {
+                    support.hidePopup();
+                }
+            }
+            return;
+        }
+        if (support != null) {
+            support.setCurrentInfo(hover.info, hover.anchorPoint);
+        }
+    }
+
     private void updateHeaderTooltip(MouseEvent e) {
         if (headersTable == null || e == null || currentRequest == null) {
             return;
         }
-        int row = headersTable.rowAtPoint(e.getPoint());
-        int col = headersTable.columnAtPoint(e.getPoint());
-        if (row < 0 || col < 0) {
+        HeaderVariableHover hover = resolveHeaderVariableHover(e);
+        if (hover == null) {
             headersTable.setToolTipText(null);
             return;
         }
-        Object value = headersTable.getValueAt(row, col);
-        String text = value != null ? value.toString() : "";
-        VariableTokenScanner.VariableToken token = firstVariableToken(text);
-        if (token == null) {
-            headersTable.setToolTipText(null);
-            return;
-        }
-        RequestEditorPanel.VariableHoverInfo info = null;
-        if (variableActionBridge != null) {
-            try {
-                info = variableActionBridge.inspect(token.key);
-            } catch (Exception ignored) {
-                info = null;
-            }
-        }
-        if (info == null) {
-            info = new RequestEditorPanel.VariableHoverInfo();
-            info.key = token.key;
-            info.resolved = token.isResolved();
-            info.value = token.value;
-            info.scope = token.isResolved() ? "resolved" : "not found";
-            info.source = token.isResolved() ? "resolved" : "unresolved";
-            info.activeEnvironmentName = variableActionBridge != null ? variableActionBridge.activeEnvironmentName() : null;
-        }
+        VariableTokenScanner.VariableToken token = hover.token;
+        VariableHoverInfo info = hover.info;
         StringBuilder tooltip = new StringBuilder();
         tooltip.append("{{").append(token.key).append("}}");
-        tooltip.append(" — ").append(info.resolved ? "Resolved" : "Unresolved");
+        tooltip.append(" - ").append(info.resolved ? "Resolved" : "Unresolved");
         if (info.source != null && !info.source.isBlank()) {
             tooltip.append(" from ").append(info.source);
         }
@@ -1217,6 +1251,9 @@ public class RequestEditorPanel extends JPanel {
         }
         if (info.shadowedSource != null && !info.shadowedSource.isBlank()) {
             tooltip.append(" (shadowed ").append(info.shadowedSource).append(')');
+        }
+        if (hover.disabled) {
+            tooltip.append(" [Disabled header]");
         }
         headersTable.setToolTipText(tooltip.toString());
     }
@@ -1228,6 +1265,54 @@ public class RequestEditorPanel extends JPanel {
         var resolver = buildCurrentResolver();
         List<VariableTokenScanner.VariableToken> tokens = VariableTokenScanner.scan(text, resolver.getVariables());
         return tokens.isEmpty() ? null : tokens.get(0);
+    }
+
+    private HeaderVariableHover resolveHeaderVariableHover(MouseEvent e) {
+        if (headersTable == null || e == null || currentRequest == null) {
+            return null;
+        }
+        int row = headersTable.rowAtPoint(e.getPoint());
+        int col = headersTable.columnAtPoint(e.getPoint());
+        if (row < 0 || col < 0) {
+            return null;
+        }
+        int modelRow = headersTable.convertRowIndexToModel(row);
+        int modelCol = headersTable.convertColumnIndexToModel(col);
+        Object value = headersTable.getModel().getValueAt(modelRow, modelCol);
+        String text = value != null ? value.toString() : "";
+        VariableTokenScanner.VariableToken token = firstVariableToken(text);
+        if (token == null) {
+            return null;
+        }
+        VariableHoverInfo info = null;
+        if (variableActionBridge != null) {
+            try {
+                info = variableActionBridge.inspect(token.key);
+            } catch (Exception ignored) {
+                info = null;
+            }
+        }
+        if (info == null) {
+            info = createFallbackHoverInfo(token);
+        }
+        normalizeHoverInfo(info, token);
+        boolean disabled = isHeaderRowDisabled(modelRow);
+        if (disabled) {
+            info.message = (info.message != null && !info.message.isBlank() ? info.message + " " : "")
+                    + "Header is disabled and will be omitted from the final request.";
+        }
+        Rectangle cellBounds = headersTable.getCellRect(row, col, true);
+        Point anchorPoint = new Point(cellBounds.x + Math.max(8, Math.min(cellBounds.width - 8, cellBounds.width / 2)),
+                cellBounds.y + cellBounds.height - 2);
+        return new HeaderVariableHover(token, info, anchorPoint, disabled);
+    }
+
+    private boolean isHeaderRowDisabled(int modelRow) {
+        if (headersModel == null || modelRow < 0 || modelRow >= headersModel.getRowCount()) {
+            return false;
+        }
+        Object disabled = headersModel.getValueAt(modelRow, HEADER_DISABLED_MODEL_COLUMN);
+        return Boolean.TRUE.equals(disabled);
     }
 
     boolean promptAndApplyVariableEdit(VariableHoverInfo info) {
@@ -1282,6 +1367,10 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private JPopupMenu buildVariablePopup(JTextComponent component, VariableHoverInfo info) {
+        return buildVariablePopup((Component) component, info);
+    }
+
+    private JPopupMenu buildVariablePopup(Component component, VariableHoverInfo info) {
         JPopupMenu popup = new JPopupMenu();
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
@@ -1332,12 +1421,12 @@ public class RequestEditorPanel extends JPanel {
                 : "Create the variable in the Active Environment after confirmation.")
                 : "No Active Environment selected. Select or import one to edit or create persisted variables.");
         editButton.addActionListener(e -> {
-            boolean applied = info != null && info.resolved
-                    ? promptAndApplyVariableEdit(info)
-                    : promptAndApplyVariableCreate(info);
-            if (applied) {
-                popup.setVisible(false);
+            if (info != null && info.resolved) {
+                promptAndApplyVariableEdit(info);
+            } else {
+                promptAndApplyVariableCreate(info);
             }
+            popup.setVisible(false);
         });
         actions.add(editButton);
 
@@ -1384,22 +1473,69 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void showVariablePopup(JTextComponent component, VariableHoverInfo info, Point point, VariableHoverSupport support) {
+        showVariablePopup((JComponent) component, info, point, support);
+    }
+
+    private void showVariablePopup(JComponent component, VariableHoverInfo info, Point point, HeaderVariableHoverSupport support) {
+        Runnable cancelHideAction = support != null ? () -> support.cancelHidePopup() : null;
+        showVariablePopup(component, info, point, cancelHideAction,
+                popup -> {
+                    if (support != null) {
+                        support.trackPopup(popup);
+                    }
+                });
+    }
+
+    private void showVariablePopup(JComponent component, VariableHoverInfo info, Point point, VariableHoverSupport support) {
+        Runnable cancelHideAction = support != null ? () -> support.cancelHidePopup() : null;
+        showVariablePopup(component, info, point, cancelHideAction,
+                popup -> {
+                    if (support != null) {
+                        support.trackPopup(popup);
+                    }
+                });
+    }
+
+    private void showVariablePopup(JComponent component,
+                                   VariableHoverInfo info,
+                                   Point point,
+                                   Runnable cancelHideAction,
+                                   java.util.function.Consumer<JPopupMenu> tracker) {
         if (component == null || info == null || info.key == null || info.key.isBlank() || point == null) {
             return;
         }
-        Object existing = component.getClientProperty("awb.variable.popup");
-        if (existing instanceof JPopupMenu existingMenu) {
-            existingMenu.setVisible(false);
-        }
+        hidePopupForComponent(component);
         JPopupMenu popup = buildVariablePopup(component, info);
-        component.putClientProperty("awb.variable.popup", popup);
-        if (support != null) {
-            support.trackPopup(popup);
-            support.cancelHidePopup();
+        component.putClientProperty(VARIABLE_POPUP_PROPERTY, popup);
+        if (tracker != null) {
+            tracker.accept(popup);
+        }
+        if (cancelHideAction != null) {
+            cancelHideAction.run();
         }
         if (component.isShowing()) {
             popup.show(component, Math.max(0, point.x), Math.max(0, point.y + 18));
         }
+    }
+
+    private void hideAllVariablePopups() {
+        for (JTextComponent component : variableHoverSupports.keySet()) {
+            hidePopupForComponent(component);
+        }
+        if (headersTable != null) {
+            hidePopupForComponent(headersTable);
+        }
+    }
+
+    private void hidePopupForComponent(JComponent component) {
+        if (component == null) {
+            return;
+        }
+        Object popup = component.getClientProperty(VARIABLE_POPUP_PROPERTY);
+        if (popup instanceof JPopupMenu menu) {
+            menu.setVisible(false);
+        }
+        component.putClientProperty(VARIABLE_POPUP_PROPERTY, null);
     }
 
     private final class VariableHoverSupport {
@@ -1484,14 +1620,112 @@ public class RequestEditorPanel extends JPanel {
         private void hidePopup() {
             timer.stop();
             hideTimer.stop();
-            Object popup = component.getClientProperty("awb.variable.popup");
-            if (popup instanceof JPopupMenu menu) {
-                menu.setVisible(false);
-            }
-            component.putClientProperty("awb.variable.popup", null);
+            hidePopupForComponent(component);
             lastInfo = null;
             lastEvent = null;
             hoveringPopup = false;
+        }
+    }
+
+    private final class HeaderVariableHoverSupport {
+        private final JComponent component;
+        private final javax.swing.Timer timer;
+        private final javax.swing.Timer hideTimer;
+        private Point lastPoint;
+        private VariableHoverInfo lastInfo;
+        private boolean hoveringPopup = false;
+
+        private HeaderVariableHoverSupport(JComponent component) {
+            this.component = component;
+            this.timer = new javax.swing.Timer(VARIABLE_HOVER_DELAY_MS, e -> {
+                if (lastInfo != null) {
+                    showVariablePopup(component, lastInfo, lastPoint != null ? lastPoint : new Point(0, 0), this);
+                }
+            });
+            this.timer.setRepeats(false);
+            this.hideTimer = new javax.swing.Timer(VARIABLE_HOVER_HIDE_DELAY_MS, e -> hidePopup());
+            this.hideTimer.setRepeats(false);
+        }
+
+        private void setCurrentInfo(VariableHoverInfo info, Point point) {
+            this.lastInfo = info;
+            this.lastPoint = point;
+            if (info == null || info.key == null || info.key.isBlank()) {
+                timer.stop();
+                hidePopup();
+                return;
+            }
+            cancelHidePopup();
+            timer.restart();
+        }
+
+        private void scheduleHidePopup() {
+            if (hoveringPopup) {
+                return;
+            }
+            hideTimer.restart();
+        }
+
+        private void cancelHidePopup() {
+            hideTimer.stop();
+        }
+
+        private void trackPopup(JPopupMenu popup) {
+            if (popup == null) {
+                return;
+            }
+            attachPopupHoverListeners(popup);
+        }
+
+        private void attachPopupHoverListeners(Component root) {
+            if (root == null) {
+                return;
+            }
+            MouseAdapter listener = new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hoveringPopup = true;
+                    cancelHidePopup();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hoveringPopup = false;
+                    scheduleHidePopup();
+                }
+            };
+            root.addMouseListener(listener);
+            if (root instanceof Container container) {
+                for (Component child : container.getComponents()) {
+                    attachPopupHoverListeners(child);
+                }
+            }
+        }
+
+        private void hidePopup() {
+            timer.stop();
+            hideTimer.stop();
+            hidePopupForComponent(component);
+            lastInfo = null;
+            lastPoint = null;
+            hoveringPopup = false;
+        }
+    }
+
+    private static final class HeaderVariableHover {
+        private final VariableTokenScanner.VariableToken token;
+        private final VariableHoverInfo info;
+        private final Point anchorPoint;
+        private final boolean disabled;
+
+        private HeaderVariableHover(VariableTokenScanner.VariableToken token,
+                                    VariableHoverInfo info,
+                                    Point anchorPoint,
+                                    boolean disabled) {
+            this.token = token;
+            this.info = info;
+            this.anchorPoint = anchorPoint;
+            this.disabled = disabled;
         }
     }
 
@@ -1546,6 +1780,101 @@ public class RequestEditorPanel extends JPanel {
     public JTextComponent getUrlField() { return urlField; }
     public JComboBox<String> getMethodBox() { return methodBox; }
     public JTabbedPane getTabs() { return tabs; }
+    JButton getSendButtonForTests() { return sendBtn; }
+    JButton getSendDropdownButtonForTests() { return sendDropdownBtn; }
+    JTable getHeadersTableForTests() { return headersTable; }
+    JTextComponent getBodyRawAreaForTests() { return bodyRawArea; }
+    JTextArea getResolvedViewAreaForTests() { return resolvedViewArea; }
+    JPopupMenu getVisibleVariablePopupForTests() {
+        JPopupMenu popup = popupForComponent(urlField);
+        if (popup != null) {
+            return popup;
+        }
+        popup = popupForComponent(bodyRawArea);
+        if (popup != null) {
+            return popup;
+        }
+        return popupForComponent(headersTable);
+    }
+
+    Rectangle getUrlVariableTokenBoundsForTests(String key) {
+        return variableTokenBounds(urlField, key);
+    }
+
+    Rectangle getBodyVariableTokenBoundsForTests(String key) {
+        return variableTokenBounds(bodyRawArea, key);
+    }
+
+    Rectangle getHeaderVariableCellBoundsForTests(String key) {
+        if (headersTable == null || key == null || key.isBlank()) {
+            return null;
+        }
+        for (int row = 0; row < headersTable.getRowCount(); row++) {
+            for (int col = 0; col < Math.min(2, headersTable.getColumnCount()); col++) {
+                Object value = headersTable.getValueAt(row, col);
+                VariableTokenScanner.VariableToken token = firstVariableToken(value != null ? value.toString() : null);
+                if (token != null && key.equals(token.key)) {
+                    return headersTable.getCellRect(row, col, true);
+                }
+            }
+        }
+        return null;
+    }
+
+    private Rectangle variableTokenBounds(JTextComponent component, String key) {
+        if (component == null || key == null || key.isBlank()) {
+            return null;
+        }
+        var resolver = buildCurrentResolver();
+        List<VariableTokenScanner.VariableToken> tokens = VariableTokenScanner.scan(textOf(component), resolver.getVariables());
+        for (VariableTokenScanner.VariableToken token : tokens) {
+            if (token == null || !key.equals(token.key)) {
+                continue;
+            }
+            try {
+                Shape startShape = component.modelToView2D(token.start);
+                Shape endShape = component.modelToView2D(Math.max(token.start, token.end - 1));
+                if (startShape == null || endShape == null) {
+                    return null;
+                }
+                Rectangle start = startShape.getBounds();
+                Rectangle end = endShape.getBounds();
+                return start.union(end);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private JPopupMenu popupForComponent(JComponent component) {
+        if (component == null) {
+            return null;
+        }
+        Object popup = component.getClientProperty(VARIABLE_POPUP_PROPERTY);
+        if (popup instanceof JPopupMenu menu && menu.isVisible()) {
+            return menu;
+        }
+        return null;
+    }
+
+    private boolean isPointerInsideVisiblePopup(JComponent component) {
+        JPopupMenu popup = popupForComponent(component);
+        if (popup == null || !popup.isShowing()) {
+            return false;
+        }
+        PointerInfo pointerInfo = MouseInfo.getPointerInfo();
+        if (pointerInfo == null || pointerInfo.getLocation() == null) {
+            return false;
+        }
+        try {
+            Point popupLocation = popup.getLocationOnScreen();
+            Rectangle popupBounds = new Rectangle(popupLocation, popup.getSize());
+            return popupBounds.contains(pointerInfo.getLocation());
+        } catch (IllegalComponentStateException ignored) {
+            return false;
+        }
+    }
 
     private void clearAll() {
         resetDerivedHeaderMaterializationState();
