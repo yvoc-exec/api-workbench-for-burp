@@ -20,6 +20,7 @@ import java.util.concurrent.*;
 public class AuthorizationCodeHandler {
     private static final int CALLBACK_PORT = 9876;
     private static final String CALLBACK_PATH = "/callback";
+    private static final SecureRandom RANDOM = new SecureRandom();
     private final MontoyaApi api;
 
     public record CallbackEndpoint(String host, int port, String path) {}
@@ -134,7 +135,7 @@ public class AuthorizationCodeHandler {
             try (ServerSocket server = new ServerSocket(endpoint.port(), 1, InetAddress.getByName(endpoint.host()))) {
                 server.setSoTimeout(300000); // 5 min timeout
                 try (Socket client = server.accept();
-                     BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+                     BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
                      OutputStream out = client.getOutputStream()) {
 
                     String line = in.readLine();
@@ -143,15 +144,15 @@ public class AuthorizationCodeHandler {
                         String query = line.split(" ")[1].substring(endpoint.path().length());
                         if (query.startsWith("?")) query = query.substring(1);
 
-                        String code = null;
-                        String state = null;
-                        for (String param : query.split("&")) {
-                            String[] kv = param.split("=");
-                            if (kv.length == 2) {
-                                if ("code".equals(kv[0])) code = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                                if ("state".equals(kv[0])) state = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                            }
-                        }
+                String code = null;
+                String state = null;
+                for (String param : query.split("&")) {
+                    String[] kv = param.split("=");
+                    if (kv.length == 2) {
+                        if ("code".equals(kv[0])) code = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                        if ("state".equals(kv[0])) state = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                    }
+                }
 
                         // Send response to browser
                         String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" +
@@ -174,7 +175,7 @@ public class AuthorizationCodeHandler {
 
     private String generateCodeVerifier() {
         byte[] bytes = new byte[32];
-        new SecureRandom().nextBytes(bytes);
+        RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
@@ -186,7 +187,7 @@ public class AuthorizationCodeHandler {
 
     private String generateState() {
         byte[] bytes = new byte[16];
-        new SecureRandom().nextBytes(bytes);
+        RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }

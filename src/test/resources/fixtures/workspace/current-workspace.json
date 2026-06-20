@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "activeEnvironmentId": "env-dev",
+  "collections": [
+    {
+      "name": "APIM",
+      "folderPaths": ["Auth", "Auth/OAuth"],
+      "requests": [
+        {
+          "id": "req-login",
+          "name": "Login",
+          "path": "Auth/OAuth",
+          "sourceCollection": "APIM",
+          "method": "POST",
+          "url": "https://api.example.test/login",
+          "editorMaterialized": true,
+          "buildMode": "MANUAL_PRESERVE",
+          "suppressedAutoHeaders": ["authorization"],
+          "headers": [
+            {"key": "Authorization", "value": "Bearer token", "disabled": true},
+            {"key": "Content-Type", "value": "application/json", "disabled": false}
+          ],
+          "body": {
+            "mode": "raw",
+            "raw": "{\"name\":\"Alice\"}"
+          }
+        }
+      ],
+      "runtimeVars": {
+        "runtime_only": "value"
+      },
+      "runtimeOAuth2": {
+        "oauth2_access_token": "token"
+      }
+    }
+  ],
+  "environments": [
+    {
+      "id": "env-dev",
+      "name": "Dev",
+      "sourceFormat": "api-workbench",
+      "sourceFileName": "dev.env",
+      "variables": {
+        "base_url": "https://api.example.test"
+      },
+      "oauth2": {
+        "config": {
+          "accessTokenUrl": "https://auth.example.test/token"
+        },
+        "outputBindings": {
+          "accessToken": "oauth2_access_token"
+        }
+      }
+    }
+  ],
+  "historyEntries": [
+    {
+      "id": "hist-current-1",
+      "timestamp": "2026-06-15T01:00:00Z",
+      "source": "WORKBENCH",
+      "collectionName": "APIM",
+      "requestName": "Login",
+      "environmentName": "Dev",
+      "requestSnapshot": {
+        "method": "POST",
+        "urlTemplate": "{{base_url}}/login",
+        "rawRequestSentText": "POST /login HTTP/1.1\r\nHost: api.example.test\r\n\r\n"
+      },
+      "statusCode": 200,
+      "result": "SUCCESS"
+    },
+    {
+      "id": "hist-current-2",
+      "timestamp": "2026-06-15T01:01:00Z",
+      "source": "RUNNER",
+      "collectionName": "APIM",
+      "requestName": "Users",
+      "environmentName": "Dev",
+      "requestSnapshot": {
+        "method": "GET",
+        "urlTemplate": "{{base_url}}/users/{{id}}"
+      },
+      "statusCode": 500,
+      "result": "ERROR",
+      "errorMessage": "boom"
+    }
+  ],
+  "diagnosticsCaptureEnabled": true,
+  "checkedRequestKeys": ["APIM\u001FAuth/OAuth\u001FLogin\u001FPOST\u001F1"],
+  "expandedTreePathKeys": ["APIM\u001FAuth"]
+}

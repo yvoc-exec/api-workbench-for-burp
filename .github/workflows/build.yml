@@ -3,72 +3,138 @@ name: Build API Workbench JAR
 
 on:
   push:
-  workflow_dispatch:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  build:
+  linux-build:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         java: ['17', '21', '25']
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up JDK ${{ matrix.java }}
-      uses: actions/setup-java@v4
-      with:
-        java-version: ${{ matrix.java }}
-        distribution: 'temurin'
-    - name: Print Java and Maven versions
-      run: |
-        java -version
-        mvn -version
-    - name: Run Maven verify with JaCoCo coverage
-      run: mvn -B clean verify
-    - name: Verify shaded JAR exists and is non-trivially sized
-      run: |
-        jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
-        if [ -z "$jar" ]; then
-          echo "Missing shaded JAR output"
-          exit 1
-        fi
-        if [ ! -s "$jar" ]; then
-          echo "Shaded JAR exists but is empty"
-          exit 1
-        fi
-        size=$(stat -c%s "$jar")
-        echo "Shaded JAR: $jar ($size bytes)"
-        if [ "$size" -lt 1000000 ]; then
-          echo "Shaded JAR is unexpectedly small"
-          exit 1
-        fi
-    - name: Probe shaded runtime artifact
-      run: |
-        jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
-        java -cp "$jar" burp.smoke.ScriptRuntimeProbe --require-full
-    - name: Upload JaCoCo reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: jacoco-reports-java${{ matrix.java }}
-        if-no-files-found: warn
-        path: |
-          target/site/jacoco/**
-          target/jacoco.exec
-    - name: Upload surefire and failsafe reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: surefire-reports-java${{ matrix.java }}
-        if-no-files-found: warn
-        path: |
-          target/surefire-reports/**
-          target/failsafe-reports/**
-          target/*.dump
-          target/*.dumpstream
-    - name: Upload API Workbench JAR
-      uses: actions/upload-artifact@v4
-      with:
-        name: api-workbench-for-burp-jar-java${{ matrix.java }}
-        path: target/*-jar-with-dependencies.jar
+      - uses: actions/checkout@v4
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+      - name: Print Java and Maven versions
+        run: |
+          java -version
+          mvn -version
+      - name: Run Maven verify with JaCoCo coverage
+        run: mvn -B clean verify
+      - name: Verify shaded JAR exists and is non-trivially sized
+        run: |
+          jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
+          if [ -z "$jar" ]; then
+            echo "Missing shaded JAR output"
+            exit 1
+          fi
+          if [ ! -s "$jar" ]; then
+            echo "Shaded JAR exists but is empty"
+            exit 1
+          fi
+          size=$(stat -c%s "$jar")
+          echo "Shaded JAR: $jar ($size bytes)"
+          if [ "$size" -lt 1000000 ]; then
+            echo "Shaded JAR is unexpectedly small"
+            exit 1
+          fi
+      - name: Probe shaded runtime artifact
+        run: |
+          jar=$(find target -maxdepth 1 -name '*-jar-with-dependencies.jar' | head -n 1)
+          java -cp "$jar" burp.smoke.ScriptRuntimeProbe --require-full
+      - name: Upload JaCoCo reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-reports-linux-java${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            target/site/jacoco/**
+            target/jacoco.exec
+      - name: Upload surefire and failsafe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-linux-java${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+      - name: Upload API Workbench JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-workbench-for-burp-jar-linux-java${{ matrix.java }}
+          path: target/*-jar-with-dependencies.jar
+
+  windows-build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['17', '25']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+      - name: Print Java and Maven versions
+        shell: pwsh
+        run: |
+          java -version
+          mvn -version
+      - name: Run Maven verify with JaCoCo coverage
+        shell: pwsh
+        run: mvn -B clean verify
+      - name: Verify shaded JAR exists and is non-trivially sized
+        shell: pwsh
+        run: |
+          $jar = Get-ChildItem target -Filter '*-jar-with-dependencies.jar' | Select-Object -First 1
+          if (-not $jar) {
+            throw "Missing shaded JAR output"
+          }
+          if ($jar.Length -le 0) {
+            throw "Shaded JAR exists but is empty"
+          }
+          Write-Host "Shaded JAR: $($jar.FullName) ($($jar.Length) bytes)"
+          if ($jar.Length -lt 1000000) {
+            throw "Shaded JAR is unexpectedly small"
+          }
+      - name: Probe shaded runtime artifact
+        shell: pwsh
+        run: |
+          $jar = Get-ChildItem target -Filter '*-jar-with-dependencies.jar' | Select-Object -First 1
+          & java -cp $jar.FullName burp.smoke.ScriptRuntimeProbe --require-full
+      - name: Upload JaCoCo reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-reports-windows-java${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            target/site/jacoco/**
+            target/jacoco.exec
+      - name: Upload surefire and failsafe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-windows-java${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+      - name: Upload API Workbench JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-workbench-for-burp-jar-windows-java${{ matrix.java }}
+          path: target/*-jar-with-dependencies.jar

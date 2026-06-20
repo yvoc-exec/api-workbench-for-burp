@@ -5,6 +5,7 @@ import burp.testsupport.OAuth2HttpTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -114,7 +115,6 @@ class OAuth2ManagerTest {
                 CompletableFuture<TokenStore.TokenEntry> second = CompletableFuture.supplyAsync(() -> resolve(manager, config), executor);
 
                 assertThat(firstRequestArrived.await(5, TimeUnit.SECONDS)).isTrue();
-                Thread.sleep(150L);
                 assertThat(server.requestCount()).isEqualTo(1);
                 releaseRefresh.countDown();
 
@@ -162,6 +162,20 @@ class OAuth2ManagerTest {
         }
     }
 
+    @Test
+    void tokenLockRegistryIsReleasedAfterAcquisitionCompletes() throws Exception {
+        try (OAuth2HttpTestSupport.TokenEndpointServer server = new OAuth2HttpTestSupport.TokenEndpointServer((request, invocation) ->
+                OAuth2HttpTestSupport.ResponseSpec.json(200, """
+                        {"access_token":"cleanup-access","expires_in":30}
+                        """))) {
+            OAuth2Config config = baseConfig(server.url("/token"));
+            OAuth2Manager manager = new OAuth2Manager(OAuth2HttpTestSupport.mockMontoyaApi(server));
+
+            assertThat(manager.getValidToken(config).accessToken).isEqualTo("cleanup-access");
+            assertThat(tokenLockRegistrySize()).isZero();
+        }
+    }
+
     private static OAuth2Config baseConfig(String tokenUrl) {
         OAuth2Config config = new OAuth2Config();
         config.grantType = OAuth2Config.GrantType.CLIENT_CREDENTIALS;
@@ -197,5 +211,13 @@ class OAuth2ManagerTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static int tokenLockRegistrySize() throws Exception {
+        Field field = OAuth2Manager.class.getDeclaredField("TOKEN_LOCKS");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, ?> locks = (java.util.Map<String, ?>) field.get(null);
+        return locks.size();
     }
 }

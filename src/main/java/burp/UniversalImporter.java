@@ -388,9 +388,7 @@ public class UniversalImporter {
         }
         byte[] rawRequest = exec.rawRequestBytes != null
                 ? exec.rawRequestBytes
-                : (exec.requestHeaders != null
-                ? exec.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8)
-                : new byte[0]);
+                : exec.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         warnIfUnresolved(rawRequest, req.name);
         if (debugRawRequest) {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);

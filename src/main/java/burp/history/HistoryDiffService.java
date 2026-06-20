@@ -52,7 +52,8 @@ public class HistoryDiffService {
     }
 
     public boolean different(HistoryEntry left, HistoryEntry right) {
-        return !Objects.equals(diff(left, right), "");
+        String baseline = left != null ? diff(left, left) : diff(right, right);
+        return !Objects.equals(diff(left, right), baseline);
     }
 
     private static void appendField(StringBuilder sb, String field, String left, String right) {

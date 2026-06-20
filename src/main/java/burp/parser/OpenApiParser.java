@@ -558,11 +558,11 @@ public class OpenApiParser implements CollectionParser {
         // Handle oneOf/anyOf/allOf
         if (schema.containsKey("oneOf") && schema.get("oneOf") instanceof List) {
             List<Map<String, Object>> oneOf = (List) schema.get("oneOf");
-            if (!oneOf.isEmpty()) return generateExampleValue(oneOf.get(0));
+            if (!oneOf.isEmpty()) return generateExampleValue(oneOf.get(0), new HashSet<>(visited), depth + 1);
         }
         if (schema.containsKey("anyOf") && schema.get("anyOf") instanceof List) {
             List<Map<String, Object>> anyOf = (List) schema.get("anyOf");
-            if (!anyOf.isEmpty()) return generateExampleValue(anyOf.get(0));
+            if (!anyOf.isEmpty()) return generateExampleValue(anyOf.get(0), new HashSet<>(visited), depth + 1);
         }
         if (schema.containsKey("allOf") && schema.get("allOf") instanceof List) {
             List<Map<String, Object>> allOf = (List) schema.get("allOf");
@@ -619,7 +619,7 @@ public class OpenApiParser implements CollectionParser {
                 List<Object> arr = new ArrayList<>();
                 if (schema.containsKey("items") && schema.get("items") instanceof Map) {
                     Map<String, Object> items = (Map) schema.get("items");
-                    arr.add(generateExampleValue(items));
+                    arr.add(generateExampleValue(items, new HashSet<>(visited), depth + 1));
                 }
                 return arr;
 
@@ -636,7 +636,7 @@ public class OpenApiParser implements CollectionParser {
                             Map<String, Object> propSchema = (Map) entry.getValue();
                             // Only include required properties or first 5 to avoid bloat
                             if (required.contains(propName) || obj.size() < 5) {
-                                obj.put(propName, generateExampleValue(propSchema));
+                                obj.put(propName, generateExampleValue(propSchema, new HashSet<>(visited), depth + 1));
                             }
                         }
                     }

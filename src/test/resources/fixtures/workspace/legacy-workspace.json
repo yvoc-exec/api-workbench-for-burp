@@ -1,0 +1,16 @@
+{
+  "version": 0,
+  "collections": [
+    {
+      "name": "Legacy",
+      "requests": [
+        {
+          "name": "Imported",
+          "method": "GET",
+          "url": "https://api.example.test/legacy",
+          "editorMaterialized": false
+        }
+      ]
+    }
+  ]
+}

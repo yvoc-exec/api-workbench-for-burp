@@ -1,0 +1,29 @@
+name: Performance Test Suite
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 6'
+
+jobs:
+  performance-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Run performance profile
+        run: mvn -B verify -Pperformance-tests
+      - name: Upload performance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-test-reports
+          if-no-files-found: warn
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/site/jacoco/**

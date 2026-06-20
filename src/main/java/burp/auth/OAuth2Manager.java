@@ -6,15 +6,17 @@ import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Central OAuth2 token lifecycle manager.
  * Integrates with VariableResolver to inject tokens into requests.
  */
 public class OAuth2Manager {
-    private static final ConcurrentHashMap<String, Object> TOKEN_LOCKS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, LockRef> TOKEN_LOCKS = new ConcurrentHashMap<>();
     private final MontoyaApi api;
 
     public OAuth2Manager(MontoyaApi api) {
@@ -77,8 +79,9 @@ public class OAuth2Manager {
             return entry;
         }
 
-        Object lock = TOKEN_LOCKS.computeIfAbsent(key, ignored -> new Object());
-        synchronized (lock) {
+        LockRef lockRef = acquireLockRef(key);
+        lockRef.lock.lock();
+        try {
             entry = TokenStore.get(key);
             if (entry != null && entry.isValid(config.tokenExpiryBuffer)) {
                 return entry;
@@ -105,6 +108,9 @@ public class OAuth2Manager {
             // Full re-auth
             recordDiagnostic(DiagnosticSeverity.INFO, "OAuth2 token re-authentication started", "key=" + key);
             return acquireToken(config);
+        } finally {
+            lockRef.lock.unlock();
+            releaseLockRef(key, lockRef);
         }
     }
 
@@ -161,5 +167,31 @@ public class OAuth2Manager {
         copy.tokenExpiryBuffer = source.tokenExpiryBuffer;
         copy.clientAuth = source.clientAuth;
         return copy;
+    }
+
+    private static LockRef acquireLockRef(String key) {
+        return TOKEN_LOCKS.compute(key, (ignored, current) -> {
+            LockRef ref = current != null ? current : new LockRef();
+            ref.users.incrementAndGet();
+            return ref;
+        });
+    }
+
+    private static void releaseLockRef(String key, LockRef lockRef) {
+        TOKEN_LOCKS.computeIfPresent(key, (ignored, current) -> {
+            if (current != lockRef) {
+                return current;
+            }
+            int remaining = current.users.decrementAndGet();
+            if (remaining <= 0 && !current.lock.isLocked() && !current.lock.hasQueuedThreads()) {
+                return null;
+            }
+            return current;
+        });
+    }
+
+    private static final class LockRef {
+        private final ReentrantLock lock = new ReentrantLock();
+        private final AtomicInteger users = new AtomicInteger();
     }
 }

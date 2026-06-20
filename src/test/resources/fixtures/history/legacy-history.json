@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "historyEntries": [
+    {
+      "id": "hist-legacy-1",
+      "timestamp": "2026-06-14T01:00:00Z",
+      "source": "WORKBENCH",
+      "collectionName": "Legacy",
+      "requestName": "Legacy Login",
+      "requestSnapshot": {
+        "method": "POST",
+        "urlTemplate": "{{base_url}}/legacy-login"
+      }
+    }
+  ]
+}

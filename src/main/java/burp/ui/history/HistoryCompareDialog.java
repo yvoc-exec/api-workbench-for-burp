@@ -14,7 +14,8 @@ public final class HistoryCompareDialog {
         HistoryDiffService service = diffService != null ? diffService : new HistoryDiffService();
         String diff = service.diff(left, right);
 
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(parent), "Compare History Entries", Dialog.ModalityType.APPLICATION_MODAL);
+        Window owner = parent != null ? SwingUtilities.getWindowAncestor(parent) : null;
+        JDialog dialog = new JDialog(owner, "Compare History Entries", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setLayout(new BorderLayout(5, 5));
 

@@ -238,7 +238,7 @@ public class BrunoParser implements CollectionParser {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (IOException | RuntimeException ignored) {
             // Best effort only.
         }
     }
@@ -450,7 +450,7 @@ public class BrunoParser implements CollectionParser {
             }
 
             return req;
-        } catch (Exception e) {
+        } catch (IOException | RuntimeException e) {
             return null;
         }
     }

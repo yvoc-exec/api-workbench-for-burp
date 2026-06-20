@@ -448,7 +448,9 @@ public class OAuth2Panel extends JPanel {
         if (suppressChangeNotifications || !editable || variablesChangeListener == null) return;
         try {
             variablesChangeListener.onVariablesChanged(getVariables(), replaceMode);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            updateStatus("ERROR: OAuth2 variable sync failed: " + safe(e.getMessage()));
+        }
     }
 
     private void appendRequestSummary(OAuth2Config config) {
