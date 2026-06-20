@@ -27,7 +27,10 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -116,6 +119,90 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void debouncedWorkspaceSaveFailureLogsOnceAndPreservesPreviousPersistedState() throws Exception {
+        WorkspaceSaveFailureFixture fixture = newFailureFixture();
+        try {
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("baseline-workspace", "Baseline"));
+            fixture.importer.requestWorkspaceStateSaveNow();
+            awaitSuccessfulWrites(fixture.store, 1);
+
+            String baselineJson = fixture.store.currentValue();
+            assertThat(workspaceNameFromJson(baselineJson)).isEqualTo("baseline-workspace");
+            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(baselineJson);
+
+            fixture.store.failNextWrite("debounced boom");
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("failed-workspace", "Failed"));
+            setDebounceDelay(fixture.importer, 100);
+            fixture.importer.requestWorkspaceStateSave();
+
+            awaitErrorCount(fixture.logs, 1);
+            assertThat(fixture.logs.errors).singleElement().satisfies(error -> assertThat(error)
+                    .contains("Workspace state save failed")
+                    .contains("debounced boom"));
+            assertThat(fixture.store.currentValue()).isEqualTo(baselineJson);
+            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(baselineJson);
+        } finally {
+            fixture.importer.cleanup();
+        }
+    }
+
+    @Test
+    void workspaceSaveExecutorRemainsUsableAndLaterSaveSucceedsAfterBackgroundFailure() throws Exception {
+        WorkspaceSaveFailureFixture fixture = newFailureFixture();
+        try {
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("baseline-workspace", "Baseline"));
+            fixture.importer.requestWorkspaceStateSaveNow();
+            awaitSuccessfulWrites(fixture.store, 1);
+
+            fixture.store.failNextWrite("transient workspace failure");
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("failed-workspace", "Failed"));
+            setDebounceDelay(fixture.importer, 100);
+            fixture.importer.requestWorkspaceStateSave();
+
+            awaitErrorCount(fixture.logs, 1);
+            assertThat(workspaceNameFromJson(fixture.store.currentValue())).isEqualTo("baseline-workspace");
+
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("recovered-workspace", "Recovered"));
+            fixture.importer.requestWorkspaceStateSaveNow();
+            awaitSuccessfulWrites(fixture.store, 2);
+
+            String recoveredJson = fixture.store.currentValue();
+            assertThat(workspaceNameFromJson(recoveredJson)).isEqualTo("recovered-workspace");
+            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(recoveredJson);
+            assertThat(fixture.logs.errors).hasSize(1);
+            assertThat(isWorkspaceSaveExecutorTerminated(fixture.importer)).isFalse();
+        } finally {
+            fixture.importer.cleanup();
+        }
+    }
+
+    @Test
+    void cleanupTerminatesWorkspaceSaveWorkerAfterBackgroundFailure() throws Exception {
+        WorkspaceSaveFailureFixture fixture = newFailureFixture();
+        try {
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("baseline-workspace", "Baseline"));
+            fixture.importer.requestWorkspaceStateSaveNow();
+            awaitSuccessfulWrites(fixture.store, 1);
+
+            fixture.store.failNextWrite("cleanup failure");
+            applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("cleanup-workspace", "Cleanup"));
+            setDebounceDelay(fixture.importer, 100);
+            fixture.importer.requestWorkspaceStateSave();
+
+            awaitErrorCount(fixture.logs, 1);
+            fixture.importer.cleanup();
+
+            assertThat(isWorkspaceSaveExecutorTerminated(fixture.importer)).isTrue();
+            assertThat(fixture.store.currentValue()).isNotBlank();
+            assertThat(workspaceNameFromJson(fixture.store.currentValue()))
+                    .isIn("baseline-workspace", "cleanup-workspace");
+        } finally {
+            if (!isWorkspaceSaveExecutorTerminated(fixture.importer)) {
+                fixture.importer.cleanup();
+            }
+        }
+    }
+
     void cleanupPersistsRequestEditorStateBeforeFinalWorkspaceSave() throws Exception {
         WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
         fixture.writeCount.set(0);
@@ -761,6 +848,91 @@ class UniversalImporterWorkspaceSaveTest {
         return field.get(target);
     }
 
+    private static WorkspaceState workspaceState(String collectionName, String environmentName) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = collectionName;
+        ApiRequest request = new ApiRequest();
+        request.id = "req-" + collectionName;
+        request.name = "Request " + collectionName;
+        request.method = "GET";
+        request.url = "https://" + collectionName + ".example.test";
+        request.path = collectionName;
+        request.sourceCollection = collectionName;
+        collection.requests = new ArrayList<>(List.of(request));
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        EnvironmentProfile environment = new EnvironmentProfile();
+        environment.id = "env-" + environmentName;
+        environment.name = environmentName;
+        environment.ensureDefaults();
+        environment.variables.put("base_url", "https://" + environmentName.toLowerCase() + ".example.test");
+        state.environments = new ArrayList<>(List.of(environment));
+        state.activeEnvironmentId = environment.id;
+        return state;
+    }
+
+    private static void applyWorkspaceState(UniversalImporter importer, WorkspaceState state) throws Exception {
+        SwingUtilities.invokeAndWait(() -> importer.getUI().restoreWorkspaceState(state));
+    }
+
+    private static void applyWorkspaceStateWithoutAutoSave(UniversalImporter importer, WorkspaceState state) throws Exception {
+        ImporterPanel ui = importer.getUI();
+        Field field = ImporterPanel.class.getDeclaredField("workspaceChangeListener");
+        field.setAccessible(true);
+        Runnable original = (Runnable) field.get(ui);
+        try {
+            field.set(ui, null);
+            SwingUtilities.invokeAndWait(() -> ui.restoreWorkspaceState(state));
+            SwingUtilities.invokeAndWait(() -> { });
+        } finally {
+            field.set(ui, original);
+        }
+    }
+
+    private static void awaitSuccessfulWrites(FailOncePersistedStore store, int expectedWrites) throws Exception {
+        awaitCondition(() -> store.successfulWriteCount.get() >= expectedWrites,
+                "workspace write count " + expectedWrites);
+    }
+
+    private static void awaitErrorCount(WorkspaceLogCapture capture, int expectedErrors) throws Exception {
+        awaitCondition(() -> capture.errors.size() >= expectedErrors,
+                "workspace error log count " + expectedErrors);
+    }
+
+    private static void awaitCondition(java.util.concurrent.Callable<Boolean> condition, String description) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            SwingUtilities.invokeAndWait(() -> { });
+            if (Boolean.TRUE.equals(condition.call())) {
+                return;
+            }
+            Thread.sleep(25L);
+        }
+        assertThat(condition.call()).as(description).isTrue();
+    }
+
+    private static String workspaceNameFromJson(String json) {
+        WorkspaceState state = WorkspaceStateJson.fromJson(json);
+        return state != null
+                && state.collections != null
+                && !state.collections.isEmpty()
+                && state.collections.get(0) != null
+                ? state.collections.get(0).name
+                : null;
+    }
+
+    private static String lastSavedWorkspaceJson(UniversalImporter importer) throws Exception {
+        Field field = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceJson");
+        field.setAccessible(true);
+        return (String) field.get(importer);
+    }
+
+    private static boolean isWorkspaceSaveExecutorTerminated(UniversalImporter importer) throws Exception {
+        Method method = UniversalImporter.class.getDeclaredMethod("isWorkspaceSaveExecutorTerminatedForTests");
+        method.setAccessible(true);
+        return (boolean) method.invoke(importer);
+    }
+
     private record WorkspaceSaveFixture(UniversalImporter importer,
                                         ImporterPanel ui,
                                         RequestEditorPanel requestEditor,
@@ -769,7 +941,52 @@ class UniversalImporterWorkspaceSaveTest {
                                         AtomicReference<String> lastJson) {
     }
 
+    private record WorkspaceSaveFailureFixture(UniversalImporter importer,
+                                               FailOncePersistedStore store,
+                                               WorkspaceLogCapture logs) {
+    }
+
+    private static final class FailOncePersistedStore {
+        private final PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        private final AtomicReference<String> currentValue = new AtomicReference<>();
+        private final AtomicInteger successfulWriteCount = new AtomicInteger();
+        private final AtomicReference<String> nextFailureMessage = new AtomicReference<>();
+
+        private FailOncePersistedStore() {
+            Mockito.when(persistedObject.getString(Mockito.anyString())).thenAnswer(inv -> currentValue.get());
+            Mockito.doAnswer(inv -> {
+                String failureMessage = nextFailureMessage.getAndSet(null);
+                if (failureMessage != null) {
+                    throw new IllegalStateException(failureMessage);
+                }
+                currentValue.set(inv.getArgument(1, String.class));
+                successfulWriteCount.incrementAndGet();
+                return null;
+            }).when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        }
+
+        void failNextWrite(String failureMessage) {
+            nextFailureMessage.set(failureMessage);
+        }
+
+        String currentValue() {
+            return currentValue.get();
+        }
+
+        PersistedObject persistedObject() {
+            return persistedObject;
+        }
+    }
+
+    private static final class WorkspaceLogCapture {
+        private final List<String> errors = new CopyOnWriteArrayList<>();
+    }
+
     private static MontoyaApi mockApi() {
+        return mockApi(null);
+    }
+
+    private static MontoyaApi mockApi(WorkspaceLogCapture capture) {
         MontoyaApi api = Mockito.mock(MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS);
         HttpRequestEditor requestEditor = Mockito.mock(HttpRequestEditor.class);
         Mockito.when(requestEditor.uiComponent()).thenReturn(new JPanel());
@@ -777,6 +994,13 @@ class UniversalImporterWorkspaceSaveTest {
         HttpResponseEditor responseEditor = Mockito.mock(HttpResponseEditor.class);
         Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
         Mockito.when(api.userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
+        if (capture != null) {
+            var logging = api.logging();
+            Mockito.doAnswer(inv -> {
+                capture.errors.add(inv.getArgument(0, String.class));
+                return null;
+            }).when(logging).logToError(Mockito.anyString());
+        }
         return api;
     }
 
@@ -795,5 +1019,13 @@ class UniversalImporterWorkspaceSaveTest {
         MontoyaApi api = mockApi();
         UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, new WorkspaceStateService(Mockito.mock(PersistedObject.class)));
         return importer.getUI();
+    }
+
+    private static WorkspaceSaveFailureFixture newFailureFixture() throws Exception {
+        FailOncePersistedStore store = new FailOncePersistedStore();
+        WorkspaceLogCapture logs = new WorkspaceLogCapture();
+        UniversalImporter importer = new UniversalImporter(mockApi(logs), burp.utils.ScriptMode.DISABLED, new WorkspaceStateService(store.persistedObject()));
+        setDebounceDelay(importer, 5000);
+        return new WorkspaceSaveFailureFixture(importer, store, logs);
     }
 }

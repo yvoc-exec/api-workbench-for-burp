@@ -95,7 +95,7 @@ class HeaderVariableInteractionUiIT {
         assertThat(editButton).isNotNull();
 
         Color resolvedColor = headerCellColor(headersTable, "{{api_key}}");
-        assertThat(resolvedColor).isEqualTo(new Color(0, 110, 0));
+        assertThat(resolvedColor).isEqualTo(VariableStatusColors.resolved(headersTable));
         SwingRobotTestSupport.click(editButton, robot);
         Window editDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", Duration.ofSeconds(5));
         JTextField input = SwingRobotTestSupport.findByName((Container) ((RootPaneContainer) editDialog).getContentPane(),
@@ -126,7 +126,8 @@ class HeaderVariableInteractionUiIT {
         JButton createButton = SwingRobotTestSupport.findByText(unresolvedPopup, JButton.class, "Create in Active Env");
         assertThat(createButton).isNotNull();
         Color unresolvedColor = headerCellColor(headersTable, "{{user_id}}");
-        assertThat(unresolvedColor).isEqualTo(new Color(176, 38, 38));
+        assertThat(unresolvedColor).isEqualTo(VariableStatusColors.unresolved(headersTable));
+        assertThat(unresolvedColor).isNotEqualTo(resolvedColor);
         SwingRobotTestSupport.click(createButton, robot);
         Window createDialog = SwingRobotTestSupport.waitForWindowTitle("Create Variable", Duration.ofSeconds(5));
         JTextField createField = SwingRobotTestSupport.findByName((Container) ((RootPaneContainer) createDialog).getContentPane(),
@@ -159,7 +160,9 @@ class HeaderVariableInteractionUiIT {
         Font disabledFont = headerCellFont(headersTable, "{{disabled_value}}");
         Color disabledColor = headerCellColor(headersTable, "{{disabled_value}}");
         assertThat(disabledFont.isItalic()).isTrue();
-        assertThat(disabledColor).isEqualTo(new Color(110, 110, 110));
+        assertThat(disabledColor).isEqualTo(VariableStatusColors.disabled(headersTable));
+        assertThat(disabledColor).isNotEqualTo(resolvedColor);
+        assertThat(disabledColor).isNotEqualTo(unresolvedColor);
         SwingRobotTestSupport.click(disabledEditButton, robot);
         Window disabledDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", Duration.ofSeconds(5));
         JTextField disabledField = SwingRobotTestSupport.findByName((Container) ((RootPaneContainer) disabledDialog).getContentPane(),

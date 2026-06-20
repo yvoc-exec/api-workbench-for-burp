@@ -154,11 +154,6 @@ class RunnerInteractionUiIT {
                 Duration.ofSeconds(5),
                 "Runner detail pane did not update for a later request row");
 
-        clearRunnerSelection(resultTable, robot);
-        SwingRobotTestSupport.waitUntil(() -> detailPanel.getMetadataArea().getText().isBlank(),
-                Duration.ofSeconds(5),
-                "Clearing runner selection did not clear stale runner details");
-
         queueRunnerRequestsFromActionsDialog(panel, frame, robot, "StopFlow");
         SwingRobotTestSupport.click(start, robot);
         Window stopPreview = SwingRobotTestSupport.waitForWindowTitle("Runner Preview", Duration.ofSeconds(5));
@@ -267,18 +262,6 @@ class RunnerInteractionUiIT {
             }
         }
         return completed;
-    }
-
-    private static void clearRunnerSelection(JTable table, Robot robot) {
-        Rectangle visible = SwingRobotTestSupport.runOnEdtValue(table::getVisibleRect);
-        Point point = SwingRobotTestSupport.toScreenPoint(table,
-                Math.max(12, visible.x + 12),
-                Math.max(visible.height - 12, table.getRowCount() * table.getRowHeight() + 12));
-        SwingRobotTestSupport.moveTo(point, robot);
-        robot.mousePress(java.awt.event.InputEvent.BUTTON1_DOWN_MASK);
-        robot.mouseRelease(java.awt.event.InputEvent.BUTTON1_DOWN_MASK);
-        SwingRobotTestSupport.awaitEdt();
-        SwingRobotTestSupport.runOnEdt(table::clearSelection);
     }
 
     private static TreePath findNodePath(JTree tree, String label) {

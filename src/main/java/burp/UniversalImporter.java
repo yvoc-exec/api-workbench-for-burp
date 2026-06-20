@@ -634,20 +634,31 @@ public class UniversalImporter {
         }
         try {
             WorkspaceState snapshot = captureWorkspaceStateSnapshot();
-            Future<?> future = submitWorkspaceStateSave(snapshot);
+            Future<?> future = submitWorkspaceStateSave(snapshot, !waitForCompletion);
             if (waitForCompletion && future != null) {
                 future.get();
             }
         } catch (Exception e) {
-            logWorkspaceStateError("save", e);
+            logWorkspaceStateError("save", unwrapWorkspaceStateSaveException(e));
         }
     }
 
-    private Future<?> submitWorkspaceStateSave(WorkspaceState snapshot) {
+    private Future<?> submitWorkspaceStateSave(WorkspaceState snapshot, boolean logFailuresInBackground) {
         if (workspaceSaveExecutor == null || workspaceSaveClosed) {
             return CompletableFuture.completedFuture(null);
         }
-        return workspaceSaveExecutor.submit(() -> persistWorkspaceStateSnapshotJson(snapshot));
+        return workspaceSaveExecutor.submit(() -> {
+            try {
+                persistWorkspaceStateSnapshotJson(snapshot);
+                return null;
+            } catch (Exception e) {
+                if (logFailuresInBackground) {
+                    logWorkspaceStateError("save", e);
+                    return null;
+                }
+                throw e;
+            }
+        });
     }
 
     private void persistWorkspaceStateSnapshotJson(WorkspaceState snapshot) {
@@ -684,6 +695,13 @@ public class UniversalImporter {
         };
     }
 
+    private Exception unwrapWorkspaceStateSaveException(Exception exception) {
+        if (exception instanceof java.util.concurrent.ExecutionException executionException
+                && executionException.getCause() instanceof Exception cause) {
+            return cause;
+        }
+        return exception;
+    }
 
 
     private void logWorkspaceStateError(String action, Exception e) {
