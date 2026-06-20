@@ -3,24 +3,30 @@ package burp.ui;
 import burp.models.EnvironmentProfile;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
+import burp.testsupport.SwingRobotTestSupport;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-import javax.swing.Action;
 import javax.swing.JComponent;
+import javax.swing.JFrame;
 import javax.swing.JRadioButton;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.KeyStroke;
-import java.awt.event.ActionEvent;
-import java.awt.event.InputEvent;
+import java.awt.Robot;
 import java.awt.event.KeyEvent;
-import java.util.Locale;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @EnabledIfSystemProperty(named = "ui.tests.enabled", matches = "true")
 class EnvironmentEditorShortcutUiIT {
+
+    @AfterEach
+    void tearDown() {
+        SwingRobotTestSupport.disposeTrackedWindows();
+    }
 
     @Test
     void ctrlSCommitsRawAndTableEnvironmentEdits() throws Exception {
@@ -35,35 +41,52 @@ class EnvironmentEditorShortcutUiIT {
         JRadioButton rawView = ImporterPanelTestSupport.getField(bundle.panel, "environmentRawViewBtn");
         JRadioButton tableView = ImporterPanelTestSupport.getField(bundle.panel, "environmentTableViewBtn");
 
-        rawView.doClick();
-        rawArea.setText("""
+        SwingRobotTestSupport.runOnEdt(() -> {
+            bundle.panel.getTabbedPane().setSelectedIndex(1);
+            rawView.doClick();
+        });
+        JFrame frame = SwingRobotTestSupport.showInFrame(bundle.panel.getPanel(), "Environment Shortcut Test");
+        Robot robot = SwingRobotTestSupport.newRobot();
+
+        SwingRobotTestSupport.runOnEdt(() -> rawArea.setText("""
                 base_url=https://keyboard.example.test
                 token=abc123
-                """);
-        invokeSaveShortcut(rawArea);
+                """));
+        assertSaveActionRegistered(rawArea);
+        SwingRobotTestSupport.focus(rawArea, robot);
+        SwingRobotTestSupport.pressSaveShortcut(robot);
+        SwingRobotTestSupport.waitUntil(() -> "https://keyboard.example.test".equals(profile.variables.get("base_url")),
+                Duration.ofSeconds(5),
+                "Raw editor Ctrl/Meta+S did not save the active environment");
         assertThat(profile.variables)
                 .containsEntry("base_url", "https://keyboard.example.test")
                 .containsEntry("token", "abc123");
 
-        tableView.doClick();
-        for (int i = 0; i < table.getRowCount(); i++) {
-            if ("base_url".equals(table.getValueAt(i, 0))) {
-                table.setValueAt("https://table.example.test", i, 1);
-                break;
+        SwingRobotTestSupport.runOnEdt(tableView::doClick);
+        SwingRobotTestSupport.runOnEdt(() -> {
+            for (int i = 0; i < table.getRowCount(); i++) {
+                if ("base_url".equals(table.getValueAt(i, 0))) {
+                    table.setValueAt("https://table.example.test", i, 1);
+                    break;
+                }
             }
-        }
-        invokeSaveShortcut(table);
+        });
+        assertSaveActionRegistered(table);
+        SwingRobotTestSupport.focus(table, robot);
+        SwingRobotTestSupport.pressSaveShortcut(robot);
+        SwingRobotTestSupport.waitUntil(() -> "https://table.example.test".equals(profile.variables.get("base_url")),
+                Duration.ofSeconds(5),
+                "Table editor Ctrl/Meta+S did not save the active environment");
 
         assertThat(profile.variables)
                 .containsEntry("base_url", "https://table.example.test")
                 .containsEntry("token", "abc123");
+
+        SwingRobotTestSupport.dispose(frame);
     }
 
-    private static void invokeSaveShortcut(JComponent component) {
-        int mask = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")
-                ? InputEvent.META_DOWN_MASK
-                : InputEvent.CTRL_DOWN_MASK;
-        KeyStroke save = KeyStroke.getKeyStroke(KeyEvent.VK_S, mask);
+    private static void assertSaveActionRegistered(JComponent component) {
+        KeyStroke save = KeyStroke.getKeyStroke(KeyEvent.VK_S, SwingRobotTestSupport.shortcutMask());
         Object actionKey = component.getInputMap(JComponent.WHEN_FOCUSED).get(save);
         if (actionKey == null) {
             actionKey = component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(save);
@@ -72,8 +95,6 @@ class EnvironmentEditorShortcutUiIT {
             actionKey = component.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).get(save);
         }
         assertThat(actionKey).isEqualTo("environment-save");
-        Action action = component.getActionMap().get(actionKey);
-        assertThat(action).isNotNull();
-        action.actionPerformed(new ActionEvent(component, ActionEvent.ACTION_PERFORMED, "environment-save"));
+        assertThat(component.getActionMap().get(actionKey)).isNotNull();
     }
 }
