@@ -3,6 +3,8 @@ package burp.diagnostics;
 import burp.exporter.EnvironmentExportFormat;
 import burp.exporter.EnvironmentExportOptions;
 import burp.exporter.EnvironmentExportService;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
 import burp.history.HistoryEntry;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
@@ -36,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,6 +57,33 @@ class DiagnosticPassiveBehaviorTest {
     void diagnosticsToggleDoesNotChangeRequestRunnerHistoryOrEnvironmentOutputs() throws Exception {
         PassiveScenarioSnapshot captureOff = captureScenario(false, "capture-off");
         PassiveScenarioSnapshot captureOn = captureScenario(true, "capture-on");
+
+        assertThat(captureOff.diagnosticEventCount).isZero();
+        assertThat(captureOff.diagnosticOperations).isEmpty();
+        assertThat(captureOff.sanitizedDiagnosticReport).contains("(none)");
+        assertThat(captureOff.sanitizedDiagnosticReport)
+                .doesNotContain("REQUEST_BUILD")
+                .doesNotContain("RUNNER_RUN")
+                .doesNotContain("SCRIPT_EXECUTION");
+
+        assertThat(captureOn.diagnosticEventCount).isGreaterThan(0);
+        assertThat(captureOn.diagnosticOperations)
+                .contains(DiagnosticOperation.REQUEST_BUILD,
+                        DiagnosticOperation.VARIABLE_RESOLUTION,
+                        DiagnosticOperation.SCRIPT_EXECUTION,
+                        DiagnosticOperation.HISTORY_CAPTURE);
+        assertThat(captureOn.sanitizedDiagnosticReport)
+                .contains("REQUEST_BUILD")
+                .contains("SCRIPT_EXECUTION");
+        assertThat(captureOn.sanitizedDiagnosticReport)
+                .doesNotContain("seed-token")
+                .doesNotContain("seed-password")
+                .doesNotContain("client-123")
+                .doesNotContain("refresh_token")
+                .doesNotContain("oauth2_access_token")
+                .doesNotContain("Authorization")
+                .doesNotContain("Bearer ")
+                .doesNotContain("Cookie:");
 
         assertThat(captureOff.workbenchRawRequestBytes).containsExactly(captureOn.workbenchRawRequestBytes);
         assertThat(captureOff.workbenchResponseStatus).isEqualTo(captureOn.workbenchResponseStatus);
@@ -185,6 +215,13 @@ class DiagnosticPassiveBehaviorTest {
         snapshot.importedEnvironment = importedEnvironment.copy();
         snapshot.exportedEnvironmentJson = exportedEnvironmentJson;
         snapshot.oauth2Bindings = new LinkedHashMap<>(importedEnvironment.oauth2.outputBindings);
+        List<DiagnosticEvent> diagnosticsSnapshot = store.snapshot();
+        snapshot.diagnosticEventCount = diagnosticsSnapshot.size();
+        snapshot.diagnosticOperations = diagnosticsSnapshot.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(event -> event.operation)
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        snapshot.sanitizedDiagnosticReport = store.sanitizedReport(true);
         return snapshot;
     }
 
@@ -353,5 +390,8 @@ class DiagnosticPassiveBehaviorTest {
         private EnvironmentProfile importedEnvironment;
         private String exportedEnvironmentJson;
         private Map<String, String> oauth2Bindings;
+        private int diagnosticEventCount;
+        private Set<DiagnosticOperation> diagnosticOperations;
+        private String sanitizedDiagnosticReport;
     }
 }

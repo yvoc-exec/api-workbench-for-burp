@@ -280,6 +280,37 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void importerReusesTheSameWorkspaceStateServiceInstanceForRestoreAndSave() throws Exception {
+        AtomicInteger readCount = new AtomicInteger(0);
+        AtomicInteger writeCount = new AtomicInteger(0);
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doAnswer(inv -> {
+            readCount.incrementAndGet();
+            return WorkspaceStateJson.toJson(new WorkspaceState());
+        }).when(persistedObject).getString(Mockito.anyString());
+        Mockito.doAnswer(inv -> {
+            writeCount.incrementAndGet();
+            return null;
+        }).when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+        UniversalImporter importer = new UniversalImporter(mockApi(), burp.utils.ScriptMode.DISABLED, service);
+
+        Field serviceField = UniversalImporter.class.getDeclaredField("workspaceStateService");
+        serviceField.setAccessible(true);
+        assertThat(serviceField.get(importer)).isSameAs(service);
+
+        Method restoreWorkspaceStateAfterUiRegistration = UniversalImporter.class.getDeclaredMethod("restoreWorkspaceStateAfterUiRegistration");
+        restoreWorkspaceStateAfterUiRegistration.setAccessible(true);
+        restoreWorkspaceStateAfterUiRegistration.invoke(importer);
+        SwingUtilities.invokeAndWait(() -> { });
+        importer.requestWorkspaceStateSaveNow();
+
+        assertThat(readCount.get()).isEqualTo(1);
+        assertThat(writeCount.get()).isEqualTo(1);
+        assertThat(serviceField.get(importer)).isSameAs(service);
+    }
+
+    @Test
     void deletingAuthorizationTriggersImmediateWorkspaceSave() throws Exception {
         WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
         fixture.writeCount.set(0);

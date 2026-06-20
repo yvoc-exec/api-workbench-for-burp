@@ -23,6 +23,7 @@ import java.util.function.Supplier;
  * request load/build behavior in one place.</p>
  */
 final class RequestEditorStateMapper {
+    static final int HEADER_DISABLED_MODEL_COLUMN = 2;
 
     private RequestEditorStateMapper() {
     }
@@ -183,13 +184,14 @@ final class RequestEditorStateMapper {
         for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
             String key = (String) ctx.headersModel.getValueAt(i, 0);
             String value = (String) ctx.headersModel.getValueAt(i, 1);
+            boolean disabled = Boolean.TRUE.equals(headerDisabledValue(ctx.headersModel, i));
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
             if (TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
                 continue;
             }
-            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", false));
+            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
         }
 
         String bodyMode = ctx.getBodyModeInternal.get();
@@ -264,7 +266,7 @@ final class RequestEditorStateMapper {
         }
         if (req.headers != null) {
             for (ApiRequest.Header header : req.headers) {
-                if (header == null || header.disabled || header.key == null) {
+                if (header == null || header.key == null) {
                     continue;
                 }
                 String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
@@ -272,7 +274,7 @@ final class RequestEditorStateMapper {
                     continue;
                 }
                 if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
-                    ctx.headersModel.addRow(new Object[]{header.key, header.value != null ? header.value : ""});
+                    ctx.headersModel.addRow(headerRow(header.key, header.value != null ? header.value : "", header.disabled, ctx.headersModel));
                 }
             }
         }
@@ -300,7 +302,24 @@ final class RequestEditorStateMapper {
                 return;
             }
         }
-        model.addRow(new Object[]{key, value});
+        model.addRow(headerRow(key, value, false, model));
+    }
+
+    private static Object[] headerRow(String key, String value, boolean disabled, DefaultTableModel model) {
+        if (model != null && model.getColumnCount() > HEADER_DISABLED_MODEL_COLUMN) {
+            return new Object[]{key, value, disabled};
+        }
+        return new Object[]{key, value};
+    }
+
+    private static Object headerDisabledValue(DefaultTableModel model, int row) {
+        if (model == null || row < 0 || row >= model.getRowCount()) {
+            return Boolean.FALSE;
+        }
+        if (model.getColumnCount() <= HEADER_DISABLED_MODEL_COLUMN) {
+            return Boolean.FALSE;
+        }
+        return model.getValueAt(row, HEADER_DISABLED_MODEL_COLUMN);
     }
 
     static void ensureStarterRow(DefaultTableModel model) {

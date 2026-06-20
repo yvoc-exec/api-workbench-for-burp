@@ -18,11 +18,19 @@ import javax.swing.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Core importer logic. Handles parsing, variable resolution, and sending to Burp tools.
  */
 public class UniversalImporter {
+    static final String WORKSPACE_SAVE_THREAD_NAME_PREFIX = "awb-workspace-save";
+
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final RequestBuilder requestBuilder;
@@ -31,7 +39,9 @@ public class UniversalImporter {
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
     private final DebouncedSwingAction debouncedWorkspaceSave;
-    private String lastSavedWorkspaceJson;
+    private final ExecutorService workspaceSaveExecutor;
+    private volatile String lastSavedWorkspaceJson;
+    private volatile boolean workspaceSaveClosed = false;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -49,7 +59,10 @@ public class UniversalImporter {
         this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
-        this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::saveWorkspaceState);
+        this.workspaceSaveExecutor = workspaceStateService != null
+                ? Executors.newSingleThreadExecutor(newWorkspaceSaveThreadFactory())
+                : null;
+        this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::scheduleWorkspaceStateSave);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
     }
 
@@ -519,6 +532,8 @@ public class UniversalImporter {
             ui.cleanup();
         }
         flushWorkspaceStateSave();
+        workspaceSaveClosed = true;
+        shutdownWorkspaceSaveExecutor();
         clearVariables();
     }
 
@@ -572,7 +587,7 @@ public class UniversalImporter {
     }
 
     void requestWorkspaceStateSave() {
-        if (debouncedWorkspaceSave != null) {
+        if (!workspaceSaveClosed && debouncedWorkspaceSave != null) {
             debouncedWorkspaceSave.restart();
         }
     }
@@ -589,20 +604,84 @@ public class UniversalImporter {
     }
 
     void saveWorkspaceState() {
+        if (workspaceSaveClosed) {
+            return;
+        }
+        persistWorkspaceStateSnapshot(true);
+    }
+
+    WorkspaceState captureWorkspaceStateSnapshot() throws Exception {
+        if (workspaceStateService == null || ui == null) {
+            return new WorkspaceState();
+        }
+        return SwingEdt.call(() -> WorkspaceState.copyOf(ui.getWorkspaceStateSnapshot()));
+    }
+
+    boolean isWorkspaceSaveExecutorTerminatedForTests() {
+        return workspaceSaveExecutor == null || workspaceSaveExecutor.isTerminated();
+    }
+
+    private void scheduleWorkspaceStateSave() {
+        if (workspaceSaveClosed) {
+            return;
+        }
+        persistWorkspaceStateSnapshot(false);
+    }
+
+    private void persistWorkspaceStateSnapshot(boolean waitForCompletion) {
         if (workspaceStateService == null || ui == null) {
             return;
         }
         try {
-            WorkspaceState state = SwingEdt.call(ui::getWorkspaceStateSnapshot);
-            String json = WorkspaceStateJson.toJson(state);
-            if (Objects.equals(json, lastSavedWorkspaceJson)) {
-                return;
+            WorkspaceState snapshot = captureWorkspaceStateSnapshot();
+            Future<?> future = submitWorkspaceStateSave(snapshot);
+            if (waitForCompletion && future != null) {
+                future.get();
             }
-            workspaceStateService.saveJson(json);
-            lastSavedWorkspaceJson = json;
         } catch (Exception e) {
             logWorkspaceStateError("save", e);
         }
+    }
+
+    private Future<?> submitWorkspaceStateSave(WorkspaceState snapshot) {
+        if (workspaceSaveExecutor == null || workspaceSaveClosed) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return workspaceSaveExecutor.submit(() -> persistWorkspaceStateSnapshotJson(snapshot));
+    }
+
+    private void persistWorkspaceStateSnapshotJson(WorkspaceState snapshot) {
+        WorkspaceState safeSnapshot = WorkspaceState.copyOf(snapshot);
+        String json = WorkspaceStateJson.toJson(safeSnapshot);
+        if (Objects.equals(json, lastSavedWorkspaceJson)) {
+            return;
+        }
+        workspaceStateService.saveJson(json);
+        lastSavedWorkspaceJson = json;
+    }
+
+    private void shutdownWorkspaceSaveExecutor() {
+        if (workspaceSaveExecutor == null) {
+            return;
+        }
+        workspaceSaveExecutor.shutdown();
+        try {
+            if (!workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                workspaceSaveExecutor.shutdownNow();
+                workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            workspaceSaveExecutor.shutdownNow();
+        }
+    }
+
+    private static ThreadFactory newWorkspaceSaveThreadFactory() {
+        return runnable -> {
+            Thread thread = new Thread(runnable, WORKSPACE_SAVE_THREAD_NAME_PREFIX + "-1");
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
 
