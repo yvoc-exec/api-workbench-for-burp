@@ -326,10 +326,7 @@ burp/
 |-- runner/
 |   `-- CollectionRunner.java             # Sequential request runner
 |-- smoke/
-|   |-- SmokeRuntimeConfig.java           # Opt-in runtime smoke configuration
-|   |-- SmokeRuntimeResult.java           # Runtime smoke result/report model
-|   |-- SmokeRuntimeRunner.java           # Local runtime smoke execution harness
-|   `-- SmokeUiEvidenceSnapshot.java      # UI evidence snapshot helper
+|   `-- ScriptRuntimeProbe.java           # Standalone packaged script runtime validation tool
 |-- ui/
 |   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, Runner, and History
 |   |-- OAuth2Panel.java                  # OAuth2 configuration UI
