@@ -17,7 +17,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,16 +32,15 @@ class WorkbenchSelectionLifecycleUiIT {
     void staleWorkbenchSendCompletionDoesNotOverwriteCurrentSelectionOrEmptyState() {
         CountDownLatch sendStarted = new CountDownLatch(1);
         CountDownLatch allowResponse = new CountDownLatch(1);
-        AtomicInteger callCount = new AtomicInteger();
 
         UniversalImporter importer = UiWorkflowFixtures.newImporter(
                 UiWorkflowFixtures.mockUiApi(request -> {
-                    int call = callCount.incrementAndGet();
-                    if (call == 1 || call == 2 || call == 3) {
+                    String url = request.url();
+                    if (url != null && url.endsWith("/a")) {
                         sendStarted.countDown();
                         await(allowResponse);
                         return burp.testsupport.RunnerScriptTestFixtures.mockResponse(200,
-                                "{\"call\":" + call + "}",
+                                "{\"request\":\"A\"}",
                                 "application/json");
                     }
                     return burp.testsupport.RunnerScriptTestFixtures.mockResponse(200, "{\"ok\":true}", "application/json");
@@ -56,24 +54,28 @@ class WorkbenchSelectionLifecycleUiIT {
         SwingRobotTestSupport.runOnEdt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
 
         JFrame frame = SwingRobotTestSupport.showInFrame(panel.getPanel(), "Workbench Lifecycle UI");
+        SwingRobotTestSupport.expandWindowToAvailableScreen(frame);
         Robot robot = SwingRobotTestSupport.newRobot();
         JTree tree = panel.getRequestTreeForTests();
 
         selectRequest(tree, "Request A", robot);
-        SwingRobotTestSupport.waitUntil(() -> editor.getCurrentRequest() != null
+        SwingRobotTestSupport.waitUntilOnEdt(() -> editor.getCurrentRequest() != null
                         && "Request A".equals(editor.getCurrentRequest().name),
                 Duration.ofSeconds(5),
                 "Request A was not selected before send");
         String authoredA = editor.getUrlField().getText();
         JButton sendButton = editor.getSendButtonForTests();
+        SwingRobotTestSupport.waitUntilOnEdt(sendButton::isEnabled,
+                Duration.ofSeconds(5),
+                "Send button did not enable for Request A");
         SwingRobotTestSupport.click(sendButton, robot);
         await(sendStarted);
-        SwingRobotTestSupport.waitUntil(() -> !editor.isSendEnabled(),
+        SwingRobotTestSupport.waitUntilOnEdt(() -> !editor.isSendEnabled(),
                 Duration.ofSeconds(5),
                 "Send controls did not disable during the in-flight send");
 
         selectRequest(tree, "Request B", robot);
-        SwingRobotTestSupport.waitUntil(() -> editor.getCurrentRequest() != null
+        SwingRobotTestSupport.waitUntilOnEdt(() -> editor.getCurrentRequest() != null
                         && "Request B".equals(editor.getCurrentRequest().name),
                 Duration.ofSeconds(5),
                 "Request B was not selected during Request A send");
@@ -81,7 +83,7 @@ class WorkbenchSelectionLifecycleUiIT {
         assertThat(panel.getWorkbenchDetailMetaTextForTest()).contains("Request Name: Request B");
 
         allowResponse.countDown();
-        SwingRobotTestSupport.waitUntil(() -> editor.isSendEnabled(),
+        SwingRobotTestSupport.waitUntilOnEdt(editor::isSendEnabled,
                 Duration.ofSeconds(5),
                 "Send controls were not re-enabled for the still-selected Request B");
         assertThat(editor.getCurrentRequest().name).isEqualTo("Request B");
@@ -91,10 +93,8 @@ class WorkbenchSelectionLifecycleUiIT {
 
         CountDownLatch clearStarted = new CountDownLatch(1);
         CountDownLatch allowClearResponse = new CountDownLatch(1);
-        AtomicInteger clearCall = new AtomicInteger();
         UniversalImporter clearImporter = UiWorkflowFixtures.newImporter(
                 UiWorkflowFixtures.mockUiApi(request -> {
-                    clearCall.incrementAndGet();
                     clearStarted.countDown();
                     await(allowClearResponse);
                     return burp.testsupport.RunnerScriptTestFixtures.mockResponse(200, "{\"clear\":true}", "application/json");
@@ -103,16 +103,17 @@ class WorkbenchSelectionLifecycleUiIT {
         RequestEditorPanel clearEditor = clearPanel.getRequestEditorForTests();
         SwingRobotTestSupport.runOnEdt(() -> clearPanel.restoreWorkspaceCollections(List.of(collection("Workspace", request("Request A", "/a")))));
         JFrame clearFrame = SwingRobotTestSupport.showInFrame(clearPanel.getPanel(), "Workbench Lifecycle UI Clear");
+        SwingRobotTestSupport.expandWindowToAvailableScreen(clearFrame);
         JTree clearTree = clearPanel.getRequestTreeForTests();
         selectRequest(clearTree, "Request A", robot);
         SwingRobotTestSupport.click(clearEditor.getSendButtonForTests(), robot);
         await(clearStarted);
         clearTreeSelectionByClickingWhitespace(clearTree, robot);
-        SwingRobotTestSupport.waitUntil(() -> clearEditor.getCurrentRequest() == null,
+        SwingRobotTestSupport.waitUntilOnEdt(() -> clearEditor.getCurrentRequest() == null,
                 Duration.ofSeconds(5),
                 "Clearing the request-tree selection did not empty the editor");
         allowClearResponse.countDown();
-        SwingRobotTestSupport.waitUntil(() -> !clearEditor.isSendEnabled(),
+        SwingRobotTestSupport.waitUntilOnEdt(() -> !clearEditor.isSendEnabled(),
                 Duration.ofSeconds(5),
                 "Empty-selection send controls became enabled after a stale completion");
         assertThat(clearEditor.getCurrentRequest()).isNull();
@@ -131,16 +132,17 @@ class WorkbenchSelectionLifecycleUiIT {
         ApiCollection deleteCollection = collection("Workspace", request("Request A", "/a"));
         SwingRobotTestSupport.runOnEdt(() -> deletePanel.restoreWorkspaceCollections(List.of(deleteCollection)));
         JFrame deleteFrame = SwingRobotTestSupport.showInFrame(deletePanel.getPanel(), "Workbench Lifecycle UI Delete");
+        SwingRobotTestSupport.expandWindowToAvailableScreen(deleteFrame);
         JTree deleteTree = deletePanel.getRequestTreeForTests();
         selectRequest(deleteTree, "Request A", robot);
         SwingRobotTestSupport.click(deleteEditor.getSendButtonForTests(), robot);
         await(deleteStarted);
         deleteSelectedRequestViaContextMenu(deleteTree, "Request A", deleteFrame, robot);
-        SwingRobotTestSupport.waitUntil(() -> deleteEditor.getCurrentRequest() == null,
+        SwingRobotTestSupport.waitUntilOnEdt(() -> deleteEditor.getCurrentRequest() == null,
                 Duration.ofSeconds(5),
                 "Deleting the selected request during send did not clear the editor");
         allowDeleteResponse.countDown();
-        SwingRobotTestSupport.waitUntil(() -> deletePanel.getWorkbenchDetailMetaTextForTest().isBlank(),
+        SwingRobotTestSupport.waitUntilOnEdt(() -> deletePanel.getWorkbenchDetailMetaTextForTest().isBlank(),
                 Duration.ofSeconds(5),
                 "Deleting the selected request allowed a stale send completion to repopulate Workbench details");
         assertThat(findRequestPath(deleteTree, "Request A")).isNull();

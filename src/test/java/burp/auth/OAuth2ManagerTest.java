@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class OAuth2ManagerTest {
+    private static final long ASYNC_TIMEOUT_SECONDS = 1L;
 
     @AfterEach
     void tearDown() {
@@ -99,7 +100,7 @@ class OAuth2ManagerTest {
 
         try (OAuth2HttpTestSupport.TokenEndpointServer server = new OAuth2HttpTestSupport.TokenEndpointServer((request, invocation) -> {
             firstRequestArrived.countDown();
-            assertThat(releaseRefresh.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(releaseRefresh.await(ASYNC_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
             return OAuth2HttpTestSupport.ResponseSpec.json(200,
                     """
                     {"access_token":"shared-access","refresh_token":"shared-refresh","expires_in":120}
@@ -114,12 +115,12 @@ class OAuth2ManagerTest {
                 CompletableFuture<TokenStore.TokenEntry> first = CompletableFuture.supplyAsync(() -> resolve(manager, config), executor);
                 CompletableFuture<TokenStore.TokenEntry> second = CompletableFuture.supplyAsync(() -> resolve(manager, config), executor);
 
-                assertThat(firstRequestArrived.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(firstRequestArrived.await(ASYNC_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
                 assertThat(server.requestCount()).isEqualTo(1);
                 releaseRefresh.countDown();
 
-                TokenStore.TokenEntry firstEntry = first.get(5, TimeUnit.SECONDS);
-                TokenStore.TokenEntry secondEntry = second.get(5, TimeUnit.SECONDS);
+                TokenStore.TokenEntry firstEntry = first.get(ASYNC_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                TokenStore.TokenEntry secondEntry = second.get(ASYNC_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
                 assertThat(firstEntry.accessToken).isEqualTo("shared-access");
                 assertThat(secondEntry.accessToken).isEqualTo("shared-access");

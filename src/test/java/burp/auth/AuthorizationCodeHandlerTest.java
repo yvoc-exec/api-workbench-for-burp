@@ -14,6 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AuthorizationCodeHandlerTest {
+    private static final long CALLBACK_TIMEOUT_SECONDS = 1L;
+
     @Test
     void parsesLoopbackRedirectEndpoint() throws Exception {
         AuthorizationCodeHandler.CallbackEndpoint endpoint =
@@ -62,7 +64,7 @@ class AuthorizationCodeHandlerTest {
 
         sendCallback(port, "/oauth/callback?code=code-123&state=expected-state");
 
-        assertThat(future.get(5, TimeUnit.SECONDS)).isEqualTo("code-123");
+        assertThat(future.get(CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isEqualTo("code-123");
     }
 
     @Test
@@ -76,7 +78,7 @@ class AuthorizationCodeHandlerTest {
 
         sendCallback(port, "/oauth/callback?code=code-123&state=wrong-state");
 
-        assertThatThrownBy(() -> future.get(5, TimeUnit.SECONDS))
+        assertThatThrownBy(() -> future.get(CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                 .hasCauseInstanceOf(Exception.class)
                 .hasMessageContaining("Invalid state or missing code");
     }
@@ -100,7 +102,7 @@ class AuthorizationCodeHandlerTest {
     }
 
     private static void sendCallback(int port, String pathAndQuery) throws Exception {
-        long deadline = System.currentTimeMillis() + 5_000L;
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CALLBACK_TIMEOUT_SECONDS);
         while (true) {
             try (Socket socket = new Socket("127.0.0.1", port);
                  OutputStream out = socket.getOutputStream()) {

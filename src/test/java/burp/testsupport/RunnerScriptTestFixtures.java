@@ -155,7 +155,7 @@ public final class RunnerScriptTestFixtures {
     }
 
     public static void waitForRunnerToStop(CollectionRunner runner) {
-        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(5);
+        long deadline = System.currentTimeMillis() + TimeUnit.MILLISECONDS.toMillis(1500);
         while (runner != null && runner.isRunning() && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(10);

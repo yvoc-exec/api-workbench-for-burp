@@ -36,6 +36,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 class WorkspaceConcurrentSaveTest {
+    private static final long CONCURRENCY_TIMEOUT_SECONDS = 1L;
+    private static final long THREAD_JOIN_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(CONCURRENCY_TIMEOUT_SECONDS);
 
     @AfterEach
     void tearDown() {
@@ -63,14 +65,14 @@ class WorkspaceConcurrentSaveTest {
         }, "workspace-save-v2-v4");
 
         firstWriter.start();
-        assertThat(store.firstWriteEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(store.firstWriteEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         queuedWriters.start();
 
         assertThat(store.writes()).isEmpty();
         store.allowFirstWrite.countDown();
 
-        firstWriter.join(5000);
-        queuedWriters.join(5000);
+        firstWriter.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        queuedWriters.join(THREAD_JOIN_TIMEOUT_MILLIS);
         assertThat(firstWriter.isAlive()).isFalse();
         assertThat(queuedWriters.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
@@ -105,12 +107,12 @@ class WorkspaceConcurrentSaveTest {
         }, "workspace-save-snapshot");
 
         writer.start();
-        assertThat(store.firstWriteEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(store.firstWriteEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
 
         mutateWorkspaceState(state, "workspace-v2", "env-v2", true, "queue-v2", "history-v2");
         store.allowFirstWrite.countDown();
 
-        writer.join(5000);
+        writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
         assertThat(writer.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
 
@@ -146,7 +148,7 @@ class WorkspaceConcurrentSaveTest {
         }, "workspace-load-during-save");
 
         writer.start();
-        assertThat(store.firstWriteEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(store.firstWriteEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         loader.start();
 
         assertThat(WorkspaceStateJson.fromJson(store.currentValue()).collections)
@@ -156,8 +158,8 @@ class WorkspaceConcurrentSaveTest {
 
         store.allowFirstWrite.countDown();
 
-        writer.join(5000);
-        loader.join(5000);
+        writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        loader.join(THREAD_JOIN_TIMEOUT_MILLIS);
         assertThat(writer.isAlive()).isFalse();
         assertThat(loader.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
@@ -210,7 +212,7 @@ class WorkspaceConcurrentSaveTest {
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateB));
             fixture.store.allowBlockedWrite();
 
-            saveThread.join(5000);
+            saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(failure.get()).isNull();
 
@@ -240,7 +242,7 @@ class WorkspaceConcurrentSaveTest {
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateB));
             fixture.store.allowBlockedWrite();
 
-            saveThread.join(5000);
+            saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(failure.get()).isNull();
 
@@ -311,8 +313,8 @@ class WorkspaceConcurrentSaveTest {
             cleanupThread.start();
             fixture.store.allowBlockedWrite();
 
-            saveThread.join(5000);
-            cleanupThread.join(5000);
+            saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
+            cleanupThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(cleanupThread.isAlive()).isFalse();
             assertThat(saveFailure.get()).isNull();
@@ -545,7 +547,7 @@ class WorkspaceConcurrentSaveTest {
     }
 
     private static void waitForWriteCount(BlockingStringStore store, int expectedWrites) {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CONCURRENCY_TIMEOUT_SECONDS);
         while (System.nanoTime() < deadline) {
             if (store.writeCount.get() >= expectedWrites) {
                 return;
@@ -561,7 +563,7 @@ class WorkspaceConcurrentSaveTest {
     }
 
     private static void waitForWorkspaceName(BlockingStringStore store, String expectedWorkspaceName) {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CONCURRENCY_TIMEOUT_SECONDS);
         while (System.nanoTime() < deadline) {
             String json = store.currentValue();
             if (json != null && !json.isBlank()) {
@@ -606,7 +608,7 @@ class WorkspaceConcurrentSaveTest {
 
     private static void await(CountDownLatch latch) {
         try {
-            assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(latch.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted while waiting for concurrent workspace save", e);

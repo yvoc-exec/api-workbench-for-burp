@@ -45,6 +45,15 @@ class HistoryStoreTest {
     }
 
     @Test
+    void isEmptyReturnsFalseWhileEntriesRemain() {
+        HistoryStore store = new HistoryStore();
+        store.addEntry(HistoryTestFixtures.sampleWorkbenchEntry());
+
+        assertThat(store.isEmpty()).isFalse();
+        assertThat(store.size()).isEqualTo(1);
+    }
+
+    @Test
     void addAllReplaceAllNormalizeAndLookupRemainDeterministic() {
         HistoryStore store = new HistoryStore();
         HistoryEntry older = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),

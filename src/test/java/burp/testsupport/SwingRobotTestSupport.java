@@ -70,9 +70,11 @@ public final class SwingRobotTestSupport {
 
     public static void clickTabbedPaneTab(JTabbedPane tabbedPane, String title, Robot robot) {
         Objects.requireNonNull(tabbedPane, "tabbedPane");
+        waitForComponentShowing(tabbedPane, DEFAULT_TIMEOUT);
         int index = tabbedPane.indexOfTab(title);
         assertThat(index).isGreaterThanOrEqualTo(0);
-        Rectangle bounds = tabbedPane.getBoundsAt(index);
+        Rectangle bounds = runOnEdtValue(() -> tabbedPane.getBoundsAt(index));
+        assertThat(bounds).as("Tabbed pane tab bounds").isNotNull();
         Point point = toScreenPoint(tabbedPane, bounds.x + Math.max(4, bounds.width / 2), bounds.y + Math.max(4, bounds.height / 2));
         moveTo(point, robot);
         leftClick(robot);
@@ -295,6 +297,23 @@ public final class SwingRobotTestSupport {
         assertThat(condition.getAsBoolean()).as(message).isTrue();
     }
 
+    public static void waitUntilOnEdt(java.util.concurrent.Callable<Boolean> condition, Duration timeout, String message) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (Boolean.TRUE.equals(runOnEdtValue(condition))) {
+                return;
+            }
+            awaitEdt();
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(message, e);
+            }
+        }
+        assertThat(Boolean.TRUE.equals(runOnEdtValue(condition))).as(message).isTrue();
+    }
+
     public static void waitForComponentShowing(Component component, Duration timeout) {
         waitUntil(() -> component != null && component.isShowing(), timeout,
                 "Timed out waiting for component to show: " + (component != null ? component.getClass().getSimpleName() : "null"));
@@ -316,6 +335,22 @@ public final class SwingRobotTestSupport {
             return false;
         }, timeout, "Timed out waiting for window title: " + title);
         return found[0];
+    }
+
+    public static void expandWindowToAvailableScreen(Window window) {
+        Objects.requireNonNull(window, "window");
+        runOnEdt(() -> {
+            Rectangle bounds = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+            if (bounds != null && !bounds.isEmpty()) {
+                window.setBounds(bounds);
+            }
+            if (window instanceof Frame frame) {
+                frame.setExtendedState(frame.getExtendedState() | Frame.MAXIMIZED_BOTH);
+            }
+            window.validate();
+            window.repaint();
+        });
+        waitUntil(window::isShowing, DEFAULT_TIMEOUT, "Timed out waiting for expanded window to remain visible");
     }
 
     public static JPopupMenu waitForPopup(Container root, Duration timeout) {
