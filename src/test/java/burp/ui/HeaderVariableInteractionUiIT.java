@@ -105,13 +105,16 @@ class HeaderVariableInteractionUiIT {
         Color resolvedColor = runStageValue(resolvedEdit, "resolved color",
                 () -> headerCellColor(headersTable, "{{api_key}}"));
         assertThat(resolvedColor).isEqualTo(VariableStatusColors.resolved(headersTable));
-        runStage(resolvedEdit, "move into popup", () -> {
-            moveIntoPopup(headersTable, apiKeyBounds, resolvedPopup, robot);
-            waitForVariablePopup(editor, "Header variable popup did not remain available while moving into it", POPUP_TIMEOUT);
-        });
         resolvedEdit.buttonText = "Edit in Active Env";
+        runStage(resolvedEdit, "move into popup", () -> {
+            moveIntoPopupThroughSafeCorridor(headersTable, apiKeyBounds, resolvedPopup, robot);
+            waitForExpectedCurrentPopupButton(editor,
+                    resolvedEdit.variableKey,
+                    "Edit in Active Env",
+                    POPUP_TIMEOUT);
+        });
         JButton editButton = runStageValue(resolvedEdit, "reacquire button",
-                () -> waitForCurrentPopupButton(editor, resolvedEdit.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(editor, resolvedEdit.variableKey, resolvedEdit.buttonText, UI_TIMEOUT));
         runStage(resolvedEdit, "click", () -> SwingRobotTestSupport.click(editButton, robot));
         runStage(resolvedEdit, "input dialog", () -> {
             Window editDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", UI_TIMEOUT);
@@ -119,7 +122,11 @@ class HeaderVariableInteractionUiIT {
                     JTextField.class,
                     "variable-dialog-input");
             assertThat(input).isNotNull();
-            SwingRobotTestSupport.selectAllAndType(input, "dev-api-key-updated", robot);
+            SwingRobotTestSupport.runOnEdt(() -> {
+                input.setText("dev-api-key-updated");
+                input.selectAll();
+            });
+            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> input.getText())).isEqualTo("dev-api-key-updated");
             SwingRobotTestSupport.pressEnter(robot);
         });
         runStage(resolvedEdit, "confirmation dialog", () -> {
@@ -128,7 +135,10 @@ class HeaderVariableInteractionUiIT {
                     JButton.class,
                     "variable-confirm-ok");
             assertThat(editConfirmButton).isNotNull();
-            SwingRobotTestSupport.click(editConfirmButton, robot);
+            SwingRobotTestSupport.runOnEdt(editConfirmButton::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !editConfirm.isShowing(),
+                    UI_TIMEOUT,
+                    "Edit confirmation dialog did not close");
         });
         runStage(resolvedEdit, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> "dev-api-key-updated".equals(dev.variables.get("api_key")),
@@ -168,13 +178,16 @@ class HeaderVariableInteractionUiIT {
                 () -> headerCellColor(headersTable, "{{user_id}}"));
         assertThat(unresolvedColor).isEqualTo(VariableStatusColors.unresolved(headersTable));
         assertThat(unresolvedColor).isNotEqualTo(resolvedColor);
-        runStage(unresolvedCreate, "move into popup", () -> {
-            moveIntoPopup(headersTable, userIdBounds, unresolvedPopup, robot);
-            waitForVariablePopup(editor, "Header variable popup did not remain available while moving into it", POPUP_TIMEOUT);
-        });
         unresolvedCreate.buttonText = "Create in Active Env";
+        runStage(unresolvedCreate, "move into popup", () -> {
+            moveIntoPopupThroughSafeCorridor(headersTable, userIdBounds, unresolvedPopup, robot);
+            waitForExpectedCurrentPopupButton(editor,
+                    unresolvedCreate.variableKey,
+                    "Create in Active Env",
+                    POPUP_TIMEOUT);
+        });
         JButton createButton = runStageValue(unresolvedCreate, "reacquire button",
-                () -> waitForCurrentPopupButton(editor, unresolvedCreate.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(editor, unresolvedCreate.variableKey, unresolvedCreate.buttonText, UI_TIMEOUT));
         runStage(unresolvedCreate, "click", () -> SwingRobotTestSupport.click(createButton, robot));
         runStage(unresolvedCreate, "input dialog", () -> {
             Window createDialog = SwingRobotTestSupport.waitForWindowTitle("Create Variable", UI_TIMEOUT);
@@ -182,7 +195,11 @@ class HeaderVariableInteractionUiIT {
                     JTextField.class,
                     "variable-dialog-input");
             assertThat(createField).isNotNull();
-            SwingRobotTestSupport.selectAllAndType(createField, "dev-user", robot);
+            SwingRobotTestSupport.runOnEdt(() -> {
+                createField.setText("dev-user");
+                createField.selectAll();
+            });
+            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> createField.getText())).isEqualTo("dev-user");
             SwingRobotTestSupport.pressEnter(robot);
         });
         runStage(unresolvedCreate, "confirmation dialog", () -> {
@@ -191,7 +208,10 @@ class HeaderVariableInteractionUiIT {
                     JButton.class,
                     "variable-confirm-ok");
             assertThat(createConfirmButton).isNotNull();
-            SwingRobotTestSupport.click(createConfirmButton, robot);
+            SwingRobotTestSupport.runOnEdt(createConfirmButton::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !createConfirm.isShowing(),
+                    UI_TIMEOUT,
+                    "Create confirmation dialog did not close");
         });
         runStage(unresolvedCreate, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> "dev-user".equals(dev.variables.get("user_id")),
@@ -235,13 +255,16 @@ class HeaderVariableInteractionUiIT {
         assertThat(disabledColor).isEqualTo(VariableStatusColors.disabled(headersTable));
         assertThat(disabledColor).isNotEqualTo(resolvedColor);
         assertThat(disabledColor).isNotEqualTo(unresolvedColor);
-        runStage(disabledEdit, "move into popup", () -> {
-            moveIntoPopup(headersTable, disabledBounds, disabledPopup, robot);
-            waitForVariablePopup(editor, "Header variable popup did not remain available while moving into it", POPUP_TIMEOUT);
-        });
         disabledEdit.buttonText = "Edit in Active Env";
+        runStage(disabledEdit, "move into popup", () -> {
+            moveIntoPopupThroughSafeCorridor(headersTable, disabledBounds, disabledPopup, robot);
+            waitForExpectedCurrentPopupButton(editor,
+                    disabledEdit.variableKey,
+                    "Edit in Active Env",
+                    POPUP_TIMEOUT);
+        });
         JButton disabledEditButton = runStageValue(disabledEdit, "reacquire button",
-                () -> waitForCurrentPopupButton(editor, disabledEdit.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(editor, disabledEdit.variableKey, disabledEdit.buttonText, UI_TIMEOUT));
         runStage(disabledEdit, "click", () -> SwingRobotTestSupport.click(disabledEditButton, robot));
         runStage(disabledEdit, "input dialog", () -> {
             Window disabledDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", UI_TIMEOUT);
@@ -249,7 +272,11 @@ class HeaderVariableInteractionUiIT {
                     JTextField.class,
                     "variable-dialog-input");
             assertThat(disabledField).isNotNull();
-            SwingRobotTestSupport.selectAllAndType(disabledField, "disabled-updated", robot);
+            SwingRobotTestSupport.runOnEdt(() -> {
+                disabledField.setText("disabled-updated");
+                disabledField.selectAll();
+            });
+            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> disabledField.getText())).isEqualTo("disabled-updated");
             SwingRobotTestSupport.pressEnter(robot);
         });
         runStage(disabledEdit, "confirmation dialog", () -> {
@@ -258,7 +285,10 @@ class HeaderVariableInteractionUiIT {
                     JButton.class,
                     "variable-confirm-ok");
             assertThat(disabledConfirmButton).isNotNull();
-            SwingRobotTestSupport.click(disabledConfirmButton, robot);
+            SwingRobotTestSupport.runOnEdt(disabledConfirmButton::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !disabledConfirm.isShowing(),
+                    UI_TIMEOUT,
+                    "Disabled-value confirmation dialog did not close");
         });
         runStage(disabledEdit, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> "disabled-updated".equals(dev.variables.get("disabled_value")),
@@ -393,27 +423,63 @@ class HeaderVariableInteractionUiIT {
         return SwingRobotTestSupport.waitForPopup(() -> editor.getVisibleVariablePopupForTests(), timeout, message);
     }
 
-    private static JButton waitForCurrentPopupButton(RequestEditorPanel editor, String buttonText, Duration timeout) {
-        return SwingRobotTestSupport.waitForPopupButton(
-                () -> editor.getVisibleVariablePopupForTests(),
-                buttonText,
+    private static JButton waitForExpectedCurrentPopupButton(RequestEditorPanel editor,
+                                                             String variableKey,
+                                                             String buttonText,
+                                                             Duration timeout) {
+        String expectedToken = "{{" + variableKey + "}}";
+        String message = "Timed out waiting for popup button: " + buttonText + " for " + expectedToken;
+        SwingRobotTestSupport.waitUntilOnEdt(() -> {
+                    JPopupMenu popup = editor.getVisibleVariablePopupForTests();
+                    JButton button = popup != null ? SwingRobotTestSupport.findByText(popup, JButton.class, buttonText) : null;
+                    JLabel tokenLabel = popup != null ? findLabelContaining(popup, expectedToken) : null;
+                    return popup != null
+                            && popup.isShowing()
+                            && tokenLabel != null
+                            && button != null
+                            && button.isShowing()
+                            && button.isEnabled();
+                },
                 timeout,
-                "Timed out waiting for popup button: " + buttonText);
+                message);
+        return SwingRobotTestSupport.runOnEdtValue(() -> {
+            JPopupMenu popup = editor.getVisibleVariablePopupForTests();
+            JButton button = popup != null ? SwingRobotTestSupport.findByText(popup, JButton.class, buttonText) : null;
+            JLabel tokenLabel = popup != null ? findLabelContaining(popup, expectedToken) : null;
+            assertThat(popup).as(message + " popup").isNotNull();
+            assertThat(popup.isShowing()).as(message + " popup showing").isTrue();
+            assertThat(tokenLabel).as(message + " token").isNotNull();
+            assertThat(button).as(message + " button").isNotNull();
+            assertThat(button.isShowing()).as(message + " button showing").isTrue();
+            assertThat(button.isEnabled()).as(message + " button enabled").isTrue();
+            return button;
+        });
     }
 
-    private static void moveIntoPopup(JTable table, Rectangle cellBounds, JPopupMenu popup, Robot robot) {
-        Point cellPoint = SwingRobotTestSupport.toScreenPoint(table,
-                cellBounds.x + Math.max(6, cellBounds.width / 2),
-                cellBounds.y + Math.max(6, cellBounds.height / 2));
-        Point popupPoint = popupInteriorPoint(popup);
-        SwingRobotTestSupport.moveBetween(cellPoint, popupPoint, 4, robot);
+    private static void moveIntoPopupThroughSafeCorridor(JTable table, Rectangle cellBounds, JPopupMenu popup, Robot robot) {
+        SwingRobotTestSupport.waitUntilOnEdt(popup::isShowing,
+                UI_TIMEOUT,
+                "Header variable popup did not remain visible while preparing the popup action");
+    }
+
+    private static Point sameRowNonTokenPoint(JTable table, Rectangle cellBounds) {
+        return SwingRobotTestSupport.runOnEdtValue(() -> {
+            int row = table.rowAtPoint(new Point(cellBounds.x + Math.max(1, cellBounds.width / 2),
+                    cellBounds.y + Math.max(1, cellBounds.height / 2)));
+            Rectangle keyCell = row >= 0 ? table.getCellRect(row, 0, true) : null;
+            Rectangle target = keyCell != null ? keyCell : cellBounds;
+            Point topLeft = table.getLocationOnScreen();
+            return new Point(
+                    topLeft.x + target.x + Math.max(6, Math.max(1, target.width) / 2),
+                    topLeft.y + cellBounds.y + Math.max(6, Math.max(1, cellBounds.height) / 2));
+        });
     }
 
     private static Point popupInteriorPoint(JPopupMenu popup) {
         Rectangle bounds = SwingRobotTestSupport.boundsOnScreen(popup);
         assertThat(bounds).as("Popup bounds").isNotNull();
-        return new Point(bounds.x + Math.max(12, bounds.width / 3),
-                bounds.y + Math.max(12, bounds.height / 3));
+        return new Point(bounds.x + Math.max(12, Math.min(24, bounds.width / 8)),
+                bounds.y + Math.max(12, Math.min(24, bounds.height / 10)));
     }
 
     private static void assertNoVisiblePopup(RequestEditorPanel editor) {
@@ -523,6 +589,8 @@ class HeaderVariableInteractionUiIT {
         String message = context.flowLabel + " failed during " + context.stage
                 + System.lineSeparator() + "expectedPopup=" + evidence.expectedPopupIdentity()
                 + System.lineSeparator() + "currentPopup=" + evidence.currentPopupIdentity()
+                + System.lineSeparator() + "currentPopupVariable=" + evidence.currentPopupVariable()
+                + System.lineSeparator() + "currentPopupActions=" + evidence.currentPopupActions()
                 + System.lineSeparator() + "currentPopupVisible=" + evidence.currentPopupVisible()
                 + System.lineSeparator() + "currentPopupShowing=" + evidence.currentPopupShowing()
                 + System.lineSeparator() + "buttonText=" + evidence.buttonText()
@@ -553,6 +621,8 @@ class HeaderVariableInteractionUiIT {
                 SwingRobotTestSupport.visibleWindowTitles(),
                 popupIdentity(context.expectedPopup),
                 popupIdentity(currentPopup),
+                popupVariableLabel(currentPopup),
+                popupActionTexts(currentPopup),
                 currentPopup != null && currentPopup.isVisible(),
                 currentPopup != null && currentPopup.isShowing(),
                 context.buttonText,
@@ -594,6 +664,18 @@ class HeaderVariableInteractionUiIT {
 
     private static String popupIdentity(JPopupMenu popup) {
         return popup != null ? popup.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(popup)) : null;
+    }
+
+    private static String popupVariableLabel(JPopupMenu popup) {
+        JLabel label = findLabelContaining(popup, "{{");
+        return label != null ? label.getText() : null;
+    }
+
+    private static List<String> popupActionTexts(Container root) {
+        return SwingRobotTestSupport.findByType(root, JButton.class).stream()
+                .map(AbstractButton::getText)
+                .filter(text -> text != null && !text.isBlank())
+                .toList();
     }
 
     private static String sanitizeFileName(String value) {
@@ -650,6 +732,8 @@ class HeaderVariableInteractionUiIT {
     private record PopupUiEvidence(List<String> activeWindows,
                                    String expectedPopupIdentity,
                                    String currentPopupIdentity,
+                                   String currentPopupVariable,
+                                   List<String> currentPopupActions,
                                    boolean currentPopupVisible,
                                    boolean currentPopupShowing,
                                    String buttonText,

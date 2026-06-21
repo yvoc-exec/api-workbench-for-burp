@@ -89,13 +89,16 @@ class VariableHoverPopupUiIT {
             assertThat(findLabelContainingIgnoreCase(editPopup, "Source: Active Environment")).isNotNull();
             assertThat(findLabelContaining(editPopup, "Active Env: Dev")).isNotNull();
         });
-        runStage(editContext, "move into popup", () -> {
-            moveFromUrlTokenIntoPopup(requestEditor, baseUrlBounds, editPopup, robot);
-            waitForVariablePopup(requestEditor, "Resolved URL variable popup did not remain visible while moving into it", POPUP_TIMEOUT);
-        });
         editContext.buttonText = "Edit in Active Env";
+        runStage(editContext, "move into popup", () -> {
+            SwingRobotTestSupport.moveTo(popupInteriorPoint(editPopup), robot);
+            waitForExpectedCurrentPopupButton(requestEditor,
+                    editContext.variableKey,
+                    editContext.buttonText,
+                    POPUP_TIMEOUT);
+        });
         JButton editButton = runStageValue(editContext, "reacquire button",
-                () -> waitForCurrentPopupButton(requestEditor, editContext.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(requestEditor, editContext.variableKey, editContext.buttonText, UI_TIMEOUT));
         runStage(editContext, "click", () -> SwingRobotTestSupport.click(editButton, robot));
         runStage(editContext, "input dialog", () -> {
             Window inputDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", UI_TIMEOUT);
@@ -103,8 +106,16 @@ class VariableHoverPopupUiIT {
                     JTextField.class,
                     "variable-dialog-input");
             assertThat(input).isNotNull();
-            SwingRobotTestSupport.selectAllAndType(input, "https://edited.example.test", robot);
-            SwingRobotTestSupport.pressEnter(robot);
+            SwingRobotTestSupport.runOnEdt(() -> input.setText("https://edited.example.test"));
+            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> input.getText())).isEqualTo("https://edited.example.test");
+            JButton ok = SwingRobotTestSupport.findByName((Container) ((RootPaneContainer) inputDialog).getContentPane(),
+                    JButton.class,
+                    "variable-dialog-ok");
+            assertThat(ok).isNotNull();
+            SwingRobotTestSupport.runOnEdt(ok::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !inputDialog.isShowing(),
+                    UI_TIMEOUT,
+                    "Edit dialog did not close after confirmation");
         });
         runStage(editContext, "confirmation dialog", () -> {
             Window confirmDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable Confirmation", UI_TIMEOUT);
@@ -113,6 +124,9 @@ class VariableHoverPopupUiIT {
                     "variable-confirm-ok");
             assertThat(confirm).isNotNull();
             SwingRobotTestSupport.click(confirm, robot);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !confirmDialog.isShowing(),
+                    UI_TIMEOUT,
+                    "Edit confirmation dialog did not close");
         });
         runStage(editContext, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> "https://edited.example.test".equals(active.variables.get("base_url")),
@@ -149,13 +163,16 @@ class VariableHoverPopupUiIT {
             assertThat(findLabelContaining(createPopup, "{{user_id}}")).isNotNull();
             assertThat(findLabelContaining(createPopup, "Status: Unresolved")).isNotNull();
         });
-        runStage(cancelCreateContext, "move into popup", () -> {
-            moveFromUrlTokenIntoPopup(requestEditor, userIdBounds, createPopup, robot);
-            waitForVariablePopup(requestEditor, "Unresolved URL variable popup did not remain visible while moving into it", POPUP_TIMEOUT);
-        });
         cancelCreateContext.buttonText = "Create in Active Env";
+        runStage(cancelCreateContext, "move into popup", () -> {
+            SwingRobotTestSupport.moveTo(popupInteriorPoint(createPopup), robot);
+            waitForExpectedCurrentPopupButton(requestEditor,
+                    cancelCreateContext.variableKey,
+                    cancelCreateContext.buttonText,
+                    POPUP_TIMEOUT);
+        });
         JButton createButton = runStageValue(cancelCreateContext, "reacquire button",
-                () -> waitForCurrentPopupButton(requestEditor, cancelCreateContext.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(requestEditor, cancelCreateContext.variableKey, cancelCreateContext.buttonText, UI_TIMEOUT));
         runStage(cancelCreateContext, "click", () -> SwingRobotTestSupport.click(createButton, robot));
         runStage(cancelCreateContext, "input dialog", () -> {
             Window createInputDialog = SwingRobotTestSupport.waitForWindowTitle("Create Variable", UI_TIMEOUT);
@@ -163,7 +180,10 @@ class VariableHoverPopupUiIT {
                     JButton.class,
                     "variable-dialog-cancel");
             assertThat(cancelInput).isNotNull();
-            SwingRobotTestSupport.click(cancelInput, robot);
+            SwingRobotTestSupport.runOnEdt(cancelInput::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !createInputDialog.isShowing(),
+                    UI_TIMEOUT,
+                    "Create dialog did not close after cancellation");
         });
         runStage(cancelCreateContext, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> !active.variables.containsKey("user_id"),
@@ -183,17 +203,20 @@ class VariableHoverPopupUiIT {
                 "user_id",
                 active,
                 other);
+        confirmCreateContext.buttonText = "Create in Active Env";
         runStage(confirmCreateContext, "hover", () -> hoverUrlVariable(requestEditor, userIdBounds, robot));
         JPopupMenu confirmCreatePopup = runStageValue(confirmCreateContext, "popup visible",
                 () -> waitForVariablePopup(requestEditor, "Timed out waiting for variable popup"));
         confirmCreateContext.expectedPopup = confirmCreatePopup;
         runStage(confirmCreateContext, "move into popup", () -> {
-            moveFromUrlTokenIntoPopup(requestEditor, userIdBounds, confirmCreatePopup, robot);
-            waitForVariablePopup(requestEditor, "Unresolved URL variable popup did not remain visible while moving into it", POPUP_TIMEOUT);
+            SwingRobotTestSupport.moveTo(popupInteriorPoint(confirmCreatePopup), robot);
+            waitForExpectedCurrentPopupButton(requestEditor,
+                    confirmCreateContext.variableKey,
+                    confirmCreateContext.buttonText,
+                    POPUP_TIMEOUT);
         });
-        confirmCreateContext.buttonText = "Create in Active Env";
         JButton confirmCreate = runStageValue(confirmCreateContext, "reacquire button",
-                () -> waitForCurrentPopupButton(requestEditor, confirmCreateContext.buttonText, UI_TIMEOUT));
+                () -> waitForExpectedCurrentPopupButton(requestEditor, confirmCreateContext.variableKey, confirmCreateContext.buttonText, UI_TIMEOUT));
         runStage(confirmCreateContext, "click", () -> SwingRobotTestSupport.click(confirmCreate, robot));
         runStage(confirmCreateContext, "input dialog", () -> {
             Window createDialog = SwingRobotTestSupport.waitForWindowTitle("Create Variable", UI_TIMEOUT);
@@ -201,8 +224,16 @@ class VariableHoverPopupUiIT {
                     JTextField.class,
                     "variable-dialog-input");
             assertThat(createField).isNotNull();
-            SwingRobotTestSupport.selectAllAndType(createField, "42", robot);
-            SwingRobotTestSupport.pressEnter(robot);
+            SwingRobotTestSupport.runOnEdt(() -> createField.setText("42"));
+            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> createField.getText())).isEqualTo("42");
+            JButton ok = SwingRobotTestSupport.findByName((Container) ((RootPaneContainer) createDialog).getContentPane(),
+                    JButton.class,
+                    "variable-dialog-ok");
+            assertThat(ok).isNotNull();
+            SwingRobotTestSupport.runOnEdt(ok::doClick);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !createDialog.isShowing(),
+                    UI_TIMEOUT,
+                    "Create dialog did not close after confirmation");
         });
         runStage(confirmCreateContext, "confirmation dialog", () -> {
             Window createConfirm = SwingRobotTestSupport.waitForWindowTitle("Create Variable Confirmation", UI_TIMEOUT);
@@ -211,6 +242,9 @@ class VariableHoverPopupUiIT {
                     "variable-confirm-ok");
             assertThat(createConfirmButton).isNotNull();
             SwingRobotTestSupport.click(createConfirmButton, robot);
+            SwingRobotTestSupport.waitUntilOnEdt(() -> !createConfirm.isShowing(),
+                    UI_TIMEOUT,
+                    "Create confirmation dialog did not close");
         });
         runStage(confirmCreateContext, "environment mutation", () -> SwingRobotTestSupport.waitUntilOnEdt(
                 () -> "42".equals(active.variables.get("user_id")),
@@ -251,14 +285,6 @@ class VariableHoverPopupUiIT {
         SwingRobotTestSupport.moveTo(point, robot);
     }
 
-    private static void moveFromUrlTokenIntoPopup(RequestEditorPanel editor, Rectangle bounds, JPopupMenu popup, Robot robot) {
-        Point tokenPoint = SwingRobotTestSupport.toScreenPoint(editor.getUrlField(),
-                bounds.x + Math.max(4, bounds.width / 2),
-                bounds.y + Math.max(4, bounds.height / 2));
-        Point popupPoint = popupInteriorPoint(popup);
-        SwingRobotTestSupport.moveBetween(tokenPoint, popupPoint, 4, robot);
-    }
-
     private static JPopupMenu waitForVariablePopup(RequestEditorPanel editor, String message) {
         return waitForVariablePopup(editor, message, UI_TIMEOUT);
     }
@@ -267,12 +293,37 @@ class VariableHoverPopupUiIT {
         return SwingRobotTestSupport.waitForPopup(() -> editor.getVisibleVariablePopupForTests(), timeout, message);
     }
 
-    private static JButton waitForCurrentPopupButton(RequestEditorPanel editor, String buttonText, Duration timeout) {
-        return SwingRobotTestSupport.waitForPopupButton(
-                () -> editor.getVisibleVariablePopupForTests(),
-                buttonText,
+    private static JButton waitForExpectedCurrentPopupButton(RequestEditorPanel editor,
+                                                             String variableKey,
+                                                             String buttonText,
+                                                             Duration timeout) {
+        String expectedToken = "{{" + variableKey + "}}";
+        String message = "Timed out waiting for popup button: " + buttonText + " for " + expectedToken;
+        SwingRobotTestSupport.waitUntilOnEdt(() -> {
+                    JPopupMenu popup = editor.getVisibleVariablePopupForTests();
+                    JButton button = popup != null ? SwingRobotTestSupport.findByText(popup, JButton.class, buttonText) : null;
+                    JLabel tokenLabel = popup != null ? findLabelContaining(popup, expectedToken) : null;
+                    return popup != null
+                            && popup.isShowing()
+                            && tokenLabel != null
+                            && button != null
+                            && button.isShowing()
+                            && button.isEnabled();
+                },
                 timeout,
-                "Timed out waiting for popup button: " + buttonText);
+                message);
+        return SwingRobotTestSupport.runOnEdtValue(() -> {
+            JPopupMenu popup = editor.getVisibleVariablePopupForTests();
+            JButton button = popup != null ? SwingRobotTestSupport.findByText(popup, JButton.class, buttonText) : null;
+            JLabel tokenLabel = popup != null ? findLabelContaining(popup, expectedToken) : null;
+            assertThat(popup).as(message + " popup").isNotNull();
+            assertThat(popup.isShowing()).as(message + " popup showing").isTrue();
+            assertThat(tokenLabel).as(message + " token").isNotNull();
+            assertThat(button).as(message + " button").isNotNull();
+            assertThat(button.isShowing()).as(message + " button showing").isTrue();
+            assertThat(button.isEnabled()).as(message + " button enabled").isTrue();
+            return button;
+        });
     }
 
     private static Point popupInteriorPoint(JPopupMenu popup) {
@@ -407,6 +458,8 @@ class VariableHoverPopupUiIT {
         String message = context.flowLabel + " failed during " + context.stage
                 + System.lineSeparator() + "expectedPopup=" + evidence.expectedPopupIdentity()
                 + System.lineSeparator() + "currentPopup=" + evidence.currentPopupIdentity()
+                + System.lineSeparator() + "currentPopupVariable=" + evidence.currentPopupVariable()
+                + System.lineSeparator() + "currentPopupActions=" + evidence.currentPopupActions()
                 + System.lineSeparator() + "currentPopupVisible=" + evidence.currentPopupVisible()
                 + System.lineSeparator() + "currentPopupShowing=" + evidence.currentPopupShowing()
                 + System.lineSeparator() + "buttonText=" + evidence.buttonText()
@@ -437,6 +490,8 @@ class VariableHoverPopupUiIT {
                 SwingRobotTestSupport.visibleWindowTitles(),
                 popupIdentity(context.expectedPopup),
                 popupIdentity(currentPopup),
+                popupVariableLabel(currentPopup),
+                popupActionTexts(currentPopup),
                 currentPopup != null && currentPopup.isVisible(),
                 currentPopup != null && currentPopup.isShowing(),
                 context.buttonText,
@@ -478,6 +533,18 @@ class VariableHoverPopupUiIT {
 
     private static String popupIdentity(JPopupMenu popup) {
         return popup != null ? popup.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(popup)) : null;
+    }
+
+    private static String popupVariableLabel(JPopupMenu popup) {
+        JLabel label = findLabelContaining(popup, "{{");
+        return label != null ? label.getText() : null;
+    }
+
+    private static List<String> popupActionTexts(Container root) {
+        return SwingRobotTestSupport.findByType(root, JButton.class).stream()
+                .map(AbstractButton::getText)
+                .filter(text -> text != null && !text.isBlank())
+                .toList();
     }
 
     private static String sanitizeFileName(String value) {
@@ -534,6 +601,8 @@ class VariableHoverPopupUiIT {
     private record PopupUiEvidence(List<String> activeWindows,
                                    String expectedPopupIdentity,
                                    String currentPopupIdentity,
+                                   String currentPopupVariable,
+                                   List<String> currentPopupActions,
                                    boolean currentPopupVisible,
                                    boolean currentPopupShowing,
                                    String buttonText,

@@ -206,6 +206,28 @@ public final class SwingRobotTestSupport {
         typeText(text, robot);
     }
 
+    public static void replaceTextWithPaste(JTextComponent component, String text, Robot robot) {
+        Objects.requireNonNull(component, "component");
+        Objects.requireNonNull(robot, "robot");
+        focus(component, robot);
+        runOnEdt(component::selectAll);
+
+        Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+        Transferable previous = clipboard.getContents(null);
+        try {
+            clipboard.setContents(new StringSelection(text != null ? text : ""), null);
+            pressPasteShortcut(robot);
+            String expected = text != null ? text : "";
+            waitUntilOnEdt(() -> expected.equals(component.getText()),
+                    DEFAULT_TIMEOUT,
+                    "Timed out waiting for pasted text to match the expected value");
+        } finally {
+            if (previous != null) {
+                clipboard.setContents(previous, null);
+            }
+        }
+    }
+
     public static void typeText(String text, Robot robot) {
         if (text == null || text.isEmpty()) {
             return;
