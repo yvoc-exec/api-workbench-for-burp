@@ -133,16 +133,17 @@ class WorkspaceConcurrentSaveTest {
         BlockingStringStore store = new BlockingStringStore();
         WorkspaceStateService service = new WorkspaceStateService(store);
 
-        String baseline = workspaceJson("workspace-v3", "env-v3", false, "queue-v3", "history-v3");
-        store.seed(baseline);
+        WorkspaceState workspaceV3 = workspaceState("workspace-v3", "env-v3", false, "queue-v3", "history-v3");
+        WorkspaceState workspaceV4 = workspaceState("workspace-v4", "env-v4", true, "queue-v4", "history-v4");
+        store.seed(WorkspaceStateJson.toJson(workspaceV3));
+        store.blockNextWrite();
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicReference<WorkspaceState> loaded = new AtomicReference<>();
-        Thread writer = new Thread(() -> saveJson(service, workspaceJson("workspace-v4", "env-v4", true, "queue-v4", "history-v4"), failure),
+        Thread writer = new Thread(() -> saveJson(service, WorkspaceStateJson.toJson(workspaceV4), failure),
                 "workspace-save-v4");
         Thread loader = new Thread(() -> {
             try {
-                await(store.firstWriteEntered);
                 loaded.set(service.load());
             } catch (Throwable t) {
                 failure.compareAndSet(null, t);
@@ -150,14 +151,12 @@ class WorkspaceConcurrentSaveTest {
         }, "workspace-load-during-save");
 
         writer.start();
-        assertThat(store.firstWriteEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        await(store.firstWriteEntered);
+
+        WorkspaceState storedBeforeRelease = WorkspaceStateJson.fromJson(store.currentValue());
+        assertExactState(storedBeforeRelease, workspaceV3);
+
         loader.start();
-
-        assertThat(WorkspaceStateJson.fromJson(store.currentValue()).collections)
-                .singleElement()
-                .extracting(collection -> collection.name)
-                .isEqualTo("workspace-v3");
-
         store.allowFirstWrite.countDown();
 
         writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
@@ -168,11 +167,8 @@ class WorkspaceConcurrentSaveTest {
 
         WorkspaceState loadedState = loaded.get();
         assertThat(loadedState).isNotNull();
-        assertThat(loadedState.collections).singleElement().extracting(collection -> collection.name).isEqualTo("workspace-v4");
-        assertThat(loadedState.runnerQueuedRequestIdentityKeys)
-                .containsExactlyElementsOf(workspaceState("workspace-v4", "env-v4", true, "queue-v4", "history-v4").runnerQueuedRequestIdentityKeys);
-        assertThat(store.parsedSnapshots()).allSatisfy(snapshot ->
-                assertThat(snapshot.historyEntries).singleElement().extracting(entry -> entry.id).isEqualTo("history-v4"));
+        assertExactState(loadedState, workspaceV4);
+        assertObservedSnapshotsAreWholeStates(store.parsedSnapshots(), workspaceV3, workspaceV4);
     }
 
     @Test
