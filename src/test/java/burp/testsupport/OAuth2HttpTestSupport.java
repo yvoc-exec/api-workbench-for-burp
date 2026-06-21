@@ -29,12 +29,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 public final class OAuth2HttpTestSupport {
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(2);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofMillis(750);
 
     private OAuth2HttpTestSupport() {
     }
@@ -113,6 +114,7 @@ public final class OAuth2HttpTestSupport {
         private final ExecutorService executor;
         private final AtomicInteger requestCount = new AtomicInteger();
         private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
+        private final AtomicReference<Throwable> handlerFailure = new AtomicReference<>();
         private final RequestHandler handler;
 
         public TokenEndpointServer(RequestHandler handler) throws IOException {
@@ -171,6 +173,16 @@ public final class OAuth2HttpTestSupport {
             try (var input = status >= 400 ? connection.getErrorStream() : connection.getInputStream()) {
                 responseBytes = input != null ? input.readAllBytes() : new byte[0];
             }
+            Throwable failure = handlerFailure.getAndSet(null);
+            if (failure != null) {
+                if (failure instanceof Exception exception) {
+                    throw exception;
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                throw new RuntimeException(failure);
+            }
 
             StringBuilder raw = new StringBuilder();
             raw.append("HTTP/1.1 ")
@@ -210,8 +222,9 @@ public final class OAuth2HttpTestSupport {
             ResponseSpec response;
             try {
                 response = handler.handle(request, requestCount.incrementAndGet());
-            } catch (Exception e) {
-                response = ResponseSpec.plain(500, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+            } catch (Throwable t) {
+                handlerFailure.compareAndSet(null, t);
+                response = ResponseSpec.plain(500, t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName());
             }
 
             byte[] responseBytes = (response.body() != null ? response.body() : "").getBytes(StandardCharsets.UTF_8);

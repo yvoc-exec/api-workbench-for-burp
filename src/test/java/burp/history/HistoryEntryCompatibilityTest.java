@@ -11,11 +11,13 @@ import burp.scripts.ScriptVariableMutation;
 import burp.testsupport.HistoryTestFixtures;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class HistoryEntryCompatibilityTest {
 
@@ -164,5 +166,140 @@ class HistoryEntryCompatibilityTest {
         assertThat(copy.requestSnapshot.preferredRawRequestText()).isEqualTo("raw");
         copy.requestSnapshot.rawRequestSentText = "changed";
         assertThat(entry.requestSnapshot.rawRequestSentText).isEqualTo("raw");
+    }
+
+    @Test
+    void metadataTextUsesResolvedExecutionFieldsAndPositiveSizesWithinBoundedTime() {
+        assertTimeoutPreemptively(Duration.ofMillis(250), () -> {
+            RunnerResult result = HistoryTestFixtures.sampleRunnerResult(1, 1, true, 1, null);
+            result.rawRequestBytes = null;
+            result.requestHeaders = "GET /login HTTP/1.1\r\nHost: api.example.test\r\n";
+            result.requestBody = "{\"ok\":true}";
+            result.requestUrl = "https://api.example.test/login";
+            result.responseTimeMs = 1L;
+            result.responseSize = 1;
+
+            HistoryEntry entry = HistoryEntry.fromRunnerAttempt(
+                    HistoryTestFixtures.sampleCollection(),
+                    HistoryTestFixtures.sampleRequest(),
+                    HistoryTestFixtures.sampleEnvironment(),
+                    result);
+
+            int expectedRequestSize = result.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    + result.requestBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+
+            assertThat(entry.isExecuted()).isTrue();
+            assertThat(entry.requestSizeBytes).isEqualTo(expectedRequestSize);
+            assertThat(entry.toMetadataText())
+                    .contains("Source: Runner")
+                    .contains("Request Name: Login")
+                    .contains("Status Code: 1")
+                    .contains("Duration: 1 ms")
+                    .contains("Request Size: " + expectedRequestSize + " bytes")
+                    .contains("Response Available: yes")
+                    .contains("Unresolved Variables:");
+        });
+    }
+
+    @Test
+    void metadataTextLeavesUnexecutedEntriesAsNotYetSent() {
+        HistoryEntry entry = new HistoryEntry();
+        entry.ensureDefaults();
+        entry.requestSnapshot = new HistoryRequestSnapshot();
+        entry.requestSnapshot.method = "GET";
+        entry.requestSnapshot.urlTemplate = "https://api.example.test/ping";
+        entry.requestName = "Ping";
+        entry.collectionName = "Demo";
+        entry.source = HistorySource.WORKBENCH;
+        entry.statusCode = 0;
+        entry.durationMillis = 0;
+        entry.requestSizeBytes = 0;
+        entry.responseSizeBytes = 0;
+        entry.result = HistoryResult.UNKNOWN;
+        entry.resultClassification = null;
+        entry.responseSnapshot = null;
+        entry.finalResolvedUrl = null;
+
+        assertThat(entry.isExecuted()).isFalse();
+        assertThat(entry.toMetadataText())
+                .contains("Execution Attempt: Not yet sent")
+                .contains("Status Code: Not yet sent")
+                .contains("Duration: Not yet sent")
+                .contains("Request Size: Not yet sent")
+                .contains("Response Available: no");
+    }
+
+    @Test
+    void workbenchExecutionUsesEmbeddedMontoyaResponseWhenPresent() {
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                HistoryTestFixtures.sampleCollection(),
+                HistoryTestFixtures.sampleRequest(),
+                HistoryTestFixtures.sampleEnvironment(),
+                HistoryTestFixtures.sampleWorkbenchExecutionResult(),
+                1,
+                1,
+                List.of());
+
+        assertThat(entry.statusCode).isEqualTo(200);
+    }
+
+    @Test
+    void workbenchExecutionApproximatesRequestSizeAndDefaultsMissingFlowControl() {
+        burp.utils.ExecutionResult execution = HistoryTestFixtures.sampleWorkbenchExecutionResult();
+        execution.rawRequestBytes = null;
+        execution.rawRequestText = null;
+        execution.scriptFlowControl = null;
+
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                HistoryTestFixtures.sampleCollection(),
+                HistoryTestFixtures.sampleRequest(),
+                HistoryTestFixtures.sampleEnvironment(),
+                execution,
+                1,
+                2,
+                List.of());
+
+        assertThat(entry.requestSizeBytes).isEqualTo(entry.requestSnapshot.approximateSizeBytes());
+        assertThat(entry.scriptFlowControl).isEqualTo(ScriptFlowControl.CONTINUE);
+    }
+
+    @Test
+    void metadataTextIncludesAuthSourceAndScriptCounters() {
+        HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        entry.scriptWarnings = new java.util.ArrayList<>(List.of("warn-a", "warn-b"));
+        entry.scriptErrors = new java.util.ArrayList<>(List.of("error-a"));
+        entry.scriptVariableMutations = new java.util.ArrayList<>(List.of(
+                new ScriptVariableMutation("token", "old", "new", "environment", true),
+                new ScriptVariableMutation("refresh", "old", "new", "environment", true)));
+        entry.requestSnapshot.authType = "Bearer";
+        entry.requestSnapshot.authoredRequest.authSource = "collection";
+        entry.result = HistoryResult.SUCCESS;
+        entry.resultClassification = null;
+
+        assertThat(entry.toMetadataText())
+                .contains("Auth Mode / Auth Source: Bearer (collection)")
+                .contains("Script Warnings: 2")
+                .contains("Script Errors: 1")
+                .contains("Script Mutations: 2");
+    }
+
+    @Test
+    void metadataTextUsesZeroCountsWhenScriptCollectionsAreNull() {
+        HistoryEntry entry = new HistoryEntry();
+        entry.ensureDefaults();
+        entry.requestSnapshot.method = "POST";
+        entry.requestSnapshot.urlTemplate = "https://api.example.test/token";
+        entry.requestName = "Acquire Token";
+        entry.collectionName = "Demo";
+        entry.result = HistoryResult.SUCCESS;
+        entry.resultClassification = null;
+        entry.scriptWarnings = null;
+        entry.scriptErrors = null;
+        entry.scriptVariableMutations = null;
+
+        assertThat(entry.toMetadataText())
+                .contains("Script Warnings: 0")
+                .contains("Script Errors: 0")
+                .contains("Script Mutations: 0");
     }
 }

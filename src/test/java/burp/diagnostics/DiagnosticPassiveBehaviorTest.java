@@ -306,7 +306,7 @@ class DiagnosticPassiveBehaviorTest {
     }
 
     private static void waitForRunnerToStop(CollectionRunner runner) throws InterruptedException {
-        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        long deadline = System.nanoTime() + Duration.ofMillis(1500).toNanos();
         while (runner != null && runner.isRunning() && System.nanoTime() < deadline) {
             Thread.sleep(10L);
         }

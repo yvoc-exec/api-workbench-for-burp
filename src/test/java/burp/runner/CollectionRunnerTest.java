@@ -554,7 +554,7 @@ class CollectionRunnerTest {
     }
 
     private void waitForRunnerToStop(CollectionRunner runner) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 5000;
+        long deadline = System.currentTimeMillis() + 1500;
         while (runner.isRunning() && System.currentTimeMillis() < deadline) {
             Thread.sleep(10);
         }

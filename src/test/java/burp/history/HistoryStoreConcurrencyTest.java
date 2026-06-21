@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HistoryStoreConcurrencyTest {
+    private static final long CONCURRENCY_TIMEOUT_SECONDS = 1L;
+    private static final long THREAD_JOIN_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(CONCURRENCY_TIMEOUT_SECONDS);
 
     @Test
     void exactRetentionBoundaryKeepsNewestKnownWritesUntilIntentionalEviction() {
@@ -56,7 +58,7 @@ class HistoryStoreConcurrencyTest {
         }, "history-replace-all");
 
         replaceThread.start();
-        assertThat(writerDone.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(writerDone.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         assertThat(failure.get()).isNull();
 
         before.get(0).id = "mutated-snapshot";
@@ -104,8 +106,8 @@ class HistoryStoreConcurrencyTest {
 
         writer.start();
         policyThread.start();
-        writer.join(5000);
-        policyThread.join(5000);
+        writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        policyThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
 
         assertThat(writer.isAlive()).isFalse();
         assertThat(policyThread.isAlive()).isFalse();
@@ -154,8 +156,8 @@ class HistoryStoreConcurrencyTest {
         reader.start();
         start.countDown();
 
-        remover.join(5000);
-        reader.join(5000);
+        remover.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        reader.join(THREAD_JOIN_TIMEOUT_MILLIS);
         assertThat(remover.isAlive()).isFalse();
         assertThat(reader.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
@@ -207,8 +209,8 @@ class HistoryStoreConcurrencyTest {
             iteratedIds.add(entry.id);
         }
 
-        writer.join(5000);
-        remover.join(5000);
+        writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        remover.join(THREAD_JOIN_TIMEOUT_MILLIS);
         assertThat(writer.isAlive()).isFalse();
         assertThat(remover.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
@@ -238,7 +240,7 @@ class HistoryStoreConcurrencyTest {
 
     private static void await(CountDownLatch latch) {
         try {
-            assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(latch.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted waiting for history concurrency latch", e);

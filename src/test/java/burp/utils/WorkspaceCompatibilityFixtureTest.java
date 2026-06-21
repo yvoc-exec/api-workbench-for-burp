@@ -1,12 +1,16 @@
 package burp.utils;
 
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.testsupport.TestResourceLoader;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class WorkspaceCompatibilityFixtureTest {
 
@@ -56,6 +60,32 @@ class WorkspaceCompatibilityFixtureTest {
         assertThat(state.environments.get(0).id).isEqualTo("env-dup");
         assertThat(state.environments.get(1).id).isNotEqualTo("env-dup");
         assertThat(state.activeEnvironmentId).isEqualTo("env-dup");
+    }
+
+    @Test
+    void duplicateEnvironmentIdsNormalizeWithinBoundedTime() {
+        assertTimeoutPreemptively(Duration.ofMillis(250), () -> {
+            WorkspaceState state = new WorkspaceState();
+
+            EnvironmentProfile first = new EnvironmentProfile();
+            first.id = "env-dup";
+            first.name = "First";
+
+            EnvironmentProfile second = new EnvironmentProfile();
+            second.id = "env-dup";
+            second.name = "Second";
+
+            state.environments.add(first);
+            state.environments.add(second);
+            state.activeEnvironmentId = "env-dup";
+
+            WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+            assertThat(parsed.environments).hasSize(2);
+            assertThat(parsed.environments.get(0).id).isEqualTo("env-dup");
+            assertThat(parsed.environments.get(1).id).isNotEqualTo("env-dup");
+            assertThat(parsed.activeEnvironmentId).isEqualTo("env-dup");
+        });
     }
 
     @Test

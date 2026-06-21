@@ -28,13 +28,14 @@ This document summarizes the current automated test layers, the Maven profiles t
 
 - Run only with `-Pperformance-tests`
 - Use broad, non-brittle timing budgets
-- Executed by the consolidated GitHub Actions validation workflow
+- Executed only during the consolidated workflow's full-validation mode
 
 ### 5. Static analysis and mutation testing
 
 - `-Pstatic-analysis` for SpotBugs
 - `-Pmutation-tests` for PIT
-- Executed as dedicated jobs inside the consolidated GitHub Actions validation workflow
+- Static analysis runs in both normal CI and full validation
+- Mutation coverage runs only during full validation as blocking package-sharded PIT jobs
 
 ## Local commands
 
@@ -64,13 +65,15 @@ mvn -B test-compile -Pmutation-tests org.pitest:pitest-maven:mutationCoverage
 
 ## CI jobs
 
-- `Build & Validate API Workbench JAR` is the consolidated push/PR/manual workflow.
+- `Build & Validate API Workbench JAR` is the consolidated workflow for push, pull request, manual validation, and reusable release validation.
+- Push, pull request, and manual `mode=ci` runs execute only the normal CI jobs: core tests + JaCoCo, compatibility matrix, Swing UI tests, and static analysis.
+- Manual `mode=full` and reusable release validation run the normal CI jobs plus performance tests, package-sharded PIT mutation tests, and canonical JAR packaging.
 - JaCoCo runs in the consolidated workflow and still gates the core Java 17 `mvn -B clean verify` job through the existing `pom.xml` thresholds.
-- UI, static analysis, performance, and mutation validation run as separate required jobs in that same workflow.
-- The canonical shaded Java 17 JAR is uploaded only after all required jobs pass.
-- `Release JAR` remains separate and tag-triggered for `v*` releases.
+- The canonical shaded Java 17 JAR artifact (`api-workbench-for-burp-validated-java17`) is uploaded only after every required full-validation job passes.
+- `Release JAR` remains separate and tag-triggered for `v*` releases, calls the full validation workflow, downloads the canonical validated artifact, and publishes that exact JAR without rebuilding it.
+- Tag pushes do not start a duplicate standalone build workflow because `Build & Validate API Workbench JAR` is branch-triggered for `push`.
 - Compatibility coverage remains a matrix across Ubuntu (Java 21, 25) and Windows (Java 17, 25).
-- The Linux Xvfb UI job runs `mvn -B verify -Pui-tests`.
+- The Linux Xvfb UI job runs `xvfb-run -a -s "-screen 0 1920x1080x24" mvn -B verify -Pui-tests`.
 
 ## Coverage governance
 
@@ -106,12 +109,12 @@ The repository now has the following current governance floors and workflows:
 
 - JaCoCo non-regression floors are set in `pom.xml` based on the latest validated run.
 - SpotBugs currently passes on the validated run; `config/spotbugs-exclude.xml` remains available if future accepted findings ever need a documented baseline.
-- PIT is configured under `-Pmutation-tests` with a current enforceable floor of 54%.
-- The canonical shaded Java 17 JAR is published only by the consolidated validation workflow after every required job succeeds.
+- PIT remains configured under `-Pmutation-tests` with a current enforceable floor of 54%, and the hosted full-validation workflow runs it as bounded package shards.
+- The canonical shaded Java 17 JAR is published only by the consolidated full-validation workflow after every required job succeeds.
 - The documented long-term targets remain unchanged and higher than the current floors.
 
 Current mutation-testing evidence:
 
-- Mutation score: 55%
+- Mutation score: 56%
 - PIT floor: 54%
 - The score is below the aspirational 75% target, so the target remains a goal rather than a claimed achievement.
