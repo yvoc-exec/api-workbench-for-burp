@@ -15,6 +15,7 @@ import javax.swing.*;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.TreePath;
 import java.awt.*;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 
@@ -52,6 +53,7 @@ class VariableHoverPopupUiIT {
         });
 
         JFrame frame = SwingRobotTestSupport.showInFrame(panel.getPanel(), "Variable Hover Popup UI");
+        SwingRobotTestSupport.expandWindowToAvailableScreen(frame);
         Robot robot = SwingRobotTestSupport.newRobot();
 
         JTree tree = panel.getRequestTreeForTests();
@@ -64,7 +66,8 @@ class VariableHoverPopupUiIT {
                 "Request was not loaded into the editor");
 
         requestEditor.markClean();
-        hoverUrlVariable(requestEditor, "base_url", robot);
+        Rectangle baseUrlBounds = urlVariableBounds(requestEditor, "base_url");
+        hoverUrlVariable(requestEditor, baseUrlBounds, robot);
         JPopupMenu editPopup = waitForVariablePopup(requestEditor);
 
         assertThat(findLabelContaining(editPopup, "{{base_url}}")).isNotNull();
@@ -74,10 +77,8 @@ class VariableHoverPopupUiIT {
         JButton editButton = SwingRobotTestSupport.findByText(editPopup, JButton.class, "Edit in Active Env");
         assertThat(editButton).isNotNull();
         assertThat(editButton.isEnabled()).isTrue();
-        moveFromUrlTokenIntoPopup(requestEditor, "base_url", editButton, robot);
-        SwingRobotTestSupport.waitUntil(editPopup::isVisible,
-                Duration.ofSeconds(2),
-                "Popup did not remain visible while moving into it");
+        moveFromUrlTokenIntoPopup(requestEditor, baseUrlBounds, editButton, robot);
+        waitForPopupWhileMovingIntoIt("Resolved URL variable popup", requestEditor, editPopup, requestEditor.getUrlField(), baseUrlBounds);
 
         SwingRobotTestSupport.click(editButton, robot);
         Window inputDialog = SwingRobotTestSupport.waitForWindowTitle("Edit Variable", Duration.ofSeconds(5));
@@ -106,17 +107,16 @@ class VariableHoverPopupUiIT {
         assertNoVisiblePopup(requestEditor);
 
         requestEditor.markClean();
-        hoverUrlVariable(requestEditor, "user_id", robot);
+        Rectangle userIdBounds = urlVariableBounds(requestEditor, "user_id");
+        hoverUrlVariable(requestEditor, userIdBounds, robot);
         JPopupMenu createPopup = waitForVariablePopup(requestEditor);
         assertThat(findLabelContaining(createPopup, "{{user_id}}")).isNotNull();
         assertThat(findLabelContaining(createPopup, "Status: Unresolved")).isNotNull();
         JButton createButton = SwingRobotTestSupport.findByText(createPopup, JButton.class, "Create in Active Env");
         assertThat(createButton).isNotNull();
         assertThat(createButton.isEnabled()).isTrue();
-        moveFromUrlTokenIntoPopup(requestEditor, "user_id", createButton, robot);
-        SwingRobotTestSupport.waitUntil(createPopup::isVisible,
-                Duration.ofSeconds(2),
-                "Unresolved popup did not remain visible while moving into it");
+        moveFromUrlTokenIntoPopup(requestEditor, userIdBounds, createButton, robot);
+        waitForPopupWhileMovingIntoIt("Unresolved URL variable popup", requestEditor, createPopup, requestEditor.getUrlField(), userIdBounds);
 
         SwingRobotTestSupport.click(createButton, robot);
         Window createInputDialog = SwingRobotTestSupport.waitForWindowTitle("Create Variable", Duration.ofSeconds(5));
@@ -171,9 +171,17 @@ class VariableHoverPopupUiIT {
         SwingRobotTestSupport.clickTreePath(tree, path, robot);
     }
 
-    private static void hoverUrlVariable(RequestEditorPanel editor, String variableKey, Robot robot) {
+    private static Rectangle urlVariableBounds(RequestEditorPanel editor, String variableKey) {
         Rectangle bounds = SwingRobotTestSupport.runOnEdtValue(() -> editor.getUrlVariableTokenBoundsForTests(variableKey));
         assertThat(bounds).as("URL token bounds for " + variableKey).isNotNull();
+        return bounds;
+    }
+
+    private static void hoverUrlVariable(RequestEditorPanel editor, String variableKey, Robot robot) {
+        hoverUrlVariable(editor, urlVariableBounds(editor, variableKey), robot);
+    }
+
+    private static void hoverUrlVariable(RequestEditorPanel editor, Rectangle bounds, Robot robot) {
         Point point = SwingRobotTestSupport.toScreenPoint(editor.getUrlField(),
                 bounds.x + Math.max(4, bounds.width / 2),
                 bounds.y + Math.max(4, bounds.height / 2));
@@ -181,13 +189,15 @@ class VariableHoverPopupUiIT {
     }
 
     private static void moveFromUrlTokenIntoPopup(RequestEditorPanel editor, String variableKey, JButton popupButton, Robot robot) {
-        Rectangle bounds = SwingRobotTestSupport.runOnEdtValue(() -> editor.getUrlVariableTokenBoundsForTests(variableKey));
-        assertThat(bounds).isNotNull();
+        moveFromUrlTokenIntoPopup(editor, urlVariableBounds(editor, variableKey), popupButton, robot);
+    }
+
+    private static void moveFromUrlTokenIntoPopup(RequestEditorPanel editor, Rectangle bounds, JButton popupButton, Robot robot) {
         Point tokenPoint = SwingRobotTestSupport.toScreenPoint(editor.getUrlField(),
                 bounds.x + Math.max(4, bounds.width / 2),
                 bounds.y + Math.max(4, bounds.height / 2));
         Point popupPoint = SwingRobotTestSupport.centerOnScreen(popupButton);
-        SwingRobotTestSupport.moveBetween(tokenPoint, popupPoint, 12, robot);
+        SwingRobotTestSupport.moveBetween(tokenPoint, popupPoint, 4, robot);
     }
 
     private static JPopupMenu waitForVariablePopup(RequestEditorPanel editor) {
@@ -206,6 +216,59 @@ class VariableHoverPopupUiIT {
                 },
                 Duration.ofSeconds(5),
                 "Variable popup remained visible");
+    }
+
+    private static void waitForPopupWhileMovingIntoIt(String label,
+                                                      RequestEditorPanel editor,
+                                                      JPopupMenu expectedPopup,
+                                                      JComponent sourceComponent,
+                                                      Rectangle sourceBounds) {
+        try {
+            SwingRobotTestSupport.waitUntil(() -> {
+                        JPopupMenu popup = editor.getVisibleVariablePopupForTests();
+                        return popup != null && popup.isShowing();
+                    },
+                    Duration.ofSeconds(2),
+                    label + " did not remain visible while moving into it");
+        } catch (AssertionError failure) {
+            throw enrichPopupHoverFailure(label, failure, expectedPopup, sourceComponent, sourceBounds);
+        }
+    }
+
+    private static AssertionError enrichPopupHoverFailure(String label,
+                                                          AssertionError failure,
+                                                          JPopupMenu popup,
+                                                          JComponent sourceComponent,
+                                                          Rectangle sourceBounds) {
+        PopupHoverEvidence evidence = SwingRobotTestSupport.runOnEdtValue(() -> new PopupHoverEvidence(
+                SwingRobotTestSupport.visibleWindowTitles(),
+                popup != null && popup.isVisible(),
+                popup != null && popup.isShowing(),
+                toScreenBounds(sourceComponent, sourceBounds),
+                SwingRobotTestSupport.boundsOnScreen(popup),
+                SwingRobotTestSupport.pointerLocation()));
+        Path screenshot = SwingRobotTestSupport.captureScreenshot("VariableHoverPopupUiIT-popup-hover.png");
+        String message = label + " did not remain visible while moving into it"
+                + System.lineSeparator() + "activeWindows=" + evidence.activeWindows()
+                + System.lineSeparator() + "popupVisible=" + evidence.popupVisible()
+                + System.lineSeparator() + "popupShowing=" + evidence.popupShowing()
+                + System.lineSeparator() + "sourceBounds=" + evidence.sourceBounds()
+                + System.lineSeparator() + "popupBounds=" + evidence.popupBounds()
+                + System.lineSeparator() + "pointer=" + evidence.pointer()
+                + System.lineSeparator() + "screenshot=" + (screenshot != null ? screenshot : "unavailable");
+        return new AssertionError(message, failure);
+    }
+
+    private static Rectangle toScreenBounds(Component component, Rectangle localBounds) {
+        if (component == null || localBounds == null || !component.isShowing()) {
+            return null;
+        }
+        try {
+            Point topLeft = component.getLocationOnScreen();
+            return new Rectangle(topLeft.x + localBounds.x, topLeft.y + localBounds.y, localBounds.width, localBounds.height);
+        } catch (IllegalComponentStateException ignored) {
+            return null;
+        }
     }
 
     private static JLabel findLabelContaining(Container root, String fragment) {
@@ -299,5 +362,13 @@ class VariableHoverPopupUiIT {
             profile.variables.put(pairs[i], pairs[i + 1]);
         }
         return profile;
+    }
+
+    private record PopupHoverEvidence(List<String> activeWindows,
+                                      boolean popupVisible,
+                                      boolean popupShowing,
+                                      Rectangle sourceBounds,
+                                      Rectangle popupBounds,
+                                      Point pointer) {
     }
 }

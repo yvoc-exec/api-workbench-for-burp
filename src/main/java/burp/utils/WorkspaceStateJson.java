@@ -148,7 +148,13 @@ public final class WorkspaceStateJson {
                 profile.oauth2 = new burp.models.OAuth2EnvironmentState();
             }
             profile.oauth2.ensureDefaults();
-            WorkspaceStateMigrator.ensureUniqueEnvironmentId(profile, seenIds);
+            profile.ensureId();
+            while (profile.id != null && seenIds.contains(profile.id)) {
+                profile.id = java.util.UUID.randomUUID().toString();
+            }
+            if (profile.id != null) {
+                seenIds.add(profile.id);
+            }
         }
         if (state.activeEnvironmentId != null && seenIds.stream().noneMatch(id -> id.equals(state.activeEnvironmentId))) {
             state.activeEnvironmentId = null;

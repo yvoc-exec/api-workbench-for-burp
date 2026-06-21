@@ -1,16 +1,21 @@
 package burp.testsupport;
 
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.table.JTableHeader;
 import javax.swing.text.JTextComponent;
 import javax.swing.tree.TreePath;
 import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public final class SwingRobotTestSupport {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
+    private static final Path UI_FAILURE_ARTIFACT_DIR = Path.of("target", "ui-failure-artifacts");
     private static final List<Window> TRACKED_WINDOWS = new CopyOnWriteArrayList<>();
 
     private SwingRobotTestSupport() {
@@ -377,6 +383,42 @@ public final class SwingRobotTestSupport {
         return centerOnScreenInternal(component);
     }
 
+    public static Rectangle boundsOnScreen(Component component) {
+        return runOnEdtValue(() -> boundsOnScreenInternal(component));
+    }
+
+    public static Point pointerLocation() {
+        PointerInfo pointerInfo = MouseInfo.getPointerInfo();
+        return pointerInfo != null ? pointerInfo.getLocation() : null;
+    }
+
+    public static List<String> visibleWindowTitles() {
+        List<String> titles = new ArrayList<>();
+        for (Window window : Window.getWindows()) {
+            if (window != null && window.isShowing()) {
+                titles.add(describeWindow(window));
+            }
+        }
+        return titles;
+    }
+
+    public static Path captureScreenshot(String fileName) {
+        try {
+            Rectangle bounds = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+            if (bounds == null || bounds.isEmpty()) {
+                return null;
+            }
+            BufferedImage image = new Robot().createScreenCapture(bounds);
+            Files.createDirectories(UI_FAILURE_ARTIFACT_DIR);
+            String resolvedFileName = fileName != null && !fileName.isBlank() ? fileName : "ui-failure.png";
+            Path output = UI_FAILURE_ARTIFACT_DIR.resolve(resolvedFileName);
+            ImageIO.write(image, "png", output.toFile());
+            return output;
+        } catch (AWTException | IOException ignored) {
+            return null;
+        }
+    }
+
     public static int trackedWindowCount() {
         return TRACKED_WINDOWS.size();
     }
@@ -608,6 +650,31 @@ public final class SwingRobotTestSupport {
         Point topLeft = component.getLocationOnScreen();
         return new Point(topLeft.x + Math.max(1, component.getWidth()) / 2,
                 topLeft.y + Math.max(1, component.getHeight()) / 2);
+    }
+
+    private static Rectangle boundsOnScreenInternal(Component component) {
+        if (component == null || !component.isShowing()) {
+            return null;
+        }
+        try {
+            return new Rectangle(component.getLocationOnScreen(), component.getSize());
+        } catch (IllegalComponentStateException ignored) {
+            return null;
+        }
+    }
+
+    private static String describeWindow(Window window) {
+        if (window instanceof Frame frame) {
+            return titleOrClass(frame.getTitle(), window);
+        }
+        if (window instanceof Dialog dialog) {
+            return titleOrClass(dialog.getTitle(), window);
+        }
+        return window.getClass().getSimpleName();
+    }
+
+    private static String titleOrClass(String title, Window window) {
+        return title != null && !title.isBlank() ? title : window.getClass().getSimpleName();
     }
 
     private static JPopupMenu findVisiblePopup(Container root) {

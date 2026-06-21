@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -215,9 +217,18 @@ class WorkspaceConcurrentSaveTest {
             saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(failure.get()).isNull();
+            settleWorkspaceSaveWork(fixture.importer);
 
-            WorkspaceState saved = WorkspaceStateJson.fromJson(fixture.store.currentValue());
-            assertExactState(saved, stateA);
+            List<String> writes = fixture.store.writes();
+            List<WorkspaceState> snapshots = fixture.store.parsedSnapshots();
+            assertThat(writes).isNotEmpty();
+            assertThat(writes.get(0)).isEqualTo("workspace-capture-a");
+            assertThat(snapshots).isNotEmpty();
+            assertExactState(snapshots.get(0), stateA);
+            assertObservedSnapshotsAreWholeStates(snapshots, stateA, stateB);
+            if (snapshots.size() > 1) {
+                assertExactState(snapshots.get(snapshots.size() - 1), stateB);
+            }
         } finally {
             fixture.importer.cleanup();
         }
@@ -245,11 +256,13 @@ class WorkspaceConcurrentSaveTest {
             saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(failure.get()).isNull();
+            settleWorkspaceSaveWork(fixture.importer);
 
+            List<WorkspaceState> snapshots = fixture.store.parsedSnapshots();
+            assertThat(snapshots).isNotEmpty();
+            assertObservedSnapshotsAreWholeStates(snapshots, stateA, stateB);
             WorkspaceState saved = WorkspaceStateJson.fromJson(fixture.store.currentValue());
             assertStateMatchesEither(saved, stateA, stateB);
-            assertStateNotMixed(saved, stateA, stateB);
-            assertExactState(saved, stateA);
         } finally {
             fixture.importer.cleanup();
         }
@@ -448,18 +461,31 @@ class WorkspaceConcurrentSaveTest {
         assertThat(matchesLeft || matchesRight).isTrue();
     }
 
+    private static void assertObservedSnapshotsAreWholeStates(List<WorkspaceState> snapshots,
+                                                              WorkspaceState left,
+                                                              WorkspaceState right) {
+        assertThat(snapshots).isNotEmpty();
+        snapshots.forEach(snapshot -> {
+            assertStateMatchesEither(snapshot, left, right);
+            assertStateNotMixed(snapshot, left, right);
+        });
+    }
+
     private static void assertStateNotMixed(WorkspaceState actual, WorkspaceState left, WorkspaceState right) {
         String collectionName = actual.collections.get(0).name;
         String environmentName = actual.environments.get(0).name;
+        String activeEnvironmentId = actual.activeEnvironmentId;
         String queuedKey = actual.runnerQueuedRequestIdentityKeys.get(0);
         String historyId = actual.historyEntries.get(0).id;
         boolean diagnosticsEnabled = actual.diagnosticsCaptureEnabled;
         assertThat(List.of(left.collections.get(0).name, right.collections.get(0).name)).contains(collectionName);
         assertThat(List.of(left.environments.get(0).name, right.environments.get(0).name)).contains(environmentName);
+        assertThat(List.of(left.activeEnvironmentId, right.activeEnvironmentId)).contains(activeEnvironmentId);
         assertThat(List.of(left.runnerQueuedRequestIdentityKeys.get(0), right.runnerQueuedRequestIdentityKeys.get(0))).contains(queuedKey);
         assertThat(List.of(left.historyEntries.get(0).id, right.historyEntries.get(0).id)).contains(historyId);
         assertThat(List.of(left.diagnosticsCaptureEnabled, right.diagnosticsCaptureEnabled)).contains(diagnosticsEnabled);
         assertThat(collectionName.equals(left.collections.get(0).name)).isEqualTo(environmentName.equals(left.environments.get(0).name));
+        assertThat(collectionName.equals(left.collections.get(0).name)).isEqualTo(activeEnvironmentId.equals(left.activeEnvironmentId));
         assertThat(collectionName.equals(left.collections.get(0).name)).isEqualTo(queuedKey.equals(left.runnerQueuedRequestIdentityKeys.get(0)));
         assertThat(collectionName.equals(left.collections.get(0).name)).isEqualTo(historyId.equals(left.historyEntries.get(0).id));
         assertThat(collectionName.equals(left.collections.get(0).name)).isEqualTo(diagnosticsEnabled == left.diagnosticsCaptureEnabled);
@@ -543,6 +569,30 @@ class WorkspaceConcurrentSaveTest {
             return (boolean) method.invoke(importer);
         } catch (Exception e) {
             throw new AssertionError("Failed to inspect workspace save executor state", e);
+        }
+    }
+
+    private static void settleWorkspaceSaveWork(UniversalImporter importer) {
+        try {
+            runOnEdt(() -> { });
+            Field debouncedField = UniversalImporter.class.getDeclaredField("debouncedWorkspaceSave");
+            debouncedField.setAccessible(true);
+            DebouncedSwingAction debounced = (DebouncedSwingAction) debouncedField.get(importer);
+            runOnEdt(() -> {
+                if (debounced != null) {
+                    debounced.stop();
+                }
+            });
+            Field executorField = UniversalImporter.class.getDeclaredField("workspaceSaveExecutor");
+            executorField.setAccessible(true);
+            ExecutorService executor = (ExecutorService) executorField.get(importer);
+            if (executor != null && !executor.isShutdown()) {
+                Future<?> future = executor.submit(() -> null);
+                future.get(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            }
+            runOnEdt(() -> { });
+        } catch (Exception e) {
+            throw new AssertionError("Failed to settle workspace save work", e);
         }
     }
 

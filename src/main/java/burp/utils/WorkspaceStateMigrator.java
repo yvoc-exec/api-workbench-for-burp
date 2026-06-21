@@ -4,7 +4,6 @@ import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 
 import java.util.LinkedHashSet;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -55,48 +54,19 @@ public final class WorkspaceStateMigrator {
                 continue;
             }
             profile.ensureDefaults();
-            ensureUniqueEnvironmentId(profile, seen);
+            String id = profile.id;
+            if (id == null || id.isBlank() || seen.contains(id)) {
+                profile.ensureId();
+                while (profile.id != null && seen.contains(profile.id)) {
+                    profile.id = java.util.UUID.randomUUID().toString();
+                }
+            }
+            if (profile.id != null) {
+                seen.add(profile.id);
+            }
         }
         if (state.activeEnvironmentId != null && seen.stream().noneMatch(id -> id.equals(state.activeEnvironmentId))) {
             state.activeEnvironmentId = null;
         }
-    }
-
-    static void ensureUniqueEnvironmentId(EnvironmentProfile profile, Set<String> seenIds) {
-        if (profile == null || seenIds == null) {
-            return;
-        }
-        String candidate = profile.ensureId();
-        if (!isUsableUniqueId(candidate, seenIds)) {
-            candidate = generateOrdinalUuidCandidate(seenIds.size() + 1);
-        }
-        if (!isUsableUniqueId(candidate, seenIds)) {
-            candidate = generateNameBasedFallback(profile, seenIds.size() + 1);
-        }
-        if (!isUsableUniqueId(candidate, seenIds)) {
-            candidate = "env-fallback-" + Integer.toUnsignedString(seenIds.size() + 1, 36);
-        }
-        profile.id = candidate;
-        seenIds.add(candidate);
-    }
-
-    private static boolean isUsableUniqueId(String candidate, Set<String> seenIds) {
-        return candidate != null && !candidate.isBlank() && !seenIds.contains(candidate);
-    }
-
-    private static String generateOrdinalUuidCandidate(int ordinal) {
-        return "env-" + Integer.toUnsignedString(Math.max(1, ordinal), 36) + "-" + java.util.UUID.randomUUID();
-    }
-
-    private static String generateNameBasedFallback(EnvironmentProfile profile, int ordinal) {
-        String base = profile != null && profile.name != null ? profile.name : "env";
-        String normalized = base.trim()
-                .replaceAll("[^A-Za-z0-9]+", "-")
-                .replaceAll("(^-+|-+$)", "")
-                .toLowerCase(Locale.ROOT);
-        if (normalized.isBlank()) {
-            normalized = "env";
-        }
-        return normalized + "-" + Integer.toUnsignedString(Math.max(1, ordinal), 36);
     }
 }
