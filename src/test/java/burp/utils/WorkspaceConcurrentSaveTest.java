@@ -66,6 +66,7 @@ class WorkspaceConcurrentSaveTest {
             saveJson(service, workspaceV4, failure);
         }, "workspace-save-v2-v4");
 
+        store.blockNextWrite();
         firstWriter.start();
         assertThat(store.firstWriteEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)).isTrue();
         queuedWriters.start();
@@ -100,6 +101,7 @@ class WorkspaceConcurrentSaveTest {
         WorkspaceState state = workspaceState("workspace-v1", "env-v1", false, "queue-v1", "history-v1");
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
+        store.blockNextWrite();
         Thread writer = new Thread(() -> {
             try {
                 service.save(state);
@@ -195,10 +197,21 @@ class WorkspaceConcurrentSaveTest {
     void workspaceOwnerSaveExcludesMutationAppliedAfterSnapshotCapture() throws Exception {
         WorkspaceOwnerFixture fixture = newWorkspaceOwnerFixture();
         try {
+            WorkspaceState baseline = workspaceState("workspace-baseline-x", "env-baseline-x", true, "queue-x", "history-x");
             WorkspaceState stateA = workspaceState("workspace-capture-a", "env-capture-a", false, "queue-a", "history-a");
             WorkspaceState stateB = workspaceState("workspace-capture-b", "env-capture-b", true, "queue-b", "history-b");
+            String baselineJson = WorkspaceStateJson.toJson(baseline);
+
+            runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(baseline));
+            fixture.importer.requestWorkspaceStateSaveNow();
+            drainWorkspaceSaveExecutor(fixture.importer);
+            stopPendingDebouncedWorkspaceSave(fixture.importer);
 
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateA));
+            settleWorkspaceSaveWork(fixture.importer);
+            setLastSavedWorkspaceJson(fixture.importer, baselineJson);
+            fixture.store.seed(baselineJson);
+
             fixture.store.resetWriteTracking();
             fixture.store.blockNextWrite();
 
@@ -207,24 +220,31 @@ class WorkspaceConcurrentSaveTest {
             saveThread.start();
             await(fixture.store.firstWriteEntered);
 
+            WorkspaceState storedBeforeRelease = WorkspaceStateJson.fromJson(fixture.store.currentValue());
+            assertExactState(storedBeforeRelease, baseline);
+            assertThat(fixture.store.blockedWriteLabel()).isEqualTo("workspace-capture-a");
+            assertExactState(fixture.store.blockedWriteSnapshot(), stateA);
+
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateB));
             fixture.store.allowBlockedWrite();
 
             saveThread.join(THREAD_JOIN_TIMEOUT_MILLIS);
             assertThat(saveThread.isAlive()).isFalse();
             assertThat(failure.get()).isNull();
-            settleWorkspaceSaveWork(fixture.importer);
+            drainWorkspaceSaveExecutor(fixture.importer);
+
+            fixture.importer.requestWorkspaceStateSaveNow();
+            drainWorkspaceSaveExecutor(fixture.importer);
 
             List<String> writes = fixture.store.writes();
             List<WorkspaceState> snapshots = fixture.store.parsedSnapshots();
             assertThat(writes).isNotEmpty();
             assertThat(writes.get(0)).isEqualTo("workspace-capture-a");
             assertThat(snapshots).isNotEmpty();
+            assertExactState(fixture.store.blockedWriteSnapshot(), stateA);
             assertExactState(snapshots.get(0), stateA);
+            assertThat(snapshots).anySatisfy(snapshot -> assertExactState(snapshot, stateB));
             assertObservedSnapshotsAreWholeStates(snapshots, stateA, stateB);
-            if (snapshots.size() > 1) {
-                assertExactState(snapshots.get(snapshots.size() - 1), stateB);
-            }
         } finally {
             fixture.importer.cleanup();
         }
@@ -569,8 +589,23 @@ class WorkspaceConcurrentSaveTest {
     }
 
     private static void settleWorkspaceSaveWork(UniversalImporter importer) {
+        stopPendingDebouncedWorkspaceSave(importer);
+        drainWorkspaceSaveExecutor(importer);
+        runOnEdt(() -> { });
+    }
+
+    private static void setLastSavedWorkspaceJson(UniversalImporter importer, String json) {
         try {
-            runOnEdt(() -> { });
+            Field field = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceJson");
+            field.setAccessible(true);
+            field.set(importer, json);
+        } catch (Exception e) {
+            throw new AssertionError("Failed to control last saved workspace JSON", e);
+        }
+    }
+
+    private static void stopPendingDebouncedWorkspaceSave(UniversalImporter importer) {
+        try {
             Field debouncedField = UniversalImporter.class.getDeclaredField("debouncedWorkspaceSave");
             debouncedField.setAccessible(true);
             DebouncedSwingAction debounced = (DebouncedSwingAction) debouncedField.get(importer);
@@ -579,6 +614,13 @@ class WorkspaceConcurrentSaveTest {
                     debounced.stop();
                 }
             });
+        } catch (Exception e) {
+            throw new AssertionError("Failed to stop pending workspace debounce", e);
+        }
+    }
+
+    private static void drainWorkspaceSaveExecutor(UniversalImporter importer) {
+        try {
             Field executorField = UniversalImporter.class.getDeclaredField("workspaceSaveExecutor");
             executorField.setAccessible(true);
             ExecutorService executor = (ExecutorService) executorField.get(importer);
@@ -588,7 +630,7 @@ class WorkspaceConcurrentSaveTest {
             }
             runOnEdt(() -> { });
         } catch (Exception e) {
-            throw new AssertionError("Failed to settle workspace save work", e);
+            throw new AssertionError("Failed to drain workspace save executor", e);
         }
     }
 
@@ -666,6 +708,8 @@ class WorkspaceConcurrentSaveTest {
         private final CopyOnWriteArrayList<String> writeLabels = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkspaceState> parsedSnapshots = new CopyOnWriteArrayList<>();
         private final AtomicInteger writeCount = new AtomicInteger();
+        private final AtomicReference<String> blockedWriteLabel = new AtomicReference<>();
+        private final AtomicReference<WorkspaceState> blockedWriteSnapshot = new AtomicReference<>();
         private volatile CountDownLatch firstWriteEntered = new CountDownLatch(1);
         private volatile CountDownLatch allowFirstWrite = new CountDownLatch(0);
         private final AtomicReference<Boolean> firstWriteBlocked = new AtomicReference<>(Boolean.FALSE);
@@ -677,11 +721,13 @@ class WorkspaceConcurrentSaveTest {
 
         @Override
         public void set(String key, String value) {
+            WorkspaceState parsed = WorkspaceStateJson.fromJson(value);
             if (firstWriteBlocked.compareAndSet(Boolean.FALSE, Boolean.TRUE)) {
+                blockedWriteSnapshot.set(WorkspaceState.copyOf(parsed));
+                blockedWriteLabel.set(parsed.collections.get(0).name);
                 firstWriteEntered.countDown();
                 await(allowFirstWrite);
             }
-            WorkspaceState parsed = WorkspaceStateJson.fromJson(value);
             parsedSnapshots.add(parsed);
             writeLabels.add(parsed.collections.get(0).name);
             writeCount.incrementAndGet();
@@ -708,6 +754,8 @@ class WorkspaceConcurrentSaveTest {
             writeLabels.clear();
             parsedSnapshots.clear();
             writeCount.set(0);
+            blockedWriteLabel.set(null);
+            blockedWriteSnapshot.set(null);
             firstWriteBlocked.set(Boolean.FALSE);
             firstWriteEntered = new CountDownLatch(1);
             allowFirstWrite = new CountDownLatch(0);
@@ -721,6 +769,15 @@ class WorkspaceConcurrentSaveTest {
 
         void allowBlockedWrite() {
             allowFirstWrite.countDown();
+        }
+
+        String blockedWriteLabel() {
+            return blockedWriteLabel.get();
+        }
+
+        WorkspaceState blockedWriteSnapshot() {
+            WorkspaceState snapshot = blockedWriteSnapshot.get();
+            return snapshot != null ? WorkspaceState.copyOf(snapshot) : null;
         }
     }
 
