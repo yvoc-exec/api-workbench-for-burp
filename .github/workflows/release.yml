@@ -31,7 +31,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: maven
       - name: Validate downloaded shaded JAR
         id: validate-jar
         shell: bash
@@ -66,7 +65,7 @@ jobs:
       - name: Probe downloaded runtime artifact
         run: java -cp "${{ steps.validate-jar.outputs.path }}" burp.smoke.ScriptRuntimeProbe --require-full
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.validate-jar.outputs.path }}
           generate_release_notes: true
