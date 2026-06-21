@@ -124,6 +124,9 @@ jobs:
             java: '17'
           - label: Windows
             runs-on: windows-latest
+            java: '21'
+          - label: Windows
+            runs-on: windows-latest
             java: '25'
     steps:
       - uses: actions/checkout@v7.0.0
@@ -333,7 +336,7 @@ jobs:
           java-version: '17'
           cache: maven
       - name: Build shaded JAR
-        run: mvn -B clean package
+        run: mvn -B -DskipTests clean package
       - name: Resolve and validate shaded JAR
         id: validate-jar
         shell: bash

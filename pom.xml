@@ -20,7 +20,9 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <byte-buddy.version>1.18.9</byte-buddy.version>
         <jacoco.version>0.8.15</jacoco.version>
+        <skipUnitTests>false</skipUnitTests>
         <skipITs>true</skipITs>
+        <failsafe.include.pattern>**/*IT.java</failsafe.include.pattern>
         <ui.tests.enabled>false</ui.tests.enabled>
         <performance.tests.enabled>false</performance.tests.enabled>
         <spotbugs.version>4.8.6.0</spotbugs.version>
@@ -439,6 +441,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
+                    <skipTests>${skipUnitTests}</skipTests>
                     <systemPropertyVariables>
                         <ui.tests.enabled>${ui.tests.enabled}</ui.tests.enabled>
                         <performance.tests.enabled>${performance.tests.enabled}</performance.tests.enabled>
@@ -451,6 +454,9 @@
                 <version>3.2.5</version>
                 <configuration>
                     <skipITs>${skipITs}</skipITs>
+                    <includes>
+                        <include>${failsafe.include.pattern}</include>
+                    </includes>
                     <systemPropertyVariables>
                         <ui.tests.enabled>${ui.tests.enabled}</ui.tests.enabled>
                         <performance.tests.enabled>${performance.tests.enabled}</performance.tests.enabled>
@@ -472,7 +478,9 @@
         <profile>
             <id>ui-tests</id>
             <properties>
+                <skipUnitTests>true</skipUnitTests>
                 <skipITs>false</skipITs>
+                <failsafe.include.pattern>**/*UiIT.java</failsafe.include.pattern>
                 <ui.tests.enabled>true</ui.tests.enabled>
                 <performance.tests.enabled>false</performance.tests.enabled>
             </properties>
@@ -480,13 +488,19 @@
         <profile>
             <id>performance-tests</id>
             <properties>
+                <skipUnitTests>true</skipUnitTests>
                 <skipITs>false</skipITs>
+                <failsafe.include.pattern>**/*PerformanceIT.java</failsafe.include.pattern>
                 <ui.tests.enabled>false</ui.tests.enabled>
                 <performance.tests.enabled>true</performance.tests.enabled>
             </properties>
         </profile>
         <profile>
             <id>static-analysis</id>
+            <properties>
+                <skipUnitTests>true</skipUnitTests>
+                <skipITs>true</skipITs>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
