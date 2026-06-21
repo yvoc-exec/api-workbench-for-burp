@@ -368,6 +368,46 @@ public final class SwingRobotTestSupport {
         return found[0];
     }
 
+    public static JPopupMenu waitForPopup(java.util.concurrent.Callable<JPopupMenu> popupSupplier,
+                                          Duration timeout,
+                                          String message) {
+        waitUntilOnEdt(() -> {
+            JPopupMenu popup = popupSupplier.call();
+            return popup != null && popup.isShowing();
+        }, timeout, message);
+        return runOnEdtValue(() -> {
+            JPopupMenu popup = popupSupplier.call();
+            assertThat(popup).as(message + " popup").isNotNull();
+            assertThat(popup.isShowing()).as(message + " popup showing").isTrue();
+            return popup;
+        });
+    }
+
+    public static JButton waitForPopupButton(java.util.concurrent.Callable<JPopupMenu> popupSupplier,
+                                             String buttonText,
+                                             Duration timeout,
+                                             String message) {
+        waitUntilOnEdt(() -> {
+            JPopupMenu popup = popupSupplier.call();
+            JButton button = popup != null ? findByText(popup, JButton.class, buttonText) : null;
+            return popup != null
+                    && popup.isShowing()
+                    && button != null
+                    && button.isShowing()
+                    && button.isEnabled();
+        }, timeout, message);
+        return runOnEdtValue(() -> {
+            JPopupMenu popup = popupSupplier.call();
+            JButton button = popup != null ? findByText(popup, JButton.class, buttonText) : null;
+            assertThat(popup).as(message + " popup").isNotNull();
+            assertThat(popup.isShowing()).as(message + " popup showing").isTrue();
+            assertThat(button).as(message + " button").isNotNull();
+            assertThat(button.isShowing()).as(message + " button showing").isTrue();
+            assertThat(button.isEnabled()).as(message + " button enabled").isTrue();
+            return button;
+        });
+    }
+
     public static void waitForFocusOwner(Component component, Duration timeout) {
         waitUntil(() -> component != null && component.isFocusOwner(), timeout,
                 "Timed out waiting for focus owner: " + (component != null ? component.getClass().getSimpleName() : "null"));
