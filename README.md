@@ -176,11 +176,11 @@ Move cleaned-up work out of Burp when you need to share or archive it.
 
 | Export area | Formats | Why it matters |
 | --- | --- | --- |
-| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Share a cleaned-up collection in the format your team prefers |
-| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | Reuse the same targets, tenants, roles, and tokens elsewhere |
+| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Native collection export is the most faithful representation of authored structure, auth, variables, folder metadata, requests, and native script blocks. Optional active-environment resolution can materialize values, but `runtimeVars` and `runtimeOAuth2` are not auto-serialized. |
+| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | Reuse the same targets, tenants, roles, and tokens elsewhere; the export preserves the selected profile's variables, OAuth2 configuration, and output bindings |
 | History | HAR, Native History JSON, CSV summary | Export evidence or produce lightweight reports |
 
-API Workbench native format preserves native script blocks most faithfully. External export formats are lossy where their schemas cannot represent all Workbench metadata.
+External export formats are lossy where their schemas cannot represent all Workbench metadata.
 
 ### Ease-of-use features for daily testing
 
@@ -206,7 +206,7 @@ These features reduce repetitive setup work and keep testing moving inside Burp.
 | Format | Import | Export | Notes |
 | --- | --- | --- | --- |
 | API Workbench JSON | Yes | Yes | Native collection format |
-| Postman Collection v2.0 / v2.1 JSON | Yes | Yes | Postman-compatible sharing |
+| Postman Collection v2.0 and v2.1 JSON | Yes | Yes | Import: Postman Collection v2.0 and v2.1 JSON; Export: Postman Collection v2.1 JSON |
 | OpenAPI / Swagger 2.x / 3.x | Yes | Export as 3.0 JSON or YAML | Structured API definitions |
 | Insomnia JSON | Yes | Yes | Includes recognized pre/post script shapes |
 | Bruno ZIP / folder | Yes | Yes | Bruno collection packages |
