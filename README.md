@@ -101,6 +101,19 @@ Supported environment formats are summarized in [Supported formats](#supported-f
 
 Use the active environment dropdown to swap contexts quickly. Collection, environment, and request scopes all participate in variable resolution, with higher-priority values shadowing lower-priority ones when names overlap. Unresolved variables are surfaced before send, runner execution, import, and export when resolution is enabled.
 
+### Preserve and run collection scripts
+
+API Workbench preserves script-capable imports instead of flattening them into one generic runtime.
+
+| Script source | Support | Notes |
+| --- | --- | --- |
+| Postman | Yes | Keeps prerequest/test scripts in their original dialect |
+| Insomnia | Yes | Preserves request-level scripts and environment-aware mutations |
+| Bruno | Yes | Preserves bru/req/res-style scripts and tests |
+| API Workbench native | Yes | Round-trips script blocks losslessly |
+
+Scripts run through the active Workbench runtime so they can mutate request state, resolve variables, log output, raise assertions, and participate in Runner sequencing.
+
 ### Test authenticated APIs with OAuth2 support
 
 API Workbench includes OAuth2-aware request handling for common API testing flows.
@@ -151,7 +164,7 @@ Replay History keeps a Burp-native record of what you actually ran from API Work
 
 Replay History retains the latest 1000 entries. If the original request still exists, Load in Workbench applies the snapshot back into that original request. If it no longer exists, API Workbench creates or reuses a `History Replays` collection. Burp project files and exported history may contain sensitive request and response data, so review them before sharing.
 
-For the full feature reference, see [Replay History Guide](docs/replay-history.md).
+The History request viewer now prefers the actual raw HTTP request that was sent, while still retaining the authored/template request for replay and editing.
 
 ### Export collections, environments, and history for handoff
 
@@ -311,10 +324,7 @@ burp/
 |-- runner/
 |   `-- CollectionRunner.java             # Sequential request runner
 |-- smoke/
-|   |-- SmokeRuntimeConfig.java           # Opt-in runtime smoke configuration
-|   |-- SmokeRuntimeResult.java           # Runtime smoke result/report model
-|   |-- SmokeRuntimeRunner.java           # Local runtime smoke execution harness
-|   `-- SmokeUiEvidenceSnapshot.java      # UI evidence snapshot helper
+|   `-- ScriptRuntimeProbe.java           # Standalone packaged script runtime validation tool
 |-- ui/
 |   |-- ImporterPanel.java                # Main Swing UI for Workbench, Environment, OAuth2, Runner, and History
 |   |-- OAuth2Panel.java                  # OAuth2 configuration UI
@@ -427,15 +437,11 @@ Expected output:
 - `mvn clean package` passes.
 - The shaded artifact is written to `target\api-workbench-for-burp-2.0.0-jar-with-dependencies.jar`.
 
-For deeper validation notes and targeted test references, see [Testing Guide](docs/testing.md).
-
 ## More documentation
 
 - [Operator Guide](OPERATOR_GUIDE.md)
 - [Complete Documentation](DOCUMENTATION.md)
-- [Feature Guide](docs/features.md)
-- [Replay History Guide](docs/replay-history.md)
-- [Testing Guide](docs/testing.md)
+- [Environment vs Collection Precedence](ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md)
 
 ## Summary
 

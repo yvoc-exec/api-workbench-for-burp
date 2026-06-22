@@ -18,6 +18,14 @@ import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 import burp.utils.SharedRequestPipeline;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
+import burp.scripts.ScriptExecutionContext;
+import burp.scripts.ScriptAdHocRequest;
+import burp.scripts.ScriptDependentRequestExecutor;
+import burp.scripts.ScriptDependentRequestResult;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -50,6 +58,7 @@ public class CollectionRunner {
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
+    private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
     private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
 
@@ -89,6 +98,9 @@ public class CollectionRunner {
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
     public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
         this.runtimeOverlayProvider = provider;
+    }
+    public void setActiveEnvironmentProvider(Function<ApiCollection, EnvironmentProfile> provider) {
+        this.activeEnvironmentProvider = provider;
     }
     public void setOAuth2TokenSink(SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) {
         this.oauth2TokenSink = oauth2TokenSink;
@@ -137,6 +149,10 @@ public class CollectionRunner {
      * Multi-collection runner with per-collection scoped variable resolution.
      */
     public void runCollections(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
+        runCollections(sourceCollections, selectedRequests, false);
+    }
+
+    public void runCollections(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests, boolean startPaused) {
         if (running) return;
         if (selectedRequests == null || selectedRequests.isEmpty()) {
             fireOnError("No requests selected for runner");
@@ -146,8 +162,8 @@ public class CollectionRunner {
         cancelled = false;
         final RunnerStopConditions activeStopConditions = copyStopConditions(ensureStopConditions());
         synchronized (pauseLock) {
-            pauseRequested = false;
-            singleStepRequested = false;
+            pauseRequested = startPaused;
+            singleStepRequested = startPaused;
         }
         results.clear();
         extractedVars.clear();
@@ -170,6 +186,7 @@ public class CollectionRunner {
         }
 
         List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
+        RunnerDependentRequestExecutor dependentRequestExecutor = new RunnerDependentRequestExecutor(sourceCollections, reqToColMap, colMap);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         activeExecutor = executor;
@@ -178,15 +195,15 @@ public class CollectionRunner {
                 fireOnStart("Runner", ordered.size());
                 int failedResultCount = 0;
                 boolean stoppedByCondition = false;
+                int[] flowControlJumps = new int[]{0};
+                int maxFlowControlJumps = Math.max(ordered.size() * 4, 20);
 
                 for (int i = 0; i < ordered.size() && !cancelled; i++) {
-                    if (i > 0) {
-                        if (!waitIfPausedOrStepConsumed()) {
-                            break;
-                        }
-                        if (delayMs > 0) {
-                            Thread.sleep(delayMs);
-                        }
+                    if (!waitIfPausedOrStepConsumed()) {
+                        break;
+                    }
+                    if (i > 0 && delayMs > 0) {
+                        Thread.sleep(delayMs);
                     }
 
                     ApiRequest req = ordered.get(i);
@@ -209,7 +226,7 @@ public class CollectionRunner {
                         break;
                     }
 
-                    RequestExecutionOutcome outcome = executeRequest(req, col);
+                    RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
                     if (outcome == null || outcome.result == null || cancelled || Thread.currentThread().isInterrupted()) {
                         break;
                     }
@@ -248,6 +265,15 @@ public class CollectionRunner {
                             failedResultCount + "/" + activeStopConditions.stopAfterFailureCount);
                         stoppedByCondition = true;
                         break;
+                    }
+
+                    int nextIndex = applyFlowControl(ordered, i, result, flowControlJumps, maxFlowControlJumps);
+                    if (nextIndex == Integer.MIN_VALUE) {
+                        stoppedByCondition = true;
+                        break;
+                    }
+                    if (nextIndex >= 0) {
+                        i = nextIndex - 1;
                     }
                 }
 
@@ -340,13 +366,28 @@ public class CollectionRunner {
         return req.auth.type + source;
     }
 
-    private RequestExecutionOutcome executeRequest(ApiRequest req, ApiCollection col) {
+    private RequestExecutionOutcome executeRequest(ApiRequest req,
+                                                   ApiCollection col,
+                                                   ScriptDependentRequestExecutor dependentRequestExecutor,
+                                                   boolean dependentExecution,
+                                                   boolean adHocExecution,
+                                                   String parentRequestName,
+                                                   String parentRequestId,
+                                                   int dependentDepth) {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
         result.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
         result.folderPath = col != null ? RequestPathResolver.getRequestFolderPath(col, req) : req.path;
         result.method = req.method != null ? req.method.toUpperCase() : "GET";
+        result.dependentExecution = dependentExecution;
+        result.adHocExecution = adHocExecution;
+        result.parentRequestName = parentRequestName;
+        result.parentRequestId = parentRequestId;
+        result.dependentDepth = dependentDepth;
+        result.triggeredByScript = dependentExecution || adHocExecution;
+
+        fireOnRequestStart(snapshotRequestStart(result, req, col));
 
         if (pipeline == null) {
             result.success = false;
@@ -371,31 +412,104 @@ public class CollectionRunner {
             attempts++;
             try {
                 Map<String, String> overlay = runtimeOverlayFor(col);
+                EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
                 ExecutionResult exec;
-                if (pipeline == null) {
-                    exec = null;
+                if (pipeline.getClass() != SharedRequestPipeline.class) {
+                    // Preserve compatibility with legacy test subclasses that override the older
+                    // execute overloads but not the explicit ExecutionSource variant.
+                    if (activeEnvironment == null && overlay == null && oauth2TokenSink == null && runtimeVariableSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects);
+                    } else if (activeEnvironment == null && runtimeVariableSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink);
+                    } else if (activeEnvironment == null) {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                    } else if (overlay == null && oauth2TokenSink == null) {
+                        exec = pipeline.execute(req, col, followRedirects, null, null, runtimeVariableSink, activeEnvironment);
+                    } else {
+                        exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment);
+                    }
+                    if (exec != null) {
+                        exec.executionSource = burp.scripts.ExecutionSource.RUNNER;
+                        if (runtimeVariableSink != null && exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
+                            Set<String> removedKeys = exec.removedVars != null
+                                    ? new LinkedHashSet<>(exec.removedVars)
+                                    : Collections.emptySet();
+                            runtimeVariableSink.apply(col, exec.extractedVars, removedKeys);
+                        }
+                    }
+                } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
+                } else if (activeEnvironment == null) {
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 } else if (overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 }
 
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     return null;
                 }
-                if (debugRawRequest && exec != null && exec.requestHeaders != null) {
-                    fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + exec.requestHeaders + "\n=== End Runner Raw Request ===");
+                if (exec == null) {
+                    result.success = false;
+                    result.errorMessage = "Runner pipeline unavailable";
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
+                    break;
+                }
+                if (debugRawRequest && exec != null) {
+                    String rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : exec.requestHeaders);
+                    if (rawRequestText != null) {
+                        fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + rawRequestText + "\n=== End Runner Raw Request ===");
+                    }
                 }
 
-                    if (cancelled || Thread.currentThread().isInterrupted()) {
-                        return null;
-                    }
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    return null;
+                }
 
-                if (exec.success && exec.response != null && exec.response.response() != null) {
+                copyScriptOutput(result, exec);
+                if (exec.assertions != null && !exec.assertions.isEmpty()) {
+                    result.assertions.addAll(exec.assertions);
+                }
+
+                if ((exec.scriptFlowControl == burp.scripts.ScriptFlowControl.STOP_RUN
+                        || exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST)
+                        && exec.response == null) {
+                    boolean hasScriptErrors = result.scriptErrors != null && !result.scriptErrors.isEmpty();
+                    result.success = !hasScriptErrors;
+                    result.errorMessage = hasScriptErrors ? String.join("; ", result.scriptErrors) : null;
+                    result.statusCode = 0;
+                    result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
+                    result.requestHeaders = exec.requestHeaders;
+                    result.requestBody = exec.requestBody;
+                    result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    recordRunnerDiagnostic(result,
+                            exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? DiagnosticSeverity.INFO : DiagnosticSeverity.WARNING,
+                            exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? "Skipped by script" : "Stopped by script",
+                            "Flow Control: " + exec.scriptFlowControl);
+                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+                    return new RequestExecutionOutcome(result, attempts);
+                }
+
+                if (exec.response != null && exec.response.response() != null) {
                     var response = exec.response.response();
-                    result.success = true;
+                    result.success = exec.success;
                     result.statusCode = response.statusCode();
                     result.responseSize = response.body().length();
+                    result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                    result.rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : null);
 
                     String body = response.bodyToString();
                     result.responseBody = body;
@@ -415,6 +529,7 @@ public class CollectionRunner {
                     result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
+                    result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
                     HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(
                         exec.resolvedUrl != null ? exec.resolvedUrl : req.url);
                     result.host = parsed.host;
@@ -422,9 +537,15 @@ public class CollectionRunner {
 
                     // Annotate sitemap entry for visibility
                     if (api != null) {
-                        Annotations annotations = Annotations.annotations(
-                                "[Runner] " + req.name, HighlightColor.CYAN);
-                        api.siteMap().add(exec.response.withAnnotations(annotations));
+                        try {
+                            Annotations annotations = Annotations.annotations(
+                                    "[Runner] " + req.name, HighlightColor.CYAN);
+                            api.siteMap().add(exec.response.withAnnotations(annotations));
+                        } catch (Throwable ignored) {
+                            // Unit tests and non-Burp environments do not always provide the Montoya
+                            // object factory needed by annotation helpers. The request/response still
+                            // completes; we simply skip sitemap annotation in that case.
+                        }
                     }
 
                     // Copy extracted vars and assertions for cross-request continuity
@@ -432,9 +553,6 @@ public class CollectionRunner {
                         copyExecutionVariablesToResultOnly(result, exec);
                     } else {
                         mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
-                    }
-                    if (!exec.assertions.isEmpty()) {
-                        result.assertions.addAll(exec.assertions);
                     }
 
                     result.attemptNumber = attempts;
@@ -490,6 +608,38 @@ public class CollectionRunner {
         result.totalAttempts = maxAttempts;
 
         return new RequestExecutionOutcome(result, attempts);
+    }
+
+    private RunnerResult snapshotRequestStart(RunnerResult source, ApiRequest req, ApiCollection col) {
+        RunnerResult snapshot = new RunnerResult();
+        if (source != null) {
+            snapshot.requestName = source.requestName;
+            snapshot.requestId = source.requestId;
+            snapshot.collectionName = source.collectionName;
+            snapshot.folderPath = source.folderPath;
+            snapshot.method = source.method;
+            snapshot.host = source.host;
+            snapshot.path = source.path;
+            snapshot.requestUrl = source.requestUrl;
+            snapshot.dependentExecution = source.dependentExecution;
+            snapshot.adHocExecution = source.adHocExecution;
+            snapshot.parentRequestName = source.parentRequestName;
+            snapshot.parentRequestId = source.parentRequestId;
+            snapshot.dependentDepth = source.dependentDepth;
+            snapshot.triggeredByScript = source.triggeredByScript;
+            snapshot.attemptNumber = Math.max(1, source.attemptNumber);
+            snapshot.totalAttempts = Math.max(1, source.totalAttempts);
+        } else if (req != null) {
+            snapshot.requestName = req.name;
+            snapshot.requestId = req.id;
+            snapshot.method = req.method != null ? req.method.toUpperCase() : "GET";
+            snapshot.requestUrl = req.url;
+            snapshot.path = req.path;
+        }
+        if (col != null && snapshot.collectionName == null) {
+            snapshot.collectionName = col.name;
+        }
+        return snapshot;
     }
 
     private String extractCleanError(Exception e) {
@@ -550,6 +700,400 @@ public class CollectionRunner {
         }
     }
 
+    static void copyScriptOutput(RunnerResult result, ExecutionResult exec) {
+        if (result == null || exec == null) {
+            return;
+        }
+        result.scriptEngineName = exec.scriptEngineName;
+        result.executionSource = exec.executionSource;
+        result.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : burp.scripts.ScriptFlowControl.CONTINUE;
+        result.scriptFlowMessage = exec.scriptFlowMessage;
+        result.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
+        result.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
+        if (exec.scriptLogs != null && !exec.scriptLogs.isEmpty()) {
+            result.scriptLogs.addAll(exec.scriptLogs);
+        }
+        if (exec.scriptWarnings != null && !exec.scriptWarnings.isEmpty()) {
+            result.scriptWarnings.addAll(exec.scriptWarnings);
+        }
+        if (exec.scriptErrors != null && !exec.scriptErrors.isEmpty()) {
+            result.scriptErrors.addAll(exec.scriptErrors);
+            result.success = false;
+        }
+        if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
+            result.scriptVariableMutations.addAll(exec.scriptVariableMutations);
+        }
+        if (exec.scriptDependentRequestResults != null && !exec.scriptDependentRequestResults.isEmpty()) {
+            result.scriptDependentRequestResults.addAll(exec.scriptDependentRequestResults);
+        }
+        if (exec.dependentRequestCount > 0) {
+            result.dependentRequestCount += exec.dependentRequestCount;
+        } else if (exec.scriptDependentRequestResults != null && !exec.scriptDependentRequestResults.isEmpty()) {
+            result.dependentRequestCount += exec.scriptDependentRequestResults.size();
+        }
+        result.dependentExecution = exec.dependentExecution;
+        result.adHocExecution = exec.adHocExecution;
+        result.parentRequestName = exec.parentRequestName;
+        result.parentRequestId = exec.parentRequestId;
+        result.dependentDepth = exec.dependentDepth;
+        result.triggeredByScript = exec.triggeredByScript;
+    }
+
+    private int applyFlowControl(List<ApiRequest> ordered,
+                                 int currentIndex,
+                                 RunnerResult result,
+                                 int[] flowControlJumps,
+                                 int maxFlowControlJumps) {
+        if (result == null || result.scriptFlowControl == null) {
+            return -1;
+        }
+        return switch (result.scriptFlowControl) {
+            case STOP_RUN -> {
+                recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Runner stopped by script", "Flow Control: STOP_RUN");
+                yield Integer.MIN_VALUE;
+            }
+            case SET_NEXT_REQUEST -> {
+                if (flowControlJumps != null && flowControlJumps.length > 0 && flowControlJumps[0] >= maxFlowControlJumps) {
+                    fireOnError("Stopped after too many flow-control jumps");
+                    yield Integer.MIN_VALUE;
+                }
+                if (flowControlJumps != null && flowControlJumps.length > 0) {
+                    flowControlJumps[0]++;
+                }
+                int targetIndex = resolveNextRequestIndex(ordered, result.scriptFlowNextRequestName, result.scriptFlowNextRequestId);
+                if (targetIndex < 0) {
+                    fireOnDebug("Script requested next request \"" + safeFlowTarget(result) + "\" but no matching request was found.");
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Next request target not found", "Flow Control: SET_NEXT_REQUEST");
+                    yield -1;
+                }
+                recordRunnerDiagnostic(result, DiagnosticSeverity.INFO, "Next request selected by script", "Flow Control: SET_NEXT_REQUEST -> " + safeFlowTarget(result));
+                yield targetIndex;
+            }
+            case RUN_REQUEST, SEND_AD_HOC_REQUEST -> {
+                if (result.dependentRequestCount > 0 || (result.scriptDependentRequestResults != null && !result.scriptDependentRequestResults.isEmpty())) {
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.INFO, "Dependent request executed by script", "Flow Control: " + result.scriptFlowControl);
+                    yield -1;
+                }
+                String warning = "Script flow control " + result.scriptFlowControl + " is recognized but not executed yet.";
+                recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, warning, warning);
+                fireOnDebug(warning);
+                yield -1;
+            }
+            default -> -1;
+        };
+    }
+
+    private void recordRunnerDiagnostic(RunnerResult result, DiagnosticSeverity severity, String message, String details) {
+        DiagnosticEvent event = DiagnosticEvent.of(DiagnosticOperation.RUNNER_RUN, severity, "CollectionRunner", message);
+        if (result != null) {
+            event.collectionName = result.collectionName;
+            event.requestName = result.requestName;
+            event.requestId = result.requestId;
+            event.folderPath = result.folderPath;
+            event.executionSource = result.executionSource;
+            event.scriptDialect = null;
+            event.scriptPhase = null;
+        }
+        event.withDetails(details);
+        DiagnosticStore.getInstance().record(event);
+    }
+
+    private int resolveNextRequestIndex(List<ApiRequest> ordered, String nextRequestName, String nextRequestId) {
+        if (ordered == null || ordered.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < ordered.size(); i++) {
+            ApiRequest request = ordered.get(i);
+            if (request == null) {
+                continue;
+            }
+            if (nextRequestId != null && !nextRequestId.isBlank() && nextRequestId.equals(request.id)) {
+                return i;
+            }
+            if (nextRequestName != null && !nextRequestName.isBlank() && nextRequestName.equals(request.name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String safeFlowTarget(RunnerResult result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.scriptFlowNextRequestName != null && !result.scriptFlowNextRequestName.isBlank()) {
+            return result.scriptFlowNextRequestName;
+        }
+        if (result.scriptFlowNextRequestId != null && !result.scriptFlowNextRequestId.isBlank()) {
+            return result.scriptFlowNextRequestId;
+        }
+        return "";
+    }
+
+    private final class RunnerDependentRequestExecutor implements ScriptDependentRequestExecutor {
+        private static final int MAX_DEPENDENT_DEPTH = 3;
+        private static final int MAX_DEPENDENT_REQUESTS = 20;
+
+        private final Map<String, ApiRequest> requestById = new LinkedHashMap<>();
+        private final Map<String, List<ApiRequest>> requestByName = new LinkedHashMap<>();
+        private final Map<ApiRequest, ApiCollection> requestCollections;
+        private final Map<String, ApiCollection> collectionsByName;
+        private final Deque<String> requestStack = new ArrayDeque<>();
+        private int dependentDepth = 0;
+        private int dependentCount = 0;
+
+        private RunnerDependentRequestExecutor(List<ApiCollection> sourceCollections,
+                                               Map<ApiRequest, ApiCollection> requestCollections,
+                                               Map<String, ApiCollection> collectionsByName) {
+            this.requestCollections = requestCollections != null ? requestCollections : new IdentityHashMap<>();
+            this.collectionsByName = collectionsByName != null ? collectionsByName : new HashMap<>();
+            if (sourceCollections != null) {
+                for (ApiCollection collection : sourceCollections) {
+                    if (collection == null || collection.requests == null) {
+                        continue;
+                    }
+                    for (ApiRequest request : collection.requests) {
+                        if (request == null) {
+                            continue;
+                        }
+                        if (request.id != null && !request.id.isBlank()) {
+                            requestById.putIfAbsent(request.id, request);
+                        }
+                        if (request.name != null && !request.name.isBlank()) {
+                            requestByName.computeIfAbsent(request.name, k -> new ArrayList<>()).add(request);
+                        }
+                    }
+                }
+            }
+        }
+
+        @Override
+        public ScriptDependentRequestResult runRequest(ScriptExecutionContext context, String targetNameOrId) {
+            if (context == null) {
+                return ScriptDependentRequestResult.failure("runRequest is recognized but no script context is available.");
+            }
+            if (context.executionSource != burp.scripts.ExecutionSource.RUNNER) {
+                return ScriptDependentRequestResult.ignored("runRequest is ignored outside Runner mode.");
+            }
+            ApiRequest target = resolveRequest(targetNameOrId);
+            if (target == null) {
+                String message = "Dependent request target not found: " + safeLabel(targetNameOrId);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (target.disabled) {
+                String message = "Dependent request target is disabled: " + safeLabel(target.name != null && !target.name.isBlank() ? target.name : targetNameOrId);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (context.request != null && sameRequest(target, context.request)) {
+                String message = "Dependent request recursion detected: " + dependentKey(target);
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            String stackKey = dependentKey(target);
+            if (requestStack.contains(stackKey)) {
+                String message = "Dependent request recursion detected: " + stackKey;
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
+                String message = "Dependent request depth limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
+                String message = "Dependent request count limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            dependentDepth++;
+            int currentDepth = dependentDepth;
+            dependentCount++;
+            requestStack.push(stackKey);
+            try {
+                ApiCollection targetCollection = requestCollections.get(target);
+                if (targetCollection == null && target.sourceCollection != null) {
+                    targetCollection = collectionsByName.get(target.sourceCollection);
+                }
+                RequestExecutionOutcome outcome = executeRequest(target,
+                        targetCollection,
+                        this,
+                        true,
+                        false,
+                        context.request != null ? context.request.name : null,
+                        context.request != null ? context.request.id : null,
+                        currentDepth);
+                RunnerResult child = outcome != null ? outcome.result : null;
+                if (child == null) {
+                    return ScriptDependentRequestResult.failure("Dependent request execution produced no result.");
+                }
+                child.dependentExecution = true;
+                child.triggeredByScript = true;
+                child.parentRequestName = context.request != null ? context.request.name : null;
+                child.parentRequestId = context.request != null ? context.request.id : null;
+                child.dependentDepth = currentDepth;
+                results.add(child);
+                fireOnRequestComplete(child);
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                CollectionRunner.this.recordRunnerDiagnostic(child,
+                        child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
+                        child.dependentExecution ? "Dependent request executed" : "Request executed",
+                        "dependent=" + child.dependentExecution + " depth=" + child.dependentDepth);
+
+                ScriptDependentRequestResult dependentResult = new ScriptDependentRequestResult();
+                dependentResult.executed = true;
+                dependentResult.success = child.success;
+                dependentResult.message = child.errorMessage != null && !child.errorMessage.isBlank()
+                        ? child.errorMessage
+                        : "runRequest";
+                dependentResult.targetNameOrId = targetNameOrId;
+                dependentResult.resolvedRequestName = child.requestName;
+                dependentResult.resolvedRequestId = child.requestId;
+                dependentResult.parentRequestName = context.request != null ? context.request.name : null;
+                dependentResult.parentRequestId = context.request != null ? context.request.id : null;
+                dependentResult.depth = currentDepth;
+                dependentResult.runnerResult = child;
+                return dependentResult;
+            } finally {
+                requestStack.pop();
+                dependentDepth = Math.max(0, dependentDepth - 1);
+            }
+        }
+
+        @Override
+        public ScriptDependentRequestResult sendAdHocRequest(ScriptExecutionContext context, ScriptAdHocRequest request) {
+            if (context == null) {
+                return ScriptDependentRequestResult.failure("sendAdHocRequest is recognized but no script context is available.");
+            }
+            if (context.executionSource != burp.scripts.ExecutionSource.RUNNER) {
+                return ScriptDependentRequestResult.ignored("sendAdHocRequest is ignored outside Runner mode.");
+            }
+            if (request == null || request.url == null || request.url.isBlank()) {
+                String message = "sendAdHocRequest requires a URL.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
+                String message = "Dependent request depth limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            if (dependentCount >= MAX_DEPENDENT_REQUESTS) {
+                String message = "Dependent request count limit reached.";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
+                return ScriptDependentRequestResult.failure(message);
+            }
+            dependentDepth++;
+            int currentDepth = dependentDepth;
+            dependentCount++;
+            requestStack.push("ad-hoc:" + dependentCount);
+            try {
+                ApiRequest target = request.toApiRequest();
+                ApiCollection targetCollection = context.collection;
+                RequestExecutionOutcome outcome = executeRequest(target,
+                        targetCollection,
+                        this,
+                        true,
+                        true,
+                        context.request != null ? context.request.name : null,
+                        context.request != null ? context.request.id : null,
+                        currentDepth);
+                RunnerResult child = outcome != null ? outcome.result : null;
+                if (child == null) {
+                    return ScriptDependentRequestResult.failure("Ad-hoc request execution produced no result.");
+                }
+                child.dependentExecution = true;
+                child.adHocExecution = true;
+                child.triggeredByScript = true;
+                child.parentRequestName = context.request != null ? context.request.name : null;
+                child.parentRequestId = context.request != null ? context.request.id : null;
+                child.dependentDepth = currentDepth;
+                results.add(child);
+                fireOnRequestComplete(child);
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                CollectionRunner.this.recordRunnerDiagnostic(child,
+                        child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
+                        child.adHocExecution ? "Ad-hoc request executed" : "Request executed",
+                        "adHoc=" + child.adHocExecution + " depth=" + child.dependentDepth);
+
+                ScriptDependentRequestResult dependentResult = new ScriptDependentRequestResult();
+                dependentResult.executed = true;
+                dependentResult.success = child.success;
+                dependentResult.message = child.errorMessage != null && !child.errorMessage.isBlank()
+                        ? child.errorMessage
+                        : "sendAdHocRequest";
+                dependentResult.targetNameOrId = request.name != null && !request.name.isBlank() ? request.name : request.url;
+                dependentResult.resolvedRequestName = child.requestName;
+                dependentResult.resolvedRequestId = child.requestId;
+                dependentResult.parentRequestName = context.request != null ? context.request.name : null;
+                dependentResult.parentRequestId = context.request != null ? context.request.id : null;
+                dependentResult.depth = currentDepth;
+                dependentResult.adHoc = true;
+                dependentResult.runnerResult = child;
+                return dependentResult;
+            } finally {
+                requestStack.pop();
+                dependentDepth = Math.max(0, dependentDepth - 1);
+            }
+        }
+
+        private ApiRequest resolveRequest(String targetNameOrId) {
+            if (targetNameOrId == null || targetNameOrId.isBlank()) {
+                return null;
+            }
+            ApiRequest byId = requestById.get(targetNameOrId);
+            if (byId != null) {
+                return byId;
+            }
+            List<ApiRequest> byName = requestByName.get(targetNameOrId);
+            if (byName != null && !byName.isEmpty()) {
+                return byName.get(0);
+            }
+            for (Map.Entry<String, ApiRequest> entry : requestById.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
+                    return entry.getValue();
+                }
+            }
+            for (Map.Entry<String, List<ApiRequest>> entry : requestByName.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
+                    return entry.getValue().isEmpty() ? null : entry.getValue().get(0);
+                }
+            }
+            return null;
+        }
+
+        private String dependentKey(ApiRequest request) {
+            if (request == null) {
+                return "";
+            }
+            if (request.id != null && !request.id.isBlank()) {
+                return request.id;
+            }
+            if (request.name != null && !request.name.isBlank()) {
+                return request.name;
+            }
+            return "";
+        }
+
+        private boolean sameRequest(ApiRequest left, ApiRequest right) {
+            if (left == null || right == null) {
+                return false;
+            }
+            if (left.id != null && !left.id.isBlank() && right.id != null && !right.id.isBlank()) {
+                return left.id.equals(right.id);
+            }
+            if (left.name != null && !left.name.isBlank() && right.name != null && !right.name.isBlank()) {
+                return left.name.equalsIgnoreCase(right.name);
+            }
+            return false;
+        }
+
+        private String safeLabel(String value) {
+            return value != null && !value.isBlank() ? value : "unknown";
+        }
+    }
+
     private void warnIfUnresolved(byte[] rawRequest, String requestName) {
         Set<String> unresolved = burp.utils.RequestBuilder.findUnresolvedTokens(rawRequest);
         if (!unresolved.isEmpty() && api != null) {
@@ -573,6 +1117,13 @@ public class CollectionRunner {
             return null;
         }
         return runtimeOverlayProvider.apply(col);
+    }
+
+    private EnvironmentProfile activeEnvironmentFor(ApiCollection col) {
+        if (activeEnvironmentProvider == null) {
+            return null;
+        }
+        return activeEnvironmentProvider.apply(col);
     }
 
     private List<String> collectUnresolvedVariables(VariableResolver resolver, ApiRequest req) {
@@ -671,6 +1222,19 @@ public class CollectionRunner {
             snapshot.responseBodyPreview = source.responseBodyPreview;
             snapshot.extractedVariables = source.extractedVariables != null ? new HashMap<>(source.extractedVariables) : new HashMap<>();
             snapshot.assertions = source.assertions != null ? new ArrayList<>(source.assertions) : new ArrayList<>();
+            snapshot.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
+            snapshot.rawRequestText = source.rawRequestText;
+            snapshot.resolvedVariables = source.resolvedVariables != null ? new HashMap<>(source.resolvedVariables) : new HashMap<>();
+            snapshot.scriptEngineName = source.scriptEngineName;
+            snapshot.executionSource = source.executionSource;
+            snapshot.scriptLogs = source.scriptLogs != null ? new ArrayList<>(source.scriptLogs) : new ArrayList<>();
+            snapshot.scriptWarnings = source.scriptWarnings != null ? new ArrayList<>(source.scriptWarnings) : new ArrayList<>();
+            snapshot.scriptErrors = source.scriptErrors != null ? new ArrayList<>(source.scriptErrors) : new ArrayList<>();
+            snapshot.scriptVariableMutations = source.scriptVariableMutations != null ? new ArrayList<>(source.scriptVariableMutations) : new ArrayList<>();
+            snapshot.scriptFlowControl = source.scriptFlowControl;
+            snapshot.scriptFlowMessage = source.scriptFlowMessage;
+            snapshot.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
+            snapshot.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
         }
         if (exec != null) {
             if (exec.requestHeaders != null) {
@@ -678,6 +1242,12 @@ public class CollectionRunner {
             }
             if (exec.requestBody != null) {
                 snapshot.requestBody = exec.requestBody;
+            }
+            if (exec.rawRequestBytes != null) {
+                snapshot.rawRequestBytes = exec.rawRequestBytes.clone();
+                snapshot.rawRequestText = exec.rawRequestText != null
+                        ? exec.rawRequestText
+                        : new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8);
             }
             if (exec.resolvedUrl != null) {
                 snapshot.requestUrl = exec.resolvedUrl;
@@ -688,6 +1258,29 @@ public class CollectionRunner {
             if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
                 snapshot.extractedVariables = new HashMap<>(exec.extractedVars);
             }
+            if (exec.resolvedVariables != null && !exec.resolvedVariables.isEmpty()) {
+                snapshot.resolvedVariables = new HashMap<>(exec.resolvedVariables);
+            }
+            if (exec.scriptEngineName != null) {
+                snapshot.scriptEngineName = exec.scriptEngineName;
+            }
+            snapshot.executionSource = exec.executionSource != null ? exec.executionSource : snapshot.executionSource;
+            if (exec.scriptLogs != null && !exec.scriptLogs.isEmpty()) {
+                snapshot.scriptLogs = new ArrayList<>(exec.scriptLogs);
+            }
+            if (exec.scriptWarnings != null && !exec.scriptWarnings.isEmpty()) {
+                snapshot.scriptWarnings = new ArrayList<>(exec.scriptWarnings);
+            }
+            if (exec.scriptErrors != null && !exec.scriptErrors.isEmpty()) {
+                snapshot.scriptErrors = new ArrayList<>(exec.scriptErrors);
+            }
+            if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
+                snapshot.scriptVariableMutations = new ArrayList<>(exec.scriptVariableMutations);
+            }
+            snapshot.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : snapshot.scriptFlowControl;
+            snapshot.scriptFlowMessage = exec.scriptFlowMessage != null ? exec.scriptFlowMessage : snapshot.scriptFlowMessage;
+            snapshot.scriptFlowNextRequestName = exec.scriptFlowNextRequestName != null ? exec.scriptFlowNextRequestName : snapshot.scriptFlowNextRequestName;
+            snapshot.scriptFlowNextRequestId = exec.scriptFlowNextRequestId != null ? exec.scriptFlowNextRequestId : snapshot.scriptFlowNextRequestId;
         }
         snapshot.attemptNumber = Math.max(1, attemptNumber);
         snapshot.totalAttempts = Math.max(1, totalAttempts);
@@ -699,7 +1292,7 @@ public class CollectionRunner {
         row.order = req != null ? req.sequenceOrder : 0;
         row.collectionName = col != null && col.name != null ? col.name : (req != null ? req.sourceCollection : "");
         row.requestName = req != null ? req.name : "";
-        row.status = result != null && result.success ? String.valueOf(result.statusCode) : "ERR";
+        row.status = result != null ? result.displayStatusLabel() : "";
         row.timeMs = result != null ? result.responseTimeMs : 0L;
         row.retries = Math.max(0, attempts - 1);
         row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;
@@ -791,6 +1384,11 @@ public class CollectionRunner {
             for (RunnerListener l : listeners) l.onStart(collectionName, totalRequests);
         });
     }
+    private void fireOnRequestStart(RunnerResult result) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) l.onRequestStart(result);
+        });
+    }
     private void fireOnSkip(String requestName, String reason) {
         SwingUtilities.invokeLater(() -> {
             for (RunnerListener l : listeners) l.onSkip(requestName, reason);
@@ -829,6 +1427,7 @@ public class CollectionRunner {
 
     public interface RunnerListener {
         void onStart(String collectionName, int totalRequests);
+        default void onRequestStart(RunnerResult result) { }
         void onSkip(String requestName, String reason);
         void onRequestComplete(RunnerResult result);
         default void onAttemptComplete(RunnerResult result) { }

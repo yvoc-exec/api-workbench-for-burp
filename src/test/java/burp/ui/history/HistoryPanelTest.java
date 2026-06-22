@@ -53,7 +53,7 @@ class HistoryPanelTest {
         assertThat(topPanel.getComponentCount()).isEqualTo(3);
         assertThat(topPanel.getComponent(1)).isInstanceOf(JLabel.class);
         assertThat(((JLabel) topPanel.getComponent(1)).getText())
-                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.");
+                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.");
         assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
         assertThat(panel.getFilterPanel().getMinimumSize().height).isLessThanOrEqualTo(72);
         assertThat(panel.getFilterPanel().getComponentCount()).isGreaterThan(0);
@@ -84,7 +84,8 @@ class HistoryPanelTest {
         panel.getHistoryTable().setRowSelectionInterval(1, 1);
         ImporterPanelTestSupport.awaitEdt();
         assertThat(panel.getSelectedEntry().id).isEqualTo("first");
-        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("POST /login HTTP/1.1");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Host: api.example.test");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("Content-Type: application/json");
@@ -148,7 +149,7 @@ class HistoryPanelTest {
         assertThat(requestCaptor.getValue().headerValue("Authorization")).isEqualTo("Bearer {{token}}");
         assertThat(requestCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
         assertThat(requestCaptor.getValue().bodyToString()).contains("{\"username\":\"demo\",\"password\":\"{{password}}\"}");
-        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("{{base_url}}/login");
+        assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("POST /login HTTP/1.1");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
 
         assertThat(responseCaptor.getValue().statusCode()).isEqualTo((short) 200);

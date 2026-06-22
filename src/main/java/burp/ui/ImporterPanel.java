@@ -17,9 +17,16 @@ import burp.history.HistoryResult;
 import burp.history.HistorySource;
 import burp.history.HistoryRequestSnapshot;
 import burp.history.HistoryResponseSnapshot;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticSanitizer;
+import burp.diagnostics.DiagnosticStore;
 import burp.utils.OAuth2BearerAliasDetector;
+import burp.utils.ExecutionResult;
 import burp.utils.UnresolvedVariableAnalyzer;
-import burp.smoke.SmokeUiEvidenceSnapshot;
+import burp.utils.SharedRequestPipeline;
+import burp.scripts.ScriptVariableMutation;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
 import burp.ui.tree.RequestTreeDragPayload;
@@ -36,9 +43,12 @@ import burp.ui.dnd.RunnerQueueDragPayload;
 import burp.ui.dnd.RunnerQueueTransferHandler;
 import burp.ui.history.HistoryLoadResultNotifier;
 import burp.ui.history.HistoryNativeHttpMessageFactory;
+import burp.history.HistoryHeader;
+import burp.ui.history.HistoryDetailPanel;
 import burp.ui.history.HistoryPanel;
 import burp.utils.RequestPathResolver;
 import burp.utils.EnvironmentImportService;
+import burp.utils.RuntimeResolverFactory;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -54,6 +64,7 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.datatransfer.StringSelection;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
@@ -117,25 +128,32 @@ public class ImporterPanel {
     private JButton actionsBtn;
     private JCheckBox debugRawRequestBox;
     private RequestEditorPanel requestEditor;
+    private HistoryDetailPanel workbenchDetailPanel;
     private JTabbedPane workbenchDetailTabs;
-    private HttpRequestEditor workbenchRequestEditor;
-    private HttpResponseEditor workbenchResponseEditor;
-    private JTextArea workbenchMetaText;
     private final IdentityHashMap<ApiRequest, WorkbenchSendSnapshot> workbenchSendSnapshots = new IdentityHashMap<>();
     private JTextArea importLog;
     private JTextArea diagnosticsArea;
+    private JCheckBox diagnosticsIncludeDebugBox;
+    private JCheckBox diagnosticsCaptureBox;
+    private JButton diagnosticsRefreshButton;
+    private JButton diagnosticsClearButton;
+    private JButton diagnosticsCopyButton;
+    private DefaultListModel<DiagnosticEvent> diagnosticsEventListModel;
+    private JList<DiagnosticEvent> diagnosticsEventList;
+    private JTextArea diagnosticsEventDetailArea;
     private HistoryPanel historyPanel;
 
     // Runner tab
     private JTextArea runnerLog;
     private JProgressBar runnerProgress;
     private JTable resultTable;
-    private RunnerResultTableModel resultModel;
-    private JTable timelineTable;
+    private RunnerExecutionTableModel resultModel;
     private RunnerTimelineTableModel timelineModel;
+    private JTable timelineTable;
     private JList<ApiRequest> runnerQueueList;
     private DefaultListModel<ApiRequest> runnerQueueListModel;
     private JScrollPane runnerQueueScrollPane;
+    private HistoryDetailPanel runnerDetailPanel;
     private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
@@ -151,11 +169,11 @@ public class ImporterPanel {
     private javax.swing.Timer runnerCancelPollTimer;
     private CollectionRunner.RunnerListener activeRunnerListener;
     private RunnerQueueTransferHandler runnerQueueTransferHandler;
-
-    // Runner detail pane
-    private HttpRequestEditor detailRequestEditor;
-    private HttpResponseEditor detailResponseEditor;
-    private JTextArea detailVarsText;
+    private int runnerExecutingQueueIndex = -1;
+    private boolean runnerQueueFresh = false;
+    private int runnerExecutionSequence = 0;
+    private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
+    private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
 
     // Workbench environment selector
     private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
@@ -166,9 +184,12 @@ public class ImporterPanel {
         final HttpRequest builtRequest;
         final HttpResponse response;
         final String metaText;
+        final String scriptOutputText;
+        final String assertionsText;
         final String failureReason;
         final String sendModeLabel;
         final long timestampMillis;
+        HistoryEntry detailEntry;
 
         WorkbenchSendSnapshot(HttpRequest builtRequest,
                               HttpResponse response,
@@ -176,9 +197,22 @@ public class ImporterPanel {
                               String failureReason,
                               String sendModeLabel,
                               long timestampMillis) {
+            this(builtRequest, response, metaText, "", "", failureReason, sendModeLabel, timestampMillis);
+        }
+
+        WorkbenchSendSnapshot(HttpRequest builtRequest,
+                              HttpResponse response,
+                              String metaText,
+                              String scriptOutputText,
+                              String assertionsText,
+                              String failureReason,
+                              String sendModeLabel,
+                              long timestampMillis) {
             this.builtRequest = builtRequest;
             this.response = response;
             this.metaText = metaText;
+            this.scriptOutputText = scriptOutputText;
+            this.assertionsText = assertionsText;
             this.failureReason = failureReason;
             this.sendModeLabel = sendModeLabel;
             this.timestampMillis = timestampMillis;
@@ -274,10 +308,12 @@ public class ImporterPanel {
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.oauth2Panel.setTokenAcquiredCollectionSupplier(() -> null);
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);
+        this.oauth2Panel.setTokenAcquiredEnvironmentIdSupplier(this::getActiveEnvironmentId);
         this.importer = importer;
         this.runner = runner;
         if (this.runner != null) {
             this.runner.setRuntimeOverlayProvider(collection -> hasActiveEnvironment() ? activeEnvironmentOverlay() : null);
+            this.runner.setActiveEnvironmentProvider(collection -> getActiveEnvironment());
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
             this.runner.setRuntimeVariableSink(ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
         }
@@ -487,6 +523,65 @@ public class ImporterPanel {
         requestEditor = new RequestEditorPanel();
         requestEditor.setRequestBuilder(requestBuilder);
         requestEditor.setSendControlsEnabled(false);
+        requestEditor.setVariableActionBridge(new RequestEditorPanel.VariableActionBridge() {
+            @Override
+            public RequestEditorPanel.VariableHoverInfo inspect(String key) {
+                ApiCollection collection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+                EnvironmentProfile active = getActiveEnvironment();
+                Map<String, String> runtimeOverlay = active != null
+                        ? Collections.emptyMap()
+                        : (requestEditor != null ? requestEditor.getRuntimeVariablesSnapshot() : Collections.emptyMap());
+                burp.utils.RuntimeResolverFactory.ResolutionTrace trace =
+                        burp.utils.RuntimeResolverFactory.inspect(collection, requestEditor != null ? requestEditor.getCurrentRequest() : null, active, runtimeOverlay, key);
+                RequestEditorPanel.VariableHoverInfo info = new RequestEditorPanel.VariableHoverInfo();
+                info.key = key;
+                info.resolved = trace.resolved;
+                info.value = trace.value;
+                info.scope = trace.scope != null ? trace.scope : (info.resolved ? "resolved" : "not found");
+                info.source = trace.source != null ? trace.source : (active != null ? "Active Environment" : "No Active Environment selected");
+                info.shadowedSource = trace.shadowedSource;
+                info.shadowedValue = trace.shadowedValue;
+                info.activeEnvironmentName = trace.activeEnvironmentName != null ? trace.activeEnvironmentName : (active != null ? active.displayName() : null);
+                info.canEdit = active != null;
+                info.canCreate = active != null;
+                info.message = trace.message != null ? trace.message : (active != null
+                        ? "No value found. Create target: Active Environment (persisted variable)."
+                        : "No Active Environment selected. Select or import an environment to edit or create persisted variables.");
+                return info;
+            }
+
+            @Override
+            public boolean hasActiveEnvironment() {
+                return getActiveEnvironment() != null;
+            }
+
+            @Override
+            public String activeEnvironmentName() {
+                EnvironmentProfile active = getActiveEnvironment();
+                return active != null ? active.displayName() : null;
+            }
+
+            @Override
+            public boolean updateActiveEnvironment(String key, String value, boolean createIfMissing, boolean persist) {
+                EnvironmentProfile active = getActiveEnvironment();
+                if (active == null || key == null || key.isBlank()) {
+                    return false;
+                }
+                Map<String, String> changed = new LinkedHashMap<>();
+                changed.put(key, value != null ? value : "");
+                applyRuntimeVariableDeltaToActiveEnvironment(requestEditor != null ? requestEditor.getCurrentCollection() : null,
+                        changed,
+                        Collections.emptySet());
+                return true;
+            }
+
+            @Override
+            public void refreshEnvironmentUi() {
+                syncActiveEnvironmentToEditors();
+                updateEnvironmentUiState();
+                notifyWorkspaceChangedImmediately();
+            }
+        });
         requestEditor.setTrackedHeaderStateChangeListener(() -> {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
@@ -504,19 +599,10 @@ public class ImporterPanel {
         return split;
     }
 
-    private JTabbedPane createWorkbenchDetailTabs() {
-        workbenchDetailTabs = new JTabbedPane();
-        workbenchRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        workbenchDetailTabs.addTab("Request", workbenchRequestEditor.uiComponent());
-
-        workbenchResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        workbenchDetailTabs.addTab("Response", workbenchResponseEditor.uiComponent());
-
-        workbenchMetaText = new JTextArea();
-        workbenchMetaText.setEditable(false);
-        workbenchMetaText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        workbenchDetailTabs.addTab("Meta", new JScrollPane(workbenchMetaText));
-        return workbenchDetailTabs;
+    private HistoryDetailPanel createWorkbenchDetailTabs() {
+        workbenchDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        workbenchDetailTabs = workbenchDetailPanel.getTabbedPane();
+        return workbenchDetailPanel;
     }
 
     private JPanel createEnvBindingRow() {
@@ -571,6 +657,7 @@ public class ImporterPanel {
         importLog = new JTextArea(3, 50);
         importLog.setEditable(false);
         importLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(importLog);
         JScrollPane logScroll = new JScrollPane(importLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Workbench Log"));
         logScroll.setPreferredSize(new Dimension(400, 100));
@@ -582,8 +669,12 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
         }
-        ApiRequest liveRequest = requestEditor != null ? requestEditor.getCurrentRequest() : null;
-        ApiCollection col = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+        if (requestEditor == null) {
+            appendImportLog("No request loaded in editor.");
+            return;
+        }
+        ApiRequest liveRequest = requestEditor.getCurrentRequest();
+        ApiCollection col = requestEditor.getCurrentCollection();
         requestEditor.commitAllEdits();
         ApiRequest edited = requestEditor.buildRequestFromUI();
         if (edited == null || liveRequest == null) {
@@ -605,6 +696,7 @@ public class ImporterPanel {
         final ApiRequest requestToSend = liveRequest;
         final String sendModeLabel = requestEditor.getSendModeLabel();
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
                 List.of(resolvedCol),
                 List.of(requestToSend),
@@ -632,15 +724,14 @@ public class ImporterPanel {
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    result = runtimeOverlayForSend == null
-                            ? importer.sendSingleRequestWithBuiltRequest(requestToSend, resolvedCol, follow)
-                            : importer.sendSingleRequestWithBuiltRequest(
-                                    requestToSend,
-                                    resolvedCol,
-                                    follow,
-                                    runtimeOverlayForSend,
-                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+                    result = sendSingleRequestWithBuiltRequest(
+                            requestToSend,
+                            resolvedCol,
+                            follow,
+                            runtimeOverlayForSend,
+                            ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            activeEnvironment);
                     var rr = result.response;
 
                     final UniversalImporter.SingleSendResult sendResult = result;
@@ -828,6 +919,13 @@ public class ImporterPanel {
         }
         entry.ensureDefaults();
         historyStore.addEntry(entry);
+        recordDiagnostic(
+                DiagnosticOperation.HISTORY_CAPTURE,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "History entry captured",
+                "historyId=" + entry.id + "\nrawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent()) +
+                        "\nauthoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null));
         if (historyPanel != null) {
             historyPanel.refreshFromStore(entry.id);
         }
@@ -838,6 +936,12 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.LOAD_IN_WORKBENCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Loading history entry into Workbench",
+                "historyId=" + entry.id + "\nrequest=" + entry.requestDisplayName());
         if (requestEditor != null && requestEditor.isDirty() && !historyLoadResultNotifier.confirmReplaceCurrentRequest(mainPanel)) {
             return;
         }
@@ -885,6 +989,12 @@ public class ImporterPanel {
         if (entry == null || entry.requestSnapshot == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.REPLAY,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Replaying history entry",
+                "historyId=" + entry.id + "\nrequest=" + entry.requestDisplayName());
         HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
         ApiRequest request = entry.requestSnapshot.toApiRequest();
         List<ApiCollection> collectionsForAnalysis = context != null && context.collection != null
@@ -906,21 +1016,21 @@ public class ImporterPanel {
         final ApiCollection resolvedCollection = context != null ? context.collection : null;
         final ApiRequest replayRequest = request;
         final Map<String, String> runtimeOverlayForReplay = runtimeOverlay;
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
             protected Void doInBackground() throws Exception {
                 try {
                     publish("Replaying: " + replayRequest.method + " " + replayRequest.url);
                     boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
-                    UniversalImporter.SingleSendResult result = runtimeOverlayForReplay == null
-                            ? importer.sendSingleRequestWithBuiltRequest(replayRequest, resolvedCollection, follow)
-                            : importer.sendSingleRequestWithBuiltRequest(
-                                    replayRequest,
-                                    resolvedCollection,
-                                    follow,
-                                    runtimeOverlayForReplay,
-                                    ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                                    ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+                    UniversalImporter.SingleSendResult result = sendSingleRequestWithBuiltRequest(
+                            replayRequest,
+                            resolvedCollection,
+                            follow,
+                            runtimeOverlayForReplay,
+                            ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
+                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            activeEnvironment);
                     publish("Replay complete: " + replayRequest.name);
                     recordWorkbenchHistoryEntry(
                             replayRequest,
@@ -1009,6 +1119,26 @@ public class ImporterPanel {
             appendImportLog("Send to Repeater failed: " + failureReason);
             historyLoadResultNotifier.showError(mainPanel, "Send to Repeater failed: " + failureReason);
         }
+    }
+
+    private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest request,
+            ApiCollection collection,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment) throws Exception {
+        if (runtimeOverlay == null && activeEnvironment == null) {
+            return importer.sendSingleRequestWithBuiltRequest(request, collection, followRedirects);
+        }
+        return importer.sendSingleRequestWithBuiltRequest(
+                request,
+                collection,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink);
     }
 
     private HistoryRequestContext resolveExistingHistoryRequestContext(HistoryEntry entry) {
@@ -1431,6 +1561,7 @@ public class ImporterPanel {
         liveRequest.body = copyBody(edited.body);
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
         liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
+        liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
         liveRequest.authOverrideMode = edited.authOverrideMode != null ? edited.authOverrideMode : "inherit";
         liveRequest.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(edited.explicitAuth);
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, liveRequest);
@@ -1508,17 +1639,36 @@ public class ImporterPanel {
         return out;
     }
 
+    private static List<burp.scripts.ScriptBlock> copyScriptBlocks(List<burp.scripts.ScriptBlock> scripts) {
+        List<burp.scripts.ScriptBlock> out = new ArrayList<>();
+        if (scripts == null) {
+            return out;
+        }
+        for (burp.scripts.ScriptBlock block : scripts) {
+            burp.scripts.ScriptBlock copy = burp.scripts.ScriptBlock.copyOf(block);
+            if (copy != null) {
+                out.add(copy);
+            }
+        }
+        return out;
+    }
+
     private void updateWorkbenchDetailPaneSuccess(ApiRequest sentRequest,
                                                   ApiCollection sentCollection,
                                                   UniversalImporter.SingleSendResult result,
                                                   String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 result != null ? result.builtRequest : null,
                 result != null && result.response != null ? result.response.response() : null,
-                buildWorkbenchMetaText(sentRequest, result, sendModeLabel, null),
+                buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment),
+                buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
+                buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
                 null,
                 sendModeLabel,
                 System.currentTimeMillis());
+        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -1526,13 +1676,18 @@ public class ImporterPanel {
                                                   ApiCollection sentCollection,
                                                   String reason,
                                                   String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 null,
                 null,
-                buildWorkbenchMetaText(sentRequest, null, sendModeLabel, reason),
+                buildWorkbenchMetaText(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment),
+                "No script output for this request.",
+                "No assertions or extractions for this request.",
                 reason,
                 sendModeLabel,
                 System.currentTimeMillis());
+        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -1569,7 +1724,7 @@ public class ImporterPanel {
     }
 
     String getWorkbenchDetailMetaTextForTest() {
-        return workbenchMetaText != null ? workbenchMetaText.getText() : "";
+        return workbenchDetailPanel != null ? workbenchDetailPanel.getMetadataArea().getText() : "";
     }
 
     private boolean isWorkbenchRequestSelection(ApiRequest sentRequest, ApiCollection sentCollection) {
@@ -1590,10 +1745,21 @@ public class ImporterPanel {
     void showWorkbenchSendSnapshotForSelection(ApiRequest request) {
         WorkbenchSendSnapshot snapshot = request != null ? workbenchSendSnapshots.get(request) : null;
         if (snapshot == null) {
-            clearWorkbenchDetailPane();
+            if (request != null && requestEditor != null) {
+                displayWorkbenchPendingSelection(request, requestEditor.getCurrentCollection());
+            } else {
+                clearWorkbenchDetailPane();
+            }
             return;
         }
         displayWorkbenchSendSnapshot(snapshot);
+    }
+
+    private void displayWorkbenchPendingSelection(ApiRequest request, ApiCollection collection) {
+        if (workbenchDetailPanel == null) {
+            return;
+        }
+        workbenchDetailPanel.showEntry(buildWorkbenchPreviewEntry(collection, request, requestEditor != null ? requestEditor.getSendModeLabel() : ""));
     }
 
     private void displayWorkbenchSendSnapshot(WorkbenchSendSnapshot snapshot) {
@@ -1601,61 +1767,72 @@ public class ImporterPanel {
             clearWorkbenchDetailPane();
             return;
         }
-        if (workbenchRequestEditor != null) {
-            try {
-                workbenchRequestEditor.setRequest(snapshot.builtRequest != null ? snapshot.builtRequest : HttpRequest.httpRequest());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
+        if (workbenchDetailPanel != null) {
+            HistoryEntry detailEntry = snapshot.detailEntry != null
+                    ? HistoryEntry.copyOf(snapshot.detailEntry)
+                    : new HistoryEntry();
+            detailEntry.metadataSummaryText = snapshot.metaText;
+            detailEntry.scriptOutputSummaryText = snapshot.scriptOutputText;
+            detailEntry.assertionsSummaryText = snapshot.assertionsText;
+            detailEntry.errorMessage = snapshot.failureReason;
+            if (detailEntry.source == null) {
+                detailEntry.source = HistorySource.WORKBENCH;
             }
-        }
-        if (workbenchResponseEditor != null) {
-            try {
-                workbenchResponseEditor.setResponse(snapshot.response != null ? snapshot.response : HttpResponse.httpResponse());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
+            if (detailEntry.timestamp == null) {
+                detailEntry.timestamp = java.time.Instant.now();
             }
-        }
-        if (workbenchMetaText != null) {
-            workbenchMetaText.setText(snapshot.metaText != null ? snapshot.metaText : "");
-            workbenchMetaText.setCaretPosition(0);
+            if (detailEntry.id == null || detailEntry.id.isBlank()) {
+                detailEntry.id = UUID.randomUUID().toString();
+            }
+            workbenchDetailPanel.showEntry(detailEntry);
+            if (snapshot.builtRequest != null) {
+                workbenchDetailPanel.setRequestMessage(snapshot.builtRequest);
+            }
+            if (snapshot.response != null) {
+                workbenchDetailPanel.setResponseMessage(snapshot.response);
+            }
         }
     }
 
     private void clearWorkbenchDetailPane() {
-        if (workbenchRequestEditor != null) {
-            try {
-                workbenchRequestEditor.setRequest(HttpRequest.httpRequest());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
-            }
-        }
-        if (workbenchResponseEditor != null) {
-            try {
-                workbenchResponseEditor.setResponse(HttpResponse.httpResponse());
-            } catch (RuntimeException ignored) {
-                // Tests may construct the panel without a Montoya object factory.
-            }
-        }
-        if (workbenchMetaText != null) {
-            workbenchMetaText.setText("");
-            workbenchMetaText.setCaretPosition(0);
+        if (workbenchDetailPanel != null) {
+            workbenchDetailPanel.clear();
         }
     }
 
-    private String buildWorkbenchMetaText(ApiRequest edited, UniversalImporter.SingleSendResult result, String sendModeLabel, String failureReason) {
+    private String buildWorkbenchMetaText(ApiCollection sentCollection,
+                                          ApiRequest edited,
+                                          UniversalImporter.SingleSendResult result,
+                                          String sendModeLabel,
+                                          String failureReason,
+                                          EnvironmentProfile activeEnvironment) {
         StringBuilder meta = new StringBuilder();
+        String collectionName = sentCollection != null && sentCollection.name != null ? sentCollection.name : (edited != null ? edited.sourceCollection : "");
+        String folderPath = sentCollection != null && edited != null ? RequestPathResolver.getRequestFolderPath(sentCollection, edited) : (edited != null && edited.path != null ? edited.path : "");
+        String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
+        String method = edited != null && edited.method != null ? edited.method : "GET";
+        String urlTemplate = edited != null && edited.url != null ? edited.url : "";
+        String finalResolvedUrl = result != null && result.resolvedUrl != null ? result.resolvedUrl : "";
+        String authLine = buildAuthMetaLine(edited);
+        String executionSource = result != null && result.executionResult != null && result.executionResult.executionSource != null
+                ? result.executionResult.executionSource.name()
+                : "Workbench Send";
+
         if (failureReason != null && !failureReason.isEmpty()) {
             meta.append("Send failed: ").append(failureReason).append("\n");
-            return meta.toString();
         }
-        String method = edited != null && edited.method != null ? edited.method : "GET";
-        String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
-        meta.append("Request: ").append(requestName).append(" [").append(method).append("]\n");
-        String authLine = buildAuthMetaLine(edited);
+        meta.append("Collection Name: ").append(collectionName != null ? collectionName : "").append("\n");
+        meta.append("Folder Path: ").append(folderPath != null ? folderPath : "").append("\n");
+        meta.append("Request Name: ").append(requestName).append("\n");
+        meta.append("HTTP Method: ").append(method).append("\n");
         if (authLine != null) {
             meta.append(authLine);
         }
-        meta.append("Resolved URL: ").append(result != null && result.resolvedUrl != null ? result.resolvedUrl : "").append("\n");
+        meta.append("Active Environment Name: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append("\n");
+        meta.append("URL Template: ").append(urlTemplate).append("\n");
+        meta.append("Final Resolved URL: ").append(finalResolvedUrl.isBlank() ? "Not yet sent" : finalResolvedUrl).append("\n");
+        meta.append("Execution Source: ").append(executionSource).append("\n");
+        meta.append("Attempt: ").append(result != null && result.executionResult != null ? "1/1" : "Not yet sent").append("\n");
         int statusCode = 0;
         int responseBytes = 0;
         if (result != null && result.response != null && result.response.response() != null) {
@@ -1663,8 +1840,15 @@ public class ImporterPanel {
             statusCode = response.statusCode();
             responseBytes = response.body() != null ? response.body().getBytes().length : 0;
         }
-        meta.append("Status: ").append(statusCode).append("\n");
-        meta.append("Elapsed: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
+        meta.append("Duration: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
+        meta.append("Status: ").append(statusCode > 0 ? statusCode : "Not yet sent").append("\n");
+        meta.append("Result Classification: ").append(statusCode > 0 ? (statusCode >= 400 ? "Failure" : "Success") : "Not yet sent").append("\n");
+        meta.append("Script Engine: ").append(result != null && result.executionResult != null && result.executionResult.scriptEngineName != null ? result.executionResult.scriptEngineName : "Not yet sent").append("\n");
+        meta.append("Script Mode: ").append(scriptMode != null ? scriptMode.label : "").append("\n");
+        meta.append("Flow Control State: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowControl != null ? result.executionResult.scriptFlowControl : "CONTINUE").append("\n");
+        meta.append("Flow Message: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowMessage != null ? result.executionResult.scriptFlowMessage : "").append("\n");
+        meta.append("Raw Request Available: ").append(result != null && result.rawRequestText != null ? "yes" : "no").append("\n");
+        meta.append("Response Available: ").append(result != null && result.response != null && result.response.response() != null ? "yes" : "no").append("\n");
         meta.append("Response bytes: ").append(responseBytes).append("\n");
         meta.append("Send mode: ").append(sendModeLabel != null ? sendModeLabel : "").append("\n");
         if (result != null && result.rawRequestText != null) {
@@ -1673,7 +1857,891 @@ public class ImporterPanel {
                 meta.append("Unresolved tokens: ").append(String.join(", ", unresolved)).append("\n");
             }
         }
+        if (result == null) {
+            meta.append("Not yet sent\n");
+        }
         return meta.toString();
+    }
+
+    private String buildWorkbenchScriptOutputText(ExecutionResult executionResult) {
+        if (executionResult == null) {
+            return "No script output for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Execution Source: ").append(executionResult.executionSource != null ? executionResult.executionSource : "Workbench Send").append('\n');
+        sb.append("Script Engine: ").append(executionResult.scriptEngineName != null ? executionResult.scriptEngineName : "").append('\n');
+        sb.append("Flow Control: ").append(executionResult.scriptFlowControl != null ? executionResult.scriptFlowControl : "CONTINUE").append('\n');
+        sb.append("Flow Message: ").append(executionResult.scriptFlowMessage != null ? executionResult.scriptFlowMessage : "").append('\n');
+        sb.append('\n').append("Logs:").append('\n');
+        if (executionResult.scriptLogs == null || executionResult.scriptLogs.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var log : executionResult.scriptLogs) {
+                if (log == null) {
+                    continue;
+                }
+                sb.append('[').append(log.level != null ? log.level.toUpperCase(Locale.ROOT) : "INFO").append("] ")
+                        .append(log.message != null ? log.message : "");
+                if (log.scriptName != null && !log.scriptName.isBlank()) {
+                    sb.append(" (script=").append(log.scriptName).append(')');
+                }
+                sb.append('\n');
+            }
+        }
+        sb.append('\n').append("Warnings:").append('\n');
+        if (executionResult.scriptWarnings == null || executionResult.scriptWarnings.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String warning : executionResult.scriptWarnings) {
+                sb.append(warning != null ? warning : "").append('\n');
+            }
+        }
+        sb.append('\n').append("Errors:").append('\n');
+        if (executionResult.scriptErrors == null || executionResult.scriptErrors.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String error : executionResult.scriptErrors) {
+                sb.append(error != null ? error : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildWorkbenchAssertionsText(ExecutionResult executionResult) {
+        if (executionResult == null) {
+            return "No assertions or extractions for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Assertions:").append('\n');
+        if (executionResult.assertions == null || executionResult.assertions.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (RunnerResult.AssertionResult assertion : executionResult.assertions) {
+                if (assertion == null) {
+                    continue;
+                }
+                sb.append(assertion.passed ? "[PASS] " : "[FAIL] ")
+                        .append(assertion.name != null ? assertion.name : "")
+                        .append(" expected=").append(assertion.expected != null ? assertion.expected : "")
+                        .append(" actual=").append(assertion.actual != null ? assertion.actual : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Variable Mutations:").append('\n');
+        if (executionResult.scriptVariableMutations == null || executionResult.scriptVariableMutations.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var mutation : executionResult.scriptVariableMutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Extractions:").append('\n');
+        if (executionResult.extractedVars == null || executionResult.extractedVars.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (Map.Entry<String, String> entry : executionResult.extractedVars.entrySet()) {
+                sb.append(entry.getKey()).append(" = ").append(entry.getValue() != null ? entry.getValue() : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private HistoryEntry buildWorkbenchExecutionEntry(ApiCollection sentCollection,
+                                                      ApiRequest sentRequest,
+                                                      UniversalImporter.SingleSendResult result,
+                                                      String sendModeLabel,
+                                                      String failureReason,
+                                                      EnvironmentProfile activeEnvironment) {
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                sentCollection,
+                sentRequest,
+                activeEnvironment,
+                result != null ? result.executionResult : null,
+                1,
+                1,
+                Collections.emptyList());
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(sentCollection, sentRequest, activeEnvironment, null);
+        String resolvedUrl = result != null && result.resolvedUrl != null && !result.resolvedUrl.isBlank()
+                ? result.resolvedUrl
+                : resolver.resolve(sentRequest != null ? sentRequest.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = result != null && result.executionResult != null && result.executionResult.resolvedVariables != null
+                    ? new LinkedHashMap<>(result.executionResult.resolvedVariables)
+                    : resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = parseHost(resolvedUrl);
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = result != null && result.executionResult != null ? result.executionResult.scriptEngineName : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                sentCollection,
+                sentRequest,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                result != null && result.executionResult != null ? result.executionResult.scriptVariableMutations : Collections.emptyList(),
+                "Workbench",
+                false);
+        entry.scriptOutputSummaryText = buildWorkbenchScriptOutputText(result != null ? result.executionResult : null);
+        entry.assertionsSummaryText = buildWorkbenchAssertionsText(result != null ? result.executionResult : null);
+        if (failureReason != null && !failureReason.isBlank()) {
+            entry.errorMessage = failureReason;
+        }
+        entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+        return entry;
+    }
+
+    private HistoryEntry buildWorkbenchPreviewEntry(ApiCollection collection, ApiRequest request, String sendModeLabel) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(collection, request, activeEnvironment, null, 1, 1, Collections.emptyList());
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(collection, request, activeEnvironment, null);
+        String resolvedUrl = resolver.resolve(request != null ? request.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = parseHost(resolvedUrl);
+        entry.result = null;
+        entry.ensureDefaults();
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = sendModeLabel != null && !sendModeLabel.isBlank() ? sendModeLabel : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                collection,
+                request,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                Collections.emptyList(),
+                "Workbench preview",
+                true);
+        entry.scriptOutputSummaryText = "Not executed yet.";
+        entry.assertionsSummaryText = "Not executed yet.";
+        entry.resultClassification = "Not executed yet";
+        return entry;
+    }
+
+    private HistoryEntry buildRunnerHistoryEntry(ApiCollection collection, ApiRequest request, RunnerResult result, boolean preview) {
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, activeEnvironment, result);
+        if (entry == null) {
+            return null;
+        }
+        VariableResolver resolver = RuntimeResolverFactory.build(collection, request, activeEnvironment, null);
+        String resolvedUrl = result != null && result.requestUrl != null && !result.requestUrl.isBlank()
+                ? result.requestUrl
+                : resolver.resolve(request != null ? request.url : null);
+        if (entry.requestSnapshot != null) {
+            entry.requestSnapshot.resolvedUrl = resolvedUrl;
+            entry.requestSnapshot.resolvedVariables = result != null && result.resolvedVariables != null
+                    ? new LinkedHashMap<>(result.resolvedVariables)
+                    : resolver.getVariables();
+        }
+        entry.finalResolvedUrl = resolvedUrl;
+        entry.host = result != null && result.host != null && !result.host.isBlank() ? result.host : parseHost(resolvedUrl);
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        entry.scriptDialect = result != null ? result.scriptEngineName : null;
+        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
+                collection,
+                request,
+                activeEnvironment,
+                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
+                result != null ? result.scriptVariableMutations : Collections.emptyList(),
+                "Runner",
+                preview);
+        entry.scriptOutputSummaryText = buildRunnerScriptOutputText(result, preview);
+        entry.assertionsSummaryText = buildRunnerAssertionsText(result, preview);
+        if (preview) {
+            entry.result = null;
+            entry.ensureDefaults();
+            entry.resultClassification = "Not executed yet";
+        } else {
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+        }
+        return entry;
+    }
+
+    private HistoryEntry buildRunnerQueuePreviewEntry(ApiCollection collection, ApiRequest request) {
+        return buildRunnerHistoryEntry(collection, request, null, true);
+    }
+
+    private HistoryEntry buildRunnerCompleteEntry(List<RunnerResult> results) {
+        HistoryEntry entry = new HistoryEntry();
+        entry.id = UUID.randomUUID().toString();
+        entry.timestamp = java.time.Instant.now();
+        entry.source = HistorySource.RUNNER;
+        entry.requestName = "Runner Complete";
+        entry.collectionName = "Runner";
+        entry.collectionId = "Runner";
+        entry.result = HistoryResult.SUCCESS;
+        entry.resultClassification = HistoryResult.SUCCESS.displayName();
+        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
+        int count = results != null ? results.size() : 0;
+        long success = results != null ? results.stream().filter(r -> r != null && r.success).count() : 0L;
+        long failure = count - success;
+        long extracted = results != null ? results.stream().mapToLong(r -> r != null && r.extractedVariables != null ? r.extractedVariables.size() : 0).sum() : 0L;
+        entry.variablesSummaryText = "Runner completed.\nTotal requests: " + count + "\nSuccessful: " + success + "\nFailed: " + failure + "\nExtracted variables: " + extracted;
+        entry.scriptOutputSummaryText = "Runner completed.\nSuccess: " + success + "/" + count;
+        entry.assertionsSummaryText = count > 0 ? "Final request count: " + count : "No runner requests executed.";
+        return entry;
+    }
+
+    private String buildRunnerScriptOutputText(RunnerResult result, boolean preview) {
+        if (result == null) {
+            return preview ? "Not executed yet." : "No script output for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Execution Source: ").append(result.executionSource != null ? result.executionSource : "RUNNER").append('\n');
+        sb.append("Script Engine: ").append(result.scriptEngineName != null ? result.scriptEngineName : "").append('\n');
+        sb.append("Flow Control: ").append(result.scriptFlowControl != null ? result.scriptFlowControl : "CONTINUE").append('\n');
+        sb.append("Flow Message: ").append(result.scriptFlowMessage != null ? result.scriptFlowMessage : "").append('\n');
+        sb.append('\n').append("Logs:").append('\n');
+        if (result.scriptLogs == null || result.scriptLogs.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (var log : result.scriptLogs) {
+                if (log == null) {
+                    continue;
+                }
+                sb.append('[').append(log.level != null ? log.level.toUpperCase(Locale.ROOT) : "INFO").append("] ")
+                        .append(log.message != null ? log.message : "");
+                if (log.scriptName != null && !log.scriptName.isBlank()) {
+                    sb.append(" (script=").append(log.scriptName).append(')');
+                }
+                sb.append('\n');
+            }
+        }
+        sb.append('\n').append("Warnings:").append('\n');
+        if (result.scriptWarnings == null || result.scriptWarnings.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String warning : result.scriptWarnings) {
+                sb.append(warning != null ? warning : "").append('\n');
+            }
+        }
+        sb.append('\n').append("Errors:").append('\n');
+        if (result.scriptErrors == null || result.scriptErrors.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (String error : result.scriptErrors) {
+                sb.append(error != null ? error : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildRunnerAssertionsText(RunnerResult result, boolean preview) {
+        if (result == null) {
+            return preview ? "Not executed yet." : "No assertions or extractions for this request.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Assertions:").append('\n');
+        if (result.assertions == null || result.assertions.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (RunnerResult.AssertionResult assertion : result.assertions) {
+                if (assertion == null) {
+                    continue;
+                }
+                sb.append(assertion.passed ? "[PASS] " : "[FAIL] ")
+                        .append(assertion.name != null ? assertion.name : "")
+                        .append(" expected=").append(assertion.expected != null ? assertion.expected : "")
+                        .append(" actual=").append(assertion.actual != null ? assertion.actual : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Variable Mutations:").append('\n');
+        if (result.scriptVariableMutations == null || result.scriptVariableMutations.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (ScriptVariableMutation mutation : result.scriptVariableMutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append(mutation.scope != null ? mutation.scope : "")
+                        .append(": ")
+                        .append(mutation.key != null ? mutation.key : "")
+                        .append(" old=").append(mutation.oldValue != null ? mutation.oldValue : "")
+                        .append(" new=").append(mutation.newValue != null ? mutation.newValue : "")
+                        .append(" persistent=").append(mutation.persistent)
+                        .append(mutation.sourceScriptName != null ? " script=" + mutation.sourceScriptName : "")
+                        .append('\n');
+            }
+        }
+        sb.append('\n').append("Extractions:").append('\n');
+        if (result.extractedVariables == null || result.extractedVariables.isEmpty()) {
+            sb.append("(none)");
+        } else {
+            for (Map.Entry<String, String> entry : result.extractedVariables.entrySet()) {
+                sb.append(entry.getKey()).append(" = ").append(entry.getValue() != null ? entry.getValue() : "").append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildRuntimeVariableSummaryText(ApiCollection collection,
+                                                   ApiRequest request,
+                                                   EnvironmentProfile activeEnvironment,
+                                                   Map<String, String> resolvedVariables,
+                                                   List<ScriptVariableMutation> mutations,
+                                                   String contextLabel,
+                                                   boolean preview) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(contextLabel != null && !contextLabel.isBlank() ? contextLabel : "Variables / Environment").append('\n');
+        sb.append("Active Environment: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append('\n');
+        if (preview) {
+            sb.append("State: Not executed yet.\n");
+        }
+        if (resolvedVariables == null || resolvedVariables.isEmpty()) {
+            sb.append(preview ? "No preview variables available." : "No resolved variables available.");
+        } else {
+            sb.append('\n').append("Resolved Variables / Environment:").append('\n');
+            List<String> keys = new ArrayList<>(resolvedVariables.keySet());
+            keys.sort(String.CASE_INSENSITIVE_ORDER);
+            for (String key : keys) {
+                if (key == null || key.isBlank()) {
+                    continue;
+                }
+                RuntimeResolverFactory.ResolutionTrace trace = RuntimeResolverFactory.inspect(collection, request, activeEnvironment, null, key);
+                String resolvedValue = maskVariablePreview(key, resolvedVariables.get(key));
+                sb.append("- ").append(key).append('\n');
+                sb.append("  resolved value / preview: ").append(resolvedValue != null && !resolvedValue.isBlank() ? resolvedValue : "").append('\n');
+                sb.append("  winning source: ").append(trace.source != null ? trace.source : "unknown").append('\n');
+                sb.append("  shadowed sources: ").append(trace.shadowedSource != null ? trace.shadowedSource : "none").append('\n');
+                sb.append("  collection value: ").append(displaySummaryValue(candidateValue(trace, "collection environment", "collection variables"))).append('\n');
+                sb.append("  folder value: ").append(displaySummaryValue(candidateValue(trace, "folder variables"))).append('\n');
+                sb.append("  active environment value: ").append(displaySummaryValue(candidateValue(trace, "active environment"))).append('\n');
+                sb.append("  runtime value: ").append(displaySummaryValue(candidateValue(trace, "collection runtime OAuth2", "collection runtime vars", "runtime overlay", "runtime/script", "runtime"))).append('\n');
+                sb.append("  request value: ").append(displaySummaryValue(candidateValue(trace, "request variables"))).append('\n');
+                sb.append("  auth/OAuth2 mapped value: ").append(displaySummaryValue(candidateValue(trace, "auth/runtime mapping"))).append('\n');
+                sb.append("  persistent: ").append(isPersistentSource(trace.source)).append('\n');
+            }
+        }
+        if (mutations != null && !mutations.isEmpty()) {
+            sb.append('\n').append("Variable Mutations:").append('\n');
+            for (ScriptVariableMutation mutation : mutations) {
+                if (mutation == null) {
+                    continue;
+                }
+                sb.append("- ").append(mutation.key != null ? mutation.key : "").append('\n');
+                sb.append("  old value: ").append(displaySummaryValue(mutation.oldValue)).append('\n');
+                sb.append("  new value: ").append(displaySummaryValue(mutation.newValue)).append('\n');
+                sb.append("  scope: ").append(displaySummaryValue(mutation.scope)).append('\n');
+                sb.append("  persistent: ").append(mutation.persistent).append('\n');
+                sb.append("  mutation source: ").append(displaySummaryValue(mutation.sourceScriptName)).append('\n');
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String candidateValue(RuntimeResolverFactory.ResolutionTrace trace, String... sourceFragments) {
+        if (trace == null || trace.candidates == null || trace.candidates.isEmpty()) {
+            return null;
+        }
+        String match = null;
+        for (RuntimeResolverFactory.ResolutionCandidate candidate : trace.candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            if (sourceMatches(candidate.source, sourceFragments) || sourceMatches(candidate.scope, sourceFragments) || sourceMatches(candidate.layer, sourceFragments)) {
+                match = candidate.value;
+            }
+        }
+        return match;
+    }
+
+    private boolean sourceMatches(String source, String... fragments) {
+        if (source == null || fragments == null || fragments.length == 0) {
+            return false;
+        }
+        String normalizedSource = source.toLowerCase(Locale.ROOT);
+        for (String fragment : fragments) {
+            if (fragment == null || fragment.isBlank()) {
+                continue;
+            }
+            if (normalizedSource.contains(fragment.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String maskVariablePreview(String key, String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalizedKey = key != null ? key.toLowerCase(Locale.ROOT) : "";
+        if (normalizedKey.contains("token")
+                || normalizedKey.contains("secret")
+                || normalizedKey.contains("password")
+                || normalizedKey.contains("auth")
+                || normalizedKey.contains("credential")
+                || normalizedKey.contains("key")
+                || normalizedKey.contains("private")
+                || normalizedKey.contains("passwd")
+                || normalizedKey.contains("pwd")
+                || normalizedKey.contains("apikey")) {
+            if (value.length() <= 6) {
+                return "***";
+            }
+            return value.substring(0, Math.min(6, value.length())) + "***";
+        }
+        if (value.length() > 200) {
+            return value.substring(0, 200) + "... (" + value.length() + " chars)";
+        }
+        return value;
+    }
+
+    private boolean isPersistentSource(String source) {
+        if (source == null || source.isBlank()) {
+            return false;
+        }
+        String normalized = source.toLowerCase(Locale.ROOT);
+        if (normalized.contains("request variables")
+                || normalized.contains("request")
+                || normalized.contains("runtime overlay")
+                || normalized.contains("auth/runtime mapping")) {
+            return false;
+        }
+        return true;
+    }
+
+    private String displaySummaryValue(String value) {
+        return value != null && !value.isBlank() ? value : "none";
+    }
+
+    private String buildSummaryTextForRunner(RunnerResult result) {
+        if (result == null) {
+            return "No runner results yet.";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Request: ").append(result.requestName != null ? result.requestName : "").append('\n');
+        sb.append("Collection: ").append(result.collectionName != null ? result.collectionName : "").append('\n');
+        sb.append("Status: ").append(result.displayLogStatusLabel()).append('\n');
+        sb.append("Resolved URL: ").append(result.requestUrl != null ? result.requestUrl : "Not available").append('\n');
+        sb.append("Host: ").append(result.host != null ? result.host : "Not available").append('\n');
+        sb.append("Duration: ").append(result.responseTimeMs > 0 ? result.responseTimeMs + " ms" : "Not available").append('\n');
+        sb.append("Extracted Variables: ").append(result.extractedVariables != null ? result.extractedVariables.size() : 0).append('\n');
+        return sb.toString().trim();
+    }
+
+    private String htmlEscape(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    private String parseHost(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return null;
+        }
+        try {
+            return burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl).host;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private int nextRunnerExecutionSequence() {
+        return ++runnerExecutionSequence;
+    }
+
+    private RunnerExecutionTableModel.Entry createExecutionEntry(String type,
+                                                                 String state,
+                                                                 String requestName,
+                                                                 String source,
+                                                                 String method,
+                                                                 String status,
+                                                                 String resultLabel,
+                                                                 String duration,
+                                                                 String flow,
+                                                                 String message,
+                                                                 HistoryEntry detailEntry,
+                                                                 RunnerResult requestResult,
+                                                                 RunnerTimelineRow timelineRow,
+                                                                 String requestId,
+                                                                 String collectionName) {
+        return new RunnerExecutionTableModel.Entry(
+                nextRunnerExecutionSequence(),
+                java.time.Instant.now(),
+                type,
+                state,
+                requestName,
+                source,
+                method,
+                status,
+                resultLabel,
+                duration,
+                flow,
+                message,
+                detailEntry,
+                requestResult,
+                timelineRow,
+                requestId,
+                collectionName
+        );
+    }
+
+    private void indexRunnerResult(RunnerResult result) {
+        if (result == null) {
+            return;
+        }
+        if (result.requestId != null && !result.requestId.isBlank()) {
+            runnerResultById.put(result.requestId, result);
+        }
+        String nameKey = runnerResultKey(result.collectionName, result.requestName);
+        if (!nameKey.isBlank()) {
+            runnerResultByName.put(nameKey, result);
+        }
+        if (result.requestName != null && !result.requestName.isBlank()) {
+            runnerResultByName.putIfAbsent(result.requestName, result);
+        }
+    }
+
+    private String runnerResultKey(String collectionName, String requestName) {
+        String collection = collectionName != null ? collectionName.trim() : "";
+        String request = requestName != null ? requestName.trim() : "";
+        return collection + "\u0000" + request;
+    }
+
+    private int resolveRunnerQueueIndex(RunnerResult result) {
+        if (result == null) {
+            return -1;
+        }
+        if (result.requestId != null && !result.requestId.isBlank()) {
+            ApiRequest request = findRequestById(result.requestId);
+            int index = indexOfRunnerQueueRequest(request);
+            if (index >= 0) {
+                return index;
+            }
+        }
+        if (result.requestName != null && !result.requestName.isBlank()) {
+            for (int i = 0; i < runnerQueuedRequests.size(); i++) {
+                ApiRequest candidate = runnerQueuedRequests.get(i);
+                if (candidate == null) {
+                    continue;
+                }
+                boolean nameMatches = result.requestName.equals(candidate.name);
+                boolean collectionMatches = result.collectionName == null
+                        || result.collectionName.isBlank()
+                        || result.collectionName.equals(candidate.sourceCollection);
+                if (nameMatches && collectionMatches) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private RunnerResult findRunnerResultForTimeline(RunnerTimelineRow row) {
+        if (row == null) {
+            return null;
+        }
+        RunnerResult byName = runnerResultByName.get(runnerResultKey(row.collectionName, row.requestName));
+        if (byName != null) {
+            return byName;
+        }
+        if (row.requestName != null && !row.requestName.isBlank()) {
+            byName = runnerResultByName.get(row.requestName);
+            if (byName != null) {
+                return byName;
+            }
+        }
+        if (row.requestName != null && !row.requestName.isBlank()) {
+            for (RunnerResult candidate : runnerResultById.values()) {
+                if (candidate != null && row.requestName.equals(candidate.requestName)) {
+                    if (row.collectionName == null || row.collectionName.isBlank() || row.collectionName.equals(candidate.collectionName)) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private RunnerTimelineRow buildTimelineRow(RunnerResult result) {
+        RunnerTimelineRow row = new RunnerTimelineRow();
+        row.order = result != null ? Math.max(1, result.attemptNumber) : 0;
+        row.collectionName = result != null && result.collectionName != null ? result.collectionName : "";
+        row.requestName = result != null && result.requestName != null ? result.requestName : "";
+        row.status = result != null ? result.displayStatusLabel() : "";
+        row.timeMs = result != null ? result.responseTimeMs : 0L;
+        row.retries = result != null ? Math.max(0, result.attemptNumber - 1) : 0;
+        row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;
+        row.assertions = formatRunnerAssertionSummary(result);
+        return row;
+    }
+
+    private String formatRunnerAssertionSummary(RunnerResult result) {
+        if (result == null || result.assertions == null || result.assertions.isEmpty()) {
+            return "0/0";
+        }
+        int passed = 0;
+        int total = 0;
+        for (RunnerResult.AssertionResult assertion : result.assertions) {
+            if (assertion == null) {
+                continue;
+            }
+            total++;
+            if (assertion.passed) {
+                passed++;
+            }
+        }
+        return passed + "/" + total;
+    }
+
+    private RunnerTimelineRow buildTimelineRowFromExecutionEntry(RunnerExecutionTableModel.Entry entry) {
+        RunnerTimelineRow row = new RunnerTimelineRow();
+        row.order = entry != null ? entry.sequence : 0;
+        row.collectionName = entry != null && entry.collectionName != null ? entry.collectionName : "";
+        row.requestName = entry != null && entry.requestName != null ? entry.requestName : "";
+        row.status = entry != null && entry.result != null && !entry.result.isBlank() ? entry.result : (entry != null ? entry.state : "");
+        row.timeMs = entry != null ? parseDurationText(entry.duration) : 0L;
+        row.retries = entry != null && entry.requestResult != null ? Math.max(0, entry.requestResult.attemptNumber - 1) : 0;
+        row.varsChanged = entry != null && entry.requestResult != null && entry.requestResult.extractedVariables != null
+                ? entry.requestResult.extractedVariables.size()
+                : 0;
+        row.assertions = entry != null && entry.message != null ? entry.message : "";
+        return row;
+    }
+
+    private long parseDurationText(String duration) {
+        if (duration == null || duration.isBlank()) {
+            return 0L;
+        }
+        String normalized = duration.trim().toLowerCase(Locale.ROOT).replace("ms", "").trim();
+        try {
+            return Long.parseLong(normalized);
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestStart(RunnerResult result) {
+        ApiRequest request = result != null ? findRequestById(result.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, null, true);
+        return createExecutionEntry(
+                "REQUEST_STARTED",
+                "RUNNING",
+                result != null && result.requestName != null ? result.requestName : safeRequestName(request),
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection),
+                result != null && result.method != null ? result.method : (request != null && request.method != null ? request.method : "GET"),
+                "",
+                "Starting",
+                "",
+                "",
+                "Request started",
+                detailEntry,
+                result,
+                null,
+                result != null ? result.requestId : null,
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection)
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestResult(RunnerResult result) {
+        ApiRequest request = result != null ? findRequestById(result.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, result, false);
+        if (result != null) {
+            indexRunnerResult(result);
+        }
+        RunnerTimelineRow timelineRow = buildTimelineRow(result);
+        return createExecutionEntry(
+                "REQUEST_COMPLETED",
+                result != null && result.success ? "SUCCESS" : "FAILED",
+                result != null && result.requestName != null ? result.requestName : safeRequestName(request),
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection),
+                result != null && result.method != null ? result.method : (request != null && request.method != null ? request.method : "GET"),
+                result != null && result.statusCode > 0 ? String.valueOf(result.statusCode) : "",
+                result != null ? result.displayLogStatusLabel() : "",
+                result != null && result.responseTimeMs > 0 ? result.responseTimeMs + " ms" : "",
+                result != null && result.scriptFlowControl != null ? result.scriptFlowControl.name() : "",
+                result != null && result.errorMessage != null && !result.errorMessage.isBlank() ? result.errorMessage : (result != null ? result.displayLogStatusLabel() : ""),
+                detailEntry,
+                result,
+                timelineRow,
+                result != null ? result.requestId : null,
+                result != null && result.collectionName != null ? result.collectionName : safeCollectionName(collection)
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromTimeline(RunnerTimelineRow row, RunnerResult associated) {
+        ApiRequest request = associated != null ? findRequestById(associated.requestId) : null;
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(row != null ? row.collectionName : null);
+        HistoryEntry detailEntry = associated != null
+                ? buildRunnerHistoryEntry(collection, request, associated, false)
+                : buildRunnerCompleteEntry(Collections.emptyList());
+        return createExecutionEntry(
+                "TIMELINE",
+                row != null && row.status != null ? row.status : (associated != null && associated.success ? "SUCCESS" : "INFO"),
+                row != null && row.requestName != null ? row.requestName : (associated != null && associated.requestName != null ? associated.requestName : ""),
+                row != null && row.collectionName != null ? row.collectionName : (associated != null && associated.collectionName != null ? associated.collectionName : safeCollectionName(collection)),
+                associated != null && associated.method != null ? associated.method : (request != null && request.method != null ? request.method : ""),
+                row != null && row.status != null ? row.status : "",
+                associated != null ? associated.displayLogStatusLabel() : (row != null && row.status != null ? row.status : ""),
+                row != null && row.timeMs > 0 ? row.timeMs + " ms" : "",
+                row != null && row.retries > 0 ? "retries=" + row.retries : "",
+                row != null && row.assertions != null ? row.assertions : "",
+                detailEntry,
+                associated,
+                row,
+                associated != null ? associated.requestId : null,
+                row != null && row.collectionName != null ? row.collectionName : (associated != null && associated.collectionName != null ? associated.collectionName : safeCollectionName(collection))
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromSkip(String requestName, String reason) {
+        ApiRequest request = null;
+        if (runnerExecutingQueueIndex >= 0 && runnerExecutingQueueIndex < runnerQueuedRequests.size()) {
+            request = runnerQueuedRequests.get(runnerExecutingQueueIndex);
+        }
+        if (request == null && requestName != null && !requestName.isBlank()) {
+            for (ApiRequest candidate : runnerQueuedRequests) {
+                if (candidate != null && requestName.equals(candidate.name)) {
+                    request = candidate;
+                    break;
+                }
+            }
+        }
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(request != null ? request.sourceCollection : null);
+        RunnerResult synthetic = new RunnerResult();
+        synthetic.requestName = requestName != null ? requestName : safeRequestName(request);
+        synthetic.requestId = request != null ? request.id : null;
+        synthetic.collectionName = request != null && request.sourceCollection != null ? request.sourceCollection : safeCollectionName(collection);
+        synthetic.folderPath = request != null ? request.path : null;
+        synthetic.method = request != null && request.method != null ? request.method : "GET";
+        synthetic.path = request != null ? request.path : null;
+        synthetic.host = request != null ? parseHost(request.url) : null;
+        synthetic.requestUrl = request != null ? request.url : null;
+        synthetic.success = true;
+        synthetic.scriptFlowControl = burp.scripts.ScriptFlowControl.SKIP_REQUEST;
+        synthetic.errorMessage = reason;
+        synthetic.attemptNumber = 1;
+        synthetic.totalAttempts = 1;
+        indexRunnerResult(synthetic);
+        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, synthetic, false);
+        return createExecutionEntry(
+                "SKIPPED",
+                "SKIPPED",
+                synthetic.requestName,
+                synthetic.collectionName,
+                synthetic.method,
+                "SKIPPED",
+                synthetic.displayLogStatusLabel(),
+                "",
+                "SKIP_REQUEST",
+                reason != null && !reason.isBlank() ? reason : "Skipped by script",
+                detailEntry,
+                synthetic,
+                null,
+                synthetic.requestId,
+                synthetic.collectionName
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromDebug(String message) {
+        HistoryEntry detailEntry = new HistoryEntry();
+        detailEntry.id = UUID.randomUUID().toString();
+        detailEntry.timestamp = java.time.Instant.now();
+        detailEntry.source = HistorySource.RUNNER;
+        detailEntry.requestName = "Runner Debug";
+        detailEntry.result = HistoryResult.UNKNOWN;
+        detailEntry.resultClassification = "Debug";
+        detailEntry.scriptOutputSummaryText = message != null ? message : "";
+        detailEntry.assertionsSummaryText = "Debug event";
+        detailEntry.variablesSummaryText = "Debug event";
+        return createExecutionEntry(
+                "RUN_DEBUG",
+                "INFO",
+                "Runner Debug",
+                "Runner",
+                "",
+                "INFO",
+                "Debug",
+                "",
+                "",
+                message != null ? message : "",
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromError(String message) {
+        HistoryEntry detailEntry = new HistoryEntry();
+        detailEntry.id = UUID.randomUUID().toString();
+        detailEntry.timestamp = java.time.Instant.now();
+        detailEntry.source = HistorySource.RUNNER;
+        detailEntry.requestName = "Runner Error";
+        detailEntry.errorMessage = message;
+        detailEntry.result = HistoryResult.ERROR;
+        detailEntry.resultClassification = HistoryResult.ERROR.displayName();
+        detailEntry.scriptOutputSummaryText = message != null ? message : "";
+        detailEntry.assertionsSummaryText = "Runner error";
+        detailEntry.variablesSummaryText = "Runner error";
+        return createExecutionEntry(
+                "RUN_ERROR",
+                "ERROR",
+                "Runner Error",
+                "Runner",
+                "",
+                "ERROR",
+                HistoryResult.ERROR.displayName(),
+                "",
+                "",
+                message != null ? message : "",
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
+    }
+
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRunComplete(List<RunnerResult> results) {
+        HistoryEntry detailEntry = buildRunnerCompleteEntry(results);
+        String summary = detailEntry != null ? detailEntry.scriptOutputSummaryText : "Runner completed.";
+        return createExecutionEntry(
+                "RUN_COMPLETED",
+                "COMPLETED",
+                "Runner Complete",
+                "Runner",
+                "",
+                "DONE",
+                HistoryResult.SUCCESS.displayName(),
+                "",
+                "",
+                summary,
+                detailEntry,
+                null,
+                null,
+                null,
+                "Runner"
+        );
     }
 
     static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
@@ -1712,6 +2780,7 @@ public class ImporterPanel {
 
         environmentRawArea = new JTextArea(18, 60);
         environmentRawArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(environmentRawArea);
         environmentRawArea.setText("# key=value per line\n# base_url=http://localhost:8080\n# token=abc123");
         environmentRawArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { markEnvironmentDirty(); }
@@ -1723,6 +2792,8 @@ public class ImporterPanel {
         environmentTableModel.addTableModelListener(e -> markEnvironmentDirty());
         environmentTable = RequestEditorTableSupport.createEditableTable(environmentTableModel);
         RequestEditorStateMapper.ensureStarterRow(environmentTableModel);
+        installEnvironmentSaveShortcut(environmentRawArea);
+        installEnvironmentSaveShortcut(environmentTable);
 
         environmentEditorCardPanel = new JPanel(new CardLayout());
         environmentEditorCardPanel.add(new JScrollPane(environmentRawArea), "raw");
@@ -1927,23 +2998,20 @@ public class ImporterPanel {
 
         panel.add(configPanel, BorderLayout.NORTH);
 
-        resultModel = new RunnerResultTableModel();
+        resultModel = new RunnerExecutionTableModel();
         resultTable = new JTable(resultModel);
-        resultTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        resultTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         resultTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        resultTable.setFillsViewportHeight(true);
+        SwingShortcutSupport.installTableShortcuts(resultTable);
         JScrollPane tableScroll = new JScrollPane(resultTable);
-        tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Results"));
-        tableScroll.setPreferredSize(new Dimension(350, 250));
-        tableScroll.setMinimumSize(new Dimension(200, 150));
+        tableScroll.setBorder(BorderFactory.createTitledBorder("Runner Execution Table"));
+        tableScroll.setPreferredSize(new Dimension(520, 280));
+        tableScroll.setMinimumSize(new Dimension(260, 160));
+        tableScroll.getHorizontalScrollBar().setUnitIncrement(16);
 
         timelineModel = new RunnerTimelineTableModel();
         timelineTable = new JTable(timelineModel);
-        timelineTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
-        timelineTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        JScrollPane timelineScroll = new JScrollPane(timelineTable);
-        timelineScroll.setBorder(BorderFactory.createTitledBorder("Runner Timeline"));
-        timelineScroll.setPreferredSize(new Dimension(350, 180));
-        timelineScroll.setMinimumSize(new Dimension(200, 120));
 
         runnerQueueListModel = new DefaultListModel<>();
         runnerQueueList = new JList<>(runnerQueueListModel);
@@ -1952,41 +3020,46 @@ public class ImporterPanel {
             JLabel label = (JLabel) new DefaultListCellRenderer().getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             ApiRequest request = value;
             if (request != null) {
-                StringBuilder text = new StringBuilder();
-                text.append(request.name != null && !request.name.isBlank() ? request.name : "Request");
-                if (request.sourceCollection != null && !request.sourceCollection.isBlank()) {
-                    text.append(" [").append(request.sourceCollection).append("]");
+                label.setText(request.name != null && !request.name.isBlank() ? request.name : "Request");
+                boolean executing = index == runnerExecutingQueueIndex;
+                if (executing) {
+                    label.setFont(label.getFont().deriveFont(Font.BOLD));
+                    Border executionBorder = BorderFactory.createMatteBorder(0, 3, 0, 0,
+                            isSelected ? list.getSelectionForeground() : list.getSelectionBackground());
+                    label.setBorder(BorderFactory.createCompoundBorder(executionBorder,
+                            BorderFactory.createEmptyBorder(0, 4, 0, 0)));
+                    if (!isSelected) {
+                        label.setBackground(list.getSelectionBackground());
+                    }
                 }
-                if (request.path != null && !request.path.isBlank()) {
-                    text.append(" - ").append(request.path);
-                }
-                label.setText(text.toString());
+                String tooltip = buildRunnerQueueTooltip(request);
+                label.setToolTipText(tooltip);
             }
             return label;
+        });
+        runnerQueueList.setToolTipText("");
+        runnerQueueList.addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting()) {
+                return;
+            }
+            ApiRequest selectedQueueRequest = runnerQueueList.getSelectedValue();
+            showRunnerQueueSelection(selectedQueueRequest);
+        });
+        runnerQueueList.addMouseMotionListener(new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                updateRunnerQueueTooltipForLocation(e.getPoint());
+            }
         });
         runnerQueueScrollPane = new JScrollPane(runnerQueueList);
         runnerQueueScrollPane.setBorder(BorderFactory.createTitledBorder("Runner Queue"));
         runnerQueueScrollPane.setPreferredSize(new Dimension(320, 360));
         runnerQueueScrollPane.setMinimumSize(new Dimension(220, 180));
 
-        runnerDetailTabs = new JTabbedPane();
-        detailRequestEditor = importer.getApi().userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
-        runnerDetailTabs.addTab("Request", detailRequestEditor.uiComponent());
+        runnerDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        runnerDetailTabs = runnerDetailPanel.getTabbedPane();
 
-        detailResponseEditor = importer.getApi().userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
-        runnerDetailTabs.addTab("Response", detailResponseEditor.uiComponent());
-
-        detailVarsText = new JTextArea();
-        detailVarsText.setEditable(false);
-        detailVarsText.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        runnerDetailTabs.addTab("Vars", new JScrollPane(detailVarsText));
-
-        JSplitPane resultsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, timelineScroll);
-        resultsSplit.setResizeWeight(0.70);
-        resultsSplit.setOneTouchExpandable(true);
-        resultsSplit.setContinuousLayout(true);
-
-        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, resultsSplit);
+        JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, tableScroll);
         queueSplit.setResizeWeight(0.30);
         queueSplit.setOneTouchExpandable(true);
         queueSplit.setContinuousLayout(true);
@@ -1999,10 +3072,16 @@ public class ImporterPanel {
 
         installRunnerQueueTransferSupport();
         resultTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting() && resultTable.getSelectedRow() >= 0) {
-                RunnerResult r = resultModel.getResultAt(resultTable.getSelectedRow());
-                updateRunnerDetailPane(r);
+            if (e.getValueIsAdjusting()) {
+                return;
             }
+            int selectedRow = resultTable.getSelectedRow();
+            if (selectedRow < 0) {
+                updateRunnerDetailPane(null);
+                return;
+            }
+            RunnerExecutionTableModel.Entry row = resultModel.getEntryAt(selectedRow);
+            updateRunnerDetailPane(row != null ? row.detailEntry : null);
         });
 
         JPanel bottomPanel = new JPanel();
@@ -2046,6 +3125,7 @@ public class ImporterPanel {
         runnerLog = new JTextArea(3, 50);
         runnerLog.setEditable(false);
         runnerLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(runnerLog);
         JScrollPane logScroll = new JScrollPane(runnerLog);
         logScroll.setBorder(BorderFactory.createTitledBorder("Runner Log"));
         logScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
@@ -2062,12 +3142,24 @@ public class ImporterPanel {
     private class TreeMouseListener extends MouseAdapter {
         @Override
         public void mousePressed(MouseEvent e) {
+            maybeClearTreeSelectionOnBackgroundClick(e);
             maybeShowTreeContextMenu(e);
         }
 
         @Override
         public void mouseReleased(MouseEvent e) {
+            maybeClearTreeSelectionOnBackgroundClick(e);
             maybeShowTreeContextMenu(e);
+        }
+    }
+
+    private void maybeClearTreeSelectionOnBackgroundClick(MouseEvent e) {
+        if (requestTree == null || e == null || e.isPopupTrigger() || !SwingUtilities.isLeftMouseButton(e)) {
+            return;
+        }
+        TreePath path = requestTree.getPathForLocation(e.getX(), e.getY());
+        if (path == null && requestTree.getSelectionPath() != null) {
+            requestTree.clearSelection();
         }
     }
 
@@ -2760,6 +3852,18 @@ public class ImporterPanel {
         return null;
     }
 
+    private EnvironmentProfile findEnvironmentById(String environmentId) {
+        if (environmentId == null || environmentProfiles.isEmpty()) {
+            return null;
+        }
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile != null && Objects.equals(environmentId, profile.id)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
     private boolean hasActiveEnvironment() {
         return getActiveEnvironment() != null;
     }
@@ -2839,6 +3943,7 @@ public class ImporterPanel {
             commitEnvironmentEditorToSelectedProfile();
         }
         commitOAuth2ConfigUiToActiveEnvironment();
+        String previousEnvironmentId = activeEnvironmentId;
         activeEnvironmentId = environmentId;
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
@@ -2852,6 +3957,15 @@ public class ImporterPanel {
         syncOAuth2EnvironmentControls();
         syncOAuth2UiState(true);
         syncActiveEnvironmentToEditors();
+        if (!Objects.equals(previousEnvironmentId, activeEnvironmentId)) {
+            recordDiagnostic(
+                    DiagnosticOperation.ENVIRONMENT_SWITCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Active environment switched",
+                    "from=" + (previousEnvironmentId != null ? previousEnvironmentId : "none") +
+                            "\nto=" + (activeEnvironmentId != null ? activeEnvironmentId : "none"));
+        }
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
     }
 
@@ -2903,6 +4017,14 @@ public class ImporterPanel {
         }
 
         if (changed) {
+            recordDiagnostic(
+                    DiagnosticOperation.ENVIRONMENT_SWITCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Runtime variables applied to active environment",
+                    "collection=" + (collection != null && collection.name != null ? collection.name : "none") +
+                            "\nchangedKeys=" + (changedVars != null ? String.join(", ", changedVars.keySet()) : "") +
+                            "\nremovedKeys=" + (removedKeys != null ? String.join(", ", removedKeys) : ""));
             SwingUtilities.invokeLater(() -> {
                 renderSelectedEnvironmentIntoEditor();
                 syncActiveEnvironmentToEditors();
@@ -2924,25 +4046,28 @@ public class ImporterPanel {
         return normalized;
     }
 
-    private void applyOAuth2ConfigToActiveEnvironment(Map<String, String> configVars) {
-        EnvironmentProfile active = getActiveEnvironment();
-        if (active == null) {
+    private void applyOAuth2ConfigToEnvironment(EnvironmentProfile environment, Map<String, String> configVars) {
+        if (environment == null) {
             return;
         }
-        active.ensureDefaults();
-        String preservedClientAuth = active.oauth2 != null && active.oauth2.config != null
-                ? active.oauth2.config.get("oauth2_client_auth")
+        environment.ensureDefaults();
+        String preservedClientAuth = environment.oauth2 != null && environment.oauth2.config != null
+                ? environment.oauth2.config.get("oauth2_client_auth")
                 : null;
-        active.oauth2.config.clear();
+        environment.oauth2.config.clear();
         if (configVars != null && !configVars.isEmpty()) {
-            active.oauth2.config.putAll(configVars);
+            environment.oauth2.config.putAll(configVars);
         }
         if (preservedClientAuth != null && !preservedClientAuth.isBlank()) {
-            active.oauth2.config.put("oauth2_client_auth", preservedClientAuth);
+            environment.oauth2.config.put("oauth2_client_auth", preservedClientAuth);
         }
-        active.oauth2.ensureDefaults();
+        environment.oauth2.ensureDefaults();
         oauth2ConfigDirty = false;
-        renderedOAuth2ConfigEnvironmentId = active.id;
+        renderedOAuth2ConfigEnvironmentId = environment.id;
+    }
+
+    private void applyOAuth2ConfigToActiveEnvironment(Map<String, String> configVars) {
+        applyOAuth2ConfigToEnvironment(getActiveEnvironment(), configVars);
     }
 
     private void commitOAuth2ConfigUiToActiveEnvironment() {
@@ -2970,43 +4095,63 @@ public class ImporterPanel {
         }
     }
 
-    private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
-        EnvironmentProfile active = getActiveEnvironment();
+    private Map<String, String> storeOAuth2TokenInEnvironment(ApiCollection collection,
+                                                              EnvironmentProfile environment,
+                                                              burp.auth.TokenStore.TokenEntry entry) {
         Map<String, String> stored = new LinkedHashMap<>();
-        if (active == null || entry == null) {
+        if (environment == null || entry == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token store skipped",
+                    "activeEnvironment=" + (environment != null ? environment.displayName() : "none") +
+                            "\nhasEntry=" + (entry != null));
             return stored;
         }
-        String accessBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("accessToken") : null;
-        String refreshBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("refreshToken") : null;
-        String tokenTypeBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("tokenType") : null;
-        String expiresInBinding = active.oauth2.outputBindings != null ? active.oauth2.outputBindings.get("expiresIn") : null;
+        String accessBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("accessToken") : null;
+        String refreshBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("refreshToken") : null;
+        String tokenTypeBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("tokenType") : null;
+        String expiresInBinding = environment.oauth2.outputBindings != null ? environment.oauth2.outputBindings.get("expiresIn") : null;
 
         if (entry.accessToken != null && !entry.accessToken.isBlank()) {
             String key = accessBinding != null && !accessBinding.isBlank() ? accessBinding : "oauth2_access_token";
-            active.variables.put(key, entry.accessToken);
+            environment.variables.put(key, entry.accessToken);
             stored.put(key, entry.accessToken);
         }
         if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
             String key = refreshBinding != null && !refreshBinding.isBlank() ? refreshBinding : "oauth2_refresh_token";
-            active.variables.put(key, entry.refreshToken);
+            environment.variables.put(key, entry.refreshToken);
             stored.put(key, entry.refreshToken);
         }
         if (entry.tokenType != null && !entry.tokenType.isBlank()) {
             String key = tokenTypeBinding != null && !tokenTypeBinding.isBlank() ? tokenTypeBinding : "oauth2_token_type";
-            active.variables.put(key, entry.tokenType);
+            environment.variables.put(key, entry.tokenType);
             stored.put(key, entry.tokenType);
         }
         if (entry.expiresAt > 0) {
             long expiresInSeconds = Math.max(0, (entry.expiresAt - System.currentTimeMillis()) / 1000);
             String key = expiresInBinding != null && !expiresInBinding.isBlank() ? expiresInBinding : "oauth2_expires_in";
-            active.variables.put(key, String.valueOf(expiresInSeconds));
+            environment.variables.put(key, String.valueOf(expiresInSeconds));
             stored.put(key, String.valueOf(expiresInSeconds));
         }
         if (!stored.isEmpty()) {
-            active.ensureDefaults();
+            environment.ensureDefaults();
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token stored in active environment",
+                    "environment=" + environment.displayName() +
+                            "\nstoredKeys=" + String.join(", ", stored.keySet()) +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
             notifyWorkspaceChangedImmediately();
         }
         return stored;
+    }
+
+    private Map<String, String> storeOAuth2TokenInActiveEnvironment(ApiCollection collection, burp.auth.TokenStore.TokenEntry entry) {
+        return storeOAuth2TokenInEnvironment(collection, getActiveEnvironment(), entry);
     }
 
     private void clearActiveEnvironmentOAuth2TokenOutputs() {
@@ -3017,6 +4162,12 @@ public class ImporterPanel {
             if (oauth2Panel != null) {
                 oauth2Panel.setLastAcquiredToken(null);
             }
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token clear skipped",
+                    "activeEnvironment=none");
             return;
         }
 
@@ -3040,6 +4191,13 @@ public class ImporterPanel {
         updateEnvironmentUiState();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         setOAuth2AutosaveStatus("Cleared OAuth2 token variables from Active Environment \"" + active.displayName() + "\".", Color.GRAY);
+        recordDiagnostic(
+                DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "OAuth2 token outputs cleared",
+                "environment=" + active.displayName() +
+                        "\nremovedKeys=" + String.join(", ", keysToRemove));
         if (oauth2Panel != null) {
             oauth2Panel.setLastAcquiredToken(null);
         }
@@ -4287,7 +5445,11 @@ public class ImporterPanel {
         }
         InputMap inputMap = component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT);
         ActionMap actionMap = component.getActionMap();
-        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK);
+        int mask = environmentSaveShortcutMask();
+        if (component instanceof JTextArea || component instanceof javax.swing.text.JTextComponent) {
+            inputMap = component.getInputMap(JComponent.WHEN_FOCUSED);
+        }
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, mask);
         inputMap.put(saveKey, "environment-save");
         actionMap.put("environment-save", new AbstractAction() {
             @Override
@@ -4295,6 +5457,11 @@ public class ImporterPanel {
                 commitEnvironmentEditorToSelectedProfile();
             }
         });
+    }
+
+    private int environmentSaveShortcutMask() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return osName.contains("mac") ? InputEvent.META_DOWN_MASK : InputEvent.CTRL_DOWN_MASK;
     }
 
     private void commitEnvironmentEditorToSelectedProfile() {
@@ -4588,36 +5755,67 @@ public class ImporterPanel {
 
     private void handleOAuth2TokenAcquired(TokenStore.TokenEntry entry,
                                            ApiCollection collection,
-                                           Map<String, String> oauth2Vars) {
+                                           Map<String, String> oauth2Vars,
+                                           String environmentId,
+                                           boolean autoBindRequested) {
         if (entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
             return;
         }
 
-        EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        if (activeEnvironment == null) {
+        EnvironmentProfile targetEnvironment = environmentId != null ? findEnvironmentById(environmentId) : getActiveEnvironment();
+        if (targetEnvironment == null) {
             appendImportLog("OAuth2 token fetch requires an active environment.");
             setOAuth2AutosaveStatus("Create or select an Active Environment before fetching tokens.", Color.GRAY);
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "OAuth2 token fetch requires active environment",
+                    "collection=" + (collection != null && collection.name != null ? collection.name : "none"));
             return;
         }
 
-        applyOAuth2ConfigToActiveEnvironment(filterOAuth2ConfigVars(oauth2Vars));
+        applyOAuth2ConfigToEnvironment(targetEnvironment, filterOAuth2ConfigVars(oauth2Vars));
         oauth2Panel.setLastAcquiredToken(entry);
 
-        boolean autoBind = oauth2Panel.isAutoBindSelected();
+        boolean autoBind = autoBindRequested;
         Map<String, String> stored = Collections.emptyMap();
         if (autoBind) {
-            stored = storeOAuth2TokenInActiveEnvironment(collection, entry);
+            stored = storeOAuth2TokenInEnvironment(collection, targetEnvironment, entry);
         }
 
-        syncActiveEnvironmentToEditors();
-        updateEnvironmentUiState();
+        boolean targetStillActive = Objects.equals(activeEnvironmentId, targetEnvironment.id);
+        if (targetStillActive) {
+            syncActiveEnvironmentToEditors();
+            updateEnvironmentUiState();
+        }
         if (autoBind && stored != null && !stored.isEmpty()) {
-            renderSelectedEnvironmentIntoEditor(true);
-            setOAuth2AutosaveStatus("Token values saved to " + activeEnvironment.displayName() + ".", new Color(0, 128, 0));
-            appendImportLog("OAuth2 token auto-bound to active environment \"" + activeEnvironment.displayName() + "\".");
+            if (targetStillActive) {
+                renderSelectedEnvironmentIntoEditor(true);
+            }
+            setOAuth2AutosaveStatus("Token values saved to " + targetEnvironment.displayName() + ".", new Color(0, 128, 0));
+            appendImportLog("OAuth2 token auto-bound to active environment \"" + targetEnvironment.displayName() + "\".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token auto-bound to active environment",
+                    "environment=" + targetEnvironment.displayName() +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none") +
+                            "\nstoredKeys=" + String.join(", ", stored.keySet()));
         } else {
-            setOAuth2AutosaveStatus("Token acquired. Click Bind Token to choose target variables.", new Color(150, 90, 0));
-            appendImportLog("OAuth2 token acquired for active environment \"" + activeEnvironment.displayName() + "\".");
+            String statusMessage = targetStillActive
+                    ? "Token acquired. Click Bind Token to choose target variables."
+                    : "Token acquired for " + targetEnvironment.displayName() + ". Re-select that environment to bind token values.";
+            setOAuth2AutosaveStatus(statusMessage, new Color(150, 90, 0));
+            appendImportLog("OAuth2 token acquired for active environment \"" + targetEnvironment.displayName() + "\".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "OAuth2 token acquired",
+                    "environment=" + targetEnvironment.displayName() +
+                            "\ncollection=" + (collection != null && collection.name != null ? collection.name : "none"));
         }
         notifyWorkspaceChangedImmediately();
     }
@@ -4627,6 +5825,12 @@ public class ImporterPanel {
         TokenStore.TokenEntry entry = oauth2Panel != null ? oauth2Panel.getLastAcquiredToken() : null;
         if (active == null || entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
             appendImportLog("Bind Token: acquire a token first and select an Active Environment.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Bind token skipped",
+                    "activeEnvironment=" + (active != null ? active.displayName() : "none"));
             return;
         }
 
@@ -4825,6 +6029,13 @@ public class ImporterPanel {
         notifyWorkspaceChangedImmediately();
         setOAuth2AutosaveStatus("OAuth2 token bound to active environment \"" + active.displayName() + "\".", new Color(0, 128, 0));
         appendImportLog("OAuth2 token bound to active environment \"" + active.displayName() + "\".");
+        recordDiagnostic(
+                DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "OAuth2 token bound to active environment",
+                "environment=" + active.displayName() +
+                        "\nbindings=" + String.join(", ", active.oauth2.outputBindings.values()));
     }
 
     private Map<String, String> filterOAuth2ConfigVars(Map<String, String> oauth2Vars) {
@@ -5119,8 +6330,8 @@ public class ImporterPanel {
     private void addCollection() {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileFilter(new FileNameExtensionFilter(
-            "API Collections (JSON, YAML, YML, HAR, BRU folder)",
-            "json", "yaml", "yml", "har"
+            "API Collections (JSON, YAML, YML, HAR, BRU folder/ZIP)",
+            "json", "yaml", "yml", "har", "zip"
         ));
         chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
         if (chooser.showOpenDialog(mainPanel) == JFileChooser.APPROVE_OPTION) {
@@ -5201,6 +6412,12 @@ public class ImporterPanel {
     }
 
     private void importCollectionFilesDroppedOnRequestTreeAsync(List<File> files) {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection drop import started",
+                "fileCount=" + (files != null ? files.size() : 0));
         SwingWorker<DropImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected DropImportResult doInBackground() {
@@ -5213,6 +6430,12 @@ public class ImporterPanel {
                     applyCollectionDropImportResult(get());
                 } catch (Exception e) {
                     appendImportLog("Drop import failed: " + e.getMessage());
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.ERROR,
+                            "ImporterPanel",
+                            "Collection drop import failed",
+                            "error=" + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
                 }
             }
         };
@@ -5223,6 +6446,12 @@ public class ImporterPanel {
         DropImportResult result = new DropImportResult();
         if (files == null || files.isEmpty()) {
             result.messages.add("No files were dropped.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Collection drop import skipped",
+                    "reason=empty file list");
             return result;
         }
 
@@ -5237,19 +6466,44 @@ public class ImporterPanel {
                 if (parser == null) {
                     result.failedCount++;
                     result.messages.add("Skipped unsupported file: " + file.getName());
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.WARNING,
+                            "ImporterPanel",
+                            "Collection file skipped",
+                            "file=" + file.getName() + "\nreason=unsupported");
                     continue;
                 }
                 ApiCollection collection = parser.parse(file);
                 if (collection == null) {
                     result.failedCount++;
                     result.messages.add("Failed to import " + file.getName() + ": parser returned no collection.");
+                    recordDiagnostic(
+                            DiagnosticOperation.IMPORT,
+                            DiagnosticSeverity.WARNING,
+                            "ImporterPanel",
+                            "Collection file produced no collection",
+                            "file=" + file.getName());
                     continue;
                 }
                 result.importedCollections.add(collection);
                 result.messages.add("Imported collection candidate from " + file.getName() + ": " + collection.name);
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.INFO,
+                        "ImporterPanel",
+                        "Collection file parsed",
+                        "file=" + file.getName() +
+                                "\ncollection=" + (collection.name != null ? collection.name : ""));
             } catch (Exception e) {
                 result.failedCount++;
                 result.messages.add("Failed to import " + file.getName() + ": " + e.getMessage());
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.ERROR,
+                        "ImporterPanel",
+                        "Collection file import failed",
+                        "file=" + file.getName() + "\nerror=" + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
             }
         }
         return result;
@@ -5267,6 +6521,12 @@ public class ImporterPanel {
         if (result.importedCollections.isEmpty()) {
             result.importedCount = 0;
             appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection drop import completed",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -5291,6 +6551,12 @@ public class ImporterPanel {
         if (appended.isEmpty()) {
             result.importedCount = 0;
             appendImportLog("Drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection drop import completed",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -5303,6 +6569,12 @@ public class ImporterPanel {
             }
         });
         appendImportLog("Drop import complete: " + appended.size() + " imported, " + result.failedCount + " failed.");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection drop import completed",
+                "imported=" + appended.size() + "\nfailed=" + result.failedCount);
     }
 
     private void showRemoveCollectionsDialog() {
@@ -5417,6 +6689,7 @@ public class ImporterPanel {
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
         state.historyEntries = historyStore.snapshot();
+        state.diagnosticsCaptureEnabled = DiagnosticStore.getInstance().isCaptureEnabled();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
         }
@@ -5458,6 +6731,7 @@ public class ImporterPanel {
                 restoreWorkspaceCollections(state.collections != null ? state.collections : Collections.emptyList());
                 replaceEnvironmentProfiles(state.environments);
                 historyPersistenceService.restoreStore(historyStore, state);
+                DiagnosticStore.getInstance().setCaptureEnabled(state.diagnosticsCaptureEnabled);
                 if (historyPanel != null) {
                     historyPanel.refreshFromStore();
                 }
@@ -5471,6 +6745,7 @@ public class ImporterPanel {
                 syncOAuth2UiState();
                 renderSelectedEnvironmentIntoEditor(true);
                 updateEnvironmentUiState();
+                syncDiagnosticsCaptureUi(DiagnosticStore.getInstance().isCaptureEnabled());
                 syncWorkbenchEnvironmentControls();
                 syncActiveEnvironmentToEditors();
                 if (tabbedPane != null && tabbedPane.getTabCount() > 0) {
@@ -6457,6 +7732,7 @@ public class ImporterPanel {
         List<ApiRequest> restoredQueue = restoreRunnerQueueFromIdentityKeys(state.runnerQueuedRequestIdentityKeys);
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(restoredQueue);
+        runnerQueueFresh = !restoredQueue.isEmpty();
         refreshRunnerQueueList(restoredQueue.isEmpty() ? -1 : 0);
         updateRunnerQueueUiState();
     }
@@ -7118,6 +8394,12 @@ public class ImporterPanel {
     }
 
     private void handleEnvironmentImport() {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment import started",
+                "activeEnvironment=" + (getActiveEnvironment() != null ? getActiveEnvironment().displayName() : "none"));
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Import Environment");
         chooser.setFileFilter(new FileNameExtensionFilter("Environment files", "json", "bru", "env"));
@@ -7132,12 +8414,24 @@ public class ImporterPanel {
             List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
             if (imported == null || imported.isEmpty()) {
                 appendImportLog("No environment profiles found in " + file.getName() + ".");
+                recordDiagnostic(
+                        DiagnosticOperation.IMPORT,
+                        DiagnosticSeverity.WARNING,
+                        "ImporterPanel",
+                        "Environment import produced no profiles",
+                        "file=" + file.getName());
                 return;
             }
             addImportedEnvironmentProfiles(imported, file.getName());
         } catch (Exception e) {
             String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Environment import failed: " + message);
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Environment import failed",
+                    "file=" + file.getName() + "\nerror=" + message);
             if (!GraphicsEnvironment.isHeadless()) {
                 JOptionPane.showMessageDialog(mainPanel,
                         "Environment import failed:\n" + message,
@@ -7153,6 +8447,12 @@ public class ImporterPanel {
     }
 
     private void importEnvironmentFilesDroppedAsync(List<File> files) {
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment drop import started",
+                "fileCount=" + (files != null ? files.size() : 0));
         SwingWorker<EnvironmentDropImportResult, String> worker = new SwingWorker<>() {
             @Override
             protected EnvironmentDropImportResult doInBackground() {
@@ -7228,6 +8528,12 @@ public class ImporterPanel {
     private void applyEnvironmentDropImportResult(EnvironmentDropImportResult result) {
         if (result == null) {
             appendImportLog("Environment drop import complete: 0 imported, 0 failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Environment drop import completed without result",
+                    "imported=0 failed=0");
             return;
         }
         for (String message : result.messages) {
@@ -7235,6 +8541,12 @@ public class ImporterPanel {
         }
         if (result.importedProfiles.isEmpty()) {
             appendImportLog("Environment drop import complete: 0 imported, " + result.failedCount + " failed.");
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    result.failedCount > 0 ? DiagnosticSeverity.WARNING : DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Environment drop import finished",
+                    "imported=0 failed=" + result.failedCount);
             return;
         }
 
@@ -7276,6 +8588,12 @@ public class ImporterPanel {
         syncActiveEnvironmentToEditors();
         notifyWorkspaceChangedImmediately();
         appendImportLog("Environment drop import complete: " + result.importedCount + " imported, " + result.failedCount + " failed.");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment drop import completed",
+                "imported=" + result.importedCount + "\nfailed=" + result.failedCount);
     }
 
     private String uniqueEnvironmentNameForDrop(String desiredName,
@@ -7344,6 +8662,13 @@ public class ImporterPanel {
         syncActiveEnvironmentToEditors();
         SwingUtilities.invokeLater(this::notifyWorkspaceChangedImmediately);
         appendImportLog("Imported " + imported.size() + " environment profile(s) from " + sourceName + ".");
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment profiles imported",
+                "source=" + sourceName +
+                        "\ncount=" + imported.size());
         if (firstImported != null) {
             appendImportLog("Active environment set to imported environment \"" + firstImported.displayName() + "\".");
         }
@@ -7454,9 +8779,21 @@ public class ImporterPanel {
         if (collection == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection export started",
+                "collection=" + collectionDisplayName(collection));
         persistCurrentRequestEditorState();
         CollectionExportSelection selection = showCollectionExportDialog(collection);
         if (selection == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Collection export cancelled",
+                    "collection=" + collectionDisplayName(collection));
             return;
         }
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
@@ -7491,9 +8828,24 @@ public class ImporterPanel {
                 message.append(" Warnings: ").append(String.join(" | ", result.warnings));
             }
             appendImportLog(message.toString());
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Collection export completed",
+                    "collection=" + collectionDisplayName(collection) +
+                            "\nformat=" + selection.format +
+                            "\noutput=" + selection.outputPath);
         } catch (ExportException e) {
             String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Collection export failed: " + reason);
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Collection export failed",
+                    "collection=" + collectionDisplayName(collection) +
+                            "\nerror=" + reason);
             JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -7543,8 +8895,20 @@ public class ImporterPanel {
         if (selected == null) {
             return;
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment export started",
+                "environment=" + selected.displayName());
         EnvironmentExportSelection selection = showEnvironmentExportDialog(selected);
         if (selection == null) {
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Environment export cancelled",
+                    "environment=" + selected.displayName());
             return;
         }
         try {
@@ -7555,9 +8919,24 @@ public class ImporterPanel {
                 message.append(" Warnings: ").append(String.join(" | ", result.warnings));
             }
             appendImportLog(message.toString());
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Environment export completed",
+                    "environment=" + selected.displayName() +
+                            "\nformat=" + selection.format +
+                            "\noutput=" + selection.outputPath);
         } catch (ExportException e) {
             String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             appendImportLog("Environment export failed: " + reason);
+            recordDiagnostic(
+                    DiagnosticOperation.EXPORT,
+                    DiagnosticSeverity.ERROR,
+                    "ImporterPanel",
+                    "Environment export failed",
+                    "environment=" + selected.displayName() +
+                            "\nerror=" + reason);
             JOptionPane.showMessageDialog(mainPanel, "Environment export failed: " + reason, "Export Environment", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -8304,27 +9683,94 @@ public class ImporterPanel {
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
+        diagnosticsEventListModel = new DefaultListModel<>();
+        diagnosticsEventList = new JList<>(diagnosticsEventListModel);
+        diagnosticsEventList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        diagnosticsEventList.setCellRenderer((list, value, index, isSelected, cellHasFocus) -> {
+            JLabel label = (JLabel) new DefaultListCellRenderer()
+                    .getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            if (value != null) {
+                label.setText(DiagnosticSanitizer.sanitizeText(value.summaryLine()));
+            }
+            return label;
+        });
+        diagnosticsEventList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                showSelectedDiagnosticEvent();
+            }
+        });
+        JScrollPane eventScrollPane = new JScrollPane(diagnosticsEventList);
+        eventScrollPane.setBorder(BorderFactory.createTitledBorder("Recorded Events"));
+
+        diagnosticsEventDetailArea = new JTextArea(10, 42);
+        diagnosticsEventDetailArea.setEditable(false);
+        diagnosticsEventDetailArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(diagnosticsEventDetailArea);
+        JScrollPane detailScrollPane = new JScrollPane(diagnosticsEventDetailArea);
+        detailScrollPane.setBorder(BorderFactory.createTitledBorder("Selected Event"));
+
+        JSplitPane eventSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, eventScrollPane, detailScrollPane);
+        eventSplit.setResizeWeight(0.45);
+        eventSplit.setOneTouchExpandable(true);
+
         diagnosticsArea = new JTextArea(24, 100);
         diagnosticsArea.setEditable(false);
         diagnosticsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        SwingShortcutSupport.installTextComponentShortcuts(diagnosticsArea);
         diagnosticsArea.setText(DIAGNOSTICS_PLACEHOLDER_TEXT);
         diagnosticsArea.setLineWrap(false);
         diagnosticsArea.setWrapStyleWord(false);
 
         JScrollPane scrollPane = new JScrollPane(diagnosticsArea);
         scrollPane.setBorder(BorderFactory.createTitledBorder("Snapshot"));
-        panel.add(scrollPane, BorderLayout.CENTER);
+
+        JSplitPane diagnosticsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, eventSplit, scrollPane);
+        diagnosticsSplit.setResizeWeight(0.42);
+        diagnosticsSplit.setOneTouchExpandable(true);
+        diagnosticsSplit.setContinuousLayout(true);
+        panel.add(diagnosticsSplit, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        JButton refreshButton = new JButton("Refresh Snapshot");
-        refreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
-        JButton exportButton = new JButton("Export");
+        diagnosticsCaptureBox = new JCheckBox();
+        syncDiagnosticsCaptureUi(DiagnosticStore.getInstance().isCaptureEnabled());
+        diagnosticsCaptureBox.addActionListener(e -> {
+            DiagnosticStore.getInstance().setCaptureEnabled(diagnosticsCaptureBox.isSelected());
+            syncDiagnosticsCaptureUi(diagnosticsCaptureBox.isSelected());
+            refreshDiagnosticsSnapshot();
+            notifyWorkspaceChangedImmediately();
+        });
+        diagnosticsRefreshButton = new JButton("Refresh Snapshot");
+        diagnosticsRefreshButton.addActionListener(e -> refreshDiagnosticsSnapshot());
+        diagnosticsClearButton = new JButton("Clear Session Diagnostics");
+        diagnosticsClearButton.addActionListener(e -> clearDiagnosticsSnapshot());
+        diagnosticsCopyButton = new JButton("Copy Sanitized Report");
+        diagnosticsCopyButton.addActionListener(e -> copyDiagnosticsSnapshot());
+        JButton exportButton = new JButton("Export Sanitized Report");
         exportButton.addActionListener(e -> exportDiagnosticsSnapshot());
-        buttons.add(refreshButton);
+        diagnosticsIncludeDebugBox = new JCheckBox("Include Debug");
+        diagnosticsIncludeDebugBox.setToolTipText("Include debug diagnostics in the snapshot and exported report.");
+        diagnosticsIncludeDebugBox.addActionListener(e -> refreshDiagnosticsSnapshot());
+        buttons.add(diagnosticsCaptureBox);
+        buttons.add(diagnosticsRefreshButton);
+        buttons.add(diagnosticsClearButton);
+        buttons.add(diagnosticsCopyButton);
         buttons.add(exportButton);
+        buttons.add(diagnosticsIncludeDebugBox);
         panel.add(buttons, BorderLayout.NORTH);
 
+        refreshDiagnosticsSnapshot();
         return panel;
+    }
+
+    private void syncDiagnosticsCaptureUi(boolean enabled) {
+        if (diagnosticsCaptureBox == null) {
+            return;
+        }
+        diagnosticsCaptureBox.setText("Diagnostics Capture: " + (enabled ? "ON" : "OFF"));
+        diagnosticsCaptureBox.setSelected(enabled);
+        diagnosticsCaptureBox.setToolTipText(enabled
+                ? "Detailed diagnostic events are being recorded for this workspace."
+                : "Detailed diagnostic events are not being recorded. Turn this on to capture variable, script, and runner diagnostics.");
     }
 
     void refreshDiagnosticsSnapshot() {
@@ -8333,6 +9779,105 @@ public class ImporterPanel {
         }
         diagnosticsArea.setText(buildDiagnosticsSnapshot());
         diagnosticsArea.setCaretPosition(0);
+        refreshDiagnosticsEventViews();
+    }
+
+    void clearDiagnosticsSnapshot() {
+        DiagnosticStore.getInstance().clear();
+        refreshDiagnosticsSnapshot();
+    }
+
+    void copyDiagnosticsSnapshot() {
+        StringSelection selection = new StringSelection(buildSanitizedDiagnosticsReport());
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+    }
+
+    private void refreshDiagnosticsEventViews() {
+        if (diagnosticsEventListModel == null) {
+            return;
+        }
+        String selectedId = null;
+        DiagnosticEvent selectedEvent = diagnosticsEventList != null ? diagnosticsEventList.getSelectedValue() : null;
+        if (selectedEvent != null) {
+            selectedId = selectedEvent.operationId;
+        }
+        diagnosticsEventListModel.clear();
+        List<DiagnosticEvent> filtered = filteredDiagnosticEvents();
+        int selectionIndex = -1;
+        for (int i = 0; i < filtered.size(); i++) {
+            DiagnosticEvent event = filtered.get(i);
+            diagnosticsEventListModel.addElement(event);
+            if (selectedId != null && event != null && Objects.equals(selectedId, event.operationId)) {
+                selectionIndex = i;
+            }
+        }
+        if (diagnosticsEventList != null) {
+            if (selectionIndex >= 0) {
+                diagnosticsEventList.setSelectedIndex(selectionIndex);
+                diagnosticsEventList.ensureIndexIsVisible(selectionIndex);
+            } else {
+                diagnosticsEventList.clearSelection();
+            }
+        }
+        showSelectedDiagnosticEvent();
+    }
+
+    private List<DiagnosticEvent> filteredDiagnosticEvents() {
+        boolean includeDebug = diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected();
+        List<DiagnosticEvent> filtered = new ArrayList<>();
+        for (DiagnosticEvent event : DiagnosticStore.getInstance().snapshot()) {
+            if (event == null) {
+                continue;
+            }
+            if (!includeDebug && event.severity == DiagnosticSeverity.DEBUG) {
+                continue;
+            }
+            filtered.add(event);
+        }
+        return filtered;
+    }
+
+    private void showSelectedDiagnosticEvent() {
+        if (diagnosticsEventDetailArea == null) {
+            return;
+        }
+        DiagnosticEvent event = diagnosticsEventList != null ? diagnosticsEventList.getSelectedValue() : null;
+        diagnosticsEventDetailArea.setText(event != null ? buildDiagnosticEventDetail(event) : "");
+        diagnosticsEventDetailArea.setCaretPosition(0);
+    }
+
+    private String buildDiagnosticEventDetail(DiagnosticEvent event) {
+        if (event == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        appendDiagnosticsLine(sb, "timestamp", event.timestamp);
+        appendDiagnosticsLine(sb, "severity", event.severity);
+        appendDiagnosticsLine(sb, "operation", event.operation);
+        appendDiagnosticsLine(sb, "sourceArea", event.sourceArea);
+        appendDiagnosticsLine(sb, "collection", event.collectionName);
+        appendDiagnosticsLine(sb, "request", event.requestName);
+        appendDiagnosticsLine(sb, "requestId", event.requestId);
+        appendDiagnosticsLine(sb, "environment", event.environmentName);
+        appendDiagnosticsLine(sb, "message", DiagnosticSanitizer.sanitizeText(event.message != null ? event.message : ""));
+        if (event.details != null && !event.details.isBlank()) {
+            sb.append('\n').append("details").append("=\n")
+                    .append(DiagnosticSanitizer.sanitizeText(event.details))
+                    .append('\n');
+        }
+        if (event.attributes != null && !event.attributes.isEmpty()) {
+            sb.append('\n').append("attributes").append("=\n");
+            event.attributes.forEach((key, value) -> sb.append(key)
+                    .append('=')
+                    .append(DiagnosticSanitizer.sanitizeText(value))
+                    .append('\n'));
+        }
+        return sb.toString().trim();
+    }
+
+    private String buildSanitizedDiagnosticsReport() {
+        return DiagnosticStore.getInstance().sanitizedReport(
+                diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected());
     }
 
     String buildDiagnosticsSnapshot() {
@@ -8372,6 +9917,16 @@ public class ImporterPanel {
 
         appendDiagnosticsSectionHeader(sb, "Warnings / Notes");
         appendWarnings(sb);
+        sb.append('\n');
+        appendDiagnosticsSectionHeader(sb, "Diagnostics Summary");
+        appendDiagnosticsLine(sb, "diagnostics.summary", DiagnosticStore.getInstance().compactSummary());
+        appendDiagnosticsLine(sb, "diagnostics.capture", DiagnosticStore.getInstance().isCaptureEnabled() ? "ON" : "OFF");
+        if (!DiagnosticStore.getInstance().isCaptureEnabled()) {
+            appendDiagnosticsLine(sb, "diagnostics.note", "Diagnostics Capture is OFF. Enable capture to record detailed variable/script/request/runner diagnostics.");
+        }
+        sb.append('\n');
+        appendDiagnosticsSectionHeader(sb, "Diagnostics Events");
+        sb.append(DiagnosticStore.getInstance().sanitizedReport(diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected()));
         return sb.toString();
     }
 
@@ -8380,268 +9935,6 @@ public class ImporterPanel {
             throw new IOException("No export file selected.");
         }
         Files.writeString(file.toPath(), snapshotText != null ? snapshotText : "", StandardCharsets.UTF_8);
-    }
-
-    public SmokeUiEvidenceSnapshot captureSmokeUiEvidenceSnapshot(String label) {
-        SmokeUiEvidenceSnapshot snapshot = new SmokeUiEvidenceSnapshot();
-        snapshot.label = label;
-        snapshot.capturedAt = DIAGNOSTICS_TIMESTAMP_FORMAT.format(ZonedDateTime.now());
-        snapshot.selectedTopLevelTab = safeSelectedTabTitle();
-        snapshot.workspaceState = getWorkspaceStateSnapshot();
-        snapshot.requestTree = captureSmokeRequestTreeState(snapshot.workspaceState);
-        snapshot.environment = captureSmokeEnvironmentState();
-        snapshot.runner = captureSmokeRunnerState(snapshot.workspaceState);
-        snapshot.requestEditor = captureSmokeRequestEditorState();
-        snapshot.logs = captureSmokeLogState();
-        if (snapshot.workspaceState == null) {
-            snapshot.notes.add("Workspace state unavailable.");
-        }
-        if (snapshot.requestTree == null || !snapshot.requestTree.exists) {
-            snapshot.notes.add("Request tree unavailable.");
-        }
-        return snapshot;
-    }
-
-    private SmokeUiEvidenceSnapshot.RequestTreeState captureSmokeRequestTreeState(WorkspaceState state) {
-        SmokeUiEvidenceSnapshot.RequestTreeState snapshot = new SmokeUiEvidenceSnapshot.RequestTreeState();
-        boolean treeExists = requestTree != null;
-        snapshot.exists = treeExists;
-        snapshot.showing = treeExists && requestTree.isShowing();
-        snapshot.valid = treeExists && requestTree.isValid();
-        snapshot.displayable = treeExists && requestTree.isDisplayable();
-        snapshot.visible = treeExists && requestTree.isVisible();
-        snapshot.rootVisible = treeExists && requestTree.isRootVisible();
-        snapshot.showsRootHandles = treeExists && requestTree.getShowsRootHandles();
-        snapshot.scrollsOnExpand = treeExists && requestTree.getScrollsOnExpand();
-        snapshot.rowCount = treeExists ? requestTree.getRowCount() : 0;
-        snapshot.selectedRow = treeExists ? requestTree.getLeadSelectionRow() : -1;
-        snapshot.selectedPath = treeExists ? safeTreePath(requestTree.getSelectionPath()) : "absent";
-        JViewport viewport = requestTreeScrollPane != null ? requestTreeScrollPane.getViewport() : null;
-        snapshot.viewportPosition = viewport != null ? String.valueOf(viewport.getViewPosition()) : "absent";
-        snapshot.viewportExtent = viewport != null ? String.valueOf(viewport.getExtentSize()) : "absent";
-        if (state != null) {
-            if (state.expandedTreePathKeys != null) {
-                snapshot.expandedTreePathKeys.addAll(state.expandedTreePathKeys);
-            }
-            if (state.checkedRequestIdentityKeys != null) {
-                snapshot.checkedRequestIdentityKeys.addAll(state.checkedRequestIdentityKeys);
-            }
-            if (state.checkedRequestKeys != null) {
-                snapshot.checkedRequestKeys.addAll(state.checkedRequestKeys);
-            }
-            if (state.collections != null) {
-                for (ApiCollection collection : state.collections) {
-                    String collectionName = safeCollectionName(collection);
-                    if (!"none".equals(collectionName)) {
-                        String treeKey = workspaceTreePathKey(collectionName, "");
-                        if (state.expandedTreePathKeys == null || !state.expandedTreePathKeys.contains(treeKey)) {
-                            snapshot.collapsedTopLevelCollections.add(collectionName);
-                        }
-                    }
-                }
-            }
-        }
-        CollectionTreeNode selectedNode = getSelectedRequestTreeNode();
-        if (selectedNode != null) {
-            snapshot.selectedNodeType = selectedNode.getNodeType() != null ? selectedNode.getNodeType().name().toLowerCase(Locale.ROOT) : null;
-            if (selectedNode.getNodeType() == CollectionTreeNode.Type.COLLECTION) {
-                snapshot.selectedCollectionName = safeCollectionName(selectedNode.collection);
-            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.FOLDER) {
-                snapshot.selectedCollectionName = selectedNode.collection != null ? safeCollectionName(selectedNode.collection) : null;
-                snapshot.selectedFolderPath = selectedNode.folderPath;
-            } else if (selectedNode.getNodeType() == CollectionTreeNode.Type.REQUEST) {
-                snapshot.selectedCollectionName = selectedNode.request != null ? safeCollectionName(requestToCollectionMap.get(selectedNode.request)) : null;
-                snapshot.selectedRequestId = selectedNode.request != null ? selectedNode.request.id : null;
-                snapshot.selectedRequestName = safeRequestName(selectedNode.request);
-                snapshot.selectedRequestPath = selectedNode.request != null ? selectedNode.request.path : null;
-                snapshot.selectedRequestSourceCollection = selectedNode.request != null ? selectedNode.request.sourceCollection : null;
-            }
-        }
-        return snapshot;
-    }
-
-    private SmokeUiEvidenceSnapshot.EnvironmentState captureSmokeEnvironmentState() {
-        SmokeUiEvidenceSnapshot.EnvironmentState snapshot = new SmokeUiEvidenceSnapshot.EnvironmentState();
-        snapshot.count = environmentProfiles.size();
-        EnvironmentProfile active = getActiveEnvironment();
-        snapshot.activeEnvironmentId = activeEnvironmentId;
-        snapshot.activeEnvironmentName = active != null ? active.displayName() : "none";
-        snapshot.selectedComboLabel = safeEnvironmentRefLabel(environmentCombo);
-        snapshot.workbenchComboLabel = safeEnvironmentRefLabel(workbenchEnvironmentCombo);
-        snapshot.oauth2ComboLabel = safeEnvironmentRefLabel(oauth2EnvironmentCombo);
-        for (EnvironmentProfile profile : environmentProfiles) {
-            if (profile == null) {
-                continue;
-            }
-            profile.ensureDefaults();
-            profile.ensureId();
-            SmokeUiEvidenceSnapshot.EnvironmentProfileState profileState = new SmokeUiEvidenceSnapshot.EnvironmentProfileState();
-            profileState.id = profile.id;
-            profileState.name = profile.displayName();
-            profileState.sourceFormat = profile.sourceFormat;
-            profileState.sourceFileName = profile.sourceFileName;
-            profileState.active = Objects.equals(profile.id, activeEnvironmentId);
-            if (profile.variables != null) {
-                profileState.variableCount = profile.variables.size();
-                profileState.variableKeys.addAll(profile.variables.keySet());
-                profileState.variables.putAll(profile.variables);
-            }
-            snapshot.profiles.add(profileState);
-        }
-        return snapshot;
-    }
-
-    private SmokeUiEvidenceSnapshot.RunnerState captureSmokeRunnerState(WorkspaceState state) {
-        SmokeUiEvidenceSnapshot.RunnerState snapshot = new SmokeUiEvidenceSnapshot.RunnerState();
-        snapshot.running = runner != null && runner.isRunning();
-        snapshot.startEnabled = startRunnerBtn != null && startRunnerBtn.isEnabled();
-        snapshot.cancelEnabled = cancelRunnerBtn != null && cancelRunnerBtn.isEnabled();
-        snapshot.pauseEnabled = pauseRunnerBtn != null && pauseRunnerBtn.isEnabled();
-        snapshot.resumeEnabled = resumeRunnerBtn != null && resumeRunnerBtn.isEnabled();
-        snapshot.stepEnabled = stepRunnerBtn != null && stepRunnerBtn.isEnabled();
-        snapshot.queueSize = runnerQueuedRequests.size();
-        for (ApiRequest request : runnerQueuedRequests) {
-            ApiCollection collection = requestToCollectionMap.get(request);
-            String collectionName = collection != null ? collection.name : (request != null ? request.sourceCollection : null);
-            int requestIndex = findRequestIndexInCollection(collection, request);
-            snapshot.queueRequestIdentityKeys.add(workspaceRequestIdentityKey(collectionName, request, requestIndex));
-            snapshot.queueRequestNames.add(safeRequestName(request));
-        }
-        if (runnerQueueList != null) {
-            snapshot.selectedQueueIndex = runnerQueueList.getSelectedIndex();
-            ApiRequest selectedQueueRequest = runnerQueueList.getSelectedValue();
-            if (selectedQueueRequest != null) {
-                ApiCollection collection = requestToCollectionMap.get(selectedQueueRequest);
-                String collectionName = collection != null ? collection.name : selectedQueueRequest.sourceCollection;
-                int requestIndex = findRequestIndexInCollection(collection, selectedQueueRequest);
-                snapshot.selectedQueueRequestIdentityKey = workspaceRequestIdentityKey(collectionName, selectedQueueRequest, requestIndex);
-                snapshot.selectedQueueRequestId = selectedQueueRequest.id;
-                snapshot.selectedQueueRequestName = selectedQueueRequest.name;
-                snapshot.selectedQueueRequestMethod = selectedQueueRequest.method;
-            }
-        }
-        if (runnerPreviewModel != null) {
-            snapshot.previewCount = runnerPreviewModel.getRowCount();
-            for (RunnerPreviewRow row : runnerPreviewModel.getRows()) {
-                if (row == null) {
-                    continue;
-                }
-                SmokeUiEvidenceSnapshot.RunnerPreviewRowState rowState = new SmokeUiEvidenceSnapshot.RunnerPreviewRowState();
-                rowState.order = row.order;
-                rowState.collectionName = row.collectionName;
-                rowState.requestName = row.requestName;
-                rowState.method = row.method;
-                rowState.urlPreview = row.urlPreview;
-                rowState.authStatus = row.authStatus;
-                if (row.unresolvedVariables != null) {
-                    rowState.unresolvedVariables.addAll(row.unresolvedVariables);
-                }
-                snapshot.previewRows.add(rowState);
-            }
-        }
-        if (resultModel != null) {
-            snapshot.resultCount = resultModel.getRowCount();
-            for (RunnerResult row : resultModel.getResults()) {
-                if (row == null) {
-                    continue;
-                }
-                SmokeUiEvidenceSnapshot.RunnerResultState rowState = new SmokeUiEvidenceSnapshot.RunnerResultState();
-                rowState.requestName = row.requestName;
-                rowState.requestId = row.requestId;
-                rowState.success = row.success;
-                rowState.statusCode = row.statusCode;
-                rowState.responseTimeMs = row.responseTimeMs;
-                rowState.responseSize = row.responseSize;
-                rowState.responseBodyLength = row.responseBodyLength;
-                rowState.errorMessage = row.errorMessage;
-                rowState.extractedVariableCount = row.extractedVariables != null ? row.extractedVariables.size() : 0;
-                snapshot.resultRows.add(rowState);
-            }
-        }
-        if (state != null && state.runnerQueuedRequestIdentityKeys != null && snapshot.queueRequestIdentityKeys.isEmpty()) {
-            snapshot.queueRequestIdentityKeys.addAll(state.runnerQueuedRequestIdentityKeys);
-        }
-        return snapshot;
-    }
-
-    private SmokeUiEvidenceSnapshot.RequestEditorState captureSmokeRequestEditorState() {
-        SmokeUiEvidenceSnapshot.RequestEditorState snapshot = new SmokeUiEvidenceSnapshot.RequestEditorState();
-        if (requestEditor == null) {
-            return snapshot;
-        }
-        ApiCollection currentCollection = requestEditor.getCurrentCollection();
-        ApiRequest currentRequest = requestEditor.getCurrentRequest();
-        snapshot.currentCollectionName = safeCollectionName(currentCollection);
-        snapshot.currentRequestId = currentRequest != null ? currentRequest.id : null;
-        snapshot.currentRequestName = safeRequestName(currentRequest);
-        if (requestEditor.getMethodBox() != null && requestEditor.getMethodBox().getSelectedItem() != null) {
-            snapshot.method = String.valueOf(requestEditor.getMethodBox().getSelectedItem());
-        }
-        if (requestEditor.getUrlField() != null) {
-            snapshot.url = requestEditor.getUrlField().getText();
-        }
-        snapshot.sendEnabled = requestEditor.isSendEnabled();
-        snapshot.sendModeLabel = requestEditor.getSendModeLabel();
-        JTabbedPane editorTabs = requestEditor.getTabs();
-        if (editorTabs != null) {
-            snapshot.tabCount = editorTabs.getTabCount();
-            int selectedIndex = editorTabs.getSelectedIndex();
-            if (selectedIndex >= 0 && selectedIndex < editorTabs.getTabCount()) {
-                snapshot.selectedTabTitle = editorTabs.getTitleAt(selectedIndex);
-            }
-        }
-        ApiRequest builtRequest = null;
-        try {
-            builtRequest = requestEditor.buildRequestFromUI();
-        } catch (Exception ignored) {
-            // Snapshot capture is best-effort.
-        }
-        if (builtRequest != null) {
-            snapshot.headerCount = builtRequest.headers != null ? builtRequest.headers.size() : 0;
-            snapshot.bodyMode = builtRequest.body != null && builtRequest.body.mode != null ? builtRequest.body.mode : "none";
-            if (builtRequest.authOverrideMode != null && !builtRequest.authOverrideMode.isBlank()) {
-                snapshot.authMode = builtRequest.authOverrideMode;
-            } else if (builtRequest.auth != null && builtRequest.auth.type != null) {
-                snapshot.authMode = builtRequest.auth.type;
-            } else {
-                snapshot.authMode = "inherit";
-            }
-        }
-        return snapshot;
-    }
-
-    private SmokeUiEvidenceSnapshot.LogState captureSmokeLogState() {
-        SmokeUiEvidenceSnapshot.LogState snapshot = new SmokeUiEvidenceSnapshot.LogState();
-        captureLogSnapshot(importLog, snapshot.importLogTail, 5, value -> snapshot.importLogLineCount = value);
-        captureLogSnapshot(runnerLog, snapshot.runnerLogTail, 5, value -> snapshot.runnerLogLineCount = value);
-        captureLogSnapshot(diagnosticsArea, snapshot.diagnosticsLogTail, 5, value -> snapshot.diagnosticsLogLineCount = value);
-        return snapshot;
-    }
-
-    private void captureLogSnapshot(JTextArea area, List<String> tail, int maxTailLines, java.util.function.IntConsumer lineCountSetter) {
-        if (lineCountSetter != null) {
-            lineCountSetter.accept(0);
-        }
-        if (area == null) {
-            return;
-        }
-        String text = area.getText();
-        if (text == null || text.isBlank()) {
-            if (lineCountSetter != null) {
-                lineCountSetter.accept(0);
-            }
-            return;
-        }
-        String[] lines = text.split("\\R");
-        if (lineCountSetter != null) {
-            lineCountSetter.accept(lines.length);
-        }
-        if (tail != null && maxTailLines > 0) {
-            int start = Math.max(0, lines.length - maxTailLines);
-            for (int i = start; i < lines.length; i++) {
-                tail.add(lines[i]);
-            }
-        }
     }
 
     private String safeEnvironmentRefLabel(JComboBox<EnvironmentRef> combo) {
@@ -8656,11 +9949,18 @@ public class ImporterPanel {
     }
 
     private void exportDiagnosticsSnapshot() {
-        String snapshot = buildDiagnosticsSnapshot();
+        String snapshot = buildSanitizedDiagnosticsReport();
         if (diagnosticsArea != null) {
             diagnosticsArea.setText(snapshot);
             diagnosticsArea.setCaretPosition(0);
         }
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Diagnostics snapshot exported",
+                "includeDebug=" + (diagnosticsIncludeDebugBox != null && diagnosticsIncludeDebugBox.isSelected()) +
+                        "\nlength=" + snapshot.length());
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Export Diagnostics Snapshot");
         chooser.setSelectedFile(new File("diagnostics-snapshot.txt"));
@@ -8983,6 +10283,7 @@ public class ImporterPanel {
             return;
         }
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
             List<ApiCollection> targetCollections = collectCollectionsForRequests(loadedCollections, selected);
@@ -9008,6 +10309,7 @@ public class ImporterPanel {
             runtimeOverlay,
             this::storeOAuth2TokenInActiveEnvironment,
             this::applyRuntimeVariableDeltaToActiveEnvironment,
+            activeEnvironment,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
                 if (importProgress != null) {
@@ -9024,6 +10326,8 @@ public class ImporterPanel {
         }
         if (selected.isEmpty()) {
             runnerQueuedRequests.clear();
+            runnerQueueFresh = false;
+            runnerExecutingQueueIndex = -1;
             refreshRunnerQueueList(-1);
             updateRunnerQueueUiState();
             appendImportLog("No requests selected to run.");
@@ -9031,6 +10335,8 @@ public class ImporterPanel {
         }
         runnerQueuedRequests.clear();
         runnerQueuedRequests.addAll(selected);
+        runnerQueueFresh = true;
+        runnerExecutingQueueIndex = -1;
         refreshRunnerQueueList(0);
         switchToTabByName("Collection Runner");
         appendRunnerLog(selected.size() + " requests queued in runner. Configure settings and press Start.");
@@ -9084,6 +10390,8 @@ public class ImporterPanel {
             }
             if (indexToSelect >= 0) {
                 selectRunnerQueueIndex(indexToSelect);
+            } else if (runnerQueueList != null) {
+                runnerQueueList.repaint();
             }
         };
         runOnEdtSync(update);
@@ -9125,10 +10433,66 @@ public class ImporterPanel {
         }
         if (index < 0 || index >= runnerQueueListModel.getSize()) {
             runnerQueueList.clearSelection();
+            runnerQueueList.repaint();
             return;
         }
         runnerQueueList.setSelectedIndex(index);
         runnerQueueList.ensureIndexIsVisible(index);
+        runnerQueueList.repaint();
+    }
+
+    private void showRunnerQueueSelection(ApiRequest request) {
+        if (runnerDetailPanel == null) {
+            return;
+        }
+        ApiCollection collection = request != null ? requestToCollectionMap.get(request) : null;
+        if (collection == null && request != null) {
+            collection = findCollectionByRequest(request);
+        }
+        if (request == null) {
+            runnerDetailPanel.clear();
+            return;
+        }
+        HistoryEntry entry = buildRunnerQueuePreviewEntry(collection, request);
+        runnerDetailPanel.showEntry(entry);
+    }
+
+    private String buildRunnerQueueTooltip(ApiRequest request) {
+        if (request == null) {
+            return null;
+        }
+        ApiCollection collection = requestToCollectionMap.get(request);
+        if (collection == null) {
+            collection = findCollectionByRequest(request);
+        }
+        StringBuilder sb = new StringBuilder("<html>");
+        sb.append("Collection: ").append(htmlEscape(collection != null && collection.name != null ? collection.name : safeCollectionName(null))).append("<br/>");
+        sb.append("Folder: ").append(htmlEscape(RequestPathResolver.getRequestFolderPath(collection, request))).append("<br/>");
+        sb.append("Method: ").append(htmlEscape(request.method != null ? request.method : "GET")).append("<br/>");
+        sb.append("URL Template: ").append(htmlEscape(request.url != null ? request.url : "")).append("<br/>");
+        EnvironmentProfile activeEnvironment = getActiveEnvironment();
+        sb.append("Active Environment: ").append(htmlEscape(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment"));
+        if (runnerExecutingQueueIndex >= 0 && runnerQueueList != null) {
+            int index = indexOfRunnerQueueRequest(request);
+            if (index == runnerExecutingQueueIndex) {
+                sb.append("<br/>State: Running");
+            }
+        }
+        sb.append("</html>");
+        return sb.toString();
+    }
+
+    private void updateRunnerQueueTooltipForLocation(Point point) {
+        if (runnerQueueList == null || point == null) {
+            return;
+        }
+        int index = runnerQueueList.locationToIndex(point);
+        if (index < 0 || index >= runnerQueueListModel.size()) {
+            runnerQueueList.setToolTipText(null);
+            return;
+        }
+        ApiRequest request = runnerQueueListModel.getElementAt(index);
+        runnerQueueList.setToolTipText(buildRunnerQueueTooltip(request));
     }
 
     private void runOnEdtSync(Runnable action) {
@@ -9177,6 +10541,10 @@ public class ImporterPanel {
     // Runner
     // ========================================================================
     private void startRunner(boolean showPreviewDialog) {
+        startRunner(showPreviewDialog, false);
+    }
+
+    private void startRunner(boolean showPreviewDialog, boolean stepMode) {
         List<ApiRequest> selected = new ArrayList<>(runnerQueuedRequests);
         if (selected.isEmpty() || loadedCollections.isEmpty()) {
             appendRunnerLog("No requests queued. Use Workbench > Actions > Run Checked first.");
@@ -9215,10 +10583,10 @@ public class ImporterPanel {
             return;
         }
 
-        startRunnerExecution(selected);
+        startRunnerExecution(selected, stepMode);
     }
 
-    private void startRunnerExecution(List<ApiRequest> selected) {
+    private void startRunnerExecution(List<ApiRequest> selected, boolean stepMode) {
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
         runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
         runner.setStopConditions(buildRunnerStopConditionsFromUi());
@@ -9229,6 +10597,10 @@ public class ImporterPanel {
         timelineModel.clear();
         runnerLog.setText("");
         runnerProgress.setValue(0);
+        runnerExecutingQueueIndex = -1;
+        runnerExecutionSequence = 0;
+        runnerResultById.clear();
+        runnerResultByName.clear();
 
         if (activeRunnerListener != null) {
             runner.removeListener(activeRunnerListener);
@@ -9241,28 +10613,68 @@ public class ImporterPanel {
                     setRunnerControlsRunning(true);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
+                    runnerQueueFresh = true;
+                    updateRunnerQueueUiState();
+                });
+            }
+            @Override public void onRequestStart(RunnerResult result) {
+                SwingUtilities.invokeLater(() -> {
+                    runnerExecutingQueueIndex = resolveRunnerQueueIndex(result);
+                    updateRunnerQueueUiState();
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestStart(result);
+                    resultModel.addEntry(entry);
+                    timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
+                    if (entry.detailEntry != null) {
+                        runnerDetailPanel.showEntry(entry.detailEntry);
+                    }
                 });
             }
             @Override public void onSkip(String name, String reason) {
-                SwingUtilities.invokeLater(() -> appendRunnerLog("Skipped: " + name + " (" + reason + ")"));
+                SwingUtilities.invokeLater(() -> {
+                    appendRunnerLog("Skipped: " + name + " (" + reason + ")");
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromSkip(name, reason);
+                    resultModel.addEntry(entry);
+                    timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
+                    if (entry.detailEntry != null) {
+                        runnerDetailPanel.showEntry(entry.detailEntry);
+                    }
+                });
             }
             @Override public void onRequestComplete(RunnerResult result) {
                 SwingUtilities.invokeLater(() -> {
-                    resultModel.addResult(result);
-                    runnerProgress.setValue(resultModel.getRowCount());
-                    String status = result.success ? "OK " + result.statusCode : "FAIL " + result.errorMessage;
-                    appendRunnerLog((resultModel.getRowCount()) + ". " + result.requestName + " -> " + status);
+                    if (result != null) {
+                        indexRunnerResult(result);
+                    }
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
+                    resultModel.addEntry(entry);
+                    if (timelineModel != null) {
+                        timelineModel.addRow(buildTimelineRow(result));
+                    }
+                    runnerProgress.setValue(resultModel.getRequestResultCount());
+                    String status = result != null ? result.displayLogStatusLabel() : "FAIL";
+                    appendRunnerLog((resultModel.getRequestResultCount()) + ". " + (result != null && result.requestName != null ? result.requestName : "Request") + " -> " + status);
                     if (!result.extractedVariables.isEmpty()) {
                         appendRunnerLog("   Extracted: " + result.extractedVariables);
                     }
+                    runnerExecutingQueueIndex = -1;
+                    updateRunnerQueueUiState();
+                    runnerDetailPanel.showEntry(entry.detailEntry);
                     setRunnerControlsRunning(runner.isRunning());
                 });
             }
             @Override public void onAttemptComplete(RunnerResult result) {
-                SwingUtilities.invokeLater(() -> recordRunnerHistoryAttempt(result));
+                SwingUtilities.invokeLater(() -> {
+                    if (result != null) {
+                        indexRunnerResult(result);
+                    }
+                    recordRunnerHistoryAttempt(result);
+                });
             }
             @Override public void onTimeline(RunnerTimelineRow row) {
-                SwingUtilities.invokeLater(() -> timelineModel.addRow(row));
+                SwingUtilities.invokeLater(() -> {
+                    timelineModel.addRow(row);
+                    resultModel.addEntry(buildExecutionRowFromTimeline(row, findRunnerResultForTimeline(row)));
+                });
             }
             @Override public void onComplete(List<RunnerResult> results) {
                 SwingUtilities.invokeLater(() -> {
@@ -9272,22 +10684,36 @@ public class ImporterPanel {
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
+                    runnerExecutingQueueIndex = -1;
+                    runnerQueueFresh = false;
+                    updateRunnerQueueUiState();
+                    runnerDetailPanel.showEntry(buildRunnerCompleteEntry(results));
                 });
             }
             @Override public void onDebug(String message) {
-                SwingUtilities.invokeLater(() -> appendRunnerLog(message));
+                SwingUtilities.invokeLater(() -> {
+                    appendRunnerLog(message);
+                    resultModel.addEntry(buildExecutionRowFromDebug(message));
+                });
             }
             @Override public void onError(String message) {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
+                    resultModel.addEntry(buildExecutionRowFromError(message));
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
+                    runnerExecutingQueueIndex = -1;
+                    updateRunnerQueueUiState();
                 });
             }
         };
         runner.addListener(activeRunnerListener);
 
-        runner.runCollections(loadedCollections, selected);
+        if (stepMode) {
+            runner.runCollections(loadedCollections, selected, true);
+        } else {
+            runner.runCollections(loadedCollections, selected);
+        }
     }
 
     private RunnerStopConditions buildRunnerStopConditionsFromUi() {
@@ -9317,7 +10743,7 @@ public class ImporterPanel {
             resumeRunnerBtn.setEnabled(running && paused);
         }
         if (stepRunnerBtn != null) {
-            stepRunnerBtn.setEnabled(running && paused);
+            stepRunnerBtn.setEnabled((running && paused) || (!running && !runnerQueuedRequests.isEmpty() && runnerQueueFresh));
         }
     }
 
@@ -9335,7 +10761,11 @@ public class ImporterPanel {
 
     private void stepRunnerFromUi() {
         appendRunnerLog("Runner stepping one request.");
-        runner.runNextOnly();
+        if (runner != null && runner.isRunning()) {
+            runner.runNextOnly();
+        } else {
+            startRunner(false, true);
+        }
         setRunnerControlsRunning(runner.isRunning());
     }
 
@@ -9396,22 +10826,34 @@ public class ImporterPanel {
             runnerLog.setText("");
         }
         runnerQueuedRequests.clear();
+        runnerQueueFresh = false;
+        runnerExecutingQueueIndex = -1;
+        runnerExecutionSequence = 0;
+        runnerResultById.clear();
+        runnerResultByName.clear();
         refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
         }
-        updateRunnerDetailPane(null);
+        clearRunnerDetailPane();
         setRunnerControlsRunning(false);
     }
 
     private void updateRunnerQueueUiState() {
         boolean hasQueue = !runnerQueuedRequests.isEmpty();
         boolean running = runner != null && runner.isRunning();
+        boolean paused = running && runner != null && runner.isPaused();
         if (startRunnerBtn != null) {
             startRunnerBtn.setEnabled(!running && hasQueue);
         }
+        if (stepRunnerBtn != null) {
+            stepRunnerBtn.setEnabled((running && paused) || (!running && hasQueue && runnerQueueFresh));
+        }
         if (runnerQueueListModel != null) {
             refreshRunnerQueueList(runnerQueueList != null ? runnerQueueList.getSelectedIndex() : -1);
+        }
+        if (runnerQueueList != null) {
+            runnerQueueList.repaint();
         }
     }
 
@@ -9614,6 +11056,12 @@ public class ImporterPanel {
     private void populateOAuth2FromRequest(ApiRequest req) {
         if (req == null) {
             appendImportLog("Populate OAuth2: Request selection is empty.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 skipped",
+                    "reason=empty request");
             return;
         }
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
@@ -9628,6 +11076,12 @@ public class ImporterPanel {
                         "Active Environment Required",
                         JOptionPane.WARNING_MESSAGE);
             }
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 requires active environment",
+                    "request=" + req.name);
             return;
         }
 
@@ -9640,6 +11094,12 @@ public class ImporterPanel {
         Map<String, String> extracted = burp.utils.OAuth2PopulateHelper.extractOAuth2Fields(req, populateResolver);
         if (extracted.isEmpty()) {
             appendImportLog("Populate OAuth2: Selected request has no OAuth2-relevant data.");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 found no relevant fields",
+                    "request=" + req.name);
             return;
         }
 
@@ -9662,6 +11122,22 @@ public class ImporterPanel {
         List<String> unresolved = collectUnresolvedOAuth2PopulateVariables(extracted);
         if (!unresolved.isEmpty()) {
             appendImportLog("Populate OAuth2: Unresolved variable(s) remain: " + String.join(", ", unresolved) + ".");
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Populate OAuth2 unresolved variables",
+                    "request=" + req.name +
+                            "\nunresolved=" + String.join(", ", unresolved));
+        } else {
+            recordDiagnostic(
+                    DiagnosticOperation.OAUTH2_TOKEN_FETCH,
+                    DiagnosticSeverity.INFO,
+                    "ImporterPanel",
+                    "Populate OAuth2 completed",
+                    "request=" + req.name +
+                            "\ncollection=" + collectionName +
+                            "\nfields=" + extracted.size());
         }
     }
 
@@ -9671,19 +11147,12 @@ public class ImporterPanel {
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request, Map<String, String> activeOverlay) {
-        VariableResolver resolver = new VariableResolver();
-        if (collection != null) {
-            resolver.addEnvironmentVariables(collection);
-            resolver.addCollectionVariables(collection);
-            resolver.addFolderVariables(collection, request);
-        }
-        if (activeOverlay != null && !activeOverlay.isEmpty()) {
-            resolver.addAll(activeOverlay);
-        }
-        if (request != null) {
-            resolver.addRequestVariables(request);
-        }
-        return resolver;
+        return burp.utils.RuntimeResolverFactory.build(
+                collection,
+                request,
+                burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(activeOverlay)
+                        .withCollectionRuntimeLayers(false)
+        );
     }
 
     static VariableResolver buildOAuth2PopulateResolver(ApiCollection collection, ApiRequest request) {
@@ -9716,6 +11185,12 @@ public class ImporterPanel {
                     existing.put(variable.key, variable.value);
                 }
             }
+        }
+        if (collection != null && collection.runtimeOAuth2 != null) {
+            existing.putAll(collection.runtimeOAuth2);
+        }
+        if (collection != null && collection.runtimeVars != null) {
+            existing.putAll(collection.runtimeVars);
         }
         if (collection != null && request != null) {
             String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
@@ -9884,6 +11359,22 @@ public class ImporterPanel {
         });
     }
 
+    private void recordDiagnostic(DiagnosticOperation operation,
+                                  DiagnosticSeverity severity,
+                                  String sourceArea,
+                                  String message,
+                                  String details) {
+        DiagnosticEvent event = DiagnosticEvent.of(operation, severity, sourceArea, message);
+        event.collectionName = safeCollectionName(requestEditor != null ? requestEditor.getCurrentCollection() : null);
+        event.requestName = safeRequestName(requestEditor != null ? requestEditor.getCurrentRequest() : null);
+        event.requestId = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().id : null;
+        event.folderPath = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().path : null;
+        EnvironmentProfile active = getActiveEnvironment();
+        event.environmentName = active != null ? active.displayName() : null;
+        event.details = details;
+        DiagnosticStore.getInstance().record(event);
+    }
+
     public void appendRunnerLog(String msg) {
         SwingUtilities.invokeLater(() -> {
             runnerLog.append(msg + "\n");
@@ -9891,69 +11382,48 @@ public class ImporterPanel {
         });
     }
 
-    private void updateRunnerDetailPane(RunnerResult r) {
-        if (r == null) {
-            if (detailRequestEditor != null) {
-                try {
-                    detailRequestEditor.setRequest(HttpRequest.httpRequest());
-                } catch (RuntimeException ignored) {
-                    // Tests may construct the panel without a Montoya object factory.
-                }
-            }
-            if (detailResponseEditor != null) {
-                try {
-                    detailResponseEditor.setResponse(HttpResponse.httpResponse());
-                } catch (RuntimeException ignored) {
-                    // Tests may construct the panel without a Montoya object factory.
-                }
-            }
-            detailVarsText.setText("");
+    private void updateRunnerDetailPane(HistoryEntry entry) {
+        if (runnerDetailPanel == null) {
             return;
         }
-        StringBuilder req = new StringBuilder();
-        req.append(r.method != null ? r.method : "GET").append(" ").append(r.path != null ? r.path : "/").append(" HTTP/1.1\r\n");
-        req.append("Host: ").append(r.host != null ? r.host : "").append("\r\n");
-        if (r.requestHeaders != null) {
-            String[] lines = r.requestHeaders.split("\n");
-            for (int i = 1; i < lines.length; i++) {
-                req.append(lines[i]).append("\r\n");
-            }
+        if (entry == null) {
+            clearRunnerDetailPane();
+            return;
         }
-        if (r.requestBody != null && !r.requestBody.isEmpty()) {
-            req.append("\r\n").append(r.requestBody);
-        }
-        if (detailRequestEditor != null) {
-            detailRequestEditor.setRequest(HttpRequest.httpRequest(req.toString()));
-        }
+        runnerDetailPanel.showEntry(entry);
+    }
 
-        StringBuilder resp = new StringBuilder();
-        if (r.responseHeaders != null && !r.responseHeaders.trim().isEmpty()) {
-            resp.append(r.responseHeaders.trim());
-        } else {
-            int code = r.statusCode > 0 ? r.statusCode : 0;
-            resp.append("HTTP/1.1 ").append(code);
-        }
-        resp.append("\r\n\r\n");
-        if (r.responseBody != null && !r.responseBody.isEmpty()) {
-            resp.append(r.responseBody);
-        }
-        if (detailResponseEditor != null) {
-            detailResponseEditor.setResponse(HttpResponse.httpResponse(resp.toString()));
-        }
-
-        StringBuilder vars = new StringBuilder();
-        if (r.extractedVariables != null && !r.extractedVariables.isEmpty()) {
-            for (Map.Entry<String, String> entry : r.extractedVariables.entrySet()) {
-                vars.append(entry.getKey()).append(" = ").append(entry.getValue()).append("\n");
-            }
-        } else {
-            vars.append("No variables extracted.");
-        }
-        if (detailVarsText != null) {
-            detailVarsText.setText(vars.toString());
-            detailVarsText.setCaretPosition(0);
+    private void clearRunnerDetailPane() {
+        if (runnerDetailPanel != null) {
+            runnerDetailPanel.clear();
         }
     }
+
+    RequestEditorPanel getRequestEditorForTests() { return requestEditor; }
+    JTree getRequestTreeForTests() { return requestTree; }
+    HistoryPanel getHistoryPanelForTests() { return historyPanel; }
+    HistoryDetailPanel getWorkbenchDetailPanelForTests() { return workbenchDetailPanel; }
+    JTable getRunnerResultTableForTests() { return resultTable; }
+    JList<ApiRequest> getRunnerQueueListForTests() { return runnerQueueList; }
+    HistoryDetailPanel getRunnerDetailPanelForTests() { return runnerDetailPanel; }
+    JButton getStartRunnerButtonForTests() { return startRunnerBtn; }
+    JButton getPauseRunnerButtonForTests() { return pauseRunnerBtn; }
+    JButton getResumeRunnerButtonForTests() { return resumeRunnerBtn; }
+    JButton getStepRunnerButtonForTests() { return stepRunnerBtn; }
+    JButton getCancelRunnerButtonForTests() { return cancelRunnerBtn; }
+    JCheckBox getDiagnosticsCaptureBoxForTests() { return diagnosticsCaptureBox; }
+    JCheckBox getDiagnosticsIncludeDebugBoxForTests() { return diagnosticsIncludeDebugBox; }
+    JButton getDiagnosticsRefreshButtonForTests() { return diagnosticsRefreshButton; }
+    JButton getDiagnosticsClearButtonForTests() { return diagnosticsClearButton; }
+    JButton getDiagnosticsCopyButtonForTests() { return diagnosticsCopyButton; }
+    JList<DiagnosticEvent> getDiagnosticsEventListForTests() { return diagnosticsEventList; }
+    JTextArea getDiagnosticsEventDetailAreaForTests() { return diagnosticsEventDetailArea; }
+    JTextArea getDiagnosticsSnapshotAreaForTests() { return diagnosticsArea; }
+    JComboBox<EnvironmentRef> getWorkbenchEnvironmentComboForTests() { return workbenchEnvironmentCombo; }
+    JComboBox<EnvironmentRef> getEnvironmentComboForTests() { return environmentCombo; }
+    JButton getActionsButtonForTests() { return actionsBtn; }
+    JTextArea getImportLogAreaForTests() { return importLog; }
+    void queueRunnerRequestsForTests(List<ApiRequest> selected) { queueRunnerRequests(selected != null ? selected : Collections.emptyList()); }
 
     public JPanel getPanel() { return mainPanel; }
     public JTabbedPane getTabbedPane() { return tabbedPane; }

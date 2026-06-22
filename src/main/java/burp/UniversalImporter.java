@@ -12,16 +12,25 @@ import burp.api.montoya.http.RedirectionMode;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
+import burp.ui.history.HistoryNativeHttpMessageFactory;
 
 import javax.swing.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Core importer logic. Handles parsing, variable resolution, and sending to Burp tools.
  */
 public class UniversalImporter {
+    static final String WORKSPACE_SAVE_THREAD_NAME_PREFIX = "awb-workspace-save";
+
     private final MontoyaApi api;
     private final VariableResolver resolver;
     private final RequestBuilder requestBuilder;
@@ -30,7 +39,9 @@ public class UniversalImporter {
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
     private final DebouncedSwingAction debouncedWorkspaceSave;
-    private String lastSavedWorkspaceJson;
+    private final ExecutorService workspaceSaveExecutor;
+    private volatile String lastSavedWorkspaceJson;
+    private volatile boolean workspaceSaveClosed = false;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -48,7 +59,10 @@ public class UniversalImporter {
         this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
-        this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::saveWorkspaceState);
+        this.workspaceSaveExecutor = workspaceStateService != null
+                ? Executors.newSingleThreadExecutor(newWorkspaceSaveThreadFactory())
+                : null;
+        this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::scheduleWorkspaceStateSave);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
     }
 
@@ -115,8 +129,8 @@ public class UniversalImporter {
      * Each request resolves against its own source collection context.
      */
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
-                                          int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
-        importRequestsSequential(queue, destinations, delayMs, null, null, null, logCallback, resultCallback);
+                                         int delayMs, LogCallback logCallback, ResultCallback resultCallback) {
+        importRequestsSequential(queue, destinations, delayMs, null, null, null, null, logCallback, resultCallback);
     }
 
     public void importRequestsSequential(List<QueuedRequest> queue, List<String> destinations,
@@ -124,6 +138,7 @@ public class UniversalImporter {
                                          Map<String, String> runtimeOverlay,
                                          SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
                                          SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+                                         EnvironmentProfile activeEnvironment,
                                          LogCallback logCallback,
                                          ResultCallback resultCallback) {
         SwingWorker<ImportResult, String> worker = new SwingWorker<>() {
@@ -141,7 +156,7 @@ public class UniversalImporter {
                             resolver.clear();
                             Map<String, String> colSources = seedResolverForCollection(qr.collection);
                             for (String destination : destinations) {
-                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, logCallback, colSources);
+                                processRequest(qr.collection, qr.request, destination, delayMs, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, logCallback, colSources);
                             }
                             result.successCount++;
                             publish("[OK] " + qr.request.name);
@@ -194,7 +209,7 @@ public class UniversalImporter {
      */
     public SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest req, ApiCollection colContext, boolean followRedirects) throws Exception {
-        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, null, null, null);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, null, null, null, null);
     }
 
     public SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -203,7 +218,7 @@ public class UniversalImporter {
             boolean followRedirects,
             Map<String, String> runtimeOverlay,
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink) throws Exception {
-        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, null);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, null, null);
     }
 
     public SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -213,14 +228,29 @@ public class UniversalImporter {
             Map<String, String> runtimeOverlay,
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink);
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }
         return new SingleSendResult(
             exec.response,
             exec.builtRequest,
-            exec.requestHeaders,
+            exec.rawRequestText != null
+                    ? exec.rawRequestText
+                    : (exec.rawRequestBytes != null
+                        ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : exec.requestHeaders),
             exec.resolvedUrl,
             exec.elapsedMs,
             exec.errorMessage,
@@ -354,25 +384,24 @@ public class UniversalImporter {
                                 Map<String, String> runtimeOverlay,
                                 SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
                                 SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+                                EnvironmentProfile activeEnvironment,
                                 LogCallback logCallback,
                                 Map<String, String> colSources) throws Exception {
         String destinationLower = destination.toLowerCase();
         boolean liveSend = "sitemap".equals(destinationLower);
         ExecutionResult exec = runtimeOverlay != null
                 ? (liveSend
-                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink)
-                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink))
+                    ? pipeline.execute(req, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND)
+                    : pipeline.build(req, collection, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.BUILD_PREVIEW))
                 : (liveSend
-                    ? pipeline.execute(req, collection, followRedirects)
-                    : pipeline.build(req, collection));
+                    ? pipeline.execute(req, collection, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND)
+                    : pipeline.build(req, collection, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.BUILD_PREVIEW));
         if (exec == null || !exec.success || exec.requestHeaders == null) {
             throw new Exception(exec != null && exec.errorMessage != null ? exec.errorMessage : "Failed to build request");
         }
         byte[] rawRequest = exec.rawRequestBytes != null
                 ? exec.rawRequestBytes
-                : (exec.requestHeaders != null
-                ? exec.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8)
-                : new byte[0]);
+                : exec.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         warnIfUnresolved(rawRequest, req.name);
         if (debugRawRequest) {
             String debug = RequestDebugFormatter.format(rawRequest, destination, req.name);
@@ -388,9 +417,13 @@ public class UniversalImporter {
         if (liveSend) {
             if (delayMs > 0) Thread.sleep(delayMs);
             if (exec.response != null && exec.response.response() != null) {
-                Annotations annotations = Annotations.annotations(
-                        "[Imported] " + req.name, HighlightColor.CYAN);
-                api.siteMap().add(exec.response.withAnnotations(annotations));
+                try {
+                    Annotations annotations = Annotations.annotations(
+                            "[Imported] " + req.name, HighlightColor.CYAN);
+                    api.siteMap().add(exec.response.withAnnotations(annotations));
+                } catch (Throwable ignored) {
+                    // Burp object factory is unavailable in unit tests/non-Burp environments.
+                }
             } else {
                 throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
             }
@@ -400,11 +433,16 @@ public class UniversalImporter {
         String resolvedUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
-        burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                parsed.host, parsed.port, parsed.useHttps);
+        burp.api.montoya.http.HttpService service = null;
+        try {
+            service = burp.api.montoya.http.HttpService.httpService(
+                    parsed.host, parsed.port, parsed.useHttps);
+        } catch (Throwable ignored) {
+            // Unit tests / non-Burp environments may not have a Montoya object factory.
+        }
 
         HttpRequest httpRequest = exec.builtRequest != null ? exec.builtRequest
-                : HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+                : buildHttpRequest(rawRequest, service);
         String tabName = generateUniqueTabName(req.name, req.sourceCollection != null ? req.sourceCollection : "Unknown");
 
         switch (destinationLower) {
@@ -420,20 +458,40 @@ public class UniversalImporter {
 
     private void sendToSitemap(burp.api.montoya.http.HttpService service, byte[] request, String name) throws Exception {
         try {
-            HttpRequest httpRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(request));
-            RequestOptions options = RequestOptions.requestOptions()
-                    .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
-            burp.api.montoya.http.message.HttpRequestResponse response = api.http().sendRequest(httpRequest, options);
+            HttpRequest httpRequest = buildHttpRequest(request, service);
+            burp.api.montoya.http.message.HttpRequestResponse response;
+            try {
+                RequestOptions options = RequestOptions.requestOptions()
+                        .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER);
+                response = api.http().sendRequest(httpRequest, options);
+            } catch (Throwable factoryError) {
+                response = api.http().sendRequest(httpRequest);
+            }
             if (response != null && response.response() != null) {
-                Annotations annotations = Annotations.annotations(
-                        "[Imported] " + name, HighlightColor.CYAN);
-                api.siteMap().add(response.withAnnotations(annotations));
+                try {
+                    Annotations annotations = Annotations.annotations(
+                            "[Imported] " + name, HighlightColor.CYAN);
+                    api.siteMap().add(response.withAnnotations(annotations));
+                } catch (Throwable ignored) {
+                    // Annotation helpers can be unavailable in unit tests.
+                }
             } else {
                 throw new Exception("Sitemap request failed: no response received (possible timeout/DNS failure)");
             }
         } catch (Exception e) {
             throw new Exception("Sitemap request failed: " + extractCleanError(e));
         }
+    }
+
+    private HttpRequest buildHttpRequest(byte[] rawRequest, burp.api.montoya.http.HttpService service) throws Exception {
+        try {
+            if (service != null) {
+                return HttpRequest.httpRequest(service, ByteArray.byteArray(rawRequest));
+            }
+        } catch (Throwable ignored) {
+        }
+        String fallbackRaw = rawRequest != null ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8) : "";
+        return HistoryNativeHttpMessageFactory.request(fallbackRaw);
     }
 
     private String generateUniqueTabName(String baseName, String collectionName) {
@@ -474,6 +532,8 @@ public class UniversalImporter {
             ui.cleanup();
         }
         flushWorkspaceStateSave();
+        workspaceSaveClosed = true;
+        shutdownWorkspaceSaveExecutor();
         clearVariables();
     }
 
@@ -527,7 +587,7 @@ public class UniversalImporter {
     }
 
     void requestWorkspaceStateSave() {
-        if (debouncedWorkspaceSave != null) {
+        if (!workspaceSaveClosed && debouncedWorkspaceSave != null) {
             debouncedWorkspaceSave.restart();
         }
     }
@@ -544,22 +604,104 @@ public class UniversalImporter {
     }
 
     void saveWorkspaceState() {
+        if (workspaceSaveClosed) {
+            return;
+        }
+        persistWorkspaceStateSnapshot(true);
+    }
+
+    WorkspaceState captureWorkspaceStateSnapshot() throws Exception {
+        if (workspaceStateService == null || ui == null) {
+            return new WorkspaceState();
+        }
+        return SwingEdt.call(() -> WorkspaceState.copyOf(ui.getWorkspaceStateSnapshot()));
+    }
+
+    boolean isWorkspaceSaveExecutorTerminatedForTests() {
+        return workspaceSaveExecutor == null || workspaceSaveExecutor.isTerminated();
+    }
+
+    private void scheduleWorkspaceStateSave() {
+        if (workspaceSaveClosed) {
+            return;
+        }
+        persistWorkspaceStateSnapshot(false);
+    }
+
+    private void persistWorkspaceStateSnapshot(boolean waitForCompletion) {
         if (workspaceStateService == null || ui == null) {
             return;
         }
         try {
-            WorkspaceState state = SwingEdt.call(ui::getWorkspaceStateSnapshot);
-            String json = WorkspaceStateJson.toJson(state);
-            if (Objects.equals(json, lastSavedWorkspaceJson)) {
-                return;
+            WorkspaceState snapshot = captureWorkspaceStateSnapshot();
+            Future<?> future = submitWorkspaceStateSave(snapshot, !waitForCompletion);
+            if (waitForCompletion && future != null) {
+                future.get();
             }
-            workspaceStateService.saveJson(json);
-            lastSavedWorkspaceJson = json;
         } catch (Exception e) {
-            logWorkspaceStateError("save", e);
+            logWorkspaceStateError("save", unwrapWorkspaceStateSaveException(e));
         }
     }
 
+    private Future<?> submitWorkspaceStateSave(WorkspaceState snapshot, boolean logFailuresInBackground) {
+        if (workspaceSaveExecutor == null || workspaceSaveClosed) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return workspaceSaveExecutor.submit(() -> {
+            try {
+                persistWorkspaceStateSnapshotJson(snapshot);
+                return null;
+            } catch (Exception e) {
+                if (logFailuresInBackground) {
+                    logWorkspaceStateError("save", e);
+                    return null;
+                }
+                throw e;
+            }
+        });
+    }
+
+    private void persistWorkspaceStateSnapshotJson(WorkspaceState snapshot) {
+        WorkspaceState safeSnapshot = WorkspaceState.copyOf(snapshot);
+        String json = WorkspaceStateJson.toJson(safeSnapshot);
+        if (Objects.equals(json, lastSavedWorkspaceJson)) {
+            return;
+        }
+        workspaceStateService.saveJson(json);
+        lastSavedWorkspaceJson = json;
+    }
+
+    private void shutdownWorkspaceSaveExecutor() {
+        if (workspaceSaveExecutor == null) {
+            return;
+        }
+        workspaceSaveExecutor.shutdown();
+        try {
+            if (!workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                workspaceSaveExecutor.shutdownNow();
+                workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            workspaceSaveExecutor.shutdownNow();
+        }
+    }
+
+    private static ThreadFactory newWorkspaceSaveThreadFactory() {
+        return runnable -> {
+            Thread thread = new Thread(runnable, WORKSPACE_SAVE_THREAD_NAME_PREFIX + "-1");
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private Exception unwrapWorkspaceStateSaveException(Exception exception) {
+        if (exception instanceof java.util.concurrent.ExecutionException executionException
+                && executionException.getCause() instanceof Exception cause) {
+            return cause;
+        }
+        return exception;
+    }
 
 
     private void logWorkspaceStateError(String action, Exception e) {

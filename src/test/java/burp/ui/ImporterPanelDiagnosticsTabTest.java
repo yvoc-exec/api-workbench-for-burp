@@ -1,8 +1,13 @@
 package burp.ui;
 
 import burp.auth.OAuth2Manager;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.runner.CollectionRunner;
 import burp.ui.tree.CollectionTreeNode;
 import org.junit.jupiter.api.Test;
@@ -23,6 +28,12 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ImporterPanelDiagnosticsTabTest {
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        DiagnosticStore.getInstance().setCaptureEnabled(false);
+        DiagnosticStore.getInstance().clear();
+    }
 
     @Test
     void diagnosticsSnapshotIncludesMainRequestTreeAndSafeUiMetadata() throws Exception {
@@ -56,6 +67,58 @@ class ImporterPanelDiagnosticsTabTest {
         assertThat(snapshot).doesNotContain("Authorization:");
         assertThat(snapshot).contains("runtimeVars.count=");
         assertThat(snapshot).contains("runtimeOAuth2.count=");
+    }
+
+    @Test
+    void diagnosticsSnapshotIncludesSanitizedRecordedEvents() throws Exception {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
+        DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, "test", "Request built")
+                .withDetails("Authorization: Bearer token-secret\nCookie: session=abc123\naccess_token=super-secret"));
+
+        ImporterPanel panel = newPanel();
+        seedDiagnosticsState(panel);
+
+        String snapshot = buildSnapshot(panel);
+
+        assertThat(snapshot).contains("=== Diagnostics Events ===");
+        assertThat(snapshot).contains("=== REQUEST_BUILD (1) ===");
+        assertThat(snapshot).contains("diagnostics.summary=events=1 warnings=0 errors=0 debug=0");
+        assertThat(snapshot).contains("Request built");
+        assertThat(snapshot).doesNotContain("token-secret");
+        assertThat(snapshot).doesNotContain("session=abc123");
+        assertThat(snapshot).doesNotContain("super-secret");
+    }
+
+    @Test
+    void diagnosticsSnapshotGroupsEventsByOperationWithSummary() throws Exception {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
+        DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.IMPORT, DiagnosticSeverity.INFO, "test", "Import started"));
+        DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.EXPORT, DiagnosticSeverity.WARNING, "test", "Export warning"));
+
+        ImporterPanel panel = newPanel();
+        seedDiagnosticsState(panel);
+
+        String snapshot = buildSnapshot(panel);
+
+        assertThat(snapshot).contains("=== Diagnostics Summary ===");
+        assertThat(snapshot).contains("diagnostics.summary=events=2 warnings=1 errors=0 debug=0");
+        assertThat(snapshot).contains("=== IMPORT (1) ===");
+        assertThat(snapshot).contains("=== EXPORT (1) ===");
+    }
+
+    @Test
+    void activeEnvironmentSwitchEmitsDiagnosticsEvent() throws Exception {
+        DiagnosticStore.getInstance().setCaptureEnabled(true);
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile dev = environment("Dev", "https://dev.example.test");
+        EnvironmentProfile qa = environment("QA", "https://qa.example.test");
+        panel.replaceEnvironmentProfiles(List.of(dev, qa));
+
+        panel.setActiveEnvironmentId(qa.id);
+
+        String snapshot = buildSnapshot(panel);
+        assertThat(snapshot).contains("=== ENVIRONMENT_SWITCH (1) ===");
+        assertThat(snapshot).contains("Active environment switched");
     }
 
     @Test
@@ -140,6 +203,15 @@ class ImporterPanelDiagnosticsTabTest {
         request.path = "Auth/OAuth/" + name;
         request.sequenceOrder = ordinal;
         return request;
+    }
+
+    private static EnvironmentProfile environment(String name, String baseUrl) {
+        EnvironmentProfile profile = new EnvironmentProfile();
+        profile.name = name;
+        profile.ensureId();
+        profile.ensureDefaults();
+        profile.variables.put("base_url", baseUrl);
+        return profile;
     }
 
     private static String buildSnapshot(ImporterPanel panel) throws Exception {

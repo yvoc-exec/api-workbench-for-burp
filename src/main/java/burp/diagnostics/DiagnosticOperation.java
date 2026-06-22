@@ -1,0 +1,18 @@
+package burp.diagnostics;
+
+public enum DiagnosticOperation {
+    WORKBENCH_SEND,
+    RUNNER_RUN,
+    RUNNER_REQUEST_ATTEMPT,
+    SCRIPT_EXECUTION,
+    VARIABLE_RESOLUTION,
+    OAUTH2_TOKEN_FETCH,
+    HISTORY_CAPTURE,
+    IMPORT,
+    EXPORT,
+    ENVIRONMENT_SWITCH,
+    REPLAY,
+    LOAD_IN_WORKBENCH,
+    REQUEST_BUILD,
+    HISTORY_COMPARE
+}

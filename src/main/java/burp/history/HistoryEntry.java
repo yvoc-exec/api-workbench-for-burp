@@ -5,7 +5,15 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerResult;
+import burp.scripts.ScriptFlowControl;
+import burp.scripts.ScriptLogEntry;
+import burp.scripts.ScriptVariableMutation;
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.ui.ImporterPanel;
+import burp.utils.HttpUtils;
 import burp.utils.ExecutionResult;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
@@ -42,6 +50,25 @@ public class HistoryEntry {
     public List<String> unresolvedVariables = new ArrayList<>();
     public List<HistoryAssertionResult> assertions = new ArrayList<>();
     public List<HistoryExtractionResult> extractions = new ArrayList<>();
+    public String scriptEngineName;
+    public String executionSource;
+    public List<ScriptLogEntry> scriptLogs = new ArrayList<>();
+    public List<String> scriptWarnings = new ArrayList<>();
+    public List<String> scriptErrors = new ArrayList<>();
+    public List<ScriptVariableMutation> scriptVariableMutations = new ArrayList<>();
+    public ScriptFlowControl scriptFlowControl = ScriptFlowControl.CONTINUE;
+    public String scriptFlowMessage;
+    public String scriptFlowNextRequestName;
+    public String scriptFlowNextRequestId;
+    public String finalResolvedUrl;
+    public String host;
+    public String scriptMode;
+    public String scriptDialect;
+    public String resultClassification;
+    public String variablesSummaryText;
+    public String scriptOutputSummaryText;
+    public String assertionsSummaryText;
+    public String metadataSummaryText;
 
     public static HistoryEntry fromWorkbenchExecution(ApiCollection collection,
                                                       ApiRequest request,
@@ -62,15 +89,49 @@ public class HistoryEntry {
                     ? entry.responseSnapshot.body.length
                     : 0L;
             entry.requestSizeBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.length : entry.requestSnapshot.approximateSizeBytes();
+            if (entry.requestSnapshot != null) {
+                entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
+                        ? exec.rawRequestText
+                        : (exec.rawRequestBytes != null
+                        ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : null);
+                entry.requestSnapshot.resolvedUrl = exec.resolvedUrl;
+                entry.requestSnapshot.resolvedVariables = exec.resolvedVariables != null
+                        ? new LinkedHashMap<>(exec.resolvedVariables)
+                        : new LinkedHashMap<>();
+            }
+            if (isIntentionalNoResponseFlow(exec.scriptFlowControl, exec.response == null)) {
+                entry.result = historyResultForFlowControl(exec.scriptFlowControl);
+            } else {
             entry.result = HistoryResult.from(exec.success,
-                    exec.errorMessage,
-                    hasFailedAssertion(exec.assertions),
-                    unresolvedVariables != null && !unresolvedVariables.isEmpty());
+                        exec.errorMessage,
+                        hasFailedAssertion(exec.assertions),
+                        unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            }
+            entry.finalResolvedUrl = exec.resolvedUrl;
+            entry.host = parseHost(exec.resolvedUrl);
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
+            entry.scriptEngineName = exec.scriptEngineName;
+            entry.executionSource = exec.executionSource != null ? exec.executionSource.name() : null;
+            entry.scriptLogs = copyScriptLogs(exec.scriptLogs);
+            entry.scriptWarnings = exec.scriptWarnings != null ? new ArrayList<>(exec.scriptWarnings) : new ArrayList<>();
+            entry.scriptErrors = exec.scriptErrors != null ? new ArrayList<>(exec.scriptErrors) : new ArrayList<>();
+            entry.scriptVariableMutations = copyScriptMutations(exec.scriptVariableMutations);
+            entry.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : ScriptFlowControl.CONTINUE;
+            entry.scriptFlowMessage = exec.scriptFlowMessage;
+            entry.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
+            entry.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+            DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
+                    "Workbench history captured")
+                    .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
+                            + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         } else {
             entry.result = HistoryResult.from(false, null, false, unresolvedVariables != null && !unresolvedVariables.isEmpty());
         }
@@ -100,14 +161,48 @@ public class HistoryEntry {
             entry.assertions = copyAssertions(result.assertions);
             entry.extractions = copyExtractions(result.extractedVariables);
             entry.unresolvedVariables = normalizeStrings(extractUnresolvedFromResult(result));
-            entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
-                    !entry.unresolvedVariables.isEmpty());
+            entry.scriptEngineName = result.scriptEngineName;
+            entry.executionSource = result.executionSource != null ? result.executionSource.name() : null;
+            entry.scriptLogs = copyScriptLogs(result.scriptLogs);
+            entry.scriptWarnings = result.scriptWarnings != null ? new ArrayList<>(result.scriptWarnings) : new ArrayList<>();
+            entry.scriptErrors = result.scriptErrors != null ? new ArrayList<>(result.scriptErrors) : new ArrayList<>();
+            entry.scriptVariableMutations = copyScriptMutations(result.scriptVariableMutations);
+            entry.scriptFlowControl = result.scriptFlowControl != null ? result.scriptFlowControl : ScriptFlowControl.CONTINUE;
+            entry.scriptFlowMessage = result.scriptFlowMessage;
+            entry.scriptFlowNextRequestName = result.scriptFlowNextRequestName;
+            entry.scriptFlowNextRequestId = result.scriptFlowNextRequestId;
+            entry.finalResolvedUrl = result.requestUrl;
+            entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(result.requestUrl);
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+            if (entry.requestSnapshot != null) {
+                entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
+                entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
+                        ? result.rawRequestText
+                        : (result.rawRequestBytes != null
+                        ? new String(result.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                        : null);
+                entry.requestSnapshot.resolvedUrl = result.requestUrl;
+                entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
+                        ? new LinkedHashMap<>(result.resolvedVariables)
+                        : new LinkedHashMap<>();
+            }
+            if (isIntentionalNoResponseFlow(result.scriptFlowControl, result.responseSize <= 0 && result.statusCode <= 0)) {
+                entry.result = historyResultForFlowControl(result.scriptFlowControl);
+            } else {
+                entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
+                        !entry.unresolvedVariables.isEmpty());
+            }
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
+            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
                 entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
             }
+            DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
+                    "Runner history captured")
+                    .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
+                            + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         }
         if (entry.responseSnapshot == null && entry.statusCode <= 0 && entry.errorMessage != null && !entry.errorMessage.isBlank()) {
             entry.result = HistoryResult.ERROR;
@@ -143,6 +238,25 @@ public class HistoryEntry {
         copy.unresolvedVariables = source.unresolvedVariables != null ? new ArrayList<>(source.unresolvedVariables) : new ArrayList<>();
         copy.assertions = copyHistoryAssertions(source.assertions);
         copy.extractions = copyHistoryExtractions(source.extractions);
+        copy.scriptEngineName = source.scriptEngineName;
+        copy.executionSource = source.executionSource;
+        copy.scriptLogs = copyScriptLogs(source.scriptLogs);
+        copy.scriptWarnings = source.scriptWarnings != null ? new ArrayList<>(source.scriptWarnings) : new ArrayList<>();
+        copy.scriptErrors = source.scriptErrors != null ? new ArrayList<>(source.scriptErrors) : new ArrayList<>();
+        copy.scriptVariableMutations = copyScriptMutations(source.scriptVariableMutations);
+        copy.scriptFlowControl = source.scriptFlowControl != null ? source.scriptFlowControl : ScriptFlowControl.CONTINUE;
+        copy.scriptFlowMessage = source.scriptFlowMessage;
+        copy.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
+        copy.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
+        copy.finalResolvedUrl = source.finalResolvedUrl;
+        copy.host = source.host;
+        copy.scriptMode = source.scriptMode;
+        copy.scriptDialect = source.scriptDialect;
+        copy.resultClassification = source.resultClassification;
+        copy.variablesSummaryText = source.variablesSummaryText;
+        copy.scriptOutputSummaryText = source.scriptOutputSummaryText;
+        copy.assertionsSummaryText = source.assertionsSummaryText;
+        copy.metadataSummaryText = source.metadataSummaryText;
         return copy;
     }
 
@@ -177,8 +291,26 @@ public class HistoryEntry {
         if (extractions == null) {
             extractions = new ArrayList<>();
         }
+        if (scriptLogs == null) {
+            scriptLogs = new ArrayList<>();
+        }
+        if (scriptWarnings == null) {
+            scriptWarnings = new ArrayList<>();
+        }
+        if (scriptErrors == null) {
+            scriptErrors = new ArrayList<>();
+        }
+        if (scriptVariableMutations == null) {
+            scriptVariableMutations = new ArrayList<>();
+        }
+        if (scriptFlowControl == null) {
+            scriptFlowControl = ScriptFlowControl.CONTINUE;
+        }
         if (result == null) {
             result = HistoryResult.UNKNOWN;
+        }
+        if (resultClassification == null && result != null) {
+            resultClassification = result.displayName();
         }
     }
 
@@ -258,26 +390,87 @@ public class HistoryEntry {
     }
 
     public String toMetadataText() {
+        if (metadataSummaryText != null && !metadataSummaryText.isBlank()) {
+            return metadataSummaryText.trim();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("History ID: ").append(id != null ? id : "").append('\n');
-        sb.append("Timestamp: ").append(timeDisplay()).append('\n');
+        sb.append("Created / Executed Timestamp: ").append(timeDisplay()).append('\n');
         sb.append("Source: ").append(source != null ? source.displayName() : "").append('\n');
-        sb.append("Attempt: ").append(attemptDisplay()).append('\n');
-        sb.append("Collection ID: ").append(collectionId != null ? collectionId : "").append('\n');
-        sb.append("Collection Name: ").append(collectionName != null ? collectionName : "").append('\n');
-        sb.append("Folder Path: ").append(folderPath != null ? folderPath : "").append('\n');
-        sb.append("Request ID: ").append(requestId != null ? requestId : "").append('\n');
+        sb.append("Collection: ").append(collectionName != null ? collectionName : "").append('\n');
+        sb.append("Folder / Request Path: ").append(folderPath != null ? folderPath : "").append('\n');
         sb.append("Request Name: ").append(requestName != null ? requestName : "").append('\n');
-        sb.append("Environment ID: ").append(environmentId != null ? environmentId : "").append('\n');
-        sb.append("Environment Name: ").append(environmentName != null ? environmentName : "").append('\n');
-        sb.append("Result: ").append(resultDisplayName()).append('\n');
-        sb.append("Status Code: ").append(statusCode > 0 ? statusCode : "").append('\n');
-        sb.append("Duration: ").append(durationMillis).append(" ms").append('\n');
-        sb.append("Request Size: ").append(requestSizeBytes).append(" bytes").append('\n');
-        sb.append("Response Size: ").append(responseSizeBytes).append(" bytes").append('\n');
+        sb.append("Method: ").append(requestSnapshot != null && requestSnapshot.method != null ? requestSnapshot.method : "").append('\n');
+        sb.append("URL Template: ").append(requestSnapshot != null && requestSnapshot.urlTemplate != null ? requestSnapshot.urlTemplate : "").append('\n');
+        sb.append("Final Resolved URL: ").append(finalResolvedUrl != null && !finalResolvedUrl.isBlank() ? finalResolvedUrl : "Not yet sent").append('\n');
+        sb.append("Host: ").append(host != null && !host.isBlank() ? host : "Not yet sent").append('\n');
+        sb.append("Active Environment: ").append(environmentName != null ? environmentName : "No Environment").append('\n');
+        sb.append("Auth Mode / Auth Source: ").append(resolveAuthLabel()).append('\n');
+        sb.append("Execution Source: ").append(executionSource != null && !executionSource.isBlank() ? executionSource : "Not yet sent").append('\n');
+        sb.append("Execution Attempt: ").append(isExecuted() ? attemptDisplay() : "Not yet sent").append('\n');
+        sb.append("Runner Attempt Number: ").append(source == HistorySource.RUNNER ? attemptDisplay() : (isExecuted() ? "Not applicable" : "Not yet sent")).append('\n');
+        sb.append("Status Code: ").append(statusCode > 0 ? statusCode : "Not yet sent").append('\n');
+        sb.append("Duration: ").append(durationMillis > 0 ? durationMillis + " ms" : "Not yet sent").append('\n');
+        sb.append("Request Size: ").append(requestSizeBytes > 0 ? requestSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Response Size: ").append(responseSizeBytes > 0 ? responseSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Result Classification: ").append(resultClassification != null && !resultClassification.isBlank() ? resultClassification : (isExecuted() ? resultDisplayName() : "Not yet sent")).append('\n');
+        sb.append("Script Engine: ").append(displayValue(scriptEngineName)).append('\n');
+        sb.append("Script Mode: ").append(displayValue(scriptMode)).append('\n');
+        sb.append("Script Dialect: ").append(displayValue(scriptDialect)).append('\n');
+        sb.append("Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
+        sb.append("Flow Message: ").append(scriptFlowMessage != null ? scriptFlowMessage : "").append('\n');
+        sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
+        sb.append("Response Available: ").append(responseSnapshot != null && responseSnapshot.hasBody() ? "yes" : "no").append('\n');
+        sb.append("Script Logs: ").append(scriptLogs != null ? scriptLogs.size() : 0).append('\n');
+        sb.append("Script Warnings: ").append(scriptWarnings != null ? scriptWarnings.size() : 0).append('\n');
+        sb.append("Script Errors: ").append(scriptErrors != null ? scriptErrors.size() : 0).append('\n');
+        sb.append("Script Mutations: ").append(scriptVariableMutations != null ? scriptVariableMutations.size() : 0).append('\n');
         sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
         return sb.toString().trim();
+    }
+
+    private String displayValue(String value) {
+        if (value != null && !value.isBlank()) {
+            return value;
+        }
+        return isExecuted() ? "Not available" : "Not yet sent";
+    }
+
+    public boolean isExecuted() {
+        if (result != null && result != HistoryResult.UNKNOWN) {
+            return true;
+        }
+        return (statusCode > 0)
+                || durationMillis > 0
+                || (responseSnapshot != null && responseSnapshot.hasBody())
+                || (finalResolvedUrl != null && !finalResolvedUrl.isBlank())
+                || (requestSnapshot != null && requestSnapshot.hasRawRequestSent());
+    }
+
+    private String resolveAuthLabel() {
+        String authType = requestSnapshot != null ? requestSnapshot.authType : null;
+        if (authType == null || authType.isBlank()) {
+            return isExecuted() ? "Not yet sent" : "Not yet sent";
+        }
+        StringBuilder sb = new StringBuilder(authType);
+        if (requestSnapshot != null && requestSnapshot.authoredRequest != null
+                && requestSnapshot.authoredRequest.authSource != null
+                && !requestSnapshot.authoredRequest.authSource.isBlank()) {
+            sb.append(" (").append(requestSnapshot.authoredRequest.authSource).append(")");
+        }
+        return sb.toString();
+    }
+
+    private static String parseHost(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return null;
+        }
+        try {
+            return HttpUtils.parseTargetForRequest(resolvedUrl).host;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static HistoryEntry createBase(HistorySource source,
@@ -311,6 +504,9 @@ public class HistoryEntry {
         long size = 0L;
         if (result == null) {
             return size;
+        }
+        if (result.rawRequestBytes != null && result.rawRequestBytes.length > 0) {
+            return result.rawRequestBytes.length;
         }
         if (result.requestHeaders != null) {
             size += result.requestHeaders.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
@@ -400,6 +596,61 @@ public class HistoryEntry {
             }
         }
         return out;
+    }
+
+    private static List<ScriptLogEntry> copyScriptLogs(List<ScriptLogEntry> logs) {
+        List<ScriptLogEntry> out = new ArrayList<>();
+        if (logs == null) {
+            return out;
+        }
+        for (ScriptLogEntry log : logs) {
+            if (log == null) {
+                continue;
+            }
+            ScriptLogEntry copy = new ScriptLogEntry();
+            copy.level = log.level;
+            copy.message = log.message;
+            copy.scriptId = log.scriptId;
+            copy.scriptName = log.scriptName;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private static List<ScriptVariableMutation> copyScriptMutations(List<ScriptVariableMutation> mutations) {
+        List<ScriptVariableMutation> out = new ArrayList<>();
+        if (mutations == null) {
+            return out;
+        }
+        for (ScriptVariableMutation mutation : mutations) {
+            if (mutation == null) {
+                continue;
+            }
+            ScriptVariableMutation copy = new ScriptVariableMutation();
+            copy.key = mutation.key;
+            copy.oldValue = mutation.oldValue;
+            copy.newValue = mutation.newValue;
+            copy.scope = mutation.scope;
+            copy.persistent = mutation.persistent;
+            copy.sourceScriptId = mutation.sourceScriptId;
+            copy.sourceScriptName = mutation.sourceScriptName;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private static boolean isIntentionalNoResponseFlow(ScriptFlowControl flowControl, boolean noResponse) {
+        return noResponse && (flowControl == ScriptFlowControl.SKIP_REQUEST || flowControl == ScriptFlowControl.STOP_RUN);
+    }
+
+    private static HistoryResult historyResultForFlowControl(ScriptFlowControl flowControl) {
+        if (flowControl == ScriptFlowControl.SKIP_REQUEST) {
+            return HistoryResult.SKIPPED;
+        }
+        if (flowControl == ScriptFlowControl.STOP_RUN) {
+            return HistoryResult.STOPPED;
+        }
+        return HistoryResult.UNKNOWN;
     }
 
     private static List<String> extractUnresolvedFromResult(RunnerResult result) {

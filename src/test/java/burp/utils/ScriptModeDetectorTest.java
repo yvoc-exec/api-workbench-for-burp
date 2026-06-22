@@ -19,14 +19,12 @@ class ScriptModeDetectorTest {
         assertThat(result).isNotNull();
         assertThat(result.mode).isNotNull();
         assertThat(result.javaVersion).isGreaterThanOrEqualTo(8);
+        assertThat(result.engineName).isNotNull();
     }
 
     @Test
-    void probeNashorn_returnsNullOrReason() {
-        String reason = ScriptModeDetector.probeNashorn();
-        // On Java 17+ with nashorn-core dependency, this should be null (success)
-        // On Java 8 or without nashorn, it will return a reason string
-        // We just verify it doesn't throw
+    void probeJavaScriptRuntime_returnsNullOrDetailedReason() {
+        String reason = ScriptModeDetector.probeJavaScriptRuntime();
         if (reason != null) {
             assertThat(reason).isNotBlank();
         }

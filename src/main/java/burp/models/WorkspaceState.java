@@ -1,6 +1,7 @@
 package burp.models;
 
 import burp.history.HistoryEntry;
+import burp.scripts.ScriptBlock;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -24,6 +25,7 @@ public class WorkspaceState {
     public List<String> expandedTreePathKeys = new ArrayList<>();
     public Map<String, String> requestTreePaths = new LinkedHashMap<>();
     public List<HistoryEntry> historyEntries = new ArrayList<>();
+    public boolean diagnosticsCaptureEnabled = false;
     public Boolean workbenchRepeaterSelected;
     public Boolean workbenchSitemapSelected;
     public Boolean workbenchIntruderSelected;
@@ -69,6 +71,7 @@ public class WorkspaceState {
         copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
         copy.historyEntries = copyHistoryEntries(source.historyEntries);
+        copy.diagnosticsCaptureEnabled = source.diagnosticsCaptureEnabled;
         copy.workbenchRepeaterSelected = source.workbenchRepeaterSelected;
         copy.workbenchSitemapSelected = source.workbenchSitemapSelected;
         copy.workbenchIntruderSelected = source.workbenchIntruderSelected;
@@ -127,6 +130,8 @@ public class WorkspaceState {
         copy.folderPaths = src.folderPaths != null ? new ArrayList<>(src.folderPaths) : new ArrayList<>();
         copy.folderAuthModes = src.folderAuthModes != null ? new LinkedHashMap<>(src.folderAuthModes) : new LinkedHashMap<>();
         copy.folderAuth = copyAuthMap(src.folderAuth);
+        copy.scriptBlocks = copyScriptBlocks(src.scriptBlocks);
+        copy.folderScriptBlocks = copyFolderScriptBlocks(src.folderScriptBlocks);
         copy.requests = copyRequests(src.requests);
         copy.variables = copyVariables(src.variables);
         copy.folderVars = copyNestedStringMap(src.folderVars);
@@ -201,6 +206,7 @@ public class WorkspaceState {
         copy.variables = copyVariables(src.variables);
         copy.preRequestScripts = copyScripts(src.preRequestScripts);
         copy.postResponseScripts = copyScripts(src.postResponseScripts);
+        copy.scriptBlocks = copyScriptBlocks(src.scriptBlocks);
         return copy;
     }
 
@@ -322,6 +328,34 @@ public class WorkspaceState {
                 continue;
             }
             out.add(new ApiRequest.Script(script.type, script.exec));
+        }
+        return out;
+    }
+
+    private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> src) {
+        List<ScriptBlock> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (ScriptBlock block : src) {
+            ScriptBlock copy = ScriptBlock.copyOf(block);
+            if (copy != null) {
+                out.add(copy);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, List<ScriptBlock>> copyFolderScriptBlocks(Map<String, List<ScriptBlock>> src) {
+        Map<String, List<ScriptBlock>> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, List<ScriptBlock>> entry : src.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            out.put(entry.getKey(), copyScriptBlocks(entry.getValue()));
         }
         return out;
     }

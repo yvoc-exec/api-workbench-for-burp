@@ -410,9 +410,29 @@ public final class EnvironmentImportService {
             if (key.isEmpty()) {
                 continue;
             }
-            values.put(key, trimmed.substring(colon + 1).trim());
+            values.put(key, unquoteBrunoValue(trimmed.substring(colon + 1).trim()));
         }
         return values;
+    }
+
+    private static String unquoteBrunoValue(String value) {
+        if (value == null || value.length() < 2) {
+            return value != null ? value : "";
+        }
+
+        char first = value.charAt(0);
+        char last = value.charAt(value.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            String inner = value.substring(1, value.length() - 1);
+            if (first == '"') {
+                return inner
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\");
+            }
+            return inner;
+        }
+
+        return value;
     }
 
     private static String extractBlock(String content, String blockName) {

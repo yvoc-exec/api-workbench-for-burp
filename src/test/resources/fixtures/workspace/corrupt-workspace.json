@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "collections": [
+    {
+      "name": "Broken",
+      "requests": [
+        {
+          "name": "Broken"
+          "url": "https://api.example.test/broken"
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,8 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -72,6 +74,40 @@ class InsomniaParserTest {
         assertThat(multipart.body.formdata.get(0).disabled).isFalse();
         assertThat(multipart.body.formdata.get(1).key).isEqualTo("file_disabled");
         assertThat(multipart.body.formdata.get(1).disabled).isTrue();
+    }
+
+    @Test
+    void preservesHookStyleScriptsAsDialectAwareScriptBlocks() throws Exception {
+        ApiCollection collection = parseInsomniaJson("""
+                {
+                  "__type": "export",
+                  "__export_format": "Insomnia v4",
+                  "resources": [
+                    {
+                      "_type": "request",
+                      "_id": "req_scripted",
+                      "name": "Scripted",
+                      "method": "POST",
+                      "url": "https://api.example.test/scripted",
+                      "requestHooks": [
+                        "module.exports.requestHooks = [context => { context.request.setHeader('X-Test', '1'); }];"
+                      ],
+                      "responseHooks": [
+                        "module.exports.responseHooks = [context => { console.log(context.response.getStatusCode()); }];"
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.preRequestScripts).hasSize(1);
+        assertThat(request.postResponseScripts).hasSize(1);
+        assertThat(request.scriptBlocks).hasSize(2);
+        assertThat(request.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.INSOMNIA);
+        assertThat(request.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+        assertThat(request.scriptBlocks.get(1).dialect).isEqualTo(ScriptDialect.INSOMNIA);
+        assertThat(request.scriptBlocks.get(1).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
     }
 
     @Test

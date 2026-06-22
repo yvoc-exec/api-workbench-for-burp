@@ -2,6 +2,10 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import burp.utils.AuthInheritanceResolver;
 import com.google.gson.*;
 import java.io.*;
@@ -197,7 +201,114 @@ public class InsomniaParser implements CollectionParser {
             AuthInheritanceResolver.markRequestInherit(req);
         }
 
+        extractInsomniaScripts(res, req);
+
         return req;
+    }
+
+    private void extractInsomniaScripts(JsonObject res, ApiRequest req) {
+        if (res == null || req == null) {
+            return;
+        }
+        addInsomniaScriptsFromField(res, req, "requestHooks", ScriptPhase.PRE_REQUEST, 0);
+        addInsomniaScriptsFromField(res, req, "preRequestScript", ScriptPhase.PRE_REQUEST, 1);
+        addInsomniaScriptsFromField(res, req, "pre_request_script", ScriptPhase.PRE_REQUEST, 2);
+        addInsomniaScriptsFromField(res, req, "responseHooks", ScriptPhase.POST_RESPONSE, 3);
+        addInsomniaScriptsFromField(res, req, "afterResponseScript", ScriptPhase.POST_RESPONSE, 4);
+        addInsomniaScriptsFromField(res, req, "after_response_script", ScriptPhase.POST_RESPONSE, 5);
+
+        if (res.has("script") && res.get("script").isJsonObject()) {
+            JsonObject script = res.getAsJsonObject("script");
+            addInsomniaScriptsFromNested(script, req, ScriptPhase.PRE_REQUEST, new String[]{"pre", "request", "preRequest", "before"});
+            addInsomniaScriptsFromNested(script, req, ScriptPhase.POST_RESPONSE, new String[]{"post", "response", "after", "postResponse", "afterResponse"});
+        }
+        if (res.has("scripts") && res.get("scripts").isJsonObject()) {
+            JsonObject scripts = res.getAsJsonObject("scripts");
+            addInsomniaScriptsFromNested(scripts, req, ScriptPhase.PRE_REQUEST, new String[]{"pre", "request", "preRequest", "before"});
+            addInsomniaScriptsFromNested(scripts, req, ScriptPhase.POST_RESPONSE, new String[]{"post", "response", "after", "postResponse", "afterResponse"});
+        }
+    }
+
+    private void addInsomniaScriptsFromNested(JsonObject container,
+                                              ApiRequest req,
+                                              ScriptPhase phase,
+                                              String[] candidateKeys) {
+        if (container == null || req == null || candidateKeys == null) {
+            return;
+        }
+        for (String key : candidateKeys) {
+            if (container.has(key)) {
+                addInsomniaScriptsFromElement(container.get(key), req, phase, key);
+            }
+        }
+    }
+
+    private void addInsomniaScriptsFromField(JsonObject res,
+                                             ApiRequest req,
+                                             String field,
+                                             ScriptPhase phase,
+                                             int order) {
+        if (res == null || req == null || field == null || !res.has(field)) {
+            return;
+        }
+        addInsomniaScriptsFromElement(res.get(field), req, phase, field);
+    }
+
+    private void addInsomniaScriptsFromElement(com.google.gson.JsonElement element,
+                                               ApiRequest req,
+                                               ScriptPhase phase,
+                                               String sourcePath) {
+        if (element == null || req == null || element.isJsonNull()) {
+            return;
+        }
+        List<String> scripts = new ArrayList<>();
+        if (element.isJsonPrimitive()) {
+            scripts.add(element.getAsString());
+        } else if (element.isJsonArray()) {
+            for (JsonElement part : element.getAsJsonArray()) {
+                if (part == null || part.isJsonNull()) {
+                    continue;
+                }
+                if (part.isJsonPrimitive()) {
+                    scripts.add(part.getAsString());
+                } else {
+                    scripts.add(part.toString());
+                }
+            }
+        } else if (element.isJsonObject()) {
+            JsonObject obj = element.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                addInsomniaScriptsFromElement(entry.getValue(), req, phase, sourcePath + ":" + entry.getKey());
+            }
+            return;
+        } else {
+            scripts.add(element.toString());
+        }
+
+        for (String scriptSource : scripts) {
+            if (scriptSource == null || scriptSource.isBlank()) {
+                continue;
+            }
+            ApiRequest.Script legacy = new ApiRequest.Script("js", scriptSource);
+            if (phase == ScriptPhase.PRE_REQUEST) {
+                req.preRequestScripts.add(legacy);
+            } else {
+                req.postResponseScripts.add(legacy);
+            }
+            ScriptBlock block = ScriptBlock.fromLegacy(
+                    legacy,
+                    ScriptDialect.INSOMNIA,
+                    phase,
+                    ScriptScope.REQUEST,
+                    "insomnia",
+                    sourcePath,
+                    req.scriptBlocks.size()
+            );
+            if (block != null) {
+                block.metadata.put("sourceField", sourcePath);
+                req.scriptBlocks.add(block);
+            }
+        }
     }
 
     private String buildFolderPath(String folderId, Map<String, String> folderNames, Map<String, String> folderParents) {

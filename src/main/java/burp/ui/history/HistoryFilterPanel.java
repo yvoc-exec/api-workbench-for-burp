@@ -20,7 +20,7 @@ public class HistoryFilterPanel extends JPanel {
     private final JTextField folderField = new JTextField(8);
     private final JTextField requestField = new JTextField(8);
     private final JTextField environmentField = new JTextField(8);
-    private final JComboBox<String> resultCombo = new JComboBox<>(new String[]{"All", "Success", "Failure", "Error", "Assertion Failure", "Missing Variable", "Skipped", "Unknown"});
+    private final JComboBox<String> resultCombo = new JComboBox<>(new String[]{"All", "Success", "Failure", "Error", "Assertion Failure", "Missing Variable", "Skipped by Script", "Stopped by Script", "Unknown"});
     private final JTextField fromField = new JTextField(9);
     private final JTextField toField = new JTextField(9);
     private final JCheckBox hasResponseBodyBox = new JCheckBox("Has body");
@@ -208,6 +208,12 @@ public class HistoryFilterPanel extends JPanel {
     private static HistoryResult resultFromText(String value) {
         if (value == null || value.isBlank() || "All".equalsIgnoreCase(value)) {
             return null;
+        }
+        if ("Skipped".equalsIgnoreCase(value)) {
+            return HistoryResult.SKIPPED;
+        }
+        if ("Stopped".equalsIgnoreCase(value)) {
+            return HistoryResult.STOPPED;
         }
         for (HistoryResult result : HistoryResult.values()) {
             if (result.displayName().equalsIgnoreCase(value) || result.name().equalsIgnoreCase(value.replace(' ', '_'))) {

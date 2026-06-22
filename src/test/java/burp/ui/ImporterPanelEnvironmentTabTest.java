@@ -15,10 +15,14 @@ import org.mockito.Mockito;
 
 import javax.swing.table.DefaultTableModel;
 import javax.swing.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.List;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -304,6 +308,56 @@ class ImporterPanelEnvironmentTabTest {
     }
 
     @Test
+    void environmentRawAreaCtrlSSavesEdits() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+
+        JTextArea rawArea = (JTextArea) privateField(panel, "environmentRawArea");
+        SwingUtilities.invokeAndWait(() -> rawArea.setText("""
+                base_url=https://keyboard.example.test
+                token=abc123
+                """));
+
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, environmentSaveMask());
+        Object actionKey = rawArea.getInputMap(JComponent.WHEN_FOCUSED).get(saveKey);
+        assertThat(actionKey).isEqualTo("environment-save");
+        Action action = rawArea.getActionMap().get(actionKey);
+        assertThat(action).isNotNull();
+        action.actionPerformed(new ActionEvent(rawArea, ActionEvent.ACTION_PERFORMED, "environment-save"));
+
+        assertThat(profile.variables)
+                .containsEntry("base_url", "https://keyboard.example.test")
+                .containsEntry("token", "abc123");
+    }
+
+    @Test
+    void environmentTableCtrlSSavesEdits() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile profile = environment("UAT", "https://uat.example.test");
+        panel.replaceEnvironmentProfiles(List.of(profile));
+        panel.setActiveEnvironmentId(profile.id);
+        SwingUtilities.invokeAndWait(() -> ((JRadioButton) privateFieldUnchecked(panel, "environmentTableViewBtn")).doClick());
+
+        JTable table = (JTable) privateField(panel, "environmentTable");
+        DefaultTableModel model = (DefaultTableModel) privateField(panel, "environmentTableModel");
+        SwingUtilities.invokeAndWait(() -> {
+            model.setValueAt("base_url", 0, 0);
+            model.setValueAt("https://table-keyboard.example.test", 0, 1);
+        });
+
+        KeyStroke saveKey = KeyStroke.getKeyStroke(KeyEvent.VK_S, environmentSaveMask());
+        Object actionKey = table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(saveKey);
+        assertThat(actionKey).isEqualTo("environment-save");
+        Action action = table.getActionMap().get(actionKey);
+        assertThat(action).isNotNull();
+        action.actionPerformed(new ActionEvent(table, ActionEvent.ACTION_PERFORMED, "environment-save"));
+
+        assertThat(profile.variables).containsEntry("base_url", "https://table-keyboard.example.test");
+    }
+
+    @Test
     void dirtyEnvironmentEditorIsNotOverwrittenByNonForceRender() throws Exception {
         ImporterPanel panel = newPanel();
         EnvironmentProfile profile = environment("UAT", "https://saved.example.test");
@@ -536,5 +590,10 @@ class ImporterPanelEnvironmentTabTest {
             labels.add(String.valueOf(item));
         }
         return labels;
+    }
+
+    private static int environmentSaveMask() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return osName.contains("mac") ? InputEvent.META_DOWN_MASK : InputEvent.CTRL_DOWN_MASK;
     }
 }

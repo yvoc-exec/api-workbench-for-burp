@@ -2,13 +2,15 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptPhase;
 import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
 
 import javax.swing.JComboBox;
 import javax.swing.JTextArea;
-import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -21,18 +23,19 @@ import java.util.function.Supplier;
  * request load/build behavior in one place.</p>
  */
 final class RequestEditorStateMapper {
+    static final int HEADER_DISABLED_MODEL_COLUMN = 2;
 
     private RequestEditorStateMapper() {
     }
 
     static final class Context {
         final JComboBox<String> methodBox;
-        final JTextField urlField;
+        final JTextComponent urlField;
         final DefaultTableModel paramsModel;
         final JComboBox<String> authTypeBox;
         final Runnable rebuildAuthFields;
         final DefaultTableModel headersModel;
-        final JTextArea bodyRawArea;
+        final JTextComponent bodyRawArea;
         final DefaultTableModel bodyFormModel;
         final Consumer<String> setBodyModeInternal;
         final Supplier<String> getBodyModeInternal;
@@ -46,12 +49,12 @@ final class RequestEditorStateMapper {
         final RequestBuilder requestBuilder;
 
         Context(JComboBox<String> methodBox,
-                JTextField urlField,
+                JTextComponent urlField,
                 DefaultTableModel paramsModel,
                 JComboBox<String> authTypeBox,
                 Runnable rebuildAuthFields,
                 DefaultTableModel headersModel,
-                JTextArea bodyRawArea,
+                JTextComponent bodyRawArea,
                 DefaultTableModel bodyFormModel,
                 Consumer<String> setBodyModeInternal,
                 Supplier<String> getBodyModeInternal,
@@ -144,8 +147,8 @@ final class RequestEditorStateMapper {
             ensureStarterRow(ctx.bodyFormModel);
         }
 
-        loadScripts(req.preRequestScripts, ctx.preScriptArea);
-        loadScripts(req.postResponseScripts, ctx.postScriptArea);
+        loadScripts(preRequestScriptsForDisplay(req), ctx.preScriptArea);
+        loadScripts(postResponseScriptsForDisplay(req), ctx.postScriptArea);
         ctx.refreshResolvedMirror.run();
     }
 
@@ -181,13 +184,14 @@ final class RequestEditorStateMapper {
         for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
             String key = (String) ctx.headersModel.getValueAt(i, 0);
             String value = (String) ctx.headersModel.getValueAt(i, 1);
+            boolean disabled = Boolean.TRUE.equals(headerDisabledValue(ctx.headersModel, i));
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
             if (TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
                 continue;
             }
-            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", false));
+            req.headers.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
         }
 
         String bodyMode = ctx.getBodyModeInternal.get();
@@ -232,6 +236,11 @@ final class RequestEditorStateMapper {
 
         appendScript(ctx.preScriptArea.getText(), req.preRequestScripts);
         appendScript(ctx.postScriptArea.getText(), req.postResponseScripts);
+        req.scriptBlocks = currentRequest.scriptBlocks != null ? copyScriptBlocks(currentRequest.scriptBlocks) : new ArrayList<>();
+        if (req.scriptBlocks.isEmpty()) {
+            req.scriptBlocks.addAll(convertLegacyScripts(req.preRequestScripts, ScriptPhase.PRE_REQUEST, currentRequest));
+            req.scriptBlocks.addAll(convertLegacyScripts(req.postResponseScripts, ScriptPhase.POST_RESPONSE, currentRequest));
+        }
         return req;
     }
 
@@ -257,7 +266,7 @@ final class RequestEditorStateMapper {
         }
         if (req.headers != null) {
             for (ApiRequest.Header header : req.headers) {
-                if (header == null || header.disabled || header.key == null) {
+                if (header == null || header.key == null) {
                     continue;
                 }
                 String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
@@ -265,7 +274,7 @@ final class RequestEditorStateMapper {
                     continue;
                 }
                 if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
-                    ctx.headersModel.addRow(new Object[]{header.key, header.value != null ? header.value : ""});
+                    ctx.headersModel.addRow(headerRow(header.key, header.value != null ? header.value : "", header.disabled, ctx.headersModel));
                 }
             }
         }
@@ -293,7 +302,24 @@ final class RequestEditorStateMapper {
                 return;
             }
         }
-        model.addRow(new Object[]{key, value});
+        model.addRow(headerRow(key, value, false, model));
+    }
+
+    private static Object[] headerRow(String key, String value, boolean disabled, DefaultTableModel model) {
+        if (model != null && model.getColumnCount() > HEADER_DISABLED_MODEL_COLUMN) {
+            return new Object[]{key, value, disabled};
+        }
+        return new Object[]{key, value};
+    }
+
+    private static Object headerDisabledValue(DefaultTableModel model, int row) {
+        if (model == null || row < 0 || row >= model.getRowCount()) {
+            return Boolean.FALSE;
+        }
+        if (model.getColumnCount() <= HEADER_DISABLED_MODEL_COLUMN) {
+            return Boolean.FALSE;
+        }
+        return model.getValueAt(row, HEADER_DISABLED_MODEL_COLUMN);
     }
 
     static void ensureStarterRow(DefaultTableModel model) {
@@ -409,5 +435,75 @@ final class RequestEditorStateMapper {
         if (!script.isEmpty()) {
             targetScripts.add(new ApiRequest.Script("js", script));
         }
+    }
+
+    private static List<ApiRequest.Script> preRequestScriptsForDisplay(ApiRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        if (request.preRequestScripts != null && !request.preRequestScripts.isEmpty()) {
+            return request.preRequestScripts;
+        }
+        return scriptsForPhase(request.scriptBlocks, ScriptPhase.PRE_REQUEST);
+    }
+
+    private static List<ApiRequest.Script> postResponseScriptsForDisplay(ApiRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        if (request.postResponseScripts != null && !request.postResponseScripts.isEmpty()) {
+            return request.postResponseScripts;
+        }
+        return scriptsForPhase(request.scriptBlocks, ScriptPhase.POST_RESPONSE);
+    }
+
+    private static List<ApiRequest.Script> scriptsForPhase(List<ScriptBlock> blocks, ScriptPhase phase) {
+        List<ApiRequest.Script> scripts = new ArrayList<>();
+        if (blocks == null) {
+            return scripts;
+        }
+        for (ScriptBlock block : blocks) {
+            if (block != null && block.phase == phase && block.source != null) {
+                scripts.add(block.toLegacyScript());
+            }
+        }
+        return scripts;
+    }
+
+    private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> blocks) {
+        List<ScriptBlock> copy = new ArrayList<>();
+        if (blocks == null) {
+            return copy;
+        }
+        for (ScriptBlock block : blocks) {
+            ScriptBlock cloned = ScriptBlock.copyOf(block);
+            if (cloned != null) {
+                copy.add(cloned);
+            }
+        }
+        return copy;
+    }
+
+    private static List<ScriptBlock> convertLegacyScripts(List<ApiRequest.Script> scripts, ScriptPhase phase, ApiRequest currentRequest) {
+        List<ScriptBlock> blocks = new ArrayList<>();
+        if (scripts == null) {
+            return blocks;
+        }
+        int order = 0;
+        for (ApiRequest.Script script : scripts) {
+            ScriptBlock block = ScriptBlock.fromLegacy(
+                    script,
+                    burp.scripts.ScriptDialect.LEGACY_NASHORN,
+                    phase,
+                    burp.scripts.ScriptScope.REQUEST,
+                    currentRequest != null ? currentRequest.sourceCollection : null,
+                    currentRequest != null ? currentRequest.path : null,
+                    order++
+            );
+            if (block != null) {
+                blocks.add(block);
+            }
+        }
+        return blocks;
     }
 }

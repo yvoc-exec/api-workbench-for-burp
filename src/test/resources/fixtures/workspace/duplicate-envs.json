@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "collections": [],
+  "environments": [
+    {
+      "id": "env-dup",
+      "name": "Dev",
+      "variables": {
+        "base_url": "https://dev.example.test"
+      }
+    },
+    {
+      "id": "env-dup",
+      "name": "QA",
+      "variables": {
+        "base_url": "https://qa.example.test"
+      }
+    }
+  ],
+  "activeEnvironmentId": "env-dup"
+}
