@@ -147,9 +147,9 @@ run_with_java 17 "$java17_home" "mvn -B clean verify" mvn -B clean verify
 run_with_java 21 "$java21_home" "mvn -B clean verify" mvn -B clean verify
 run_with_java 25 "$java25_home" "mvn -B clean verify" mvn -B clean verify
 
-run_with_java 17 "$java17_home" 'xvfb-run -a -s "-screen 0 1920x1080x24" mvn -B verify -Pui-tests' \
-  xvfb-run -a -s "-screen 0 1920x1080x24" mvn -B verify -Pui-tests
+run_with_java 17 "$java17_home" 'xvfb-run -a -s "-screen 0 1920x1080x24" mvn -B clean verify -Pui-tests' \
+  xvfb-run -a -s "-screen 0 1920x1080x24" mvn -B clean verify -Pui-tests
 
-run_with_java 17 "$java17_home" "mvn -B verify -Pstatic-analysis" mvn -B verify -Pstatic-analysis
+run_with_java 17 "$java17_home" "mvn -B clean verify -Pstatic-analysis" mvn -B clean verify -Pstatic-analysis
 
 show_summary

@@ -22,6 +22,7 @@
         <jacoco.version>0.8.15</jacoco.version>
         <skipUnitTests>false</skipUnitTests>
         <skipITs>true</skipITs>
+        <skipJacocoCheck>false</skipJacocoCheck>
         <failsafe.include.pattern>**/*IT.java</failsafe.include.pattern>
         <ui.tests.enabled>false</ui.tests.enabled>
         <performance.tests.enabled>false</performance.tests.enabled>
@@ -171,6 +172,7 @@
                             <goal>check</goal>
                         </goals>
                         <configuration>
+                            <skip>${skipJacocoCheck}</skip>
                             <rules>
                                 <rule>
                                     <element>BUNDLE</element>
@@ -480,6 +482,7 @@
             <properties>
                 <skipUnitTests>true</skipUnitTests>
                 <skipITs>false</skipITs>
+                <skipJacocoCheck>true</skipJacocoCheck>
                 <failsafe.include.pattern>**/*UiIT.java</failsafe.include.pattern>
                 <ui.tests.enabled>true</ui.tests.enabled>
                 <performance.tests.enabled>false</performance.tests.enabled>
@@ -490,6 +493,7 @@
             <properties>
                 <skipUnitTests>true</skipUnitTests>
                 <skipITs>false</skipITs>
+                <skipJacocoCheck>true</skipJacocoCheck>
                 <failsafe.include.pattern>**/*PerformanceIT.java</failsafe.include.pattern>
                 <ui.tests.enabled>false</ui.tests.enabled>
                 <performance.tests.enabled>true</performance.tests.enabled>
@@ -500,6 +504,7 @@
             <properties>
                 <skipUnitTests>true</skipUnitTests>
                 <skipITs>true</skipITs>
+                <skipJacocoCheck>true</skipJacocoCheck>
             </properties>
             <build>
                 <plugins>
