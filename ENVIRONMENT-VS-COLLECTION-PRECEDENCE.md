@@ -15,7 +15,7 @@ Lowest to highest:
    - OAuth2 environment config is added first
    - normal environment variables can override same-named config keys
 7. Explicit execution/runtime/script overlay
-8. Request-level variables
+8. Authored request variables
 9. Auth/runtime mapping when enabled
 10. `{{name|default}}` fallback syntax, used only when no higher layer resolved the key
 
@@ -50,8 +50,9 @@ Script-local values, helper objects, and global script context are execution-tim
 | Folder data | Yes | Folder variables, auth, and script blocks |
 | Collection runtime values | Yes | Compatibility/runtime storage layer |
 | Active environment | Yes | Selected environment profile ID |
-| Request-local values | Usually transient; some are persisted as request state | Request editor and runtime overlay values |
-| Script local / global context | No | Execution-time only unless a script writes to a supported persisted scope |
+| Authored request variables | Yes | Persisted as part of the request/workspace model |
+| Explicit execution/runtime overlay | No | Transient unless written through a supported persisted scope |
+| Script local / global context | No | Transient unless explicitly written to Environment, collection, folder, or another supported persisted scope |
 
 ## 5. Workbench Send, Runner, import destinations, and export behavior
 
@@ -59,7 +60,9 @@ Script-local values, helper objects, and global script context are execution-tim
 - Runner uses the same shared request pipeline as Workbench Send.
 - Repeater, Intruder, and Sitemap import destinations also honor the active environment where request resolution is needed.
 - Exported collections and environments may lose metadata that their target schema cannot represent.
-- Native API Workbench export is the most faithful format for native scripts and runtime metadata.
+- Native API Workbench collection export is the most faithful format for authored collection structure, auth, variables, folder metadata, requests, and native script blocks. It does not automatically serialize `runtimeVars` or `runtimeOAuth2`.
+- Optional active-environment resolution can materialize values into the exported representation when selected.
+- Native API Workbench environment export preserves the selected environment profile's variables, OAuth2 configuration, and output bindings.
 
 ## 6. Worked examples
 
@@ -115,7 +118,13 @@ resolves to the placeholder value. If any higher layer resolves `host`, that val
 
 ### 6.4 Script mutation becomes visible in the active environment
 
-A script can mutate a supported persisted variable scope through the exposed binding. When it does, the active environment view and later request resolutions can observe that mutation.
+A script can mutate a supported persisted variable scope through the exposed binding. For example:
+
+```javascript
+pm.environment.set("token", "value");
+```
+
+When it does, the active environment view and later request resolutions can observe that mutation. Collection-targeted mutation does not automatically become an Environment-profile mutation.
 
 ## 7. Notes
 

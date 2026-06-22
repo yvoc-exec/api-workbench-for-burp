@@ -106,14 +106,17 @@ Script-local values and global helper context are separate from the normal reque
 
 API Workbench requires Java 17 or later.
 
-After loading the extension, Burp output should show startup lines similar to:
+After loading the extension, Burp output should show startup lines similar to the following. This is representative startup output, not a literal promise that the startup log enumerates every in-app tab:
 
 ```text
 API Workbench for Burp v2.0.0
 Supports: Postman, Bruno, OpenAPI, Insomnia, HAR
-Features: Workbench + Environment + OAuth2 + Collection Runner + History + Diagnostics
-Java: ... | Script: ...
-Extension loaded successfully!
+Features: Import + Collection Runner + Workbench
+Java: <version> | Script: <mode>
+Script engine: <engine name>
+Script reason: <reason, when present>
+Extension core initialized; scheduling API Workbench UI registration...
+API Workbench suite tab registered successfully.
 ```
 
 Check the script mode line:
@@ -145,7 +148,7 @@ Controls:
 | Control | Behavior |
 | --- | --- |
 | **+ Add Collection** | Opens a file chooser and imports a collection or Bruno folder |
-| **- Remove Selected** | Removes checked collection nodes from the current workspace |
+| **- Remove Collection** | Removes checked collection nodes from the current workspace |
 | **Check All** | Checks all visible collection/request nodes |
 | **Uncheck All** | Unchecks all visible collection/request nodes |
 
@@ -154,6 +157,14 @@ Notes:
 - Duplicate collection names are rejected to avoid ambiguous variable binding.
 - Removing a collection does not change the Active Environment.
 - Loaded collections can be restored from Burp project data when using a project on disk.
+
+### Request Tree Actions
+
+The request-tree context menu includes **New Collection**, **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Export**, and **Auth Settings**.
+
+### Request Tree Auth Inheritance
+
+Auth can be inherited from the request itself, the nearest folder, the collection, or an explicit no-auth setting.
 
 ### Request Tree
 
@@ -205,6 +216,14 @@ Controls:
 
 The active environment applies to previews, Workbench sends, Runner, Repeater, Intruder, and Sitemap request construction. An environment profile contains normal variables plus OAuth2 configuration and output bindings.
 
+### Environment Views
+
+| View | Behavior |
+| --- | --- |
+| Raw | Edit the selected profile as structured JSON |
+| Table | Edit variables and bindings in a tabular view |
+| Save | Persist the edited profile to workspace state |
+
 ### Variable behavior
 
 Use the Environment tab to manage the active environment overlay. Collection variables and collection runtime values still exist, but the environment profile is the operator-facing place to change targets, tenants, roles, and tokens.
@@ -225,20 +244,24 @@ The OAuth2 tab selects and uses an environment profile.
 
 ### Grant types
 
-- Client Credentials
-- Password Grant
-- Refresh Token
-- Authorization Code / PKCE where supported
+| Grant type | Required fields |
+| --- | --- |
+| Client Credentials | Token URL, client ID, client secret, and any required scope |
+| Password Grant | Token URL, username, password, client ID, client secret when required, and any required scope |
+| Refresh Token | Token URL, refresh token, client ID, client secret when required, and any required scope |
+| Authorization Code / PKCE where supported | Authorization URL, token URL, client ID, redirect URI or callback, and PKCE verifier data when enabled |
 
 ### OAuth2 controls
 
 | Control | Behavior |
 | --- | --- |
-| Populate from Checked Request | Pre-fills OAuth2 fields from the selected request |
+| Populate from Request | Pre-fills OAuth2 fields from the selected request |
 | Acquire Token | Requests a token and writes outputs to the active environment |
-| Auto Refresh | Refreshes tokens when needed |
+| Bind Token | Binds the current token outputs to the selected environment profile |
+| Clear Tokens | Clears configured token outputs from the selected environment profile |
+| Auto-bind token to Active Environment | Keeps token outputs aligned with the active environment through runtime/pipeline behavior |
 
-Successful token acquisition writes the configured token outputs to the selected environment profile. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, but they are not the primary operator-facing OAuth2 model.
+Successful token acquisition writes the configured token outputs to the selected environment profile. Token refresh can also happen through runtime/pipeline behavior; it is not a visible OAuth2-tab button. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, but they are not the primary operator-facing OAuth2 model.
 
 ---
 
@@ -248,11 +271,17 @@ The current presentation is a Runner Queue on the left, one consolidated Runner 
 
 ### Runner configuration
 
-- Delay between requests
-- Retries
-- Stop conditions
-- Follow redirects
-- Debug raw request output
+| Setting | Behavior |
+| --- | --- |
+| Delay | Time between requests |
+| Retries | Attempts after the initial attempt |
+| Stop on error | Stop when a request-level error occurs |
+| Stop on assertion failure | Stop when an assertion fails |
+| Stop on status >= 400 | Stop when the response status is 400 or higher |
+| Stop when variable missing | Stop when required variables are unresolved |
+| Stop after failures | Stop after the configured failure threshold |
+| Follow redirects | Follow HTTP redirects |
+| Debug final raw request | Emit the final built request for debugging |
 
 ### Runner controls
 
@@ -290,7 +319,7 @@ Actions:
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
-Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. The History store retains at most 1,000 entries and persists with the workspace.
+Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. `HistorySanitizer` handles safe text normalization and CSV-cell/formula safety; it is not a secret-redaction engine. The History store retains at most 1,000 entries and persists with the workspace.
 
 ---
 
@@ -306,7 +335,7 @@ Controls:
 - Clear
 - Copy
 
-The in-memory store retains at most 1,000 events. Reports group events by operation and include warning, error, and debug summaries. Sanitization is best-effort and masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns. Review reports before sharing them.
+The in-memory store retains at most 1,000 events. Raw `DiagnosticEvent` objects are retained first, and report/snapshot generation applies best-effort sanitization when capture is enabled. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
 
 Workspace persistence stores the diagnostics-capture-enabled setting.
 
@@ -332,9 +361,13 @@ Burp project files can contain secrets. Treat them as sensitive.
 
 | Export area | Formats | Notes |
 | --- | --- | --- |
-| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Native format is most faithful; external exports are lossy where schemas cannot represent all metadata |
-| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | The active environment is the operator context |
+| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Native collection export is the most faithful representation of authored structure, auth, variables, folder metadata, requests, and native script blocks. Optional active-environment resolution can materialize values, but `runtimeVars` and `runtimeOAuth2` are not auto-serialized. |
+| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | The active environment is the operator context and the export preserves its variables, OAuth2 configuration, and output bindings |
 | History | HAR, Native History JSON, CSV summary | Useful for evidence and reporting |
+
+Collection export uses the active environment only when the operator chooses to resolve values; unchecked export preserves placeholders, checked export resolves through the active environment, quick values used only for export do not mutate the active environment, and cancel aborts the export. Environment export preserves the selected profile's variable table, OAuth2 configuration, and output bindings.
+
+External export formats are lossy where their schemas cannot represent all Workbench metadata.
 
 ---
 
@@ -377,7 +410,7 @@ Always run only trusted scripts. Scripts can mutate requests and runtime state, 
 
 ## Supported Collection Formats
 
-- Postman v2.0 / v2.1 import and export support
+- Postman Collection v2.0 and v2.1 JSON import; Postman Collection v2.1 JSON export
 - OpenAPI / Swagger 2.x / 3.x import support
 - OpenAPI 3.0 JSON or YAML export
 - Insomnia import with supported pre/post script field shapes
@@ -401,7 +434,7 @@ Always run only trusted scripts. Scripts can mutate requests and runtime state, 
 
 ### JavaScript Runtime Unavailable or Limited Script Mode
 
-- Full mode means GraalJS or another supported JavaScript runtime is available.
+- Full mode means a supported JavaScript runtime is available.
 - Limited mode means runtime probing failed and only legacy post-response regex extraction is available.
 - Disabled mode means Java is below the supported runtime requirement.
 - Nashorn is a compatibility fallback, not the main architecture.
@@ -409,12 +442,14 @@ Always run only trusted scripts. Scripts can mutate requests and runtime state, 
 
 ### Other common issues
 
-- Import errors: confirm the file type is supported.
-- Variable errors: verify the active environment and collection values.
-- OAuth2 errors: confirm the selected environment profile and callback settings.
-- Runner errors: check stop conditions, redirects, and queue contents.
-- Auth errors: confirm inheritance and request-level overrides.
-- Burp/build errors: confirm the JAR was built with Java 17+.
+| Area | What to check |
+| --- | --- |
+| Import | Confirm the file type and import format are supported. |
+| Variables | Verify the active environment, collection values, and request overrides. |
+| OAuth2 | Confirm the selected environment profile, grant fields, and callback settings. |
+| Runner | Check stop conditions, redirects, retry counts, and queue contents. |
+| Auth | Confirm inheritance from request, folder, collection, or explicit no-auth. |
+| Build / load | Confirm the JAR was built with Java 17+ and that Burp loaded the fat JAR. |
 
 ### Obsolete wording to avoid
 
