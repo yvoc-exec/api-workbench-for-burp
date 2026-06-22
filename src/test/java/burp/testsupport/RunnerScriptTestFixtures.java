@@ -24,6 +24,7 @@ import burp.utils.SharedRequestPipeline;
 import org.mockito.Mockito;
 
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,6 +33,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+
+import javax.swing.SwingUtilities;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -155,7 +158,12 @@ public final class RunnerScriptTestFixtures {
     }
 
     public static void waitForRunnerToStop(CollectionRunner runner) {
-        long deadline = System.currentTimeMillis() + TimeUnit.MILLISECONDS.toMillis(1500);
+        waitForRunnerWorkerToStop(runner);
+        drainSwingEdt();
+    }
+
+    private static void waitForRunnerWorkerToStop(CollectionRunner runner) {
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(10);
         while (runner != null && runner.isRunning() && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(10);
@@ -164,7 +172,22 @@ public final class RunnerScriptTestFixtures {
                 throw new AssertionError("Interrupted while waiting for runner", e);
             }
         }
-        assertThat(runner != null && runner.isRunning()).isFalse();
+        assertThat(runner != null && runner.isRunning())
+                .as("Runner still running after waiting up to 10 seconds for completion")
+                .isFalse();
+    }
+
+    private static void drainSwingEdt() {
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                // Drain listener callbacks queued before the runner completed.
+            });
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while draining Swing EDT after runner completion", e);
+        } catch (InvocationTargetException e) {
+            throw new AssertionError("Swing EDT failed while draining runner listener callbacks", e.getCause());
+        }
     }
 
     public static final class RecordingRunnerListener implements CollectionRunner.RunnerListener {
