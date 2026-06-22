@@ -23,7 +23,7 @@ API Workbench for Burp Suite is a Burp-native API workspace. It helps you import
 | OAuth2 | Bind token acquisition to the active environment profile | Reduce manual token copying and refresh drift |
 | Collection Runner | Queue, preview, reorder, step, and run requests | Test chained API workflows repeatably |
 | History | Replay, compare, export, copy, or re-open previous executions | Reproduce findings and create evidence |
-| Diagnostics | Capture passive events and generate or copy sanitized reports | Diagnose runtime issues without sending traffic |
+| Diagnostics | Capture passive events and generate sanitized reports, or copy them | Diagnose runtime issues without sending traffic |
 | Export / handoff | Export collections, environments, and execution history | Share work cleanly with teammates or clients |
 
 ## Main features
