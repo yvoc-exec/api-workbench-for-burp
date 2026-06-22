@@ -29,14 +29,18 @@ import java.util.*;
  * handles OAuth2 refresh, builds and sends the HTTP request, then runs post-response
  * scripts and merges extracted variables back into the collection runtime context.
  *
- * Precedence (lowest -> highest, as added to resolver):
- *   1. Collection environment
- *   2. Collection definition variables
- *   3. Bruno folder variables
- *   4. Scoped OAuth2 runtime vars (runtimeOAuth2)
- *   5. Scoped runtime vars (runtimeVars, includes previously extracted)
- *   6. Request-level variables
- *   6. Default values {{var|default}} handled by resolver internally
+ * Precedence, lowest to highest:
+ * 1. Collection environment
+ * 2. Collection definition variables
+ * 3. Ancestor-folder variables
+ * 4. Collection runtime OAuth2
+ * 5. Collection runtime variables
+ * 6. Active Environment overlay
+ * 7. Explicit execution/runtime/script overlay
+ * 8. Request-level variables
+ * 9. Auth/runtime mapping when enabled
+ *
+ * Default placeholder values are applied only when a key remains unresolved.
  */
 public class SharedRequestPipeline {
     public interface OAuth2TokenSink {
