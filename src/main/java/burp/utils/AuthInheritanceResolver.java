@@ -74,7 +74,7 @@ public final class AuthInheritanceResolver {
             }
             if (request.auth != null && request.auth.type != null) {
                 if ("none".equalsIgnoreCase(request.auth.type)) {
-                    return request.authExplicitlyDisabled ? MODE_NONE : MODE_INHERIT;
+                    return MODE_INHERIT;
                 }
                 return MODE_EXPLICIT;
             }

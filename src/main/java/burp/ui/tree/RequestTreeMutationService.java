@@ -2,6 +2,7 @@ package burp.ui.tree;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
 
@@ -1095,6 +1096,7 @@ public final class RequestTreeMutationService {
         copy.variables = copyVariables(source.variables);
         copy.preRequestScripts = copyScripts(source.preRequestScripts);
         copy.postResponseScripts = copyScripts(source.postResponseScripts);
+        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
         copy.disabled = source.disabled;
         copy.sequenceOrder = source.sequenceOrder;
         copy.authInherited = source.authInherited;
@@ -1121,6 +1123,8 @@ public final class RequestTreeMutationService {
         copy.environment = copyStringMap(source.environment);
         copy.folderAuthModes = copyStringMap(source.folderAuthModes);
         copy.folderAuth = copyAuthMap(source.folderAuth);
+        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
+        copy.folderScriptBlocks = copyFolderScriptBlocks(source.folderScriptBlocks);
         copy.requests = new ArrayList<>();
         if (source.requests != null) {
             for (ApiRequest request : source.requests) {
@@ -1234,6 +1238,34 @@ public final class RequestTreeMutationService {
                 continue;
             }
             out.add(new ApiRequest.Script(script.type, script.exec));
+        }
+        return out;
+    }
+
+    private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> src) {
+        List<ScriptBlock> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (ScriptBlock block : src) {
+            ScriptBlock copy = ScriptBlock.copyOf(block);
+            if (copy != null) {
+                out.add(copy);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, List<ScriptBlock>> copyFolderScriptBlocks(Map<String, List<ScriptBlock>> src) {
+        Map<String, List<ScriptBlock>> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, List<ScriptBlock>> entry : src.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            out.put(entry.getKey(), copyScriptBlocks(entry.getValue()));
         }
         return out;
     }

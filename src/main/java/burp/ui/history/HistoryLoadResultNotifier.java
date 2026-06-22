@@ -43,7 +43,7 @@ public class HistoryLoadResultNotifier {
     public boolean confirmExportSensitiveData(Component parent) {
         return JOptionPane.showConfirmDialog(
                 parent,
-                "Exported history may contain sensitive request or response data. Review before sharing.",
+                "Exported history may contain raw requests, responses, tokens, cookies, and other sensitive evidence. Review before sharing.",
                 "Export History",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.WARNING_MESSAGE) == JOptionPane.YES_OPTION;

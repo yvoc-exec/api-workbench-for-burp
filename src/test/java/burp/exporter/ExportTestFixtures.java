@@ -3,6 +3,10 @@ package burp.exporter;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -44,6 +48,12 @@ final class ExportTestFixtures {
         collection.folderAuth.put("Auth", auth("bearer", Map.of("token", "{{token}}")));
         collection.folderVars = new LinkedHashMap<>();
         collection.folderVars.put("Auth", Map.of("folder_var", "folder-value"));
+        collection.scriptBlocks = new ArrayList<>();
+        collection.scriptBlocks.add(scriptBlock("collection-pre", ScriptDialect.POSTMAN, ScriptPhase.PRE_REQUEST, ScriptScope.COLLECTION, "console.log('collection pre');", 1));
+        collection.folderScriptBlocks = new LinkedHashMap<>();
+        collection.folderScriptBlocks.put("Auth", new ArrayList<>(List.of(
+                scriptBlock("folder-post", ScriptDialect.BRUNO, ScriptPhase.POST_RESPONSE, ScriptScope.FOLDER, "console.log('folder post');", 2)
+        )));
 
         collection.runtimeVars.put("runtime_only", "should-not-export");
         collection.runtimeOAuth2.put("accessToken", "runtime-token");
@@ -122,6 +132,9 @@ final class ExportTestFixtures {
         request.preRequestScripts.add(new ApiRequest.Script("js", "console.log('pre');"));
         request.postResponseScripts = new ArrayList<>();
         request.postResponseScripts.add(new ApiRequest.Script("js", "console.log('post');"));
+        request.scriptBlocks = new ArrayList<>();
+        request.scriptBlocks.add(scriptBlock("request-pre", ScriptDialect.POSTMAN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, "pm.environment.set('token', 'abc');", 0));
+        request.scriptBlocks.add(scriptBlock("request-post", ScriptDialect.INSOMNIA, ScriptPhase.POST_RESPONSE, ScriptScope.REQUEST, "insomnia.environment.set('token', 'abc');", 1));
         request.sequenceOrder = 1;
         return request;
     }
@@ -244,5 +257,21 @@ final class ExportTestFixtures {
         variable.value = value;
         variable.enabled = true;
         return variable;
+    }
+
+    static ScriptBlock scriptBlock(String id,
+                                   ScriptDialect dialect,
+                                   ScriptPhase phase,
+                                   ScriptScope scope,
+                                   String source,
+                                   int order) {
+        ScriptBlock block = new ScriptBlock();
+        block.id = id;
+        block.dialect = dialect;
+        block.phase = phase;
+        block.scope = scope;
+        block.source = source;
+        block.order = order;
+        return block;
     }
 }

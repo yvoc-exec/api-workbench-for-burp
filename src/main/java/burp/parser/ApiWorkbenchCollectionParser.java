@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.scripts.ScriptBlock;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
 import com.google.gson.JsonArray;
@@ -76,6 +77,8 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         collection.folderAuthModes = normalizeFolderPathKeys(parseStringMap(collectionObj.getAsJsonObject("folderAuthModes")));
         collection.folderAuth = normalizeFolderPathKeys(parseAuthMap(collectionObj.getAsJsonObject("folderAuth")));
         collection.folderVars = normalizeFolderPathKeys(parseNestedStringMap(collectionObj.getAsJsonObject("folderVars")));
+        collection.scriptBlocks = parseScriptBlocks(collectionObj.getAsJsonArray("scriptBlocks"));
+        collection.folderScriptBlocks = parseFolderScriptBlocks(collectionObj.getAsJsonObject("folderScriptBlocks"));
         Map<ApiRequest, String> exportedAuthSources = new IdentityHashMap<>();
         collection.requests = parseRequests(collectionObj.getAsJsonArray("requests"), collection.name, exportedAuthSources);
 
@@ -156,6 +159,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.variables = parseVariables(obj.getAsJsonArray("variables"));
             request.preRequestScripts = parseScripts(obj.getAsJsonArray("preRequestScripts"));
             request.postResponseScripts = parseScripts(obj.getAsJsonArray("postResponseScripts"));
+            request.scriptBlocks = parseScriptBlocks(obj.getAsJsonArray("scriptBlocks"));
             request.disabled = getBoolean(obj, "disabled", false);
             request.sequenceOrder = getInt(obj, "sequenceOrder", 0);
             requests.add(request);
@@ -325,6 +329,41 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             scripts.add(new ApiRequest.Script(getString(obj, "type", "js"), exec));
         }
         return scripts;
+    }
+
+    private List<ScriptBlock> parseScriptBlocks(JsonArray array) {
+        List<ScriptBlock> blocks = new ArrayList<>();
+        if (array == null) {
+            return blocks;
+        }
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder().create();
+        for (JsonElement element : array) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            try {
+                ScriptBlock block = gson.fromJson(element, ScriptBlock.class);
+                if (block != null) {
+                    blocks.add(block);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return blocks;
+    }
+
+    private Map<String, List<ScriptBlock>> parseFolderScriptBlocks(JsonObject object) {
+        Map<String, List<ScriptBlock>> blocks = new LinkedHashMap<>();
+        if (object == null) {
+            return blocks;
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null || !entry.getValue().isJsonArray()) {
+                continue;
+            }
+            blocks.put(entry.getKey(), parseScriptBlocks(entry.getValue().getAsJsonArray()));
+        }
+        return blocks;
     }
 
     private Set<String> parseSuppressedHeaders(JsonArray array) {

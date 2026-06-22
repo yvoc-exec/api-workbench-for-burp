@@ -19,6 +19,9 @@ final class HistoryNativeMessageFormatter {
         if (request == null) {
             return "";
         }
+        if (request.hasRawRequestSent()) {
+            return request.preferredRawRequestText();
+        }
 
         StringBuilder sb = new StringBuilder();
         String method = request.method != null && !request.method.isBlank() ? request.method.trim().toUpperCase() : "GET";

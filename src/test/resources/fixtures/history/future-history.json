@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "futureRootField": "ignored",
+  "historyEntries": [
+    {
+      "id": "hist-future",
+      "timestamp": "2026-06-15T03:00:00Z",
+      "source": "WORKBENCH",
+      "collectionName": "Future",
+      "requestName": "Future Request",
+      "futureEntryField": 123,
+      "requestSnapshot": {
+        "method": "DELETE",
+        "urlTemplate": "https://api.example.test/future"
+      }
+    }
+  ]
+}

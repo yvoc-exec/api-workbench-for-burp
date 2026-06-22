@@ -1,25 +1,379 @@
-# API Workbench CI build workflow.
-name: Build API Workbench JAR
+name: Build & Validate API Workbench JAR
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - '**'
+  pull_request:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Validation mode
+        required: true
+        type: choice
+        default: full
+        options:
+          - ci
+          - full
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  resolve-mode:
+    name: Resolve validation mode
     runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+      run_full: ${{ steps.resolve.outputs.run_full }}
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - name: Build with Maven
-      run: mvn clean package
-    - name: Upload API Workbench JAR
-      uses: actions/upload-artifact@v4
-      with:
-        name: api-workbench-for-burp-jar
-        path: target/*-jar-with-dependencies.jar
+      - name: Resolve mode
+        id: resolve
+        shell: bash
+        run: |
+          case "${{ github.event_name }}" in
+            push|pull_request)
+              mode="ci"
+              ;;
+            workflow_dispatch)
+              mode="${{ inputs.mode }}"
+              ;;
+            workflow_call)
+              mode="${{ inputs.mode }}"
+              if [ "$mode" != "full" ]; then
+                echo "Unsupported workflow_call mode: $mode" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported event: ${{ github.event_name }}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$mode" != "ci" ] && [ "$mode" != "full" ]; then
+            echo "Unsupported validation mode: $mode" >&2
+            exit 1
+          fi
+
+          if [ "$mode" = "full" ]; then
+            run_full="true"
+          else
+            run_full="false"
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "run_full=$run_full" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$mode run_full=$run_full"
+
+  core-tests:
+    name: Unit/component tests + default lifecycle tests + JaCoCo (Ubuntu, JDK 17)
+    needs: resolve-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Run Maven verify with JaCoCo thresholds
+        run: mvn -B clean verify
+      - name: Upload core test reports and coverage
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: core-tests-reports-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/site/jacoco/**
+            target/jacoco.exec
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+
+  compatibility-tests:
+    name: Compatibility tests (${{ matrix.label }}, JDK ${{ matrix.java }})
+    needs: resolve-mode
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Ubuntu
+            runs-on: ubuntu-latest
+            java: '21'
+          - label: Ubuntu
+            runs-on: ubuntu-latest
+            java: '25'
+          - label: Windows
+            runs-on: windows-latest
+            java: '17'
+          - label: Windows
+            runs-on: windows-latest
+            java: '21'
+          - label: Windows
+            runs-on: windows-latest
+            java: '25'
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Run Maven verify
+        run: mvn -B clean verify
+      - name: Upload compatibility test reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: compatibility-tests-reports-${{ matrix.label }}-java${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+
+  ui-tests:
+    name: Swing UI tests (Ubuntu, JDK 17)
+    needs: resolve-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Run UI tests under Xvfb
+        shell: bash
+        run: |
+          xvfb-run -a -s "-screen 0 1920x1080x24" bash -lc '
+            echo "DISPLAY=$DISPLAY"
+            java -XshowSettings:properties -version 2>&1 | grep -i headless || true
+            xdpyinfo | head -n 30
+            mvn -B verify -Pui-tests
+          '
+      - name: Validate required UI reports
+        shell: bash
+        run: |
+          python3 scripts/ci/check_junit_reports.py \
+            --label "UI tests" \
+            --glob "target/failsafe-reports/TEST-burp.ui.*UiIT.xml" \
+            --min-tests 8 \
+            --max-skipped 0
+      - name: Upload UI test reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ui-tests-reports-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/site/jacoco/**
+            target/jacoco.exec
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+            target/ui-failure-artifacts/**
+
+  static-analysis:
+    name: Static analysis (Ubuntu, JDK 17)
+    needs: resolve-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Run static analysis profile
+        run: mvn -B verify -Pstatic-analysis
+      - name: Upload SpotBugs reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: static-analysis-reports-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/spotbugsXml.xml
+            target/spotbugs.html
+            target/site/spotbugs/**
+
+  performance-tests:
+    name: Performance tests (Ubuntu, JDK 17)
+    if: needs.resolve-mode.outputs.run_full == 'true'
+    needs: resolve-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Run performance profile
+        run: mvn -B verify -Pperformance-tests
+      - name: Validate required performance reports
+        shell: bash
+        run: |
+          python3 scripts/ci/check_junit_reports.py \
+            --label "Performance tests" \
+            --glob "target/failsafe-reports/TEST-burp.performance.*IT.xml" \
+            --min-tests 1 \
+            --max-skipped 0
+      - name: Upload performance test reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: performance-tests-reports-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+
+  mutation-tests:
+    name: Mutation tests (${{ matrix.name }}, Ubuntu, JDK 17)
+    if: needs.resolve-mode.outputs.run_full == 'true'
+    needs: resolve-mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: auth-utils-exporter
+            targetClasses: burp.auth.*,burp.utils.*,burp.exporter.*
+            jvmArgs: -Xmx1536m
+            mutationUnitSize: '50'
+          - name: history-parser-runner
+            targetClasses: burp.history.*,burp.parser.*,burp.runner.*
+            jvmArgs: -Xmx2048m
+            mutationUnitSize: '50'
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Show mutation shard target classes
+        run: 'echo "PIT target classes: ${{ matrix.targetClasses }}"'
+      - name: Run PIT mutation coverage
+        run: >-
+          mvn -B test-compile -Pmutation-tests org.pitest:pitest-maven:mutationCoverage
+          -DtargetClasses=${{ matrix.targetClasses }}
+          -Dthreads=1
+          -DjvmArgs=${{ matrix.jvmArgs }}
+          -DmutationUnitSize=${{ matrix.mutationUnitSize }}
+          -DreportsDirectory=target/pit-${{ matrix.name }}
+          -DmutationThreshold=54
+      - name: Upload PIT and test reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutation-tests-${{ matrix.name }}-reports-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/pit-${{ matrix.name }}/**
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.dump
+            target/*.dumpstream
+
+  package-jar:
+    name: Package canonical validated shaded JAR (Ubuntu, JDK 17)
+    if: >-
+      needs.resolve-mode.outputs.run_full == 'true' &&
+      needs.core-tests.result == 'success' &&
+      needs.compatibility-tests.result == 'success' &&
+      needs.ui-tests.result == 'success' &&
+      needs.static-analysis.result == 'success' &&
+      needs.performance-tests.result == 'success' &&
+      needs.mutation-tests.result == 'success'
+    needs:
+      - resolve-mode
+      - core-tests
+      - compatibility-tests
+      - ui-tests
+      - static-analysis
+      - performance-tests
+      - mutation-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build shaded JAR
+        run: mvn -B -DskipTests clean package
+      - name: Resolve and validate shaded JAR
+        id: validate-jar
+        shell: bash
+        run: |
+          shopt -s nullglob
+          jars=(target/*-jar-with-dependencies.jar)
+          if [ "${#jars[@]}" -ne 1 ]; then
+            echo "Expected exactly one shaded JAR, found ${#jars[@]}" >&2
+            printf '%s\n' "${jars[@]}"
+            exit 1
+          fi
+
+          jar="${jars[0]}"
+          size=$(stat -c%s "$jar")
+          if [ "$size" -lt 1000000 ]; then
+            echo "Shaded JAR is unexpectedly small: $size" >&2
+            exit 1
+          fi
+
+          jar tf "$jar" > target/jar-contents.txt
+          grep -q 'burp/BurpExtender.class' target/jar-contents.txt
+          grep -q 'burp/smoke/ScriptRuntimeProbe.class' target/jar-contents.txt
+          grep -q 'org/graalvm/polyglot/Context.class' target/jar-contents.txt
+          grep -q 'org/openjdk/nashorn/api/scripting/NashornScriptEngineFactory.class' target/jar-contents.txt
+
+          if grep -Eq 'burp/smoke/SmokeRuntimeConfig.class|burp/smoke/SmokeRuntimeRunner.class|burp/smoke/SmokeRuntimeResult.class|burp/smoke/SmokeUiEvidenceSnapshot.class' target/jar-contents.txt; then
+            echo "Removed smoke hook classes are still packaged" >&2
+            exit 1
+          fi
+
+          echo "path=$jar" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+      - name: Probe shaded runtime artifact
+        run: java -cp "${{ steps.validate-jar.outputs.path }}" burp.smoke.ScriptRuntimeProbe --require-full
+      - name: Upload canonical shaded JAR
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: api-workbench-for-burp-validated-java17
+          if-no-files-found: error
+          path: ${{ steps.validate-jar.outputs.path }}

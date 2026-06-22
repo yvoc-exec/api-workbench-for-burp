@@ -4,6 +4,10 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
+import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import burp.ui.tree.RequestTreeMutationService;
 import org.junit.jupiter.api.Test;
 
@@ -722,5 +726,28 @@ class WorkspaceStateJsonTest {
         assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_access_token", "access");
         assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_refresh_token", "refresh");
         assertThat(preserved.collections.get(0).runtimeOAuth2).containsEntry("oauth2_client_secret", "client-secret");
+    }
+
+    @Test
+    void workspaceJsonRoundTripsNativeScriptBlocks() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        ScriptBlock block = new ScriptBlock();
+        block.dialect = ScriptDialect.POSTMAN;
+        block.phase = ScriptPhase.PRE_REQUEST;
+        block.scope = ScriptScope.REQUEST;
+        block.source = "pm.environment.set('token', 'abc123');";
+        block.enabled = true;
+        block.order = 2;
+        collection.scriptBlocks.add(block);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.collections.get(0).scriptBlocks).hasSize(1);
+        assertThat(parsed.collections.get(0).scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.POSTMAN);
+        assertThat(parsed.collections.get(0).scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+        assertThat(parsed.collections.get(0).scriptBlocks.get(0).scope).isEqualTo(ScriptScope.REQUEST);
+        assertThat(parsed.collections.get(0).scriptBlocks.get(0).source).contains("pm.environment.set");
     }
 }

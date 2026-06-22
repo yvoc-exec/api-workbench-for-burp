@@ -3,6 +3,7 @@ package burp.exporter;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.scripts.ScriptBlock;
 import burp.parser.VariableResolver;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -56,6 +57,8 @@ public final class ApiWorkbenchCollectionExporter {
             col.add("folderAuthModes", mapToJson(collection.folderAuthModes, null, false));
             col.add("folderAuth", authMapToJson(collection.folderAuth, collectionResolver, resolve));
             col.add("folderVars", nestedStringMapToJson(collection.folderVars, collectionResolver, resolve));
+            col.add("scriptBlocks", scriptBlocksToJson(collection.scriptBlocks));
+            col.add("folderScriptBlocks", folderScriptBlocksToJson(collection.folderScriptBlocks));
 
             JsonArray requests = new JsonArray();
             if (collection.requests != null) {
@@ -109,6 +112,7 @@ public final class ApiWorkbenchCollectionExporter {
         out.add("variables", CollectionExportSupport.toVariablesArray(request.variables, resolver, resolve));
         out.add("preRequestScripts", scriptsToJson(request.preRequestScripts, resolver, resolve));
         out.add("postResponseScripts", scriptsToJson(request.postResponseScripts, resolver, resolve));
+        out.add("scriptBlocks", scriptBlocksToJson(request.scriptBlocks));
         out.addProperty("disabled", request.disabled);
         out.addProperty("sequenceOrder", request.sequenceOrder);
         return out;
@@ -219,6 +223,44 @@ public final class ApiWorkbenchCollectionExporter {
             }
             obj.addProperty("exec", CollectionExportSupport.resolve(script.exec, resolver, resolve));
             out.add(obj);
+        }
+        return out;
+    }
+
+    private static JsonArray scriptBlocksToJson(List<ScriptBlock> blocks) {
+        JsonArray out = new JsonArray();
+        if (blocks == null) {
+            return out;
+        }
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder().disableHtmlEscaping().create();
+        for (ScriptBlock block : blocks) {
+            if (block == null) {
+                continue;
+            }
+            out.add(gson.toJsonTree(block));
+        }
+        return out;
+    }
+
+    private static JsonObject folderScriptBlocksToJson(Map<String, List<ScriptBlock>> blocks) {
+        JsonObject out = new JsonObject();
+        if (blocks == null) {
+            return out;
+        }
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder().disableHtmlEscaping().create();
+        for (Map.Entry<String, List<ScriptBlock>> entry : blocks.entrySet()) {
+            if (entry.getKey() == null) {
+                continue;
+            }
+            JsonArray arr = new JsonArray();
+            if (entry.getValue() != null) {
+                for (ScriptBlock block : entry.getValue()) {
+                    if (block != null) {
+                        arr.add(gson.toJsonTree(block));
+                    }
+                }
+            }
+            out.add(entry.getKey(), arr);
         }
         return out;
     }

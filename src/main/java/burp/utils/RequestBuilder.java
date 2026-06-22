@@ -187,19 +187,27 @@ public class RequestBuilder {
 
         /** Adds only if absent (lowest precedence). */
         void putDefault(String key, String value) {
-            String lower = key.toLowerCase();
+            String normalizedKey = normalizeHeaderName(key);
+            if (normalizedKey == null) {
+                return;
+            }
+            String lower = normalizedKey.toLowerCase();
             if (!keysLower.contains(lower)) {
-                headers.put(key, value);
+                headers.put(normalizedKey, normalizeHeaderValue(value));
                 keysLower.add(lower);
             }
         }
 
         /** Overrides any existing value (medium precedence). */
         void put(String key, String value) {
-            String lower = key.toLowerCase();
+            String normalizedKey = normalizeHeaderName(key);
+            if (normalizedKey == null) {
+                return;
+            }
+            String lower = normalizedKey.toLowerCase();
             // Remove existing case variant to preserve latest insertion order
-            headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(key));
-            headers.put(key, value);
+            headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(normalizedKey));
+            headers.put(normalizedKey, normalizeHeaderValue(value));
             keysLower.add(lower);
         }
 
@@ -212,7 +220,7 @@ public class RequestBuilder {
         void mergeCookie(String cookieValue) {
             String existing = get("Cookie");
             if (existing != null) {
-                putComputed("Cookie", existing + "; " + cookieValue);
+                putComputed("Cookie", existing + "; " + normalizeHeaderValue(cookieValue));
             } else {
                 putDefault("Cookie", cookieValue);
             }
@@ -231,6 +239,21 @@ public class RequestBuilder {
 
         Collection<Map.Entry<String, String>> entries() {
             return new ArrayList<>(headers.entrySet());
+        }
+
+        private static String normalizeHeaderName(String value) {
+            if (value == null) {
+                return null;
+            }
+            String normalized = value.replace("\r", " ").replace("\n", " ").trim();
+            return normalized.isEmpty() ? null : normalized;
+        }
+
+        private static String normalizeHeaderValue(String value) {
+            if (value == null) {
+                return null;
+            }
+            return value.replace("\r", " ").replace("\n", " ");
         }
     }
 

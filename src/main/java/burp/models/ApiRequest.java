@@ -2,6 +2,8 @@ package burp.models;
 
 import java.util.*;
 
+import burp.scripts.ScriptBlock;
+
 /**
  * Unified API Request model used across all collection formats.
  * All parsers (Postman, Bruno, OpenAPI, Insomnia, HAR) convert to this model.
@@ -31,6 +33,7 @@ public class ApiRequest {
     public List<Variable> variables = new ArrayList<>();  // collection-level vars
     public List<Script> preRequestScripts = new ArrayList<>();
     public List<Script> postResponseScripts = new ArrayList<>();
+    public List<ScriptBlock> scriptBlocks = new ArrayList<>();
     public boolean disabled = false;
     public int sequenceOrder = 0; // for runner ordering
     /** True when effective auth was inherited from a parent collection/folder auth context. */
@@ -100,6 +103,37 @@ public class ApiRequest {
 
     public boolean hasAuth() {
         return auth != null && auth.type != null && !"none".equals(auth.type);
+    }
+
+    public ApiRequest applyTo(ApiRequest target) {
+        if (target == null) {
+            return null;
+        }
+        target.id = id;
+        target.name = name;
+        target.path = path;
+        target.sourceCollection = sourceCollection;
+        target.method = method;
+        target.url = url;
+        target.description = description;
+        target.headers = headers != null ? new ArrayList<>(headers) : new ArrayList<>();
+        target.body = body;
+        target.auth = auth;
+        target.editorMaterialized = editorMaterialized;
+        target.buildMode = buildMode;
+        target.suppressedAutoHeaders = suppressedAutoHeaders != null ? new LinkedHashSet<>(suppressedAutoHeaders) : new LinkedHashSet<>();
+        target.variables = variables != null ? new ArrayList<>(variables) : new ArrayList<>();
+        target.preRequestScripts = preRequestScripts != null ? new ArrayList<>(preRequestScripts) : new ArrayList<>();
+        target.postResponseScripts = postResponseScripts != null ? new ArrayList<>(postResponseScripts) : new ArrayList<>();
+        target.scriptBlocks = scriptBlocks != null ? new ArrayList<>(scriptBlocks) : new ArrayList<>();
+        target.disabled = disabled;
+        target.sequenceOrder = sequenceOrder;
+        target.authInherited = authInherited;
+        target.authExplicitlyDisabled = authExplicitlyDisabled;
+        target.authSource = authSource;
+        target.authOverrideMode = authOverrideMode;
+        target.explicitAuth = explicitAuth;
+        return target;
     }
 
     public boolean isAutoCompatibleMode() {

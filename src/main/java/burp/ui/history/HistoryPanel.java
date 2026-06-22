@@ -2,6 +2,7 @@ package burp.ui.history;
 
 import burp.history.*;
 import burp.api.montoya.MontoyaApi;
+import burp.ui.SwingShortcutSupport;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -21,7 +22,7 @@ import java.util.function.Consumer;
 
 public class HistoryPanel extends JPanel {
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
-    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain sensitive request/response data.";
+    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.";
 
     private final HistoryStore historyStore;
     private final HistoryExportService exportService;
@@ -270,6 +271,7 @@ public class HistoryPanel extends JPanel {
         table.setFillsViewportHeight(true);
         table.setRowSelectionAllowed(true);
         table.setColumnSelectionAllowed(false);
+        SwingShortcutSupport.installTableShortcuts(table);
 
         tableScrollPane.setPreferredSize(new Dimension(820, 280));
         tableScrollPane.setMinimumSize(new Dimension(460, 220));

@@ -16,6 +16,7 @@ import burp.models.RunnerResult;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import burp.ui.dnd.EnvironmentDragPayload;
+import burp.ui.history.HistoryDetailPanel;
 import burp.utils.ScriptMode;
 import burp.utils.WorkspaceStateService;
 import burp.ui.tree.CollectionTreeNode;
@@ -25,6 +26,7 @@ import org.mockito.Mockito;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
+import javax.swing.JTable;
 import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JTextArea;
@@ -78,6 +80,23 @@ class ImporterPanelRunnerQueueTest {
         assertThat(timelineModel(panel).getRowCount()).isZero();
         assertThat(runnerLog(panel).getText()).isEmpty();
         assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isFalse();
+    }
+
+    @Test
+    void clearingRunnerResultSelectionClearsDetailPaneAsSelectionListenerBehavior() throws Exception {
+        ImporterPanel panel = newPanel();
+        RunnerResultHelper.addDummyRunnerData(panel);
+
+        JTable resultTable = panel.getRunnerResultTableForTests();
+        HistoryDetailPanel detailPanel = panel.getRunnerDetailPanelForTests();
+
+        SwingUtilities.invokeAndWait(() -> resultTable.setRowSelectionInterval(0, 0));
+        drainEdt();
+        assertThat(detailPanel.getMetadataArea().getText()).isNotBlank();
+
+        SwingUtilities.invokeAndWait(resultTable::clearSelection);
+        drainEdt();
+        assertThat(detailPanel.getMetadataArea().getText()).isBlank();
     }
 
     @Test
@@ -476,14 +495,25 @@ class ImporterPanelRunnerQueueTest {
 
         awaitCondition("blank-url runner result", () -> {
             try {
-                return resultModel(panel).getRowCount() == 1;
+                return resultModel(panel).getEntries().stream()
+                        .anyMatch(entry -> entry != null
+                                && entry.requestResult != null
+                                && entry.requestResult.errorMessage != null
+                                && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"));
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         });
         drainEdt();
 
-        RunnerResult result = resultModel(panel).getResultAt(0);
+        RunnerExecutionTableModel.Entry resultEntry = resultModel(panel).getEntries().stream()
+                .filter(entry -> entry != null
+                        && entry.requestResult != null
+                        && entry.requestResult.errorMessage != null
+                        && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"))
+                .findFirst()
+                .orElseThrow();
+        RunnerResult result = resultEntry.requestResult;
         assertThat(result.success).isFalse();
         assertThat(result.errorMessage).contains("Request URL cannot be null or empty");
         assertThat(runnerLog(panel).getText()).contains("FAIL").contains("Request URL cannot be null or empty");
@@ -652,8 +682,8 @@ class ImporterPanelRunnerQueueTest {
         return (JList<?>) privateField(panel, "runnerQueueList");
     }
 
-    private static RunnerResultTableModel resultModel(ImporterPanel panel) throws Exception {
-        return (RunnerResultTableModel) privateField(panel, "resultModel");
+    private static RunnerExecutionTableModel resultModel(ImporterPanel panel) throws Exception {
+        return (RunnerExecutionTableModel) privateField(panel, "resultModel");
     }
 
     private static RunnerTimelineTableModel timelineModel(ImporterPanel panel) throws Exception {

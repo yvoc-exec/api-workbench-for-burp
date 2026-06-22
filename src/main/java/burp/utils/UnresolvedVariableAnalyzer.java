@@ -16,16 +16,23 @@ public class UnresolvedVariableAnalyzer {
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
 
     public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request) {
-        return analyze(collection, request, null);
+        return analyze(collection, request, null, true);
     }
 
     public List<UnresolvedVariableIssue> analyze(ApiCollection collection, ApiRequest request, java.util.Map<String, String> runtimeOverlay) {
+        return analyze(collection, request, runtimeOverlay, true);
+    }
+
+    public List<UnresolvedVariableIssue> analyze(ApiCollection collection,
+                                                 ApiRequest request,
+                                                 java.util.Map<String, String> runtimeOverlay,
+                                                 boolean includeCollectionRuntimeLayers) {
         List<UnresolvedVariableIssue> issues = new ArrayList<>();
         if (request == null) {
             return issues;
         }
 
-        VariableResolver resolver = seedResolver(collection, request, runtimeOverlay);
+        VariableResolver resolver = seedResolver(collection, request, runtimeOverlay, includeCollectionRuntimeLayers);
         java.util.Map<String, String> resolvedVariables = resolver.getVariables();
         Set<String> seen = new LinkedHashSet<>();
         String collectionName = collection != null ? collection.name : request.sourceCollection;
@@ -86,14 +93,17 @@ public class UnresolvedVariableAnalyzer {
         return issues;
     }
 
-    private VariableResolver seedResolver(ApiCollection collection, ApiRequest request, java.util.Map<String, String> runtimeOverlay) {
-        return RuntimeResolverFactory.build(
-                collection,
-                request,
-                runtimeOverlay != null
-                        ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
-                        : RuntimeResolverFactory.Options.defaultOptions()
-        );
+    private VariableResolver seedResolver(ApiCollection collection,
+                                          ApiRequest request,
+                                          java.util.Map<String, String> runtimeOverlay,
+                                          boolean includeCollectionRuntimeLayers) {
+        RuntimeResolverFactory.Options options = runtimeOverlay != null
+                ? RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
+                : RuntimeResolverFactory.Options.defaultOptions();
+        if (!includeCollectionRuntimeLayers) {
+            options = options.withCollectionRuntimeLayers(false);
+        }
+        return RuntimeResolverFactory.build(collection, request, options);
     }
 
     private void scanValue(List<UnresolvedVariableIssue> issues,
