@@ -21,7 +21,7 @@ Lowest to highest:
 
 Later layers win. The active environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override.
 
-Default values are not a normal mutable scope.
+Default placeholders are not a normal mutable scope.
 
 ## 2. Active-environment ownership and behavior
 

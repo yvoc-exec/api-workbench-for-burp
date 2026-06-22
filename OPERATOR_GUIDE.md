@@ -148,7 +148,7 @@ Controls:
 | Control | Behavior |
 | --- | --- |
 | **+ Add Collection** | Opens a file chooser and imports a collection or Bruno folder |
-| **- Remove Collection** | Removes checked collection nodes from the current workspace |
+| **- Remove Collection** | Opens the collection-removal flow so one or more loaded collections can be selected and removed from the workspace. |
 | **Check All** | Checks all visible collection/request nodes |
 | **Uncheck All** | Unchecks all visible collection/request nodes |
 
@@ -220,9 +220,11 @@ The active environment applies to previews, Workbench sends, Runner, Repeater, I
 
 | View | Behavior |
 | --- | --- |
-| Raw | Edit the selected profile as structured JSON |
-| Table | Edit variables and bindings in a tabular view |
-| Save | Persist the edited profile to workspace state |
+| Raw | Edit environment variables as key=value lines. |
+| Table | Edit environment variable names and values in a tabular view. |
+| Save | Persist the edited profile to workspace state. |
+
+OAuth2 configuration and outputs are managed through OAuth2 controls, not the Raw or Table variable views.
 
 ### Variable behavior
 
@@ -259,9 +261,9 @@ The OAuth2 tab selects and uses an environment profile.
 | Acquire Token | Requests a token and writes outputs to the active environment |
 | Bind Token | Binds the current token outputs to the selected environment profile |
 | Clear Tokens | Clears configured token outputs from the selected environment profile |
-| Auto-bind token to Active Environment | Keeps token outputs aligned with the active environment through runtime/pipeline behavior |
+| Auto-bind token to Active Environment | Controls whether a newly acquired token is automatically bound to configured outputs in the active environment |
 
-Successful token acquisition writes the configured token outputs to the selected environment profile. Token refresh can also happen through runtime/pipeline behavior; it is not a visible OAuth2-tab button. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, but they are not the primary operator-facing OAuth2 model.
+Successful token acquisition writes the configured token outputs to the selected environment profile. Token refresh can also happen through runtime/pipeline behavior; it is not a visible OAuth2-tab button. `TokenStore` is an in-memory token cache that is cleared when the extension unloads. Configured OAuth2 outputs written into an `EnvironmentProfile` can persist with Burp project workspace state. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, but they are not the primary operator-facing OAuth2 model. Burp project files containing persisted token outputs are sensitive.
 
 ---
 
@@ -335,7 +337,7 @@ Controls:
 - Clear
 - Copy
 
-The in-memory store retains at most 1,000 events. Raw `DiagnosticEvent` objects are retained first, and report/snapshot generation applies best-effort sanitization when capture is enabled. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
+Diagnostics captures passive runtime events in a bounded in-memory store. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
 
 Workspace persistence stores the diagnostics-capture-enabled setting.
 
@@ -351,9 +353,7 @@ Workspace persistence stores the diagnostics-capture-enabled setting.
 
 ## Workspace Persistence
 
-Burp project state can persist loaded collections, environment profiles, the active environment ID, request-tree checks, selection, expanded paths, and saved request paths, collection/folder/request auth and script blocks, collection environment/runtime variables/runtime OAuth2 values, History entries, Diagnostics capture-enabled state, Workbench destination/debug/detail selections, and Runner settings, detail selection, and queued request identities.
-
-Burp project files can contain secrets. Treat them as sensitive.
+Burp project state can persist loaded collections, environment profiles, the active environment ID, request-tree checks, selection, expanded paths, and saved request paths, collection/folder/request auth and script blocks, collection environment/runtime variables/runtime OAuth2 values, History entries, Diagnostics capture-enabled state, Workbench destination/debug/detail selections, and Runner settings, detail selection, and queued request identities. `TokenStore` is separate, in-memory only, and is cleared when the extension unloads. Configured OAuth2 outputs written into an EnvironmentProfile can persist with workspace state. Burp project files containing persisted token outputs are sensitive.
 
 ---
 
@@ -450,12 +450,6 @@ Always run only trusted scripts. Scripts can mutate requests and runtime state, 
 | Runner | Check stop conditions, redirects, retry counts, and queue contents. |
 | Auth | Confirm inheritance from request, folder, collection, or explicit no-auth. |
 | Build / load | Confirm the JAR was built with Java 17+ and that Burp loaded the fat JAR. |
-
-### Obsolete wording to avoid
-
-- Use **Environment tab**, not Variables tab.
-- Use **Metadata**, not Meta.
-- Use **History** as the UI tab name.
 
 ---
 
