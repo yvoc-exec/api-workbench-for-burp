@@ -13,16 +13,17 @@ This guide is for operators using API Workbench during API testing, debugging, a
 5. [Environment Tab](#environment-tab)
 6. [OAuth2 Tab](#oauth2-tab)
 7. [Collection Runner Tab](#collection-runner-tab)
-8. [Import Destinations](#import-destinations)
-9. [Auth Inheritance](#auth-inheritance)
-10. [Workspace Persistence](#workspace-persistence)
-11. [Collection and Environment Export](#collection-and-environment-export)
-12. [Scripts and Assertions](#scripts-and-assertions)
-13. [Supported Collection Formats](#supported-collection-formats)
-14. [Common Testing Scenarios](#common-testing-scenarios)
-15. [Error Handling and Troubleshooting](#error-handling-and-troubleshooting)
-16. [Security and Safety Notes](#security-and-safety-notes)
-17. [Operator Checklists](#operator-checklists)
+8. [History Tab](#history-tab)
+9. [Diagnostics Tab](#diagnostics-tab)
+10. [Import Destinations](#import-destinations)
+11. [Workspace Persistence](#workspace-persistence)
+12. [Collection and Environment Export](#collection-and-environment-export)
+13. [Scripts and Assertions](#scripts-and-assertions)
+14. [Supported Collection Formats](#supported-collection-formats)
+15. [Common Testing Scenarios](#common-testing-scenarios)
+16. [Error Handling and Troubleshooting](#error-handling-and-troubleshooting)
+17. [Security and Safety Notes](#security-and-safety-notes)
+18. [Operator Checklists](#operator-checklists)
 
 ---
 
@@ -59,57 +60,74 @@ This guide is for operators using API Workbench during API testing, debugging, a
    - **Edit/send one request**: click a request, edit it, then click **Send**.
    - **Create Repeater tabs**: check **Repeater**, then click **Import Checked**.
    - **Send live baseline traffic**: check **Sitemap (Live)**, then click **Import Checked**.
-   - **Run a chained flow**: switch to **Collection Runner**, click **Start Collection Runner**, review the preview, then confirm.
+   - **Run a chained flow**: switch to **Collection Runner**, review the queue, then confirm.
 
 ---
 
 ## Mental Model
 
-API Workbench has four operator surfaces:
+API Workbench has six operator tabs:
 
 | Tab | Primary Job |
-|-----|-------------|
+| --- | --- |
 | **Workbench** | Load collections, check requests, edit one request, send/import checked requests |
-| **Environment** | Manage active environment profiles and OAuth2-bound runtime values |
-| **OAuth2** | Configure/acquire OAuth2 tokens and bind bearer aliases |
-| **Collection Runner** | Execute checked requests sequentially with preview, retries, stop conditions, and timeline |
+| **Environment** | Manage the active environment profile and its variables, runtime values, and OAuth2 configuration |
+| **OAuth2** | Configure/acquire OAuth2 tokens and bind them to the active environment |
+| **Collection Runner** | Execute checked requests sequentially with preview, retries, stop conditions, and flow control |
+| **History** | Review prior Workbench and Runner executions, compare them, replay them, and export evidence |
+| **Diagnostics** | Capture passive runtime evidence, inspect sanitized reports, and copy snapshots |
 
 The extension keeps runtime state scoped per collection. If two loaded collections both use `{{base_url}}`, they can have different values without leaking into each other.
 
 ### Variable Precedence
 
-When a request is built, values are resolved in this order, highest first:
+When a request is built, values are resolved from lowest to highest in this order:
 
-1. Request-level variables
-2. Active Environment variables from the Environment tab, unresolved-var preflight, scripts, or runner extraction
-3. Scoped OAuth2 runtime values
-4. Collection variables
-5. Collection environment values
-6. Default value in `{{var|default}}`
+1. Collection environment
+2. Collection definition variables
+3. Ancestor-folder variables
+4. Collection runtime OAuth2 values
+5. Collection runtime variables
+6. Active Environment overlay
+   - OAuth2 environment config is added first
+   - normal environment variables can override same-named config keys
+7. Explicit execution/runtime/script overlay
+8. Request-level variables
+9. Auth/runtime mapping when enabled
+10. `{{name|default}}` placeholder fallback, used only when the key remains unresolved
 
-Defaulted placeholders like `{{host|https://example.com}}` are treated as resolved.
+Later layers win. The active environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override.
+
+Script-local values and global helper context are separate from the normal request-build precedence above.
 
 ---
 
 ## Installation and Startup Checks
 
-After loading the extension, Burp output should show only API Workbench startup lines similar to:
+API Workbench requires Java 17 or later.
+
+After loading the extension, Burp output should show startup lines similar to the following. This is representative startup output, not a literal promise that the startup log enumerates every in-app tab:
 
 ```text
 API Workbench for Burp v2.0.0
 Supports: Postman, Bruno, OpenAPI, Insomnia, HAR
 Features: Import + Collection Runner + Workbench
-Java: ... | Script: ...
-Extension loaded successfully!
+Java: <version> | Script: <mode>
+Script engine: <engine name>
+Script reason: <reason, when present>
+Extension core initialized; scheduling API Workbench UI registration...
+API Workbench suite tab registered successfully.
 ```
 
 Check the script mode line:
 
 | Script Mode | Meaning | Operator Impact |
-|-------------|---------|-----------------|
-| Full JS | Nashorn is available | Pre-request scripts and post-response scripts can run |
-| Limited | Java is usable but Nashorn probe failed | Regex extraction fallback only; pre-request scripts are skipped |
-| Disabled | Script support unavailable | Scripts are skipped |
+| --- | --- | --- |
+| Full | A supported JavaScript runtime is available | Pre-request, post-response, and test scripts can run |
+| Limited | Runtime probing failed | Legacy post-response regex extraction remains available; JavaScript scripts are reduced |
+| Disabled | Java is below the supported requirement | JavaScript scripting is unavailable |
+
+The primary runtime is GraalJS. Nashorn is only a compatibility fallback.
 
 If the API Workbench tab does not appear:
 
@@ -128,9 +146,9 @@ The Workbench tab is the main control surface for loading, editing, and importin
 Controls:
 
 | Control | Behavior |
-|---------|----------|
+| --- | --- |
 | **+ Add Collection** | Opens a file chooser and imports a collection or Bruno folder |
-| **- Remove Selected** | Removes checked collection nodes from the current workspace |
+| **- Remove Collection** | Opens the collection-removal flow so one or more loaded collections can be selected and removed from the workspace. |
 | **Check All** | Checks all visible collection/request nodes |
 | **Uncheck All** | Unchecks all visible collection/request nodes |
 
@@ -140,722 +158,308 @@ Notes:
 - Removing a collection does not change the Active Environment.
 - Loaded collections can be restored from Burp project data when using a project on disk.
 
+### Request Tree Actions
+
+The request-tree context menu includes **New Collection**, **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Export**, and **Auth Settings**.
+
+### Request Tree Auth Inheritance
+
+Auth can be inherited from the request itself, the nearest folder, the collection, or an explicit no-auth setting.
+
 ### Request Tree
 
-The tree shows:
-
-```text
-Collection
-  Folder
-    Request
-```
-
-Use checkboxes for batch operations. Click a request row to load it into the request editor.
-Right-click the tree to create and manage items directly:
-
-| Right-click target | Menu actions |
-|--------------------|--------------|
-| Empty/root area | **New Collection** |
-| Collection | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Export...**, **Auth Settings...** |
-| Folder | **New Folder**, **New Request**, **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
-| Request | **Rename**, **Duplicate**, **Delete**, **Auth Settings...** |
-
-Notes:
-
-- Duplicate names are prevented within the same parent scope, and duplicate actions generate incremental names such as `Login Copy`, `Login Copy 2`, and `Login Copy 3`.
-- Request labels are independent from folder paths: labels such as `GET /users`, `POST /api/v1/token`, and `users\{id}` stay labels and do not create folders. Folder names cannot contain `/` or `\`, and a request may share the same name as its parent folder while still remaining nested there.
-- Selecting a collection, folder, the root area, or clearing the selection clears the request editor and disables Send until you click a request node again.
-- New Collection and New Folder clear stale request editor state before the tree is rebuilt.
-- New Request opens immediately in the request editor as a blank `GET` draft with an empty URL and inherited auth. Set the URL before sending, importing, or running; there is no separate blank-URL preflight blocker in this release, so blank requests fail later through the normal request build/send path.
-- Duplicate Folder copies the selected folder subtree and contained requests, preserving folder-scoped metadata.
-- Duplicate Request copies the selected request into the same parent folder and opens the duplicate in the editor.
-- Delete actions prompt for confirmation and remove the selected collection, folder subtree, or request; related queued runner entries are cleaned up when applicable.
-- Duplicate Collection copies persistent collection data, folders, requests, auth metadata, and variables, but does not copy runtime execution state such as `runtimeVars` or `runtimeOAuth2`.
+The tree shows collections, folders, and requests. Checked requests are the ones sent to Runner, Repeater, Sitemap, or Intruder import destinations.
 
 ### Request Editor
 
-Editable request areas:
+The request editor lets you edit one request at a time.
 
-| Area | What You Can Change |
-------|---------------------|
-| Method / URL | HTTP method, URL, query parameters |
-| Headers | Key/value rows with add/remove controls. The table shows editable materialized headers such as Accept, User-Agent, Cache-Control, Authorization, and Content-Type when they apply. Edit a row to make it explicit; remove a row to suppress that synthesized header on future rebuilds. Host, Content-Length, and Transfer-Encoding are computed by the builder and are not normal persisted rows. |
-| Auth | Select inherit or an auth type, then edit auth properties |
-| Body | Raw, URL-encoded, form-data, GraphQL, file-like modes where supported |
-| Scripts | Pre-request and post-response scripts |
-
-Buttons:
-
-| Button | Behavior |
-|--------|----------|
-| **Send** | Sends the current edited request once |
-| **Send + Repeater** | Sends the request and also creates a Repeater tab |
-| Send dropdown | Switches between send modes |
-
-Workbench send uses the same shared execution pipeline as the Collection Runner. That means variables, OAuth2 refresh, pre-request scripts, post-response scripts, and runtime variable updates behave consistently.
-
-Table-based editor tabs always keep one blank starter row available when empty (params, body form) or after effective headers (headers):
-
-- **Params** can be edited immediately without pressing `+`
-- **Headers** shows explicit/materialized header rows plus a blank starter row for quick entry
-- **form-data** and **x-www-form-urlencoded** body modes can be edited immediately without pressing `+`
-- Blank starter rows are ignored when requests are built, so they do not serialize unless you enter a key
-- Visible materialized header rows are serialized like normal headers when you save or send. Removing a materialized row suppresses that header in future rebuilds, while transport headers are still computed by the builder rather than treated as normal persisted rows.
+| Control | Behavior |
+| --- | --- |
+| Method | Change request method |
+| URL | Edit the destination URL |
+| Headers | Add, remove, or edit headers |
+| Body | Edit request body content |
+| Auth | Override or inherit request auth |
+| Send | Send the current request |
+| Send to Repeater | Open the request in Repeater |
+| Raw request debug | Show the raw request sent by the pipeline |
 
 ### Workbench Detail Tabs
 
-| Tab | Purpose |
-|-----|---------|
-| **Request** | Final built request that was sent |
-| **Response** | Response returned by Burp HTTP client |
-| **Meta** | Request name, method, auth source, resolved URL, status, elapsed time, response size, unresolved tokens |
-
-### Resolved Tab
-
-The **Resolved** tab in the request editor shows the final effective request state after variable resolution:
-
-- **Resolved URL** — final URL with query parameters substituted
-- **Resolved Auth** — selected auth type and resolved properties
-- **Resolved Headers (Effective)** — the exact headers that will be sent, including synthesized defaults, auth headers, body Content-Type, and computed Host. Disabled headers are listed separately as suppressed.
-- **Resolved Body** — body mode and resolved content
-
-### Environment Tab
-
-Controls:
-
-| Control | Behavior |
-|---------|----------|
-| **Import** | Imports environment profiles from Postman, Bruno, Insomnia, `.env`, or generic JSON |
-| **New** | Creates a new environment profile |
-| **Duplicate** | Copies the selected environment profile |
-| **Delete** | Removes the selected environment profile |
-| **Set Active** | Marks the selected environment as the active runtime layer |
-| **Export** | Exports the selected environment profile in API Workbench, Postman, dotenv, generic JSON, Insomnia, or Bruno format |
-
-The active environment is the normal runtime layer. Request-level variables remain advanced overrides.
-
-### Options Pane and Actions Button
-
-The Workbench control strip is titled **Options** and contains the **Actions** button. Use it to choose import destinations and related send options.
-
-Options:
-
-| Option | Meaning |
-|--------|---------|
-| **Repeater** | Creates Repeater tabs without sending live traffic |
-| **Sitemap (Live)** | Sends requests live and adds responses to Target > Sitemap |
-| **Intruder** | Sends raw requests to Intruder |
-| **Delay (ms)** | Delay used for live Sitemap sends |
-| **Debug final raw request** | Logs final raw request and variable resolution details |
-
-Buttons:
-
-| Button | Behavior |
-|--------|----------|
-| **Import Checked** | Imports checked requests to selected destinations |
-| **Run Checked** | Sends checked requests to the Collection Runner flow |
-
-Before Workbench send/import/run, unresolved variables trigger a modal. You can cancel, continue intentionally, or apply values into the Active Environment when one is selected.
+| Tab label | What it shows |
+| --- | --- |
+| Request | The request being sent or previewed |
+| Response | The received response |
+| Metadata | Request/response metadata and execution details |
+| Variables / Environment | Resolved variables and active-environment context |
+| Script Output | Logs, warnings, errors, and script mutations |
+| Assertions / Extractions | Assertion results and captured values |
 
 ---
 
 ## Environment Tab
 
-The Environment tab manages active environment profiles and OAuth2-bound runtime values.
-
-### Target Collection
-
-Select the collection you want to edit in the **Target** dropdown. All edits apply only to that collection.
-
-### Views
-
-| View | Best For |
-|------|----------|
-| **Raw** | Fast editing, paste JSON, paste key=value lines |
-| **Table** | Small edits and safer key/value scanning |
-
-Accepted raw formats:
-
-```text
-base_url=https://api.example.test
-tenant=qa
-token={{oauth2_access_token}}
-```
-
-or:
-
-```json
-{
-  "base_url": "https://api.example.test",
-  "tenant": "qa",
-  "token": "{{oauth2_access_token}}"
-}
-```
-
-### Base Layers and Runtime Overrides
-
-The Environment tab can display read-only base sections:
-
-- Collection environment
-- Collection definition variables
-- Scoped OAuth2 runtime
-
-Only the `# Environment variables` section is intended for normal operator edits.
-
-### Autosave
-
-Autosave behavior:
-
-- Typing in Raw view autosaves after a short debounce.
-- Table edits autosave.
-- Add/remove row actions autosave.
-- Switching target collection cancels pending autosave.
-- Programmatic refreshes do not autosave.
-- **Clear** only clears the editor UI and does not wipe environment values unless you later click **Save**.
+The Environment tab selects an environment profile, not a collection.
 
 Controls:
 
 | Control | Behavior |
-|---------|----------|
-| **Save** | Immediately writes the current editor contents to the selected environment |
-| **Set Active** | Makes the selected environment the Active Environment |
-| **Export** | Saves the selected environment profile in the selected export format |
-| **Import Environment** | Loads environment values into the Environment tab |
-| **Clear** | Clears editor UI only; does not autosave an empty map |
+| --- | --- |
+| Import | Load an environment profile from file |
+| New | Create a new environment profile |
+| Duplicate | Copy the selected profile |
+| Delete | Remove the selected profile |
+| Set Active | Make this profile the active environment |
+| Export | Write the selected profile to disk |
+| Save | Persist edits to the workspace |
+
+The active environment applies to previews, Workbench sends, Runner, Repeater, Intruder, and Sitemap request construction. An environment profile contains normal variables plus OAuth2 configuration and output bindings.
+
+### Environment Views
+
+| View | Behavior |
+| --- | --- |
+| Raw | Edit environment variables as key=value lines. |
+| Table | Edit environment variable names and values in a tabular view. |
+| Save | Persist the edited profile to workspace state. |
+
+OAuth2 configuration and outputs are managed through OAuth2 controls, not the Raw or Table variable views.
+
+### Variable behavior
+
+Use the Environment tab to manage the active environment overlay. Collection variables and collection runtime values still exist, but the environment profile is the operator-facing place to change targets, tenants, roles, and tokens.
+
+### Autosave
+
+Edits are captured into workspace state. Save when you want to make the profile explicit for the current Burp project or export.
 
 ### Unresolved Variables
 
-Before Workbench send, import, or runner start, API Workbench scans checked requests for unresolved `{{vars}}`.
-
-The modal shows:
-
-- Request name
-- Collection
-- Variable name
-- Location such as URL, header, body, auth, form field, GraphQL
-
-Actions:
-
-| Action | Behavior |
-|--------|----------|
-| **Apply to Active Environment** | Saves entered values into the Active Environment and continues |
-| **Continue Without Applying** | Continues with unresolved placeholders intact |
-| **Cancel** | Stops the operation |
+API Workbench can warn on unresolved variables before send or runner execution. Fix the Environment tab or collection inputs rather than relying on defaults unless the placeholder is intentionally optional.
 
 ---
 
 ## OAuth2 Tab
 
-The OAuth2 tab manages collection-scoped OAuth2 settings and token acquisition.
+The OAuth2 tab selects and uses an environment profile.
 
-### Target Collection
+### Grant types
 
-Select the collection in the top dropdown. OAuth2 form edits autosave to that collection.
+| Grant type | Required fields |
+| --- | --- |
+| Client Credentials | Token URL, client ID, client secret, and any required scope |
+| Password Grant | Token URL, username, password, client ID, client secret when required, and any required scope |
+| Refresh Token | Token URL, refresh token, client ID, client secret when required, and any required scope |
+| Authorization Code / PKCE where supported | Authorization URL, token URL, client ID, redirect URI or callback, and PKCE verifier data when enabled |
 
-### Grant Types
-
-| Grant Type | Required Fields | Notes |
-|------------|-----------------|-------|
-| Client Credentials | Token URL, Client ID, Client Secret unless `oauth2_client_auth=none` | Common service-to-service flow |
-| Password | Token URL, Client ID, Client Secret, Username, Password | Legacy/internal use only |
-| Authorization Code | Token URL, Auth URL, Client ID, Redirect URI, optional secret, PKCE | Opens browser and listens on the configured HTTP loopback redirect URI |
-| Refresh Token | Token URL, Client ID, optional secret, Refresh Token | Useful for renewing a known session |
-
-### OAuth2 Controls
+### OAuth2 controls
 
 | Control | Behavior |
-|---------|----------|
-| **Populate from Checked Request** | Extracts OAuth2 fields from the checked request and resolves `{{variables}}` from the owning collection context |
-| **Acquire Token** | Requests a token using current OAuth2 settings |
-| **Start Auto Refresh** | Starts collection-scoped refresh loop |
-| **Clear Tokens** | Clears in-memory OAuth2 tokens |
-| **Save Now** | Immediately saves current OAuth2 form values to selected collection |
-| **Bind OAuth2 to All** | Writes current OAuth2 settings to every loaded collection after confirmation |
+| --- | --- |
+| Populate from Request | Pre-fills OAuth2 fields from the selected request |
+| Acquire Token | Requests a token and writes outputs to the active environment |
+| Bind Token | Binds the current token outputs to the selected environment profile |
+| Clear Tokens | Clears configured token outputs from the selected environment profile |
+| Auto-bind token to Active Environment | Controls whether a newly acquired token is automatically bound to configured outputs in the active environment |
 
-### Populate from Checked Request
-
-The populate button checks the currently checked request and extracts:
-
-- Grant type
-- Token URL from auth metadata
-- Token URL inferred from request URL when it looks like a token request
-- Client ID
-- Client secret
-- Scope
-- Username/password
-- Refresh token
-- Authorization code
-- Redirect URI
-- Client auth mode
-
-Placeholders inside extracted OAuth2 values are resolved using the checked request's owning collection context first. That includes collection environment values, collection variables, runtime OAuth2 values, runtime variables, and request variables.
-
-Token URL inference is conservative. It uses signals such as:
-
-- URL path contains `/token`, `/oauth/token`, `/oauth2/token`, `/connect/token`, or `/auth/token`
-- Body mode is URL-encoded
-- Content-Type is `application/x-www-form-urlencoded`
-- Body contains OAuth field names such as `grant_type`, `client_id`, `client_secret`, `refresh_token`, `code`, or `code_verifier`
-
-Explicit token URL metadata wins and is not overwritten by inference.
-
-If any placeholders remain unresolved after populate, the Workbench log reports the missing variable names so you can bind or edit them before acquiring a token.
-
-### Acquire Token
-
-When **Acquire Token** succeeds:
-
-1. Canonical OAuth2 vars are saved into the captured target collection.
-2. The token preview is updated.
-3. If requests in that same collection use bearer aliases such as `{{accessToken}}`, API Workbench shows a dialog:
-
-   ```text
-   Token acquired.
-   These bearer variables are used by this collection:
-   - accessToken
-   - auth_token
-
-   Bind them to the acquired access token?
-   ```
-
-4. Selected aliases are written to the Active Environment variables using the configured output bindings.
-
-The dialog only scans the captured collection from the moment **Acquire Token** was clicked. It does not scan or modify other loaded collections.
-
-### Auto Refresh
-
-Auto-refresh behavior:
-
-- Uses selected collection OAuth2 runtime vars.
-- Requires a valid refresh token for refresh-token mode.
-- Runs on a background scheduler.
-- Writes refreshed token values back into that collection.
-- Stops when the collection is removed or the extension unloads.
+Successful token acquisition writes the configured token outputs to the selected environment profile. Token refresh can also happen through runtime/pipeline behavior; it is not a visible OAuth2-tab button. `TokenStore` is an in-memory token cache that is cleared when the extension unloads. Configured OAuth2 outputs written into an `EnvironmentProfile` can persist with Burp project workspace state. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, but they are not the primary operator-facing OAuth2 model. Burp project files containing persisted token outputs are sensitive.
 
 ---
 
 ## Collection Runner Tab
 
-Use the Collection Runner for stateful, ordered API flows.
+The current presentation is a Runner Queue on the left, one consolidated Runner Execution Table, and a shared detail viewer on the right.
 
-### Runner Configuration
+### Runner configuration
 
-| Option | Meaning |
-|--------|---------|
-| **Delay (ms)** | Wait between requests |
-| **Retries** | Number of retries after the first attempt |
-| **Stop on error** | Stop on build/send/transport failure |
-| **Stop on assertion failure** | Stop if post-response assertion fails |
-| **Stop on status >= 400** | Stop on HTTP 4xx/5xx |
-| **Stop when variable missing** | Stop before sending requests with unresolved vars |
-| **Stop after failures** | Stop after N failures; `0` disables |
-| **Follow redirects** | Controls Burp HTTP redirection behavior |
-| **Debug final raw request** | Logs final request and variable source details |
+| Setting | Behavior |
+| --- | --- |
+| Delay | Time between requests |
+| Retries | Attempts after the initial attempt |
+| Stop on error | Stop when a request-level error occurs |
+| Stop on assertion failure | Stop when an assertion fails |
+| Stop on status >= 400 | Stop when the response status is 400 or higher |
+| Stop when variable missing | Stop when required variables are unresolved |
+| Stop after failures | Stop after the configured failure threshold |
+| Follow redirects | Follow HTTP redirects |
+| Debug final raw request | Emit the final built request for debugging |
 
-### Runner Controls
+### Runner controls
 
-| Button | Behavior |
-|--------|----------|
-| **Start Collection Runner** | Opens the preview dialog, then starts the selected run after operator confirmation |
-| **Cancel** | Requests cancellation and waits until runner is idle |
-| **Pause** | Pause after the current request completes |
-| **Resume** | Continue a paused run |
-| **Step** | Run one queued request, then pause again |
+- Start
+- Pause
+- Resume
+- Step
+- Cancel
+- Clear queue
 
-### Run Preview
+### Queue and execution behavior
 
-Preview shows:
+- Selecting queue or execution entries updates the detail view.
+- The execution table can represent request start, completion, skipped requests, debug/error events, and run completion.
+- Flow-control outcomes such as skip and stop are represented explicitly.
+- Step advances the next runnable item in the current run state.
 
-- Request order
-- Collection
-- Method
-- URL preview
-- Unresolved variables
-- Auth status and source
+---
 
-Use preview to catch:
+## History Tab
 
-- Wrong collection context
-- Missing runtime variables
-- Requests using no auth
-- Requests pointing to production accidentally
-- Incorrect order after multi-collection selection
+History records Workbench and Runner execution information, including script details and variable changes.
 
-### Runner Results
+The detail tabs are **Request**, **Response**, **Metadata**, **Variables / Environment**, **Script Output**, and **Assertions / Extractions**.
 
-The results table shows request-level results:
+Actions:
 
-- Request
-- Method
-- Success/failure
-- Status code
-- Response time
-- Response size
-- Error message
-- Extracted variables
-- Assertion results
+- replay with current environment
+- replay original snapshot
+- compare
+- send to Repeater
+- copy as cURL
+- JSON, CSV, and HAR export
+- clear
 
-### Runner Timeline
+History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
-The timeline is optimized for operator scanning:
+Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. `HistorySanitizer` handles safe text normalization and CSV-cell/formula safety; it is not a secret-redaction engine. The History store retains at most 1,000 entries and persists with the workspace.
 
-```text
-# | Collection | Request | Status | Time | Retries | Vars Changed | Assertions
-```
+---
 
-Use it to answer:
+## Diagnostics Tab
 
-- Which request failed first?
-- Did retry recover?
-- Which step changed variables?
-- Did assertions fail before transport failed?
+Diagnostics capture is disabled by default and is passive; it does not itself send requests.
 
-### Retry Logging
+Controls:
 
-Retry logs are explicit:
+- capture enablement
+- debug inclusion
+- Refresh Snapshot
+- Clear
+- Copy
 
-```text
-Attempt 1/3 failed: timeout
-Retrying in 400ms
-Attempt 2/3 passed
-```
+Diagnostics captures passive runtime events in a bounded in-memory store. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
 
-Retries means retries after the first attempt. For example, `Retries = 2` means up to 3 total attempts.
+Workspace persistence stores the diagnostics-capture-enabled setting.
 
 ---
 
 ## Import Destinations
 
-### Repeater
-
-Use Repeater when:
-
-- You want manual payload changes.
-- You do not want live traffic during import.
-- You need Burp's normal request editing workflow.
-
-### Sitemap (Live)
-
-Use Sitemap when:
-
-- You want Burp Target > Sitemap populated.
-- You want passive scanning visibility.
-- You are ready to send real traffic.
-
-Sitemap sends the request live once and stores the response.
-
-### Intruder
-
-Use Intruder when:
-
-- You want to configure payload positions.
-- You want to fuzz a checked request after import.
-
----
-
-## Auth Inheritance
-
-Postman collections can define auth at collection, folder, and request level. API Workbench preserves that behavior and lets you edit it from the Workbench tree.
-
-Resolution order:
-
-1. Request auth wins.
-2. Nearest folder auth applies next.
-3. Collection auth applies next.
-4. Explicit `noauth` stops inheritance.
-
-Auth settings are edited per scope:
-
-- Collection nodes can be set to `none` or an explicit auth type.
-- Folder nodes can be set to `inherit`, `none`, or an explicit auth type.
-- Request nodes can be set to `inherit`, `none`, or an explicit auth type.
-
-Metadata shown to operators:
-
-| Field | Meaning |
-|-------|---------|
-| `authInherited` | Request inherited auth from folder/collection |
-| `authExplicitlyDisabled` | Request or parent explicitly selected no-auth |
-| `authSource` | Source label such as `request: Login`, `folder: Admin`, `collection: API` |
-| `authOverrideMode` | Stored request override mode: `inherit`, `explicit`, or `none` |
-
-Runner preview and Workbench Meta show auth source so you can see why a request is authenticated or unauthenticated.
+- **Repeater**: Open checked requests in Repeater for manual tampering.
+- **Sitemap (Live)**: Send checked requests as live traffic into Burp Site map.
+- **Intruder**: Open checked requests in Intruder.
 
 ---
 
 ## Workspace Persistence
 
-API Workbench saves its full workspace state through Burp project extension data.
-
-- Disk-backed Burp projects restore the saved workspace next time the project is opened.
-- Temporary Burp projects keep the workspace only for the current in-memory Burp session.
-- Workspace snapshots are coalesced after edits and unchanged snapshots are skipped to reduce unnecessary Burp project growth.
-- Saved workspace state includes loaded collections, request tree checks/selections, runtime variables, OAuth2 runtime/config values, access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
-- Treat Burp project files as sensitive because API Workbench may store secrets there.
+Burp project state can persist loaded collections, environment profiles, the active environment ID, request-tree checks, selection, expanded paths, and saved request paths, collection/folder/request auth and script blocks, collection environment/runtime variables/runtime OAuth2 values, History entries, Diagnostics capture-enabled state, Workbench destination/debug/detail selections, and Runner settings, detail selection, and queued request identities. `TokenStore` is separate, in-memory only, and is cleared when the extension unloads. Configured OAuth2 outputs written into an EnvironmentProfile can persist with workspace state. Burp project files containing persisted token outputs are sensitive.
 
 ---
 
 ## Collection and Environment Export
 
-### Collection export
+| Export area | Formats | Notes |
+| --- | --- | --- |
+| Collections | API Workbench JSON, Postman Collection v2.1 JSON, OpenAPI 3.0 JSON, OpenAPI 3.0 YAML, Insomnia JSON, Bruno ZIP, HAR 1.2 JSON | Native collection export is the most faithful representation of authored structure, auth, variables, folder metadata, requests, and native script blocks. Optional active-environment resolution can materialize values, but `runtimeVars` and `runtimeOAuth2` are not auto-serialized. |
+| Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | The active environment is the operator context and the export preserves its variables, OAuth2 configuration, and output bindings |
+| History | HAR, Native History JSON, CSV summary | Useful for evidence and reporting |
 
-Right-click a **collection** node in the Workbench tree and choose **Export...**.
+Collection export uses the active environment only when the operator chooses to resolve values; unchecked export preserves placeholders, checked export resolves through the active environment, quick values used only for export do not mutate the active environment, and cancel aborts the export. Environment export preserves the selected profile's variable table, OAuth2 configuration, and output bindings.
 
-The export dialogs use **Save As** / **Cancel** only; pick the output file in the save dialog.
-
-Supported formats:
-
-- API Workbench Collection JSON
-- Postman Collection v2.1 JSON
-- OpenAPI 3.0 JSON
-- OpenAPI 3.0 YAML
-- Insomnia JSON
-- Bruno ZIP
-- HAR 1.2 JSON
-
-The collection export dialog includes one user-facing resolution option:
-
-- **Resolve variables using active environment**
-
-Behavior:
-
-- Unchecked: preserves `{{vars}}` exactly as written and does not open the unresolved-variable modal.
-- Checked: resolves variables using the active environment and existing safe resolver inputs. If unresolved variables remain, the existing unresolved-variable modal / quick-entry flow appears; **Use for Export** applies values only to that export and does not mutate the Active Environment. Collection export resolution does not automatically use `runtimeVars` or `runtimeOAuth2`.
-- Canceling unresolved-variable handling aborts the export and does not write the file.
-
-Collection exports are explicit snapshots. They do **not** automatically include `runtimeVars` or `runtimeOAuth2`.
-API Workbench Collection JSON is the full-fidelity native export and round-trips through the native collection import path; external formats are lossy where their schemas cannot represent every Workbench field.
-
-### Environment export
-
-Use the **Environment** tab **Export** button to save the selected environment profile.
-
-The export dialog uses **Save As** / **Cancel** only; pick the output file in the save dialog.
-
-Supported formats:
-
-- API Workbench Environment JSON
-- Postman Environment JSON
-- dotenv `.env`
-- Generic JSON Object
-- Insomnia Environment JSON
-- Bruno Environment `.bru`
-
-API Workbench Environment JSON is import-compatible with the built-in Environment Import flow and round-trips the saved variables plus OAuth2 config/output bindings.
-
-Environment export writes the selected environment profile only. Runtime execution maps are not automatically included unless they were already stored as normal environment variables.
+External export formats are lossy where their schemas cannot represent all Workbench metadata.
 
 ---
 
 ## Scripts and Assertions
 
-API Workbench supports Postman-style and Bruno-style scripts when Nashorn is available.
+Supported dialects:
 
-### Common Variable Extraction
+- Postman
+- Bruno
+- Insomnia
+- API Workbench native
+- Legacy compatibility
 
-Postman style:
+Lifecycle order:
 
-```javascript
-pm.test("status is 200", function () {
-  pm.expect(pm.response.code()).to.have.status(200);
-});
-```
+1. collection scripts
+2. ancestor-folder scripts from outermost to innermost
+3. request scripts
 
-```javascript
-const jsonData = pm.response.json();
-pm.environment.set("auth_token", jsonData.access_token);
-```
+Phases:
 
-Bruno style:
+- pre-request
+- post-response
+- test
 
-```javascript
-const body = res.getBody();
-bru.setVar("auth_token", body.access_token);
-```
+Shared runtime bindings include `pm`, `bru / req / res`, `insomnia / request / response`, `awb`, and `console`.
 
-Comment extraction:
+Scripts can:
 
-```javascript
-// extract: auth_token = $.data.token
-// extract: user_id = $.user.id
-```
+- read and mutate supported variable scopes
+- mutate method, URL, headers, body, and auth through the exposed request binding
+- read response status, headers, text, parsed JSON, and timing
+- produce logs, warnings, errors, assertions, extractions, and variable-mutation records
 
-### Assertions
+Runner-only controls such as skip, stop, next-request, and dependent-request flows belong to the Runner. Workbench single Send is not a collection-control engine. Do not assume generic network-helper compatibility that is not actually implemented.
 
-Examples:
-
-```javascript
-pm.expect(pm.response.code()).to.have.status(200);
-pm.expect(pm.response).to.have.header("Content-Type");
-pm.expect(jsonData).to.have.property("id");
-pm.expect(jsonData.id).to.equal("123");
-pm.expect(jsonData.id).to.eql("123");
-```
-
-Assertions are reflected in Runner results and timeline. Stop-on-assertion-failure can halt the run.
-
-### Script Safety
-
-Nashorn is not sandboxed. Only run trusted collection scripts.
+Always run only trusted scripts. Scripts can mutate requests and runtime state, and there is no execution timeout.
 
 ---
 
 ## Supported Collection Formats
 
-| Format | Supported Inputs | Notes |
-|--------|------------------|-------|
-| Postman | v2.0/v2.1 JSON | Variables, folders, auth inheritance, scripts, body modes |
-| Bruno | `.bru` file or folder | Variables, scripts, assertions, sequence order |
-| OpenAPI/Swagger | JSON/YAML | Generates requests and example bodies from schemas, including local `#/components/schemas/...` and `#/definitions/...` refs |
-| Insomnia | v4 JSON export | Requests, groups, headers, auth, body |
-| HAR | `.har` | Imports captured requests and bodies |
-
-Disabled headers, URL-encoded fields, and form-data fields are skipped when building requests. Disabling `Content-Type` suppresses synthesized `Content-Type` headers too.
-
-Multipart file uploads only read local files when the field is explicitly marked as a file upload with metadata. Plain path-looking values are sent as text.
+- Postman Collection v2.0 and v2.1 JSON import; Postman Collection v2.1 JSON export
+- OpenAPI / Swagger 2.x / 3.x import support
+- OpenAPI 3.0 JSON or YAML export
+- Insomnia import with supported pre/post script field shapes
+- API Workbench native collection format with the most faithful script preservation
+- Bruno collection and environment formats
+- HAR request collection import/export
 
 ---
 
 ## Common Testing Scenarios
 
-### Scenario: Import Collection to Repeater
-
-1. Load collection.
-2. Check target requests.
-3. Select **Repeater**.
-4. Click **Import Checked**.
-5. Edit requests in Repeater.
-
-Use when you are exploring manually.
-
-### Scenario: Baseline All Endpoints into Sitemap
-
-1. Load collection.
-2. Check endpoints.
-3. Set delay to a safe value.
-4. Select **Sitemap (Live)**.
-5. Click **Import Checked**.
-
-Use when you want Burp Target populated. This sends live traffic.
-
-### Scenario: Chained Login Flow
-
-1. Load collection.
-2. Select login request and dependent API requests.
-3. Ensure login response script extracts token/user IDs.
-4. Open Runner.
-5. Click **Start Collection Runner** to preview and start the token request.
-6. Apply missing variables if prompted.
-7. Start runner.
-8. Watch timeline for variable changes.
-
-### Scenario: OAuth2 Token Request Is in the Collection
-
-1. Check the token request in the Workbench tree.
-2. Open OAuth2 tab.
-3. Select the target collection.
-4. Click **Populate from Checked Request**.
-5. Confirm Token URL, Client ID, Grant Type.
-6. Check the log for any unresolved variable names if the request used placeholders.
-7. Click **Acquire Token**.
-8. If prompted, bind bearer aliases such as `accessToken` or `auth_token`.
-
-### Scenario: Requests Use Non-Standard Bearer Variable Names
-
-If a request has:
-
-```text
-Authorization: Bearer {{accessToken}}
-```
-
-After acquiring OAuth2 token, API Workbench can detect `accessToken` and offer to bind it to the acquired token in runtime vars.
-
-### Scenario: Runner Stops on Missing Variable
-
-1. Check runner preview unresolved vars column.
-2. Use preflight quick-entry modal to apply values.
-3. Confirm values land in the Active Environment.
-4. Run again.
-
-### Scenario: Save Test State for Later
-
-Options:
-
-- Use a Burp project on disk for automatic workspace restore.
-- Use collection export for a portable collection snapshot and the Environment export when you intentionally need a portable environment snapshot.
-- Avoid exporting secrets unless needed and approved.
+1. Import a collection and send a single request from Workbench.
+2. Build a dev, staging, or tenant-specific environment profile and switch contexts with the active environment dropdown.
+3. Queue a login -> create -> update -> delete sequence in the Collection Runner, then inspect results in History.
+4. Send an interesting request to Repeater when you want to tamper with one case.
+5. Export a cleaned-up collection, environment, or History record for handoff and reporting.
 
 ---
 
 ## Error Handling and Troubleshooting
 
-### Import Errors
+### JavaScript Runtime Unavailable or Limited Script Mode
 
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| Unknown collection format | Unsupported file or wrong export shape | Re-export as supported format |
-| Invalid Postman collection | Missing `info` object | Export as Postman collection v2.1 |
-| Duplicate collection name | Same name already loaded | Rename one collection before loading |
-| No checked requests | Nothing checked in tree | Check request/folder/collection nodes |
+- Full mode means a supported JavaScript runtime is available.
+- Limited mode means runtime probing failed and only legacy post-response regex extraction is available.
+- Disabled mode means Java is below the supported runtime requirement.
+- Nashorn is a compatibility fallback, not the main architecture.
+- Use Diagnostics capture when collecting runtime evidence.
 
-### Variable Errors
+### Other common issues
 
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| `{{var}}` appears in final request | Missing runtime value | Use unresolved-variable modal or Active Environment |
-| Value from wrong collection | Target dropdown points to another collection | Select the correct collection before editing |
-| Edited vars disappear after switching collection | Edits were in UI but target changed before autosave | Use Save Now before switching for critical edits |
-| Clear wiped editor only | Expected behavior | Click Save Now if you intentionally want to persist empty overrides |
-
-### OAuth2 Errors
-
-| Error | Cause | Action |
-|-------|-------|--------|
-| Invalid configuration | Missing token URL/client ID/grant fields | Fill required fields |
-| Non-JSON response | Wrong token URL, proxy, WAF, HTML error | Inspect token URL and response |
-| `invalid_client` | Wrong client ID/secret or auth mode | Try `oauth2_client_auth=basic`, `body`, or `none` |
-| Missing refresh token | Auto-refresh enabled without refresh token | Acquire token again or import refresh token |
-| Browser not supported | Headless environment | Use non-browser grant if possible |
-| Authorization code timeout | No callback received | Check the configured loopback redirect URI, port availability, and redirect URI match |
-
-### Runner Errors
-
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| Runner stops immediately | Stop condition matched | Check runner log and preview |
-| Status >= 400 stop | Target returned client/server error | Inspect response and auth |
-| Assertion failure | Script assertion failed | Check assertion summary |
-| Retry never succeeds | Network, DNS, timeout, bad endpoint | Check Burp proxy/network/VPN |
-| Step button disabled | Runner is not paused | Click Pause first, wait for current request to finish |
-
-### Auth Errors
-
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| Request shows No auth in preview | No auth inherited/effective | Check collection/folder/request auth |
-| Request should inherit but does not | Parent has explicit noauth | Inspect auth source in preview/meta |
-| Token acquired but request still 401 | Request uses non-standard bearer variable | Use bearer alias binding or set runtime var manually |
-| OAuth2 request body rejected | Server expects basic client auth or no secret in body | Set `oauth2_client_auth` accordingly |
-
-### Burp/Build Errors
-
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| No JAR artifact | Build failed before package | Run `mvn test` then `mvn -DskipTests package` |
-| Extension will not load | Wrong JAR or Java version | Use fat JAR and Java 17+ |
-| No API Workbench tab | Extension startup failed | Check Burp Extensions error output |
+| Area | What to check |
+| --- | --- |
+| Import | Confirm the file type and import format are supported. |
+| Variables | Verify the active environment, collection values, and request overrides. |
+| OAuth2 | Confirm the selected environment profile, grant fields, and callback settings. |
+| Runner | Check stop conditions, redirects, retry counts, and queue contents. |
+| Auth | Confirm inheritance from request, folder, collection, or explicit no-auth. |
+| Build / load | Confirm the JAR was built with Java 17+ and that Burp loaded the fat JAR. |
 
 ---
 
 ## Security and Safety Notes
 
-- **Sitemap and Runner send live traffic.** Use delay and stop conditions when testing production-like systems.
-- **Scripts are not sandboxed.** Collection scripts can access Java classes through Nashorn. Only run trusted scripts.
-- **Project snapshots can contain tokens and secrets.** Live token cache is memory-only, but Burp project data can store OAuth access/refresh tokens and other secret values.
-- **Collection and environment exports can contain secrets.** Treat exported files as sensitive, especially when variable resolution is enabled.
-- **Authorization Code callback uses the configured HTTP loopback redirect URI.** The default remains `http://localhost:9876/callback`. Loopback examples include `http://localhost:9876/callback` and `http://127.0.0.1:9988/oauth/callback`.
-- **File uploads are explicit only.** Path-like text values are not read as files unless the field is marked as a file upload.
-- **Autosave follows selected collection.** Check the Target dropdown before editing Variables or OAuth2 settings.
+- Treat live traffic carefully before importing to Sitemap or Intruder.
+- Treat scripts as trusted code only.
+- Store secrets carefully; Burp project files may contain them.
+- Be careful with file uploads and exported archives.
+- OAuth2 loopback callbacks use localhost and should only be used in controlled environments.
 
 ---
 
@@ -863,36 +467,24 @@ Options:
 
 ### Before Live Traffic
 
-- [ ] Confirm target environment and base URL.
-- [ ] Check Runner Preview URL column.
-- [ ] Resolve missing variables.
-- [ ] Confirm auth status/source.
-- [ ] Set safe delay.
-- [ ] Enable relevant stop conditions.
-- [ ] Confirm Sitemap/Runner live traffic is authorized.
+- Confirm the active environment profile.
+- Confirm the destination tab.
+- Confirm the checked requests.
 
 ### Before OAuth2 Testing
 
-- [ ] Select correct OAuth2 target collection.
-- [ ] Populate from selected token request when available.
-- [ ] Confirm token URL and grant type.
-- [ ] Confirm client auth mode.
-- [ ] Acquire token.
-- [ ] Bind bearer aliases if prompted.
-- [ ] Verify Environment tab shows alias values when expected.
+- Confirm the selected environment profile.
+- Confirm the redirect / callback settings.
+- Confirm any token outputs that will be written back.
 
-### Before Saving/Sharing State
+### Before Saving or Sharing State
 
-- [ ] Decide whether Burp project persistence is enough.
-- [ ] Use collection or environment export only when portable state is needed.
-- [ ] Review exported files for secrets/tokens.
-- [ ] Store exported files securely.
+- Review History and Diagnostics for sensitive data.
+- Review exported collections and environment files for secrets.
+- Confirm the correct active environment.
 
 ### Before Reporting a Tool Issue
 
-- [ ] Capture collection format and request name.
-- [ ] Note selected target collection.
-- [ ] Include runner preview row if relevant.
-- [ ] Include Workbench Meta output if relevant.
-- [ ] Include Burp extension log lines.
-- [ ] State whether the Burp project is temporary or on disk.
+- Capture Diagnostics.
+- Note the Java version.
+- Note whether script mode was Full, Limited, or Disabled.
