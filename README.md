@@ -11,7 +11,7 @@ API Workbench for Burp Suite is a Burp-native API workspace. It helps you import
 | OAuth2 | Acquire and refresh OAuth2 tokens into the selected environment profile |
 | Collection Runner | Queue and execute ordered request sequences with retries, stop conditions, pause/resume, and step |
 | History | Review prior Workbench and Runner executions, compare them, replay them, and export evidence |
-| Diagnostics | Capture passive runtime diagnostics, inspect sanitized reports, and copy snapshots |
+| Diagnostics | Capture passive events and generate or copy sanitized reports |
 
 ## What it gives you
 
@@ -206,7 +206,7 @@ These features reduce repetitive setup work and keep testing moving inside Burp.
 | Format | Import | Export | Notes |
 | --- | --- | --- | --- |
 | API Workbench JSON | Yes | Yes | Native collection format |
-| Postman Collection v2.0 and v2.1 JSON | Yes | Yes | Import: Postman Collection v2.0 and v2.1 JSON; Export: Postman Collection v2.1 JSON |
+| Postman Collection v2.0 / v2.1 JSON | Yes | v2.1 only | Imports v2.0 and v2.1; exports Postman Collection v2.1 JSON |
 | OpenAPI / Swagger 2.x / 3.x | Yes | Export as 3.0 JSON or YAML | Structured API definitions |
 | Insomnia JSON | Yes | Yes | Includes recognized pre/post script shapes |
 | Bruno ZIP / folder | Yes | Yes | Bruno collection packages |
