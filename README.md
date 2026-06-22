@@ -166,8 +166,6 @@ Replay History retains the latest 1000 entries. If the original request still ex
 
 The History request viewer now prefers the actual raw HTTP request that was sent, while still retaining the authored/template request for replay and editing.
 
-For the full feature reference, see [Replay History Guide](docs/replay-history.md).
-
 ### Export collections, environments, and history for handoff
 
 Move cleaned-up work out of Burp when you need to share or archive it.
@@ -439,23 +437,11 @@ Expected output:
 - `mvn clean package` passes.
 - The shaded artifact is written to `target\api-workbench-for-burp-2.0.0-jar-with-dependencies.jar`.
 
-For deeper validation notes and targeted test references, see [Testing Guide](docs/testing.md).
-
-### Reduced manual QA suite v3
-
-Use the focused manual QA materials for the stabilized runtime / resolver pass:
-
-- [Reduced Manual QA Flow](REDUCED-MANUAL-QA-FLOW.md)
-- [Environment vs Collection Precedence](ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md)
-- `api-workbench-live-public-test-suite-v3-focused.zip`
-
 ## More documentation
 
 - [Operator Guide](OPERATOR_GUIDE.md)
 - [Complete Documentation](DOCUMENTATION.md)
-- [Feature Guide](docs/features.md)
-- [Replay History Guide](docs/replay-history.md)
-- [Testing Guide](docs/testing.md)
+- [Environment vs Collection Precedence](ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md)
 
 ## Summary
 
