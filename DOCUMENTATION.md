@@ -1,1327 +1,624 @@
 # API Workbench for Burp Suite - Complete Documentation
 
-**Version:** 2.0.0  
-**Author:** Sachinico De Leon  
-**License:** MIT  
-**Target Platform:** Burp Suite Professional / Community Edition  
-**Java Version:** 17+  
-**Montoya API:** 2024.12+
-
----
-
 ## Table of Contents
 
-1. [Overview](#1-overview)
-2. [Features](#2-features)
-3. [Architecture](#3-architecture)
-4. [Data Flow](#4-data-flow)
-5. [Collection Format Support](#5-collection-format-support)
-6. [Variable Resolution Engine](#6-variable-resolution-engine)
-7. [Authentication & OAuth2](#7-authentication--oauth2)
-8. [Collection Runner](#8-collection-runner)
-9. [Script Engine](#9-script-engine)
-10. [Live Sync / UI Mirroring](#10-live-sync--ui-mirroring)
-11. [Security Considerations](#11-security-considerations)
-12. [Known Limitations & Code-Level Behaviors](#12-known-limitations--code-level-behaviors)
-13. [Error Handling](#13-error-handling)
-14. [Performance](#14-performance)
-15. [Extending the Extension](#15-extending-the-extension)
-16. [Troubleshooting](#16-troubleshooting)
-
----
+1. [Overview](#overview)
+2. [Features](#features)
+3. [Architecture](#architecture)
+4. [Data Flow](#data-flow)
+5. [Collection Format Support](#collection-format-support)
+6. [Variable Resolution Engine](#variable-resolution-engine)
+7. [Environment and OAuth2](#environment-and-oauth2)
+8. [Collection Runner](#collection-runner)
+9. [Script Engine](#script-engine)
+10. [History Subsystem](#history-subsystem)
+11. [Diagnostics Subsystem](#diagnostics-subsystem)
+12. [State Synchronization](#state-synchronization)
+13. [Security Considerations](#security-considerations)
+14. [Known Limitations & Code-Level Behaviors](#known-limitations--code-level-behaviors)
+15. [Error Handling](#error-handling)
+16. [Performance](#performance)
+17. [Extending the Extension](#extending-the-extension)
+18. [Troubleshooting](#troubleshooting)
+19. [Appendix A: Data Model Reference](#appendix-a-data-model-reference)
+20. [Appendix B: Validation Profiles](#appendix-b-validation-profiles)
 
 ## 1. Overview
 
-This Burp Suite extension bridges the gap between API development tools (Postman, Bruno, Insomnia) and security testing workflows. It imports API collections into Burp Suite for manual pentesting while providing a built-in Collection Runner for automated sequential execution with variable extraction.
+API Workbench is a Burp-native API workspace for importing or creating collections, editing and sending requests, managing environment profiles and OAuth2, running sequential workflows, recording History, and capturing Diagnostics.
 
-For day-to-day usage, see the [Operator Guide](OPERATOR_GUIDE.md). This document focuses on architecture, implementation details, and reference behavior.
+### Key capabilities
 
-### Key Capabilities
-- **Import** collections from 5 formats into Burp Repeater, Sitemap, or both
-- **Run** collections sequentially with delays, retries, and assertions
-- **Extract** variables from responses for use in subsequent requests
-- **Manage** OAuth2 tokens across multiple grant types
-- **Execute** JavaScript pre/post request scripts via Nashorn engine
-
----
+| Capability | Notes |
+| --- | --- |
+| GraalJS primary runtime | JavaScript scripts run on a supported GraalJS-backed sandbox when Java 17+ is available |
+| Nashorn fallback | Compatibility fallback for legacy paths; not the primary architecture |
+| Dialects | Postman, Bruno, Insomnia, API Workbench native, and legacy compatibility |
+| History | Records Workbench and Runner executions, script output, assertions, extractions, and variable changes |
+| Diagnostics | Captures passive sanitized runtime events without sending traffic |
+| Environment profiles | Environment tab manages the active profile, OAuth2 config, and output bindings |
 
 ## 2. Features
 
 ### 2.1 Multi-Format Import
 
-| Format | File Extension | Auto-Detect Key | Auth Support | Scripts |
-|--------|---------------|-----------------|--------------|---------|
-| Postman v2.0/v2.1 | `.json` | `info.schema` or `info._postman_id` | Bearer, Basic, API Key, OAuth2 | Pre-request, Tests | ✅ |
-| Bruno | `.bru` (folder or file) | `.bru` file extension | Basic (native), Bearer (header) | Pre-request, Post-response | ✅ |
-| OpenAPI 2.x/3.x | `.json`, `.yaml`, `.yml` | `openapi` or `swagger` key | Bearer (auto-detected) | No | ✅ |
-| Insomnia v4 | `.json` | `__type` = export or `_type` = request | Bearer, Basic, API Key | No | ✅ |
-| HAR | `.har` | `log.entries` array | Headers only | No | ✅ |
+Supported import formats include Postman v2.0/v2.1, OpenAPI/Swagger 2.x/3.x, Insomnia, Bruno, HAR, and native API Workbench collections. Insomnia import preserves recognized pre/post script shapes. API Workbench native collections preserve script blocks most faithfully.
 
 ### 2.2 Multi-Collection Support
 
-Load multiple collections simultaneously:
-- Click **+ Add Collection** to load additional collections
-- Collection list shows name, format, and request count
-- Remove individual collections with **- Remove**
-- Checkbox tree shows requests from ALL loaded collections
-- **Source** column identifies which collection each request belongs to
-- Variables are collection-scoped (no cross-collection leakage)
-- Import/Runner operates on checked requests across all collections
+The workspace can load multiple collections at once. Request-tree state and per-collection runtime data remain isolated by collection identity.
 
 ### 2.3 Import Destinations
 
-**Repeater Mode**
-- Creates Repeater tabs for each checked request
-- No live HTTP requests made during import
-- Best for: Manual tampering, one-off testing
-
-**Sitemap Mode**
-- Sends live HTTP requests to populate Target > Site map
-- One request per endpoint (no parameter permutations)
-- Configurable delay between requests (default 200ms)
-- Best for: Attack surface mapping, passive scanning
-
-**Both Mode**
-- Repeater tabs + live Sitemap entries
-- Delay applied between Sitemap requests only
+The same checked requests can be sent to Repeater, Sitemap, or Intruder. Workbench Send remains separate from collection-style control flow.
 
 ### 2.4 Collection Runner
 
-- **Sequential execution** with configurable inter-request delay
-- **Run preview** shown automatically before sending, with collection, method, URL preview, unresolved variables, and auth status
-- **Pause / resume / step** controls for debugging chained APIs
-- **Variable extraction** from JSON responses via scripts or comments
-- **Assertions** (status code, header presence, JSON property existence)
-- **Configurable retry** with visible attempt logs and retry delay messages
-- **Stop conditions** for error, assertion failure, status >= 400, missing variable, or after N failures
-- **Real-time results** and **timeline** tables with status, timing, retries, variable changes, and assertion summary
-- **Sitemap integration** - runner responses auto-populate Site map
+The runner executes checked requests in order with retries, redirect handling, stop conditions, pause/resume, step, and cancellation.
 
 ### 2.5 OAuth2 Token Management
 
-| Grant Type | Browser Required | Auto-Refresh | Use Case |
-|-----------|-----------------|--------------|----------|
-| Client Credentials | No | Yes | Service-to-service APIs |
-| Password (ROPC) | No | Yes | Legacy/internal APIs |
-| Authorization Code + PKCE | Yes | Yes | Modern web/mobile APIs |
-| Refresh Token | No | Yes | Session maintenance |
+OAuth2 configuration belongs to the active environment profile. Tokens are acquired, refreshed, and written back to configured environment outputs.
 
 ### 2.6 Script Engine
 
-- **Nashorn JavaScript** execution for pre/post request scripts
-- **Postman API** compatibility: `pm.test()`, `pm.environment.get/set/unset()`, `pm.collectionVariables.get/set/unset()`, `pm.expect(...).to.have.status()`, `pm.expect(...).to.have.header()`, `pm.expect(...).to.have.property()`, `pm.expect(...).to.equal()`, `pm.expect(...).to.eql()`
-- **Bruno API** compatibility: `bru.setVar()`, `res.getBody()`
-- **Regex fallback** when Nashorn is unavailable
-- **Comment extraction**: `// extract: key = $.json.path`
-
----
+The runtime supports multiple script dialects and phases, mutates request state and variables, and records logs, warnings, errors, assertions, and extractions.
 
 ## 3. Architecture
 
 ### 3.1 Package Structure
 
-```
+Root support infrastructure lives in the repository root, `config/`, `.github/workflows/`, and `scripts/ci/`. The production Java tree is generated from the tracked sources below.
+
+**Primary runtime and execution components**
+
+- `burp.scripts.UnifiedScriptRuntime`
+- `burp.scripts.GraalJsSandboxEngine`
+- `burp.scripts.ScriptLifecycleExecutor`
+- `burp.scripts.ScriptBindingsFactory`
+- `burp.scripts.ScriptExecutionContext`
+- `burp.scripts.VariableScopeStore`
+- `burp.scripts.ScriptBlock`
+- `burp.utils.ScriptEngine` as the legacy compatibility adapter
+
+```text
 burp/
-|-- BurpExtender.java              # Extension entry point (Montoya API)
-|-- UniversalImporter.java         # Core import orchestrator
+|-- BurpExtender.java
+|-- UniversalImporter.java
 |-- auth/
-|   |-- OAuth2Config.java          # OAuth2 configuration model
-|   |-- OAuth2Manager.java         # Token acquisition and refresh coordinator
-|   |-- TokenStore.java            # In-memory token cache
-|   |-- ClientCredentialsHandler.java # Client Credentials grant handler
-|   |-- PasswordGrantHandler.java  # Resource Owner Password Credentials grant handler
-|   |-- RefreshTokenHandler.java   # Refresh Token grant handler
-|   `-- AuthorizationCodeHandler.java # PKCE + localhost callback grant handler
+|   |-- AuthorizationCodeHandler.java
+|   |-- ClientCredentialsHandler.java
+|   |-- OAuth2Config.java
+|   |-- OAuth2Manager.java
+|   |-- PasswordGrantHandler.java
+|   |-- RefreshTokenHandler.java
+|   `-- TokenStore.java
+|-- diagnostics/
+|   |-- DiagnosticEvent.java
+|   |-- DiagnosticOperation.java
+|   |-- DiagnosticSanitizer.java
+|   |-- DiagnosticSeverity.java
+|   |-- DiagnosticSink.java
+|   `-- DiagnosticStore.java
+|-- exporter/
+|   |-- ApiWorkbenchCollectionExporter.java
+|   |-- ApiWorkbenchEnvironmentExporter.java
+|   |-- BrunoCollectionExporter.java
+|   |-- BrunoEnvironmentExporter.java
+|   |-- CollectionExportFormat.java
+|   |-- CollectionExportOptions.java
+|   |-- CollectionExportService.java
+|   |-- CollectionExportSupport.java
+|   |-- CollectionExportTree.java
+|   |-- DotEnvEnvironmentExporter.java
+|   |-- EnvironmentExportFormat.java
+|   |-- EnvironmentExportOptions.java
+|   |-- EnvironmentExportService.java
+|   |-- ExportException.java
+|   |-- ExportFileNamePolicy.java
+|   |-- ExportIds.java
+|   |-- ExportResult.java
+|   |-- ExportSupport.java
+|   |-- ExportVariableResolutionService.java
+|   |-- GenericJsonEnvironmentExporter.java
+|   |-- HarCollectionExporter.java
+|   |-- InsomniaCollectionExporter.java
+|   |-- InsomniaEnvironmentExporter.java
+|   |-- OpenApiCollectionExporter.java
+|   |-- PostmanCollectionExporter.java
+|   `-- PostmanEnvironmentExporter.java
+|-- history/
+|   |-- HistoryAssertionResult.java
+|   |-- HistoryCsvExportService.java
+|   |-- HistoryDiffService.java
+|   |-- HistoryEntry.java
+|   |-- HistoryExportService.java
+|   |-- HistoryExtractionResult.java
+|   |-- HistoryFilterCriteria.java
+|   |-- HistoryHarExportService.java
+|   |-- HistoryHeader.java
+|   |-- HistoryJsonExportService.java
+|   |-- HistoryJsonSupport.java
+|   |-- HistoryPersistenceService.java
+|   |-- HistoryRequestSnapshot.java
+|   |-- HistoryResponseSnapshot.java
+|   |-- HistoryResult.java
+|   |-- HistoryRetentionPolicy.java
+|   |-- HistorySanitizer.java
+|   |-- HistorySource.java
+|   `-- HistoryStore.java
 |-- models/
-|   |-- ApiRequest.java            # Unified request model
-|   |-- ApiCollection.java         # Unified collection model
-|   |-- ImportResult.java          # Import operation result
-|   |-- RunnerPreviewRow.java      # Runner preview row model
-|   |-- RunnerResult.java          # Runner operation result
-|   |-- RunnerStopConditions.java  # Runner stop-condition config
-|   |-- RunnerTimelineRow.java     # Runner timeline row model
-|   `-- UnresolvedVariableIssue.java # Variable preflight issue model
+|   |-- ApiCollection.java
+|   |-- ApiRequest.java
+|   |-- BearerTokenAliasCandidate.java
+|   |-- EnvironmentProfile.java
+|   |-- ImportResult.java
+|   |-- OAuth2EnvironmentState.java
+|   |-- RunnerPreviewRow.java
+|   |-- RunnerResult.java
+|   |-- RunnerStopConditions.java
+|   |-- RunnerTimelineRow.java
+|   |-- UnresolvedVariableIssue.java
+|   `-- WorkspaceState.java
 |-- parser/
-|   |-- CollectionParser.java      # Parser interface
-|   |-- ParserRegistry.java        # Auto-detect registry
-|   |-- PostmanParser.java         # Postman v2.0/v2.1 parser
-|   |-- BrunoParser.java           # Bruno parser and script normalization
-|   |-- OpenApiParser.java         # OpenAPI 2.x/3.x parser
-|   |-- InsomniaParser.java        # Insomnia v4 parser
-|   |-- HarParser.java             # HAR parser
-|   `-- VariableResolver.java      # {{variable}} resolution engine
+|   |-- ApiWorkbenchCollectionParser.java
+|   |-- BrunoParser.java
+|   |-- CollectionParser.java
+|   |-- HarParser.java
+|   |-- InsomniaParser.java
+|   |-- OpenApiParser.java
+|   |-- ParserRegistry.java
+|   |-- PostmanParser.java
+|   `-- VariableResolver.java
 |-- runner/
-|   `-- CollectionRunner.java      # Sequential request runner
+|   `-- CollectionRunner.java
+|-- scripts/
+|   |-- ExecutionSource.java
+|   |-- GraalJsSandboxEngine.java
+|   |-- ScriptAdHocRequest.java
+|   |-- ScriptAssertionResult.java
+|   |-- ScriptBindingsFactory.java
+|   |-- ScriptBlock.java
+|   |-- ScriptDependentRequestExecutor.java
+|   |-- ScriptDependentRequestResult.java
+|   |-- ScriptDialect.java
+|   |-- ScriptExecutionContext.java
+|   |-- ScriptExecutionResult.java
+|   |-- ScriptFlowControl.java
+|   |-- ScriptLifecycleExecutor.java
+|   |-- ScriptLogEntry.java
+|   |-- ScriptPhase.java
+|   |-- ScriptScope.java
+|   |-- ScriptVariableMutation.java
+|   |-- UnifiedScriptRuntime.java
+|   `-- VariableScopeStore.java
+|-- smoke/
+|   `-- ScriptRuntimeProbe.java
 |-- ui/
-|   |-- ImporterPanel.java         # Main Swing UI (Workbench + Variables + OAuth2 + Runner)
-|   |-- OAuth2Panel.java           # OAuth2 configuration UI
-|   |-- RequestEditorAuthSupport.java # Auth-field orchestration helper
-|   |-- RequestEditorBodySupport.java # Body-mode UI and form table helper
-|   |-- RequestEditorPanel.java    # Workbench request editor
-|   |-- RequestEditorStateMapper.java # Request model <-> editor state mapping helper
-|   |-- RequestEditorTableSupport.java # Shared request-editor table behavior
-|   |-- RequestPreviewTableModel.java # Import preview table model
-|   |-- ResponsePane.java          # Workbench response display
-|   |-- RunnerPreviewTableModel.java # Runner preview table model
-|   |-- RunnerResultTableModel.java # Runner results table model
-|   |-- RunnerTimelineTableModel.java # Runner timeline table model
-|   |-- UnresolvedVariablesDialog.java # Variable preflight modal dialog
+|   |-- AuthSettingsDialog.java
+|   |-- BearerTokenAliasDialog.java
+|   |-- ImporterPanel.java
+|   |-- OAuth2Panel.java
+|   |-- RequestEditorAuthSupport.java
+|   |-- RequestEditorBodySupport.java
+|   |-- RequestEditorPanel.java
+|   |-- RequestEditorStateMapper.java
+|   |-- RequestEditorTableSupport.java
+|   |-- RequestPreviewTableModel.java
+|   |-- ResponsePane.java
+|   |-- RunnerExecutionTableModel.java
+|   |-- RunnerPreviewTableModel.java
+|   |-- RunnerResultTableModel.java
+|   |-- RunnerTimelineTableModel.java
+|   |-- SwingShortcutSupport.java
+|   |-- UnresolvedVariablesDialog.java
+|   |-- VariableHighlightStyler.java
+|   |-- VariableResolutionStatus.java
+|   |-- VariableStatusColors.java
+|   |-- VariableTokenScanner.java
+|   |-- dnd/
+|   |   |-- ActiveEnvironmentDropTransferHandler.java
+|   |   |-- EnvironmentDragPayload.java
+|   |   |-- EnvironmentProfileDragSourceTransferHandler.java
+|   |   |-- EnvironmentTransferHandler.java
+|   |   |-- RunnerQueueDragPayload.java
+|   |   `-- RunnerQueueTransferHandler.java
+|   |-- history/
+|   |   |-- HistoryActionsPanel.java
+|   |   |-- HistoryCompareDialog.java
+|   |   |-- HistoryDetailPanel.java
+|   |   |-- HistoryFilterPanel.java
+|   |   |-- HistoryLoadResultNotifier.java
+|   |   |-- HistoryNativeHttpMessageFactory.java
+|   |   |-- HistoryNativeMessageFormatter.java
+|   |   |-- HistoryPanel.java
+|   |   `-- HistoryTableModel.java
 |   `-- tree/
-|       |-- BurpLikeTreeCellRenderer.java # Shared request-tree renderer with explicit hierarchy cues
-|       |-- CheckBoxTreeCellRenderer.java # Legacy checkbox tree renderer
-|       `-- CollectionTreeNode.java # Tree node wrapper for collections, folders, and requests
+|       |-- BurpLikeTreeCellRenderer.java
+|       |-- CheckBoxTreeCellRenderer.java
+|       |-- CollectionTreeNode.java
+|       |-- RequestTreeDragPayload.java
+|       |-- RequestTreeMutationService.java
+|       |-- RequestTreeNamingPolicy.java
+|       |-- RequestTreePathService.java
+|       |-- RequestTreeTransferHandler.java
+|       `-- TreeDropRequest.java
 `-- utils/
-    |-- HttpUtils.java             # URL parsing utilities
-    |-- OAuth2RuntimeMapper.java   # Normalizes imported auth to canonical oauth2_* vars
-    |-- RequestBuilder.java        # HTTP message construction + OAuth2 + file uploads
-    |-- RuntimeVariablesJson.java  # Runtime vars/OAuth2 JSON import-export helper
-    |-- ScriptEngine.java          # Nashorn JS execution + Postman/Bruno APIs
-    |-- SharedRequestPipeline.java # Shared build/send/script/OAuth pipeline
-    `-- UnresolvedVariableAnalyzer.java # Preflight unresolved-variable scanner
+    |-- AuthInheritanceResolver.java
+    |-- DebouncedSwingAction.java
+    |-- EnvironmentImportService.java
+    |-- ExecutionResult.java
+    |-- HttpUtils.java
+    |-- OAuth2BearerAliasDetector.java
+    |-- OAuth2PopulateHelper.java
+    |-- OAuth2RuntimeMapper.java
+    |-- RequestBuilder.java
+    |-- RequestBuildPolicy.java
+    |-- RequestDebugFormatter.java
+    |-- RequestPathResolver.java
+    |-- RuntimeResolverFactory.java
+    |-- RuntimeVariablesJson.java
+    |-- ScriptEngine.java
+    |-- ScriptMode.java
+    |-- ScriptModeDetector.java
+    |-- SharedRequestPipeline.java
+    |-- SwingEdt.java
+    |-- UnresolvedVariableAnalyzer.java
+    |-- VariableDebugFormatter.java
+    |-- WorkspaceStateJson.java
+    |-- WorkspaceStateMigrator.java
+    `-- WorkspaceStateService.java
 ```
-
-Additional current models/UI utilities include `RequestEditorPanel`, `RequestEditorAuthSupport`, `RequestEditorStateMapper`, `RequestEditorBodySupport`, `RequestEditorTableSupport`, `ResponsePane`, `BurpLikeTreeCellRenderer`, `CollectionTreeNode`, `RunnerPreviewRow`, `RunnerStopConditions`, `RunnerTimelineRow`, `UnresolvedVariableIssue`, `RunnerPreviewTableModel`, `RunnerTimelineTableModel`, `UnresolvedVariablesDialog`, `SharedRequestPipeline`, `RuntimeVariablesJson`, and `UnresolvedVariableAnalyzer`.
-
 
 ### 3.2 Class Diagram (Simplified)
 
-```
+```text
 BurpExtender
-    └─> UniversalImporter
-        ├─> ImporterPanel (UI)
-        │   ├─> CollectionRunner
-        │   ├─> OAuth2Panel
-        │   └─> VariableResolver
-        ├─> ParserRegistry
-        │   ├─> PostmanParser
-        │   ├─> BrunoParser
-        │   ├─> OpenApiParser
-        │   ├─> InsomniaParser
-        │   └─> HarParser
-        └─> RequestBuilder
-            └─> HttpUtils
++- UniversalImporter
+   +- ImporterPanel
+   �  +- Workbench controls
+   �  +- Environment profile selection
+   �  +- OAuth2 acquisition
+   �  +- Runner execution table
+   �  +- History panel
+   �  +- Diagnostics panel
+   +- ParserRegistry -> PostmanParser / BrunoParser / OpenApiParser / InsomniaParser / HarParser / ApiWorkbenchCollectionParser
+   +- CollectionRunner
+   +- EnvironmentProfile / OAuth2EnvironmentState / WorkspaceState
+   +- HistoryStore / HistoryPersistenceService / HistoryExportService
+   +- DiagnosticStore / DiagnosticEvent / DiagnosticSanitizer
+   +- UnifiedScriptRuntime / ScriptLifecycleExecutor / ScriptBindingsFactory / GraalJsSandboxEngine
+   +- RequestBuilder / SharedRequestPipeline / RuntimeResolverFactory
 ```
 
 ### 3.3 Design Patterns Used
 
 | Pattern | Application |
-|---------|-------------|
-| **Strategy** | `CollectionParser` interface with 5 implementations |
-| **Registry** | `ParserRegistry` auto-detects format via `canParse()` |
-| **Observer** | `CollectionRunner.RunnerListener` for UI updates |
-| **Builder** | `RequestBuilder` constructs HTTP messages step-by-step |
-| **Factory** | `HttpService.httpService()` and `HttpRequest.httpRequest()` |
-
----
+| --- | --- |
+| Strategy | `CollectionParser` interface with one parser per supported collection family |
+| Registry | `ParserRegistry` auto-detects format via parser capability checks |
+| Observer | Runner listeners and UI models update execution views |
+| Builder | `RequestBuilder` constructs HTTP messages step-by-step |
+| Factory | `ScriptBindingsFactory`, `HttpService.httpService()`, and request helpers build runtime objects |
 
 ## 4. Data Flow
 
 ### 4.1 Import Flow
 
-```
-User selects collection file
-    |
-    v
-ParserRegistry.detectParser(File) -> returns appropriate parser
-    |
-    v
-Parser.parse(File) -> returns ApiCollection (unified model)
-    |
-    v
-VariableResolver loads environment variables
-    |
-    v
-User selects requests + destination (Repeater/Sitemap/Both)
-    |
-    v
-UnresolvedVariableAnalyzer scans checked requests
-    |
-    v
-If missing variables exist: modal offers cancel, continue, or apply runtime values
-    |
-    v
-For each checked request:
-    VariableResolver.resolve(request) -> substitutes {{variables}}
-    RequestBuilder.buildRequest(request) -> raw HTTP bytes
-    |
-    v
-    If Repeater: api.repeater().sendToRepeater(name, HttpRequest)
-    If Intruder: api.intruder().sendToIntruder(HttpRequest)
-    If Sitemap: api.http().sendRequest(HttpRequest) -> add response to Site map
-    |
-    v
-ImportResult returned with success/failure counts
-```
+1. User selects a file or Bruno folder.
+2. `ParserRegistry` selects a parser.
+3. Parser builds `ApiCollection` and related models.
+4. Environment profiles, scripts, auth, and request-tree state are stored in workspace state.
+5. Checked requests can be sent to Workbench, Runner, Repeater, Sitemap, or Intruder.
 
-### 4.2 Runner Flow
+### 4.2 Workbench Send Flow
 
-```
-User selects requests + configures runner settings
-    |
-    v
-Build run preview -> ordered list, URL preview, unresolved vars, auth status
-    |
-    v
-Optional unresolved-variable modal before live execution
-    |
-    v
-CollectionRunner.runCollection(collection, requests, initialVars)
-    |
-    v
-For each request in sequence:
-    1. Honor pause/resume/step gate
-    2. Evaluate missing-variable stop condition
-    3. Execute through SharedRequestPipeline
-    4. Retry failed attempts according to configured retries
-    5. Measure response time and shape RunnerResult
-    6. Execute post-response scripts -> extract variables
-    7. Store extracted variables for the same collection only
-    8. Evaluate assertions/status/failure stop conditions
-    9. Emit result row and timeline row
-    10. Delay (if configured and not last request)
-    |
-    v
-RunnerResult added to results table
-fireOnRequestComplete() -> UI update via SwingUtilities.invokeLater()
-    |
-    v
-All complete -> fireOnComplete() -> final statistics
-```
+1. Request + collection + active environment are passed into `SharedRequestPipeline`.
+2. Variable resolution is computed with the active-environment overlay and request-level overrides.
+3. Scripts run for the current collection/folder/request lifecycle.
+4. OAuth2 values are injected when enabled.
+5. Request is built and sent.
+6. Response, script output, History, and Diagnostics are updated.
 
-### 4.3 OAuth2 Flow
+### 4.3 Runner Flow
 
-```
-User configures OAuth2 in UI tab
-    |
-    v
-OAuth2Manager.acquireToken(config)
-    |
-    v
-Based on grant type:
-    Client Credentials -> POST token_url with client_id + client_secret
-    Password -> POST with username + password + client credentials
-    Auth Code + PKCE:
-        1. Generate code_verifier + code_challenge (SHA256)
-        2. Build auth URL with PKCE params
-        3. Start ServerSocket on 127.0.0.1:9876
-        4. Open browser via Desktop.browse()
-        5. User authenticates, redirected to localhost callback
-        6. Extract code, exchange for tokens
-    Refresh Token -> POST with refresh_token
-    |
-    v
-TokenStore.store(key, TokenEntry) -> live in-memory cache (static map, survives extension reloads in same JVM)
-    |
-    v
-Token auto-injected as {{oauth2_access_token}} in VariableResolver
-```
+1. Runner queue is created from checked requests.
+2. Each request passes through the same shared pipeline as Workbench Send.
+3. Runner-specific flow control can skip, stop, step, or advance to the next request.
+4. Execution entries are recorded into the Runner execution table and History.
 
-If the active collection/runtime state contains OAuth2 values, those values can also be mirrored into workspace snapshots saved through Burp project extension data.
+### 4.4 OAuth2 Flow
 
----
+1. OAuth2 tab operates on the selected environment profile.
+2. Tokens are acquired or refreshed.
+3. Configured token outputs are written to the profile.
+4. The active environment overlay then participates in request resolution.
+
+### 4.5 Script Lifecycle Flow
+
+1. Collection scripts run.
+2. Ancestor-folder scripts run from outermost to innermost.
+3. Request scripts run.
+4. Phases are pre-request, post-response, and test.
+5. Script output, assertions, extractions, and variable mutations are merged into runtime state.
+
+### 4.6 History Recording Flow
+
+1. A request or runner step executes.
+2. The request snapshot, response snapshot, and metadata are normalized.
+3. HistoryEntry objects are appended to the history store.
+4. Export services can later produce HAR, CSV, or native JSON.
+
+### 4.7 Diagnostics Recording Flow
+
+1. Passive runtime events are captured only when Diagnostics capture is enabled.
+2. Events are sanitized and grouped by operation.
+3. The in-memory store keeps at most 1,000 events.
+4. The operator can refresh, copy, or clear the snapshot.
 
 ## 5. Collection Format Support
 
 ### 5.1 Postman (v2.0 / v2.1)
 
-**Detection:** JSON object with `info.schema` or `info._postman_id`
-
-**Parsed Elements:**
-- `info.name` -> collection name
-- `info.description` -> collection description
-- `variable[]` -> collection-level variables (`key`, `value`, `type`)
-- `item[]` -> requests (recursive folder support)
-  - `item.request.method` -> HTTP method
-  - `item.request.url` (string or object with `raw`) -> URL
-  - `item.request.header[]` -> headers (`key`, `value`, `disabled`)
-  - `item.request.body` -> body (raw, urlencoded, formdata, graphql, file)
-  - `item.request.auth` -> authentication
-  - `item.event[]` -> scripts (`listen: prerequest` or `test`)
-
-**Auth Parsing:**
-Postman auth uses array-of-objects or object format:
-```json
-{
-  "type": "bearer",
-  "bearer": [{"key": "token", "value": "abc", "type": "string"}]
-}
-```
-Parser normalizes both formats into `ApiRequest.Auth.properties` map.
-
-**Body Modes:**
-| Mode | Parsed To | Content-Type |
-|------|-----------|--------------|
-| `raw` | `body.raw` + `body.contentType` | From `options.raw.language` |
-| `urlencoded` | `body.urlencoded[]` | `application/x-www-form-urlencoded` |
-| `formdata` | `body.formdata[]` | `multipart/form-data` |
-| `graphql` | `body.graphql.query` + `body.graphql.variables` | `application/json` |
-| `file` | Not fully supported (placeholder) | - |
+Postman collections import and export as v2.1 JSON. Pre-request and test scripts are mapped into the runtime model.
 
 ### 5.2 Bruno
 
-**Detection:** Directory containing `.bru` files, or single `.bru` file
-
-**File Format:** Plain text with block-based syntax:
-```
-meta {
-  name: Get User
-  type: http
-  seq: 1
-}
-
-get {
-  url: {{base_url}}/api/users
-  body: none
-  auth: none
-}
-
-headers {
-  content-type: application/json
-}
-
-vars {
-  base_url: http://localhost:8080
-}
-
-script:pre-request {
-  bru.setVar("timestamp", new Date().toISOString());
-}
-
-assert {
-  res.status: eq 200
-}
-```
-
-**Parsing Strategy:**
-- Regex-based extraction (not a full parser)
-- Each block matched independently
-- `meta` block: name, type, seq -> `ApiRequest.name`, `ApiRequest.sequenceOrder`
-- Method line: `get {` -> `ApiRequest.method = "GET"`
-- `url:` line inside block -> `ApiRequest.url`
-- `headers` block: line-by-line `key: value` parsing
-- `body` block: supports `{content}` and `:none`/`:json` formats
-- `vars` block: request-level variables
-- `auth` block: currently supports basic auth only
-- `script:pre-request` / `script:post-response`: stored as JS scripts
-- `assert` block: stored as post-response script
-
-**Limitations:**
-- Regex parsing may fail on complex nested braces in body content
-- File upload syntax not yet parsed
-- `bru.req.setHeader()` and other advanced APIs not supported
+Bruno folders and ZIP packages import and export as supported collection shapes. Scripts and request metadata are preserved where Bruno can represent them.
 
 ### 5.3 OpenAPI / Swagger
 
-**Detection:** JSON/YAML with `openapi` or `swagger` key
-
-**Parsed Elements:**
-- `info.title` -> collection name
-- `info.description` -> description
-- `servers[]` or `host` + `basePath` -> base URL
-- `paths` -> requests (one per HTTP method per path)
-
-**Request Generation:**
-- Method extracted from path key (`get`, `post`, etc.)
-- URL = `baseUrl + path`
-- Headers extracted from `parameters` with `in: header`
-- Body generated from `requestBody.content` schema:
-  - `application/json` -> generates example JSON from schema
-  - `application/x-www-form-urlencoded` -> form fields
-  - `multipart/form-data` -> form fields
-
-**Schema Example Generation:**
-Recursive traversal with type-aware defaults:
-| Type | Format | Example |
-|------|--------|---------|
-| string | email | `user@example.com` |
-| string | uuid | `550e8400-e29b-41d4-a716-446655440000` |
-| string | date | `2024-01-01` |
-| string | date-time | `2024-01-01T00:00:00Z` |
-| string | uri/url | `https://example.com` |
-| string | password | `SecureP@ss123` |
-| integer/number | - | `1` or `1.0` (respects minimum) |
-| boolean | - | `true` |
-| array | - | `[singleItemFromItemsSchema]` |
-| object | - | `{requiredProps + first 5 optional}` |
-
-**Cycle Protection:**
-- `visited` Set tracks `$ref` references
-- Max depth: 10 levels
-- Circular refs return `{"$ref": "... (recursive)"}`
+OpenAPI and Swagger 2.x/3.x import is supported. Export is OpenAPI 3.0 JSON or YAML.
 
 ### 5.4 Insomnia (v4)
 
-**Detection:** JSON with `__type` = export or `resources[]` with `_type` = request
-
-**Parsed Elements:**
-- `__export_format` or `resources[]._type` -> format validation
-- `resources[]` array iterated for requests
-- `_type: request_group` -> folder names for path hierarchy
-- `_type: request` -> actual requests
-  - `_id`, `name`, `method`, `url`
-  - `headers[]` (`name`, `value`, `disabled`)
-  - `body` (`mimeType`, `text`, `params[]`)
-  - `authentication` (`type`, properties)
+Insomnia import includes supported pre/post script field shapes. Environment imports and exports are supported where the schema allows them.
 
 ### 5.5 HAR
 
-**Detection:** `.har` file with `log.entries` array
+HAR files import as captured request collections and can export as evidence.
 
-**Parsed Elements:**
-- Each `entry.request` becomes one `ApiRequest`
-- `request.method`, `request.url`
-- `request.headers[]` (`name`, `value`)
-- `request.postData` -> body (`text`, `mimeType`, `params[]`)
+### 5.6 Native API Workbench
 
----
+Native API Workbench collections preserve script blocks, runtime state, and environment metadata most faithfully. External export formats are lossy where their schemas cannot represent all metadata.
 
 ## 6. Variable Resolution Engine
 
 ### 6.1 Syntax
 
-Variables use double-brace syntax: `{{variable_name}}`
+Variables use `{{name}}` placeholders. `{{name|default}}` is only a fallback when a key remains unresolved.
 
-**Default Values:** `{{variable|default_value}}`
-- If `variable` is not defined, uses `default_value`
-- Example: `{{base_url|http://localhost:8080}}`
-- Defaulted placeholders are treated as resolved by preview, preflight, and stop-on-missing-variable checks.
+### 6.2 Normal request resolution precedence
 
-**Nested Variables:** Variables can reference other variables
-- `{{api_url}}` = `{{base_url}}/api` -> resolves `base_url` first, then constructs `api_url`
-- Max 10 resolution iterations to prevent infinite loops
+Lowest to highest:
 
-### 6.2 Resolution Order (Precedence)
+1. Collection environment
+2. Collection definition variables
+3. Ancestor-folder variables
+4. Collection runtime OAuth2 values
+5. Collection runtime variables
+6. Active Environment overlay
+7. Explicit execution/runtime/script overlay
+8. Request-level variables
+9. Auth/runtime mapping when enabled
 
-Unified precedence across Workbench Send, Import, and Collection Runner (highest to lowest):
+Later layers win. The active environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override.
 
-1. **Request-level variables**
-   - Bruno: request `vars` block
-   - Postman: request-level variables
+### 6.3 Normal vs script scope
 
-2. **Extracted / runtime variables**
-   - Variables extracted from post-response scripts
-   - Variables tab runtime overrides
-   - Runner-extracted variables from previous responses
+Script-local values and helper context are execution-time only. They are not the same as persisted collection/environment layers unless a script explicitly mutates a supported persisted scope.
 
-3. **Scoped OAuth2 runtime vars**
-   - `oauth2_access_token` and other canonical `oauth2_*` vars from the collection's `runtimeOAuth2`
+### 6.4 Implementation
 
-4. **Collection-level variables**
-   - Postman: `collection.variable[]`
-   - Bruno: collection `vars` block
+`RuntimeResolverFactory` and `VariableResolver` resolve normal request values. `VariableScopeStore` and the script bindings coordinate transient and persisted script mutations.
 
-5. **Collection environment**
-   - Loaded from Postman environment JSON (`values[].key`, `values[].value`)
-   - Or bound environment file
+## 7. Environment and OAuth2
 
-6. **Default values** (lowest priority)
-   - `{{var|default}}` uses `default` if `var` undefined
+`EnvironmentProfile` is the operator-facing workspace object for normal variables, OAuth2 config, and output bindings. `OAuth2EnvironmentState` keeps the per-environment OAuth2 configuration and returned token bindings.
 
-Before Workbench send, import, and runner start, `UnresolvedVariableAnalyzer` scans URL, headers, bodies, GraphQL payloads, form fields, and auth properties. Missing variables are shown in a modal with quick-entry fields; applied values are stored in the selected collection's runtime variables.
-
-### Effective Headers and Operator Suppressions
-
-`RequestBuilder` synthesizes headers in four layers:
-
-1. **Compatibility defaults** — `Accept`, `User-Agent`, `Cache-Control`
-2. **Explicit request headers** — from the request definition or editor
-3. **Auth headers** — `Authorization`, `Cookie`, or custom API-key headers (uses `putDefault` so explicit headers win)
-4. **Computed headers** — `Host` (from parsed URL), `Content-Type` (from body mode), `Content-Length` (recomputed from body bytes)
-
-The **Workbench Resolved tab** shows the effective header set after all layers are applied, plus a separate list of disabled (suppressed) headers.
-
-**Header materialization and suppressions**: The editor loads materialized headers such as `Accept`, `User-Agent`, `Cache-Control`, `Authorization`, and `Content-Type` as editable key/value rows when they apply. Editing a materialized row makes the value explicit. Removing a materialized row suppresses the matching synthesized header on future rebuilds until it is re-added. Transport headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are computed by the builder rather than treated as normal persisted rows.
-
-Collection and environment exports are explicit user actions. Runtime variables and OAuth2 runtime values are persisted in workspace state for Burp projects, but they are not automatically included in collection or environment exports.
-
-### 6.3 Implementation
-
-```java
-public class VariableResolver {
-    private final Map<String, String> variables = new HashMap<>();
-    private static final Pattern VARIABLE_PATTERN = 
-        Pattern.compile("\{\{([^}|]+)(?:\|([^}]+))?\}\}");
-
-    public String resolve(String input) {
-        // Iteratively substitute up to 10 times
-        // Handles nested variables and default values
-    }
-}
-```
-
-### 6.4 Scope Lifecycle
-
-```
-Import/Runner Start
-    |
-    v
-Load environment file -> add to resolver
-    |
-    v
-Load collection variables -> add to resolver
-    |
-    v
-For each request:
-    Load request variables -> add to resolver
-    Resolve all {{variables}} in URL, headers, body
-    Send request
-    Extract variables from response -> update collection runtime vars
-    |
-    v
-Next request in the same collection uses updated runtime vars
-```
-
----
-
-## 7. Authentication & OAuth2
-
-### 7.1 Static Auth (From Collections)
-
-**Bearer Token**
-```java
-headers.add("Authorization: Bearer " + token);
-```
-- Postman: `auth.bearer[].key=token`
-- Bruno: `authorization: Bearer {{token}}` header
-- OpenAPI: auto-detected from `security` section
-
-**Basic Auth**
-```java
-String credentials = username + ":" + password;
-String encoded = Base64.getEncoder().encodeToString(credentials.getBytes());
-headers.add("Authorization: Basic " + encoded);
-```
-- Postman: `auth.basic[].key=username/password`
-- Bruno: `auth { basic { username: x password: y } }`
-- Insomnia: `authentication.type = "basic"`
-
-**API Key**
-```java
-headers.add(keyName + ": " + keyValue);
-```
-- Postman: `auth.apikey[].key=key/value`
-- Insomnia: `authentication.type = "apikey"`
-
-**OAuth2 (Static Token)**
-```java
-headers.add("Authorization: Bearer " + accessToken);
-```
-- Postman: `auth.oauth2[].key=accessToken`
-- If token is `null`, empty, or contains `{{`, triggers auto-acquire
-
-### 7.2 Dynamic OAuth2 (Extension-Managed)
-
-**Configuration Variables**
-All OAuth2 settings use `oauth2_` prefix:
-```
-oauth2_grant=client_credentials
-oauth2_token_url=https://auth.example.com/oauth/token
-oauth2_auth_url=https://auth.example.com/authorize
-oauth2_client_id=client_id
-oauth2_client_secret=client_secret
-oauth2_username=user
-oauth2_password=pass
-oauth2_scope=api:read api:write
-oauth2_use_pkce=true
-```
-
-**Auto-Acquire Trigger**
-When `RequestBuilder` encounters `auth.type = "oauth2"`:
-1. Check if `oauth2_access_token` exists and is valid
-2. If missing/unresolved, call `OAuth2Manager.getValidToken(config)`
-3. If token near expiry, auto-refresh via refresh token
-4. Inject `Authorization: Bearer <token>` header
-
-**Token Storage**
-```java
-public class TokenStore {
-    private static final Map<String, TokenEntry> store = new ConcurrentHashMap<>();
-
-    public static class TokenEntry {
-        String accessToken;
-        String refreshToken;
-        long expiresAt;        // epoch millis
-
-        boolean isValid(int bufferSeconds) {
-            return accessToken != null && 
-                   System.currentTimeMillis() + (bufferSeconds * 1000L) < expiresAt;
-        }
-    }
-}
-```
-- **Live cache is in-memory** - `TokenStore` uses a `static ConcurrentHashMap`, so live tokens survive extension reloads within the same Burp JVM session
-- **Workspace persistence is separate** - runtime OAuth2 values can also be saved into Burp project extension data when they are present in the captured workspace snapshot
-- Key = `grantType|tokenUrl|clientId`
-- Buffer: 60 seconds before expiry for proactive refresh
-
-**Authorization Code + PKCE Flow**
-1. Generate `code_verifier` (32 random bytes, base64url)
-2. Generate `code_challenge` = SHA256(code_verifier), base64url
-3. Generate `state` (16 random bytes, base64url)
-4. Build auth URL:
-   ```
-   https://auth.example.com/authorize?
-     response_type=code
-     &client_id=client_id
-     &redirect_uri=<configured oauth2_redirect_uri>
-     &state=state_value
-     &code_challenge=challenge_value
-     &code_challenge_method=S256
-     &scope=api:read
-   ```
-5. Parse `oauth2_redirect_uri`, require an HTTP loopback host (`localhost`, `127.0.0.1`, or `::1`), and bind `ServerSocket` to that host/port/path with a 5-minute timeout
-6. Open browser via `Desktop.getDesktop().browse()`
-7. User authenticates -> redirected to the configured loopback callback, for example `http://localhost:9876/callback?code=abc&state=xyz`
-8. Listener extracts `code`, validates `state`
-9. Exchange code for token:
-   ```
-   POST /token
-   grant_type=authorization_code
-   &client_id=client_id
-   &client_secret=client_secret
-   &code=code
-   &redirect_uri=<configured oauth2_redirect_uri>
-   &code_verifier=verifier
-   ```
-10. Store token, shut down listener
-
-The default redirect URI remains `http://localhost:9876/callback`.
-
-**Error Handling**
-- Non-JSON token response -> descriptive error with status code + preview
-- `error` field in JSON response -> `OAuth2 error: <error> - <description>`
-- Socket timeout -> `future.completeExceptionally(new Exception("timeout"))`
-- Invalid state -> security exception
-
-### 7.3 Auth Inheritance
-
-Postman imports preserve the effective auth on each request while also recording where it came from.
-API Workbench also stores editable override metadata so collection, folder, and request auth can be changed from the tree and restored later.
-
-Request metadata:
-
-- `authInherited = true` when the request inherited auth from a folder or collection
-- `authExplicitlyDisabled = true` when the request or parent explicitly selected `noauth`
-- `authSource` records the source label, such as `request: Get Me`, `folder: Admin`, or `collection: Auth Demo`
-- `authOverrideMode` stores the request override mode: `inherit`, `explicit`, or `none`
-- `explicitAuth` stores the request's explicit auth override when the mode is not inherit
-
-Collection metadata:
-
-- `collection.auth` stores the collection-level effective auth
-- `folderAuthModes` stores folder override modes keyed by normalized folder path
-- `folderAuth` stores folder-level explicit auth objects keyed by normalized folder path
-
-Auth resolution follows nearest-parent semantics:
-
-1. Explicit request auth wins.
-2. Otherwise the nearest folder auth applies.
-3. Otherwise collection auth applies.
-4. Explicit `noauth` stops inheritance and keeps the effective auth as none.
-
-Runner preview and Workbench metadata use `authSource` so operators can see whether a request is using request, folder, collection, or no-auth provenance. `RequestBuilder` still consumes the effective `ApiRequest.auth` value only; the extra metadata is for UI, tests, and workspace persistence.
-
----
+The active environment applies to Workbench sends, Runner, previews, Repeater, Intruder, Sitemap construction, and exports where resolution is needed. Collection `runtimeVars` and `runtimeOAuth2` remain compatibility/runtime storage layers, not the primary operator model.
 
 ## 8. Collection Runner
 
 ### 8.1 Execution Model
 
-Both Workbench direct send and Collection Runner use a **shared request execution pipeline** (`SharedRequestPipeline`) to guarantee consistent behavior.
-
-```java
-public void runCollection(ApiCollection collection, 
-                          List<ApiRequest> selectedRequests,
-                          Map<String, String> initialVars) {
-    // Single background thread (ExecutorService)
-    // Sequential execution - one request at a time
-    // UI updates via SwingUtilities.invokeLater()
-}
-```
+The runner is sequential. Each request passes through the same shared pipeline used by Workbench Send.
 
 ### 8.2 Configuration
 
-| Setting | Default | Range | Description |
-|---------|---------|-------|-------------|
-| Delay | 200ms | 0-5000ms | Pause between requests |
-| Retries | UI-configured | 0+ | Retries after the first attempt |
-| Stop on Error | false | boolean | Halt execution on transport/build failure |
-| Stop on Assertion Failure | false | boolean | Halt after any failed script assertion |
-| Stop on Status >= 400 | false | boolean | Halt after HTTP client/server errors |
-| Stop When Variable Missing | false | boolean | Halt before sending requests with unresolved variables, excluding `{{var|default}}` placeholders |
-| Stop After Failures | 0 | 0+ | Halt after N total failures; 0 disables this stop condition |
-| Follow Redirects | true | boolean | Burp HTTP client setting |
-| Pause/Resume/Step | n/a | controls | Pause after current request, resume, or run one queued request |
+Delay, retries, redirect handling, stop conditions, and raw-request debug are persisted in workspace state.
 
 ### 8.3 Request Lifecycle
 
-Shared pipeline steps (used by both Workbench Send and Collection Runner):
-```
-1. Create fresh VariableResolver (no cross-request leakage)
-2. Seed resolver in unified precedence order
-   - collection.environment -> collection.variables -> runtimeOAuth2 -> runtimeVars -> request.vars
-3. Execute pre-request scripts (ScriptEngine, gated by ScriptMode)
-4. OAuth2Manager.refreshIfNeeded() (if auth.type = oauth2)
-5. RequestBuilder.buildRequest() -> HTTP bytes
-   - Skips disabled headers, form-data fields, and URL-encoded fields
-   - Disabling `Content-Type` suppresses synthesized body-mode `Content-Type` headers too
-   - Applies operator suppressions: disabled explicit headers suppress synthesized defaults, auth, and body-derived headers of the same name
-   - Header precedence: explicit request headers > auth headers > compatibility defaults
-   - Computed headers (Host, Content-Type, Content-Length) are applied last and cannot be overridden by defaults
-6. api.http().sendRequest() -> HttpRequestResponse
-7. Execute post-response scripts -> extract variables
-8. Apply script/runtime variable delta into collection.runtimeVars
-9. Fire collection change listeners -> UI refresh
-```
+1. Build request with active environment overlay.
+2. Run scripts in lifecycle order.
+3. Apply flow control.
+4. Send or skip the request.
+5. Record execution, script output, assertions, and History.
 
-Collection Runner specific (around the shared pipeline):
-```
-10. Pause/step gate before each request
-11. Missing-variable stop condition before send
-12. Retry loop with delay-scaled backoff
-13. RunnerResult shaping (timing, headers, assertions)
-14. Add response to Site map
-15. Add to results and timeline tables (via invokeLater)
-16. Delay (if not last request)
-```
+### 8.4 Flow Control
 
-### 8.4 Retry Logic
+Skip, stop, next-request, and dependent-request control are Runner-oriented. Workbench single Send does not behave like a collection-control engine.
 
-```java
-int maxAttempts = maxRetries + 1;
-for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-        // send request
-        // logs: Attempt X/Y passed after a retry succeeds
-        break; // success
-    } catch (Exception e) {
-        // logs: Attempt X/Y failed: message
-        if (attempt >= maxAttempts) throw e;
-        // logs: Retrying in Nms
-        Thread.sleep(delayMs * attempt);
-    }
-}
-```
+### 8.5 Unified presentation
 
-### 8.5 Results Model
-
-```java
-public class RunnerResult {
-    String requestName;
-    String requestId;
-    boolean success;
-    int statusCode;
-    long responseTimeMs;
-    int responseSize;
-    String errorMessage;
-    String responseBodyPreview;  // first 500 chars
-    Map<String, String> extractedVariables;
-    List<AssertionResult> assertions;
-}
-
-public class AssertionResult {
-    String name;
-    boolean passed;
-    String expected;
-    String actual;
-}
-
-public class RunnerTimelineRow {
-    int index;
-    String collectionName;
-    String requestName;
-    int statusCode;
-    long timeMs;
-    int retries;
-    int varsChanged;
-    String assertions;
-}
-```
-
-### 8.6 Thread Safety
-
-| Component | Type | Rationale |
-|-----------|------|-----------|
-| `results` | `CopyOnWriteArrayList<RunnerResult>` | Background thread writes, EDT reads |
-| `extractedVars` | `ConcurrentHashMap<String, String>` | Shared mutable state across requests |
-| `cancelled` | `volatile boolean` | Visibility across threads |
-| `running` | `volatile boolean` | Visibility across threads |
-| UI callbacks | `SwingUtilities.invokeLater()` | All Swing mutations on EDT |
-
----
+The current UI uses one Runner Execution Table and a shared detail viewer; there are not separate visible Results and Timeline tables in the current operator presentation.
 
 ## 9. Script Engine
 
-### 9.0 Script Mode Gating
-
-At startup, the extension probes the JVM to determine script execution capability:
-
-| Mode | Condition | Pre-request | Post-response |
-|------|-----------|-------------|---------------|
-| **FULL_JS** | Java >= 17 and Nashorn eval succeeds | Full Nashorn execution | Full Nashorn + assertions |
-| **LIMITED** | Java >= 17 but Nashorn probe failed | Skipped | Regex fallback extraction only |
-| **DISABLED** | Java < 17 | Skipped | Skipped |
-
-The detected mode is logged at startup and displayed in the UI status bar.
-
-### 9.1 Nashorn Integration
-
-**Engine Discovery (3-tier fallback):**
-```java
-ScriptEngine engine = engineManager.getEngineByName("nashorn");
-if (engine == null) engine = engineManager.getEngineByName("javascript");
-if (engine == null) {
-    // Direct factory via reflection
-    Class<?> factoryClass = Class.forName(
-        "org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
-    Object factory = factoryClass.getDeclaredConstructor().newInstance();
-    engine = (ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
-}
-```
-
-**Dependencies:**
-- `org.openjdk.nashorn:nashorn-core:15.4`
-- `org.ow2.asm:asm:9.6` (and commons, tree, util)
-
-### 9.2 Postman API Bindings
-
-```javascript
-// Variable management
-pm.test("name", function () { /* assertions */ });
-pm.environment.set("key", value);
-pm.environment.get("key");
-pm.environment.has("key");
-pm.environment.unset("key");
-pm.collectionVariables.set("key", value);
-pm.collectionVariables.get("key");
-pm.collectionVariables.unset("key");
-
-// Assertions
-pm.expect(pm.response.code()).to.have.status(200);
-pm.expect(pm.response).to.have.header("X-Frame-Options");
-pm.expect(jsonData).to.have.property("token");
-pm.expect(value).to.equal(expected);
-pm.expect(value).to.eql(expected);
-
-// Response access
-pm.response.code();      // status code
-pm.response.text();        // body string
-pm.response.json();        // parsed JSON object
-pm.response.hasHeader("name");
-```
-
-### 9.3 Bruno API Bindings
-
-```javascript
-// Variable management
-bru.setVar("key", value);
-bru.getVar("key");
-bru.setEnvVar("key", value);
-bru.getEnvVar("key");
-
-// Response access
-res.getBody();           // parsed JSON
-res.getStatus();         // status code
-res.getBodyAsString();   // raw body string
-```
-
-### 9.4 Comment-Based Extraction
-
-Works in any format (Postman, Bruno, OpenAPI, etc.):
-```javascript
-// extract: auth_token = $.data.token
-// extract: user_id = $.users[0].id
-// extract: count = $.total
-```
-
-Parsed by regex: `//\s*extract:\s*(\w+)\s*=\s*(.+?)$`
-
-### 9.5 Fallback Mode
-
-When Nashorn is unavailable:
-- Pre-request scripts: skipped (no regex fallback)
-- Post-response scripts: regex extracts `pm.environment.set()` and `bru.setVar()` patterns
-- Assertions: default status < 400 only
-
----
-
-## 10. Live Sync / UI Mirroring
-
-All per-collection runtime mutations (variables, OAuth2, extracted vars) flow through `ApiCollection` helper methods that fire change listeners. This enables live UI refresh across tabs:
-
-- **Variables tab** automatically refreshes when a script (Workbench or Runner) extracts new variables into `collection.runtimeVars`.
-- **OAuth2 tab** refreshes when a token is acquired during pipeline execution and persisted into `collection.runtimeOAuth2`.
-- **Workbench** uses the same shared pipeline as the Runner, so variable extraction behavior is identical.
-- **Unresolved-variable preflight** can populate collection runtime vars before Workbench send, import, or runner execution, and the collection export flow can reuse the same unresolved-variable modal with export-only values when variable resolution is enabled.
-- **Collection/environment export** uses the shared collection/environment model and resolver helpers, but does not mutate runtime maps during export.
+### 9.0 Script mode gating
 
-### 10.1 Workspace State Persistence
+Java 17+ is required. Full mode means a supported runtime is available. Limited mode means runtime probing failed and only legacy post-response regex extraction is available. Disabled mode means the Java runtime is below the supported requirement.
 
-API Workbench saves its full workspace state through Burp project extension data.
+### 9.1 GraalJS primary runtime
 
-- On a disk-backed Burp project, the workspace is stored with the project and restored the next time that project is opened.
-- On a temporary Burp project, the workspace stays in memory for the current Burp session only.
-- The saved workspace includes loaded collections, request tree checks/selections, runtime variables, and OAuth2 runtime/config values, including access tokens, refresh tokens, client secrets, passwords, and secret-like runtime keys.
-- Workspace saves are coalesced through a debounced final save path, and unchanged serialized snapshots are skipped.
-- Treat Burp project files as sensitive because API Workbench may store secrets there.
+`GraalJsSandboxEngine` is the primary runtime path. It creates a fresh sandbox context per execution, blocks general host-class lookup, direct I/O, and thread creation, and exposes only the binding APIs that the extension intentionally provides.
 
-### 10.2 Autosave
+### 9.2 Nashorn compatibility fallback
 
-Variables and OAuth2 edits autosave to the selected collection using debounced UI listeners.
+Nashorn is retained only for compatibility. The direct Nashorn-factory path uses a deny-all class filter. Do not assume unrestricted `Java.type()` access or full JVM control.
 
-- Normal typing and table edits schedule autosave.
-- Programmatic refreshes suppress autosave so UI rebuilds do not overwrite runtime state.
-- **Save Now** performs an explicit immediate write.
-- **Clear** only clears the editor UI and does not write an empty runtime map until the operator explicitly saves.
+### 9.3 Bindings and dialects
 
-### 10.3 Mutation Helpers
+`ScriptBindingsFactory` exposes dialect-aware bindings for Postman, Bruno, Insomnia, native API Workbench, and legacy compatibility scripts. Binding surfaces include `pm`, `bru / req / res`, `insomnia / request / response`, `awb`, and `console`.
 
-All write paths must use these methods to guarantee listener coverage:
-- `putRuntimeVar(String, String)`
-- `putAllRuntimeVars(Map)`
-- `putRuntimeOAuth2(String, String)`
-- `putAllRuntimeOAuth2(Map)`
-- `replaceRuntimeVars(Map)`
-- `replaceRuntimeOAuth2(Map)`
+### 9.4 Script lifecycle and models
 
-Direct map mutation (`col.runtimeVars.put(...)`) bypasses listeners and is prohibited in new code.
+`ScriptLifecycleExecutor`, `ScriptExecutionContext`, `ScriptExecutionResult`, `ScriptAssertionResult`, `ScriptVariableMutation`, `ScriptFlowControl`, `ScriptLogEntry`, `ScriptPhase`, `ScriptScope`, `ScriptDialect`, `ScriptBlock`, and `ScriptDependentRequestResult` capture the script contract and its outcomes.
 
----
+### 9.5 Security model
 
-## 11. Security Considerations
-
-### 11.1 Token Storage
-- **Live `TokenStore` cache** uses `ConcurrentHashMap` and remains in-memory only.
-- **Workspace snapshots are persistent**: API Workbench stores runtime OAuth2 and runtime variable state in Burp project extension data.
-- **Collection and environment export files** may contain secrets if you choose to resolve variables or export secret-bearing environment values. Treat exported files as sensitive.
-- **No encryption at rest** in the workspace layer; Burp project files should be treated as sensitive.
-- Cleared on extension unload or `OAuth2Manager.clearTokens()`.
+Scripts can mutate requests and runtime state. Operators must run only trusted scripts and treat no-timeout execution as a security and stability risk.
 
-### 11.2 Client Secrets
-- Passed as variables (`{{client_secret}}`) - never hardcoded
-- `JPasswordField` used in UI for client secret and password fields
-- Not logged to Burp output
+## 10. History Subsystem
 
-### 11.3 Path Traversal Prevention
-Multipart file reading is only attempted when a form field is explicitly marked as a file upload and includes file metadata. Plain values that look like local paths are sent as text. File upload paths are constrained to the current working directory or the user's home directory.
+History records Workbench and Runner executions, including request/response snapshots, script output, assertions, extracted values, and variable changes. The operator-facing tab is `History`.
 
-### 11.4 OAuth2 Security
-- **PKCE** enforced for Authorization Code flow (S256 method)
-- **State parameter** validated to prevent CSRF
-- **Localhost only** (`127.0.0.1`) - no remote callback exposure
-- **Loopback-only callback** using the configured `oauth2_redirect_uri`, with `http://localhost:9876/callback` as the default
-- **Auto-shutdown** of listener after callback or timeout
+`HistoryStore` retains the latest 1,000 entries by default, `HistoryPersistenceService` stores them with the workspace, `HistoryExportService` and its format-specific services produce HAR/JSON/CSV output, and `HistorySanitizer` supports redaction-aware display.
 
-### 11.5 Script Execution
-- Nashorn runs with **no sandbox** - scripts can access any Java class via `Java.type()`
-- `console.log()` routed to Burp output (not system console)
-- No `eval()` of user input outside script contexts
-- **Warning**: Only run trusted collection scripts
+## 11. Diagnostics Subsystem
 
----
+`DiagnosticStore` keeps a passive, bounded event list. `DiagnosticEvent`, `DiagnosticOperation`, `DiagnosticSeverity`, `DiagnosticSink`, and `DiagnosticSanitizer` support grouped reports with warning, error, and debug summaries.
 
-## 12. Known Limitations & Code-Level Behaviors
+Capture is disabled by default and does not send traffic. Workspace state stores the capture-enabled flag. Sanitization is best-effort, so reports still need operator review before sharing them.
 
-### 12.1 What Is Actually Implemented vs Documented
+## 12. State Synchronization
 
-| Claimed Feature | Actual Implementation | Status |
-|-----------------|----------------------|--------|
-| Path traversal prevention for file uploads | File reading requires explicit upload metadata and restricts paths to cwd/home | Implemented |
-| `JPasswordField` for OAuth2 secrets | Uses `JPasswordField` (masked input) | Correct |
-| Nashorn sandboxed execution | **No sandbox** - `Java.type()` gives full JVM access | Security risk |
-| Token storage "never persisted" | Live `ConcurrentHashMap` cache is in-memory only, but workspace snapshots can mirror OAuth2/runtime secrets into Burp project data | Accurate with caveat |
-| File upload MIME detection | `Files.probeContentType()` is called for explicit file uploads | Implemented |
-| Automated test suite | JUnit 5 + Mockito + AssertJ across parsers, request building, runner behavior, variables, and collection/environment export | Present |
+### 12.1 Workspace persistence
 
-### 12.2 Architectural Limitations
+`WorkspaceState` persists loaded collections, environment profiles, the active environment ID, request-tree checks, selection and expansion state, saved request paths, collection/folder/request auth and script blocks, collection environment/runtime variables/runtime OAuth2 values, History entries, Diagnostics capture setting, Workbench destination/debug/detail selections, and Runner settings/detail selection/queued request identities.
 
-- **No script timeout**: Nashorn scripts run without timeout. An infinite loop will hang the Collection Runner thread permanently.
-- **Single-threaded runner**: Only one request executes at a time. No parallel execution mode.
-- **Static `TokenStore`**: Uses a `static ConcurrentHashMap`. Tokens are not isolated between Burp projects and survive extension reloads.
-- **No DI/IoC**: All dependencies are manually wired in constructors, making unit testing difficult.
-- **Test suite**: JUnit 5 Jupiter, Mockito, AssertJ in `pom.xml`. `mvn test` covers parsers, request building, shared pipeline behavior, runner controls, variables, and collection/environment export.
-- **Loopback callback requirement**: Authorization Code callback must use an HTTP loopback redirect URI. If the configured loopback port is occupied, the flow fails.
-- **Project-scoped state**: Montoya extension data is scoped to the Burp project/session. Disk-backed projects carry the saved workspace into the next session; temporary projects do not.
+### 12.2 Active-environment visibility
 
-### 12.3 Request Editor Empty-State Behavior
+Environment and OAuth2 mutations become visible to Workbench, Runner, and export resolution through the active environment overlay. Script mutations that target supported persisted scopes update the visible environment state after execution.
 
-- `RequestEditorPanel` seeds a single blank starter row into empty **Params** and shared body form tables so operators can type immediately without pressing `+`.
-- **Headers** table shows editable key/value rows, including materialized defaults and auth/body-derived headers when they apply, plus a trailing blank row for quick entry. Transport headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are computed by the builder and are not normal persisted rows.
-- The same starter-row behavior is restored after loading a request with no entries, clearing the editor, deleting the last remaining row, or switching into `form-data` / `x-www-form-urlencoded` body modes.
-- Blank starter rows are UI affordances only. Visible materialized header rows are serialized like normal headers when the request is saved or sent. Removing a materialized row suppresses that header on future rebuilds, while transport headers are still computed by the builder rather than treated as normal persisted rows.
-
-### 12.4 Parser Limitations
-
-- **Parser encoding**: All parsers use explicit UTF-8 (`InputStreamReader` with `StandardCharsets.UTF_8`). Non-ASCII characters are preserved correctly.
-- **Bruno parser**: Uses block extraction for known blocks but is not a full Bruno grammar parser. New Bruno syntax may still need parser updates.
-- **OpenAPI parser**: Generates examples for all schema types, resolves local `#/components/schemas/...` and `#/definitions/...` refs for example bodies, and casts header examples with `String.valueOf()`, which may produce `null` or unhelpful strings for complex objects.
-- **Insomnia parser**: Only supports v4 exports. v3 or earlier are not detected.
-
----
-
-## 13. Error Handling
-
-### 13.1 Import Errors
-
-| Error | Cause | User Action |
-|-------|-------|-------------|
-| "Unknown collection format" | File doesn't match any parser | Check file extension and structure |
-| "Invalid Postman collection" | Missing `info` object | Verify Postman export version |
-| "No checked requests" | Import attempted with 0 checkboxes | Check requests in the Workbench Request Tree checkboxes |
-| "DNS failed" | Unknown host | Check network/VPN/proxy |
-| "Connection refused" | Service down or wrong port | Verify target is running |
-| "Connection timeout" | Target unresponsive | Check firewall or increase timeout |
-
-### 13.2 Runner Errors
-
-| Error | Cause | Behavior |
-|-------|-------|----------|
-| Request disabled | `req.disabled = true` | Skipped with log entry |
-| Null URL | Missing or empty URL | `IllegalArgumentException` before send |
-| OAuth2 auto-acquire failed | Invalid config or network issue | Logged, request proceeds without token (will 401) |
-| Script error | Nashorn exception | Logged, regex fallback attempted |
-| Non-JSON response | HTML error page, WAF | Preview logged, assertion fails |
-
-### 13.3 OAuth2 Errors
-
-| Error | Cause | Resolution |
-|-------|-------|------------|
-| "Invalid OAuth2 configuration" | Missing required fields | Check client_id, token_url |
-| "Non-JSON response" | WAF, proxy, or wrong endpoint | Verify token_url is correct |
-| "OAuth2 error: invalid_client" | Wrong client credentials | Check client_id and client_secret |
-| "State mismatch" | CSRF or browser issue | Retry authorization flow |
-| "Browser not supported" | Headless environment | Use Client Credentials or Password grant |
-
----
-
-## 14. Performance
-
-### 14.1 Memory Management
-
-| Component | Strategy |
-|-----------|----------|
-| Response body preview | Truncated to 500 characters |
-| OpenAPI example generation | Max 5 optional properties, depth 10 |
-| Runner results | CopyOnWriteArrayList (snapshot semantics) |
-| Token store | Static `ConcurrentHashMap` - no automatic eviction |
-| Script engine | New engine per script execution (no pooling) |
-
-### 14.2 Rate Limiting
-
-- **Import delay**: 0–5000ms between Sitemap requests
-- **Runner delay**: 0–5000ms between sequential requests
-- **Concurrent requests**: 1 (runner is strictly sequential)
-- **Retry backoff**: `delayMs x attempt_number`
-
-### 14.3 Workspace Persistence Write Behavior
-
-- Workspace snapshots are serialized from the EDT-facing UI state through a debounced coordinator.
-- Repeated change notifications within the debounce window collapse into one final save.
-- If the serialized workspace JSON is unchanged from the last successful save, persistence is skipped.
-- This reduces unnecessary disk churn for Burp project files without changing request-editor or runtime behavior.
-
-### 14.4 Scalability Limits
-
-| Metric | Limit | Rationale |
-|--------|-------|-----------|
-| Collection size | ~10,000 requests | UI table rendering |
-| Response body | Preview: 500 chars | Memory conservation |
-| OpenAPI depth | 10 levels | Stack overflow prevention |
-| Script execution | No timeout | Nashorn limitation |
-| OAuth2 listener | 5 minutes | Socket timeout |
-
----
+### 12.3 UI mirroring
 
-## 15. Extending the Extension
+`ImporterPanel`, `RequestEditorPanel`, `OAuth2Panel`, `HistoryPanel`, `RunnerExecutionTableModel`, and the diagnostics views mirror the current workspace state rather than keeping separate hidden copies.
 
-### 15.1 Adding a New Collection Format
+## 13. Security Considerations
 
-1. Implement `CollectionParser` interface:
-```java
-public class MyFormatParser implements CollectionParser {
-    public boolean canParse(File file) { /* detect format */ }
-    public ApiCollection parse(File file) throws Exception { /* convert to unified model */ }
-    public String getFormatName() { return "MyFormat"; }
-    public String[] getSupportedExtensions() { return new String[]{"ext"}; }
-}
-```
+- GraalJS is sandboxed and not a full JVM shell.
+- Nashorn fallback is compatibility-only.
+- Scripts, uploads, exports, and project files may contain secrets.
+- OAuth2 loopback callbacks use localhost and should be used only in controlled environments.
+- There is no execution timeout for scripts.
 
-2. Register in `ParserRegistry`:
-```java
-public ParserRegistry() {
-    parsers.add(new PostmanParser());
-    parsers.add(new BrunoParser());
-    parsers.add(new OpenApiParser());
-    parsers.add(new InsomniaParser());
-    parsers.add(new HarParser());
-    parsers.add(new MyFormatParser());  // <-- add here
-}
-```
+## 14. Known Limitations & Code-Level Behaviors
 
-3. Normalize to `ApiRequest` / `ApiCollection` model
+- Sequential Runner execution is intentional.
+- Script compatibility depends on the selected runtime mode.
+- Parser support remains limited by the external format; lossy export is expected when the schema cannot express native metadata.
+- Generic `sendRequest`-style compatibility helpers are not guaranteed beyond the implemented binding surfaces.
+- Default placeholders are not a normal mutable scope.
 
-### 15.2 Adding a New OAuth2 Grant Type
+## 15. Error Handling
 
-1. Create handler class:
-```java
-public class MyGrantHandler {
-    public TokenStore.TokenEntry execute(OAuth2Config config, MontoyaApi api) {
-        // implement grant flow
-        return ClientCredentialsHandler.executeTokenRequest(config, body, api);
-    }
-}
-```
+Runtime failures, import errors, variable resolution problems, OAuth2 failures, and runner errors are surfaced in the UI and Diagnostics. Use Diagnostics capture when collecting evidence about runtime failures or degraded script mode.
 
-2. Add to `OAuth2Config.GrantType` enum
-3. Add case in `OAuth2Manager.acquireToken()`
+## 16. Performance
 
-### 15.3 Adding Script APIs
+Each execution gets a fresh sandbox context. History and Diagnostics stores are bounded. The pipeline is optimized for sequential request handling rather than parallel execution.
 
-Extend `ScriptEngine.PostmanApi` or `ScriptEngine.BrunoApi`:
-```java
-public class PostmanApi {
-    public MyApi my = new MyApi();
-    public class MyApi {
-        public void doSomething(String arg) { /* ... */ }
-    }
-}
-```
+## 17. Extending the Extension
 
----
+Add new script-binding behavior under `burp.scripts`, not in the legacy `ScriptEngine` compatibility layer. Collection-format work belongs with the parser and exporter packages. UI additions should preserve the current Workbench, Environment, OAuth2, Collection Runner, History, and Diagnostics model.
 
-## 16. Troubleshooting
+## 18. Troubleshooting
 
-### 16.1 Extension Won't Load
+### 18.1 Extension won't load
 
-**Symptom:** "Extension failed to load" in Burp Extensions tab
+- Confirm Java 17+.
+- Confirm the fat JAR, not the source tree, is loaded.
+- Check extension errors.
 
-**Checks:**
-1. Verify Java 17+ in Burp: `Help > Diagnostics`
-2. Check JAR is fat JAR (with dependencies): `mvn clean package`
-3. Verify Montoya API version compatibility
-4. Check Burp output for stack trace
+### 18.2 JavaScript runtime unavailable or limited
 
-### 16.2 Nashorn Not Available
+- GraalJS is the primary path.
+- Nashorn is only a fallback.
+- Use Diagnostics to capture runtime evidence.
 
-**Symptom:** "Nashorn engine not available" in logs
+### 18.3 OAuth2 browser doesn't open
 
-**Resolution:**
-- Java 17: Works with bundled `nashorn-core` dependency
-- Java 15+: Nashorn was **removed from the JDK**. The standalone `nashorn-core-15.4` dependency is bundled in the fat JAR
-- Java 21+: Standalone Nashorn may have compatibility issues; regex fallback will be used
-- Alternative: Scripts will use regex fallback (limited functionality - variable extraction only, no assertions)
+- Check callback/loopback settings.
+- Confirm the selected environment profile.
 
-### 16.3 OAuth2 Browser Doesn't Open
+### 18.4 Variables not resolving
 
-**Symptom:** Authorization Code flow hangs at "Opening browser"
+- Check the active Environment tab selection.
+- Inspect request-level overrides.
+- Consult `ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md`.
 
-**Resolution:**
-1. Check if `Desktop.isDesktopSupported()` returns true
-2. Manually copy auth URL from log and paste in browser
-3. Ensure `localhost:9876` is not blocked by firewall
-4. Use Client Credentials or Password grant as alternative
+### 18.5 Import creates empty Repeater tabs
 
-### 16.4 Variables Not Resolving
-
-**Symptom:** `{{variable}}` appears literally in requests
-
-**Checks:**
-1. Verify variable is defined in Variables tab or environment file
-2. Check spelling (case-sensitive)
-3. Ensure no spaces in variable name
-4. Try with default: `{{variable|default_value}}`
-
-### 16.5 Import Creates Empty Repeater Tabs
-
-**Symptom:** Repeater tabs created but no request content
-
-**Checks:**
-1. Verify collection has valid URLs (not empty)
-2. Check if requests are checked in the Request Tree
-3. Look for errors in Import Log panel
-4. Try Sitemap mode to verify request is buildable
-
----
+- Confirm checked requests are selected.
+- Confirm destination settings.
 
 ## Appendix A: Data Model Reference
 
-### ApiRequest
-```java
-public class ApiRequest {
-    String id;                    // Unique identifier
-    String name;                  // Display name
-    String path;                  // Folder/path hierarchy
-    String method;                // HTTP method (GET, POST, etc.)
-    String url;                   // Full URL with {{variables}}
-    String description;
-    List<Header> headers;         // Request headers
-    Body body;                    // Request body
-    Auth auth;                    // Authentication config
-    List<Variable> variables;     // Request-level variables
-    List<Script> preRequestScripts;
-    List<Script> postResponseScripts;
-    boolean disabled;
-    int sequenceOrder;
-}
+### Environment / workspace
+
+- `EnvironmentProfile`
+- `OAuth2EnvironmentState`
+- `WorkspaceState`
+
+### Request / collection
+
+- `ApiCollection`
+- `ApiRequest`
+- `BearerTokenAliasCandidate`
+- `ImportResult`
+
+### Runner
+
+- `RunnerResult`
+- `RunnerPreviewRow`
+- `RunnerTimelineRow`
+- `RunnerStopConditions`
+
+### History
+
+- `HistoryEntry`
+- `HistoryRequestSnapshot`
+- `HistoryResponseSnapshot`
+- `HistoryHeader`
+- `HistoryAssertionResult`
+- `HistoryExtractionResult`
+- `HistoryDiffService`
+
+### Diagnostics
+
+- `DiagnosticEvent`
+- `DiagnosticOperation`
+- `DiagnosticSeverity`
+- `DiagnosticStore`
+- `DiagnosticSanitizer`
+
+### Script runtime
+
+- `UnifiedScriptRuntime`
+- `GraalJsSandboxEngine`
+- `ScriptLifecycleExecutor`
+- `ScriptBindingsFactory`
+- `ScriptExecutionContext`
+- `VariableScopeStore`
+- `ScriptBlock`
+- `ScriptDialect`
+- `ScriptPhase`
+- `ScriptFlowControl`
+- `ScriptExecutionResult`
+- `ScriptVariableMutation`
+- `ScriptAssertionResult`
+- `ScriptDependentRequestResult`
+
+## Appendix B: Validation Profiles
+
+Run the standard Maven profiles:
+
+```powershell
+mvn test
+mvn clean package
+mvn -Pstatic-analysis verify
 ```
 
-### ApiCollection
-```java
-public class ApiCollection {
-    String name;
-    String description;
-    String format;                // postman, bruno, openapi, insomnia, har
-    String version;
-    List<ApiRequest> requests;
-    List<Variable> variables;     // Collection-level variables
-    Map<String, String> environment;
-}
-```
-
-### ImportResult
-```java
-public class ImportResult {
-    String collectionName;
-    int totalRequests;
-    int successCount;
-    List<String> failedRequests;
-    List<FailedRequestInfo> failedRequestDetails;
-    String error;                 // Fatal error message
-}
-```
-
-### RunnerResult
-```java
-public class RunnerResult {
-    String requestName;
-    String requestId;
-    boolean success;
-    int statusCode;
-    long responseTimeMs;
-    int responseSize;
-    String errorMessage;
-    String responseBodyPreview;   // First 500 chars
-    Map<String, String> extractedVariables;
-    List<AssertionResult> assertions;
-}
-```
-
----
-
-## Appendix B: Montoya API Method Reference
-
-| Method | Class | Usage |
-|--------|-------|-------|
-| `api.repeater().sendToRepeater(HttpRequest, String)` | Repeater | Create Repeater tab |
-| `api.siteMap().add(HttpRequestResponse)` | SiteMap | Add to Target/Sitemap |
-| `api.http().sendRequest(HttpRequest)` | Http | Send HTTP request |
-| `HttpService.httpService(String, int, boolean)` | HttpService | Create service (host, port, https) |
-| `HttpRequest.httpRequest(HttpService, ByteArray)` | HttpRequest | Create request |
-| `ByteArray.byteArray(byte[])` | ByteArray | Wrap raw bytes |
-| `api.userInterface().registerSuiteTab(String, Component)` | UserInterface | Register tab |
-| `api.logging().logToOutput(String)` | Logging | Log to output |
-| `api.logging().logToError(String)` | Logging | Log to errors |
-
----
-
-*End of Documentation*
+Push and pull-request runs use normal CI mode. Full manually dispatched validation adds the performance, mutation, and canonical package jobs.
