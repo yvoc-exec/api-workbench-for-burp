@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 
 public final class HistoryTestFixtures {
     public static final String COLLECTION_NAME = "Petstore";
+    public static final String COLLECTION_ID = "col-petstore";
     public static final String ENVIRONMENT_ID = "env-dev";
     public static final String ENVIRONMENT_NAME = "Dev";
     public static final String REQUEST_ID = "req-login";
@@ -45,6 +46,7 @@ public final class HistoryTestFixtures {
 
     public static ApiCollection sampleCollection() {
         ApiCollection collection = new ApiCollection();
+        collection.id = COLLECTION_ID;
         collection.name = COLLECTION_NAME;
         collection.description = "Sample API collection";
         collection.environment.put("base_url", BASE_URL);

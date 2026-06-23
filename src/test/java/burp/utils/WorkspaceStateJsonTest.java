@@ -1,5 +1,6 @@
 package burp.utils;
 
+import burp.history.HistoryEntry;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -9,6 +10,7 @@ import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
 import burp.ui.tree.RequestTreeMutationService;
+import burp.testsupport.HistoryTestFixtures;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -122,10 +124,33 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.version).isEqualTo(1);
         assertThat(parsed.collections).hasSize(1);
         assertThat(parsed.collections.get(0).name).isEqualTo("Demo");
+        assertThat(parsed.collections.get(0).id).isNotBlank();
         assertThat(parsed.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
         assertThat(parsed.collections.get(0).runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
         assertThat(parsed.collections.get(0).folderVars).containsKey("Admin");
         assertThat(parsed.collections.get(0).folderVars.get("Admin")).containsEntry("role", "admin");
+    }
+
+    @Test
+    void legacyWorkspaceHistoryEntriesWithoutCollectionIdentityStillLoad() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Legacy";
+
+        WorkspaceState state = new WorkspaceState();
+        state.collections.add(collection);
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "legacy-history", java.time.Instant.parse("2026-06-15T01:00:30Z"));
+        entry.collectionId = null;
+        entry.collectionName = "Legacy";
+        state.historyEntries.add(entry);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.collections.get(0).id).isNotBlank();
+        assertThat(parsed.historyEntries).hasSize(1);
+        assertThat(parsed.historyEntries.get(0).collectionName).isEqualTo("Legacy");
+        assertThat(parsed.historyEntries.get(0).collectionId).isNull();
     }
 
     @Test

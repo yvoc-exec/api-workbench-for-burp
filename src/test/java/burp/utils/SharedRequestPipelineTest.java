@@ -3,6 +3,8 @@ package burp.utils;
 import burp.api.montoya.MontoyaApi;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
+import burp.scripts.ExecutionSource;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -150,6 +152,40 @@ class SharedRequestPipelineTest {
         assertThat(removed).contains("token");
         assertThat(col.runtimeVars).containsEntry("token", "collection-token");
         assertThat(col.runtimeVars).doesNotContainKey("session");
+    }
+
+    @Test
+    void buildWithActiveEnvironmentMutatesEnvironmentAndKeepsHistoryReplaySource() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Replay Request";
+        req.method = "GET";
+        req.url = "http://example.com/{{replay_token}}";
+        req.preRequestScripts.add(new ApiRequest.Script("js", "pm.environment.set('replay_token', pm.environment.get('seed')); pm.environment.unset('seed');"));
+
+        EnvironmentProfile activeEnvironment = new EnvironmentProfile();
+        activeEnvironment.name = "Replay Env";
+        activeEnvironment.variables.put("seed", "seed-value");
+
+        ExecutionResult exec = pipeline.build(
+                req,
+                col,
+                Map.of(),
+                null,
+                null,
+                activeEnvironment,
+                ExecutionSource.HISTORY_REPLAY);
+
+        assertThat(exec.executionSource).isEqualTo(ExecutionSource.HISTORY_REPLAY);
+        assertThat(exec.success).isTrue();
+        assertThat(exec.resolvedUrl).isEqualTo("http://example.com/seed-value");
+        assertThat(activeEnvironment.variables).doesNotContainKey("seed");
+        assertThat(activeEnvironment.variables).containsEntry("replay_token", "seed-value");
     }
 
     @Test

@@ -239,7 +239,27 @@ public class UniversalImporter {
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
             EnvironmentProfile activeEnvironment) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.WORKBENCH_SEND);
+        return sendSingleRequestWithBuiltRequest(
+                req,
+                colContext,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink,
+                activeEnvironment,
+                burp.scripts.ExecutionSource.WORKBENCH_SEND);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment,
+            burp.scripts.ExecutionSource executionSource) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource);
         if (!exec.success) {
             throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
         }

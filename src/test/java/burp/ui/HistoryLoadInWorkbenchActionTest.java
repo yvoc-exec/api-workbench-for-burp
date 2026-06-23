@@ -103,6 +103,97 @@ class HistoryLoadInWorkbenchActionTest {
     }
 
     @Test
+    void loadingHistoryIntoWorkbenchResolvesStableCollectionIdentityAfterRename() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        liveCollection.name = "Petstore Renamed";
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        ApiRequest changedRequest = HistoryTestFixtures.copyRequest(HistoryTestFixtures.sampleRequest());
+        changedRequest.body.raw = "{\"username\":\"stable-loaded\"}";
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "stable-entry", Instant.parse("2026-06-15T01:41:30Z"));
+        entry.collectionId = HistoryTestFixtures.COLLECTION_ID;
+        entry.collectionName = HistoryTestFixtures.COLLECTION_NAME;
+        entry.requestSnapshot = HistoryRequestSnapshot.from(changedRequest);
+        entry.requestId = liveRequest.id;
+        entry.requestName = liveRequest.name;
+        entry.folderPath = HistoryTestFixtures.REQUEST_FOLDER;
+
+        ImporterPanelTestSupport.invokeVoid(
+                bundle.panel,
+                "loadHistoryEntryIntoWorkbench",
+                new Class<?>[]{HistoryEntry.class},
+                entry);
+
+        ImporterPanelTestSupport.awaitEdt();
+
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"stable-loaded\"}");
+        assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
+    }
+
+    @Test
+    void loadingHistoryIntoWorkbenchResolvesLegacyCanonicalFolderPathWithoutRequestId() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-admin";
+        collection.name = "Admin Collection";
+        ApiRequest request = HistoryTestFixtures.copyRequest(HistoryTestFixtures.sampleRequest());
+        request.id = "req-admin";
+        request.name = "List Users";
+        request.path = "Admin";
+        request.sourceCollection = collection.name;
+        request.body.raw = "{\"username\":\"legacy\"}";
+        collection.requests.add(request);
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        ApiRequest changedRequest = HistoryTestFixtures.copyRequest(request);
+        changedRequest.body = new ApiRequest.Body();
+        changedRequest.body.mode = request.body.mode;
+        changedRequest.body.contentType = request.body.contentType;
+        changedRequest.body.raw = "{\"username\":\"canonical-loaded\"}";
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "canonical-folder", Instant.parse("2026-06-15T01:41:45Z"));
+        entry.collectionId = collection.id;
+        entry.collectionName = collection.name;
+        entry.requestSnapshot = HistoryRequestSnapshot.from(changedRequest);
+        entry.requestSnapshot.authoredRequest.id = null;
+        entry.requestId = null;
+        entry.requestName = request.name;
+        entry.folderPath = "Admin/List Users";
+
+        ImporterPanelTestSupport.invokeVoid(
+                bundle.panel,
+                "loadHistoryEntryIntoWorkbench",
+                new Class<?>[]{HistoryEntry.class},
+                entry);
+
+        ImporterPanelTestSupport.awaitEdt();
+
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"canonical-loaded\"}");
+        assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
+    }
+
+    @Test
     void loadingHistoryIntoWorkbenchCreatesHistoryReplaysWhenOriginalMissing() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
         bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
