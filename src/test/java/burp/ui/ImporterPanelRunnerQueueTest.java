@@ -17,6 +17,7 @@ import burp.models.RunnerTerminationResult;
 import burp.models.RunnerTerminationType;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.testsupport.RunnerScriptTestFixtures;
 import burp.ui.dnd.EnvironmentDragPayload;
 import burp.ui.history.HistoryDetailPanel;
 import burp.utils.ScriptMode;
@@ -29,6 +30,7 @@ import org.mockito.Mockito;
 import javax.swing.JButton;
 import javax.swing.JDialog;
 import javax.swing.JProgressBar;
+import javax.swing.JSpinner;
 import javax.swing.JTable;
 import javax.swing.JList;
 import javax.swing.JPanel;
@@ -56,10 +58,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -295,6 +299,92 @@ class ImporterPanelRunnerQueueTest {
                     .contains("Runner termination: " + termination.displayLabel())
                     .contains(termination.reason);
         }
+    }
+
+    @Test
+    void cancelButtonWhilePausedUsesRealRunnerAndReturnsIdleControls() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        MontoyaApi api = mockApi(true);
+        CollectionRunner runner = new CollectionRunner(api, new burp.utils.SharedRequestPipeline(api, null, null, null) {
+            @Override
+            public burp.utils.ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                calls.incrementAndGet();
+                burp.utils.ExecutionResult exec = new burp.utils.ExecutionResult();
+                exec.success = true;
+                exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+                exec.requestHeaders = "GET /paused HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                return exec;
+            }
+        }, null);
+        runner.setDelayMs(0);
+        runner.setMaxRetries(0);
+        ImporterPanel panel = newPanel(runner);
+        ApiRequest first = request("One");
+        ApiRequest second = request("Two");
+        ApiCollection collection = collection("Paused", first, second);
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+        invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
+        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
+        waitUntil(() -> runner.isRunning() && runner.isPaused(), 2000);
+        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn"), 2000);
+        edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
+        waitUntil(() -> !buttonEnabled(panel, "cancelRunnerBtn"), 2000);
+        waitUntil(() -> !buttonEnabled(panel, "pauseRunnerBtn"), 2000);
+        waitUntil(() -> !buttonEnabled(panel, "resumeRunnerBtn"), 2000);
+        assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).containsIgnoringCase("cancelled");
+        assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+    }
+
+    @Test
+    void cancelButtonDuringDelayUsesRealRunnerAndKeepsCompletedRows() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        MontoyaApi api = mockApi(true);
+        CollectionRunner runner = new CollectionRunner(api, new burp.utils.SharedRequestPipeline(api, null, null, null) {
+            @Override
+            public burp.utils.ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                int call = calls.incrementAndGet();
+                burp.utils.ExecutionResult exec = new burp.utils.ExecutionResult();
+                exec.success = true;
+                exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+                exec.requestHeaders = "GET /delay" + call + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                return exec;
+            }
+        }, null);
+        runner.setDelayMs(1000);
+        runner.setMaxRetries(0);
+        ImporterPanel panel = newPanel(runner);
+        ApiRequest first = request("One");
+        ApiRequest second = request("Two");
+        ApiCollection collection = collection("Delay", first, second);
+        edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+        drainEdt();
+        invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
+        edt(() -> {
+            ((JSpinner) privateField(panel, "runnerDelaySpinner")).setValue(1000);
+            ((JSpinner) privateField(panel, "runnerRetriesSpinner")).setValue(0);
+        });
+
+        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, false);
+        waitUntil(() -> runner.getResults().size() == 1, 5000);
+        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn"), 2000);
+        edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(runner.getLastTerminationResult().completedCount).isEqualTo(1);
+        assertThat(runner.getLastTerminationResult().totalQueuedCount).isEqualTo(2);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
+        assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).contains("1/2");
+        assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
     }
 
     @Test
@@ -1007,6 +1097,25 @@ class ImporterPanelRunnerQueueTest {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private static void waitUntil(BooleanSupplier condition, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        assertThat(condition.getAsBoolean()).isTrue();
+    }
+
+    private static boolean buttonEnabled(ImporterPanel panel, String fieldName) {
+        try {
+            return ((JButton) privateField(panel, fieldName)).isEnabled();
+        } catch (Exception e) {
+            throw new AssertionError("Failed to read button field " + fieldName, e);
+        }
     }
 
     private static void edt(ThrowingRunnable action) throws Exception {

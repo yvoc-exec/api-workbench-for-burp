@@ -171,6 +171,7 @@ public class ImporterPanel {
     private RunnerQueueTransferHandler runnerQueueTransferHandler;
     private int runnerExecutingQueueIndex = -1;
     private boolean runnerQueueFresh = false;
+    private volatile boolean runnerTerminalHandled = false;
     private int runnerExecutionSequence = 0;
     private int runnerCompletedQueueCount = 0;
     private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
@@ -10986,6 +10987,7 @@ public class ImporterPanel {
                 // Terminal state now drives the runner summary.
             }
             @Override public void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+                runnerTerminalHandled = true;
                 SwingUtilities.invokeLater(() -> {
                     RunnerTerminationResult terminal = termination != null ? termination : new RunnerTerminationResult(
                             RunnerTerminationType.INTERNAL_ERROR,
@@ -11046,6 +11048,9 @@ public class ImporterPanel {
                 });
             }
             @Override public void onError(String message) {
+                if (runnerTerminalHandled) {
+                    return;
+                }
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
                     resultModel.addEntry(buildExecutionRowFromError(message));
@@ -11181,6 +11186,7 @@ public class ImporterPanel {
         runnerCompletedQueueCount = 0;
         runnerResultById.clear();
         runnerResultByName.clear();
+        runnerTerminalHandled = false;
         refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);

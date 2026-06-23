@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,6 +61,7 @@ class CollectionRunnerTerminationTest {
         assertThat(listener.completedRuns).hasSize(1);
         assertThat(listener.terminalResults).hasSize(1);
         assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.COMPLETED);
+        assertThat(listener.errors).isEmpty();
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.COMPLETED);
         assertThat(runner.getResults()).hasSize(1);
         assertThat(lastRunnerDiagnostic()).isNotNull();
@@ -68,18 +70,8 @@ class CollectionRunnerTerminationTest {
     }
 
     @Test
-    void cancellationEmitsCancelledOnceAndPreservesCompletedResults() throws Exception {
-        CountDownLatch started = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
+    void cancelWhilePausedBeforeAnyRequestExecutesEmitsCancelledOnce() throws Exception {
         CollectionRunner runner = newRunner(exec -> {
-            started.countDown();
-            try {
-                while (!Thread.currentThread().isInterrupted() && release.getCount() > 0) {
-                    Thread.sleep(10);
-                }
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
             exec.success = true;
             exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
             exec.requestHeaders = "GET /cancel HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -89,18 +81,224 @@ class CollectionRunnerTerminationTest {
         runner.addListener(listener);
 
         ApiCollection collection = collection("Cancel", request("One", 1));
-        runner.runCollections(List.of(collection), collection.requests);
-        assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+        runner.runCollections(List.of(collection), collection.requests, true);
         runner.cancel();
-        release.countDown();
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
 
         assertThat(listener.completedRuns).isEmpty();
         assertThat(listener.terminalResults).hasSize(1);
         assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
-        assertThat(runner.getResults()).hasSize(1);
+        assertThat(listener.errors).hasSize(1);
+        assertThat(runner.getResults()).isEmpty();
         assertThat(lastRunnerDiagnostic().severity).isEqualTo(DiagnosticSeverity.WARNING);
+    }
+
+    @Test
+    void cancelDuringInterRequestDelayKeepsFirstCompletedResultOnly() throws Exception {
+        CountDownLatch firstCompleted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        CollectionRunner runner = newRunner(exec -> {
+            int call = calls.incrementAndGet();
+            exec.success = true;
+            exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+            exec.requestHeaders = "GET /delay" + call + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+            exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+        });
+        runner.setDelayMs(1000);
+        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) {
+                if (result != null && "One".equals(result.requestName)) {
+                    firstCompleted.countDown();
+                }
+            }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+        });
+
+        ApiCollection collection = collection("Delay", request("One", 1), request("Two", 2));
+        runner.runCollections(List.of(collection), collection.requests);
+        assertThat(firstCompleted.await(2, TimeUnit.SECONDS)).isTrue();
+        runner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
+        assertThat(listener.terminalResults).hasSize(1);
+        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.terminalResults.get(0).completedCount).isEqualTo(1);
+        assertThat(listener.terminalResults.get(0).totalQueuedCount).isEqualTo(2);
+        assertThat(listener.errors).hasSize(1);
+    }
+
+    @Test
+    void immediateCancellationBeforeWorkerStartsStillEmitsCancelledOnceAndAllowsSecondRun() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CollectionRunner runner = newRunner(exec -> {
+            calls.incrementAndGet();
+            exec.success = true;
+            exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+            exec.requestHeaders = "GET /immediate HTTP/1.1\r\nHost: example.com\r\n\r\n";
+            exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+        });
+        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+
+        ApiCollection collection = collection("Immediate", request("One", 1));
+        runner.runCollections(List.of(collection), collection.requests);
+        runner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+
+        assertThat(listener.terminalResults).hasSize(1);
+        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.completedRuns).isEmpty();
+        assertThat(listener.errors).hasSize(1);
+        assertThat(runner.getResults()).isEmpty();
+
+        runner.runCollections(List.of(collection), collection.requests);
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(runner.getResults()).hasSize(1);
+    }
+
+    @Test
+    void cancelDuringRetryDelayDoesNotFabricateFailedQueuedResult() throws Exception {
+        CountDownLatch firstAttemptCompleted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                int call = calls.incrementAndGet();
+                ExecutionResult exec = new ExecutionResult();
+                exec.requestHeaders = "GET /retry HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                if (call == 1) {
+                    exec.success = false;
+                    exec.errorMessage = "temporary failure";
+                } else {
+                    exec.success = true;
+                    exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+                }
+                return exec;
+            }
+        }, null);
+        runner.setDelayMs(1000);
+        runner.setMaxRetries(1);
+        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onAttemptComplete(RunnerResult result) {
+                if (result != null && result.attemptNumber == 1) {
+                    firstAttemptCompleted.countDown();
+                }
+            }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+        });
+
+        ApiCollection collection = collection("Retry", request("One", 1));
+        runner.runCollections(List.of(collection), collection.requests);
+        assertThat(firstAttemptCompleted.await(2, TimeUnit.SECONDS)).isTrue();
+        runner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        waitUntil(() -> listener.terminalResults.size() == 1, 2000);
+        assertThat(listener.terminalResults).hasSize(1);
+
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.terminalResults.get(0).completedCount).isZero();
+        assertThat(listener.terminalResults.get(0).totalQueuedCount).isEqualTo(1);
+        assertThat(runner.getResults()).isEmpty();
+    }
+
+    @Test
+    void cancelDuringInterruptedInflightRequestRetainsPriorCompletedResult() throws Exception {
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        CollectionRunner runner = newRunner(exec -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                exec.success = true;
+                exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+            } else {
+                secondStarted.countDown();
+                try {
+                    while (true) {
+                        Thread.sleep(50);
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("interrupted", ie);
+                }
+            }
+            exec.requestHeaders = "GET /inflight" + call + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+            exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+        });
+        runner.setDelayMs(1000);
+        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+
+        ApiCollection collection = collection("Inflight", request("One", 1), request("Two", 2));
+        runner.runCollections(List.of(collection), collection.requests);
+        assertThat(secondStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        runner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(listener.terminalResults).hasSize(1);
+        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.terminalResults.get(0).completedCount).isEqualTo(1);
+        assertThat(listener.terminalResults.get(0).totalQueuedCount).isEqualTo(2);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
+    }
+
+    @Test
+    void legacyListenerWithoutOnTerminalStillReceivesCompleteAndCancellationSignals() throws Exception {
+        AtomicInteger completeCount = new AtomicInteger();
+        AtomicInteger errorCount = new AtomicInteger();
+        CollectionRunner.RunnerListener legacyListener = new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) { }
+            @Override public void onComplete(List<RunnerResult> results) { completeCount.incrementAndGet(); }
+            @Override public void onError(String message) { errorCount.incrementAndGet(); }
+        };
+
+        CollectionRunner completingRunner = newRunner(exec -> {
+            exec.success = true;
+            exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+        });
+        completingRunner.addListener(legacyListener);
+        ApiCollection completeCollection = collection("Complete", request("One", 1));
+        completingRunner.runCollections(List.of(completeCollection), completeCollection.requests);
+        RunnerScriptTestFixtures.waitForRunnerToStop(completingRunner);
+
+        assertThat(completeCount.get()).isEqualTo(1);
+        assertThat(errorCount.get()).isZero();
+
+        completeCount.set(0);
+        errorCount.set(0);
+        CollectionRunner cancelledRunner = newRunner(exec -> {
+            exec.success = true;
+            exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+        });
+        cancelledRunner.addListener(legacyListener);
+        ApiCollection cancelledCollection = collection("CancelLegacy", request("One", 1));
+        cancelledRunner.runCollections(List.of(cancelledCollection), cancelledCollection.requests, true);
+        cancelledRunner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(cancelledRunner);
+
+        assertThat(completeCount.get()).isZero();
+        assertThat(errorCount.get()).isEqualTo(1);
     }
 
     @Test
@@ -230,5 +428,16 @@ class CollectionRunnerTerminationTest {
                 .filter(event -> event.operation == DiagnosticOperation.RUNNER_RUN)
                 .reduce((first, second) -> second)
                 .orElse(null);
+    }
+
+    private static void waitUntil(BooleanSupplier condition, long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        assertThat(condition.getAsBoolean()).isTrue();
     }
 }
