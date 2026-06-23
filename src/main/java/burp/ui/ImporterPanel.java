@@ -2325,9 +2325,9 @@ public class ImporterPanel {
                 : HistoryResult.STOPPED;
         entry.resultClassification = termination != null ? termination.displayLabel() : HistoryResult.UNKNOWN.displayName();
         entry.scriptMode = scriptMode != null ? scriptMode.label : null;
-        int count = results != null ? (int) results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution).count() : 0;
-        long success = results != null ? results.stream().filter(r -> r != null && r.success && !r.dependentExecution && !r.adHocExecution).count() : 0L;
-        long failure = results != null ? results.stream().filter(r -> r != null && !r.success && !r.dependentExecution && !r.adHocExecution).count() : 0L;
+        int count = terminalCompletedCount(termination, results);
+        long failure = terminalFailureCount(termination, count, results);
+        long success = Math.max(0, count - (int) failure);
         long extracted = results != null ? results.stream().mapToLong(r -> r != null && r.extractedVariables != null ? r.extractedVariables.size() : 0).sum() : 0L;
         String reason = termination != null && termination.reason != null && !termination.reason.isBlank()
                 ? termination.reason
@@ -2344,9 +2344,9 @@ public class ImporterPanel {
         entry.assertionsSummaryText = count > 0 ? "Final request count: " + count : "No runner requests executed.";
         entry.metadataSummaryText = "Runner termination: " + (termination != null ? termination.displayLabel() : "Unknown") + "\n"
                 + "Reason: " + reason + "\n"
-                + "Completed Requests: " + (termination != null ? termination.completedCount : count) + "\n"
+                + "Completed Requests: " + count + "\n"
                 + "Queued Requests: " + (termination != null ? termination.totalQueuedCount : count) + "\n"
-                + "Failure Count: " + (termination != null ? termination.failureCount : failure);
+                + "Failure Count: " + failure;
         return entry;
     }
 
@@ -2973,9 +2973,7 @@ public class ImporterPanel {
     }
 
     private RunnerExecutionTableModel.Entry buildExecutionRowFromRunnerTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
-        HistoryEntry detailEntry = termination != null && termination.isCompleted()
-                ? buildRunnerCompleteEntry(results)
-                : buildRunnerTerminalEntry(termination, results);
+        HistoryEntry detailEntry = buildRunnerTerminalEntry(termination, results);
         String summary = detailEntry != null ? detailEntry.scriptOutputSummaryText : (termination != null ? termination.displayLabel() : "Runner terminal.");
         return createExecutionEntry(
                 termination != null && termination.isCompleted() ? "RUN_COMPLETED" : "RUN_TERMINATED",
@@ -2994,6 +2992,27 @@ public class ImporterPanel {
                 null,
                 "Runner"
         );
+    }
+
+    private int terminalCompletedCount(RunnerTerminationResult termination, List<RunnerResult> results) {
+        if (termination != null) {
+            return Math.max(0, termination.completedCount);
+        }
+        if (results == null) {
+            return 0;
+        }
+        return (int) results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution).count();
+    }
+
+    private int terminalFailureCount(RunnerTerminationResult termination, int completedCount, List<RunnerResult> results) {
+        if (termination != null) {
+            return Math.max(0, Math.min(termination.failureCount, completedCount));
+        }
+        if (results == null) {
+            return 0;
+        }
+        long failure = results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution && !r.success).count();
+        return (int) Math.max(0, Math.min(failure, completedCount));
     }
 
     static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
@@ -11002,21 +11021,9 @@ public class ImporterPanel {
                             "terminal callback missing",
                             null);
                     int total = Math.max(1, terminal.totalQueuedCount);
-                    int completed = Math.max(0, terminal.completedCount);
-                    int success = 0;
-                    int failure = 0;
-                    if (results != null) {
-                        for (RunnerResult r : results) {
-                            if (r == null || r.dependentExecution || r.adHocExecution) {
-                                continue;
-                            }
-                            if (r.success) {
-                                success++;
-                            } else {
-                                failure++;
-                            }
-                        }
-                    }
+                    int completed = terminalCompletedCount(terminal, results);
+                    int failure = terminalFailureCount(terminal, completed, results);
+                    int success = Math.max(0, completed - failure);
                     appendRunnerLog("\n=== Runner " + terminal.displayLabel() + " ===");
                     appendRunnerLog("Reason: " + (terminal.reason != null && !terminal.reason.isBlank() ? terminal.reason : "none"));
                     appendRunnerLog("Completed: " + completed + "/" + total);
