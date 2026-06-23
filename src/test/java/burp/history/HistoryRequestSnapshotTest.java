@@ -29,6 +29,7 @@ class HistoryRequestSnapshotTest {
     @Test
     void fromRequestDeepCopiesAuthoredDataAndSupportsBodyModes() {
         ApiRequest request = request("POST", "https://api.example.test/login");
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
         request.headers.add(new ApiRequest.Header("X-Test", "alpha", false));
         request.headers.add(new ApiRequest.Header("X-Disabled", "beta", true));
         request.variables.add(variable("", "ignored"));
@@ -51,6 +52,7 @@ class HistoryRequestSnapshotTest {
         assertThat(snapshot.requestVariablesAsAuthored).doesNotContainKey("");
         assertThat(snapshot.displayBodyText()).isEqualTo("{\"message\":\"hello\"}");
         assertThat(snapshot.authType).isEqualTo("bearer");
+        assertThat(snapshot.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
         assertThat(snapshot.authoredRequest).isNotSameAs(request);
 
         request.headers.get(0).value = "mutated";
@@ -116,6 +118,19 @@ class HistoryRequestSnapshotTest {
         assertThat(rebuilt.auth.type).isEqualTo("basic");
         assertThat(rebuilt.variables).extracting(variable -> variable.key)
                 .containsExactlyInAnyOrder("id", "blank");
+    }
+
+    @Test
+    void legacySnapshotsWithoutBuildModeStillDefaultToManualPreserveRebuilds() {
+        HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
+        snapshot.method = "GET";
+        snapshot.urlTemplate = "https://api.example.test/legacy";
+        snapshot.authoredRequest = null;
+
+        ApiRequest rebuilt = snapshot.toApiRequest();
+
+        assertThat(rebuilt.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(rebuilt.editorMaterialized).isTrue();
     }
 
     @Test

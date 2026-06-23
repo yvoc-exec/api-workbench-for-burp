@@ -11,7 +11,8 @@ import burp.scripts.ScriptBlock;
 public class ApiRequest {
     public enum BuildMode {
         AUTO_COMPATIBLE,
-        MANUAL_PRESERVE
+        MANUAL_PRESERVE,
+        EXACT_HTTP
     }
 
     public String id;
@@ -141,7 +142,12 @@ public class ApiRequest {
     }
 
     public boolean isManualPreserveMode() {
-        return resolveBuildMode() == BuildMode.MANUAL_PRESERVE || editorMaterialized;
+        BuildMode mode = resolveBuildMode();
+        return mode == BuildMode.MANUAL_PRESERVE || (editorMaterialized && mode != BuildMode.EXACT_HTTP);
+    }
+
+    public boolean isExactHttpMode() {
+        return resolveBuildMode() == BuildMode.EXACT_HTTP;
     }
 
     public BuildMode resolveBuildMode() {

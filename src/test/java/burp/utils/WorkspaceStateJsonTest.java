@@ -261,6 +261,26 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void workspaceRoundTripPreservesExactHttpBuildMode() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Exact Demo";
+
+        ApiRequest request = new ApiRequest();
+        request.name = "Exact";
+        request.path = "Exact";
+        request.sourceCollection = "Exact Demo";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        collection.requests.add(request);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection)))
+        );
+
+        ApiRequest restored = parsed.collections.get(0).requests.get(0);
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
     void legacyWorkspaceDefaultsBuildModeAndSuppressedAutoHeadersSafely() {
         String json = """
                 {

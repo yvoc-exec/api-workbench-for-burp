@@ -12,7 +12,9 @@ import burp.testsupport.ImporterPanelTestSupport;
 import burp.ui.history.HistoryLoadResultNotifier;
 import burp.ui.history.HistoryPanel;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.List;
@@ -73,6 +75,36 @@ class HistorySendToRepeaterActionTest {
         assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries).isEmpty();
         assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
         assertThat(liveCollection.requests).hasSize(1);
+    }
+
+    @Test
+    void sendToRepeaterFromHistoryPreservesExactHttpHeaders() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", new NoOpNotifier());
+
+        HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        entry.requestSnapshot.authoredRequest.buildMode = burp.models.ApiRequest.BuildMode.EXACT_HTTP;
+        entry.requestSnapshot.authoredRequest.headers.add(new burp.models.ApiRequest.Header("Host", "alt.example.test", false));
+        entry.requestSnapshot.authoredRequest.headers.add(new burp.models.ApiRequest.Header("Authorization", "Bearer first", false));
+        entry.requestSnapshot.authoredRequest.headers.add(new burp.models.ApiRequest.Header("Authorization", "Bearer second", false));
+
+        ArgumentCaptor<HttpRequest> captured = ArgumentCaptor.forClass(HttpRequest.class);
+
+        ImporterPanelTestSupport.invokeVoid(
+                bundle.panel,
+                "sendHistoryEntryToRepeater",
+                new Class<?>[]{HistoryEntry.class},
+                entry);
+
+        verify(bundle.importer, timeout(10000)).sendToRepeater(captured.capture(), ArgumentMatchers.nullable(String.class));
+        HttpRequest replayed = captured.getValue();
+        assertThat(replayed.headerValue("Host")).isEqualTo("alt.example.test");
+        assertThat(replayed.headerValue("User-Agent")).isNull();
+        assertThat(replayed.headerValue("Accept")).isNull();
+        assertThat(replayed.bodyToString()).contains("username");
     }
 
     private static List<String> collectionNames(List<ApiCollection> collections) {

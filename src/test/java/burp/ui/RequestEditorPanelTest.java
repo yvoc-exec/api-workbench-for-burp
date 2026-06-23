@@ -851,6 +851,43 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void exactHttpToggleMarksEditorDirtyAndPersistsExactBuildMode() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+        panel.markClean();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.isDirty()).isTrue();
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
+    void loadingExactHttpRequestRefreshesControlAndShowsAuthoredTransportHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.headers = List.of(
+                new ApiRequest.Header("Host", "alt.example.test", false),
+                new ApiRequest.Header("Content-Length", "9999", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+
+        panel.loadRequest(req);
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "alt.example.test")
+                .containsEntry("Content-Length", "9999")
+                .containsEntry("Transfer-Encoding", "chunked");
+        assertThat(resolvedView(panel)).contains("mode=EXACT_HTTP");
+    }
+
+    @Test
     void buildRequestFromUiStillResolvesBearerVariableBackedAuthorizationAtExecutionTime() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));

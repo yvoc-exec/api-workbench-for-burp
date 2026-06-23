@@ -25,6 +25,10 @@ public final class RequestBuildPolicy {
         return request == null || request.isManualPreserveMode();
     }
 
+    public boolean exactHttp() {
+        return request != null && request.isExactHttpMode();
+    }
+
     public boolean shouldApplyDefaultHeaders(ApiRequest request) {
         return request == null ? autoCompatible() : request.isAutoCompatibleMode();
     }

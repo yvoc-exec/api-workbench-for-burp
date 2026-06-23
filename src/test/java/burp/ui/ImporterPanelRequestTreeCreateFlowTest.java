@@ -1189,6 +1189,85 @@ class ImporterPanelRequestTreeCreateFlowTest {
     }
 
     @Test
+    void exactWorkbenchSendPreservesAuthoredTransportHeadersAndDuplicates() throws Exception {
+        ImporterPanel panel = newPanel();
+        EnvironmentProfile env = environment("UAT", Map.of("token", "live-token"));
+        edt(() -> {
+            panel.replaceEnvironmentProfiles(List.of(env));
+            panel.setActiveEnvironmentId(env.id);
+        });
+        drainEdt();
+
+        ApiCollection collection = collection("APIM");
+        collection.folderPaths.add("Auth");
+        ApiRequest request = createManualRequest(panel, collection, "Auth", "Login");
+        selectTreeNode(panel, requestNode(requestTree(panel), request.id));
+        drainEdt();
+        edt(() -> requestEditor(panel).setCurrentCollection(collection));
+        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        removeHeaderRow(requestEditor(panel), "Accept");
+        removeHeaderRow(requestEditor(panel), "User-Agent");
+        removeHeaderRow(requestEditor(panel), "Cache-Control");
+        populateManualRequestEditor(
+                requestEditor(panel),
+                "POST",
+                "https://api.example.test/login",
+                null,
+                null,
+                "{\"login\":true}",
+                null
+        );
+        edt(() -> {
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Host", "alt.example.test"});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer first"});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer second"});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Connection", "close"});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Proxy-Connection", "keep-alive"});
+        });
+
+        UniversalImporter importer = importer(panel);
+        AtomicReference<String> rawRequestText = new AtomicReference<>();
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            @SuppressWarnings("unchecked")
+            Map<String, String> runtimeOverlay = invocation.getArgument(3);
+            return buildWorkbenchSendResult(panel, requestArg, runtimeOverlay, new AtomicInteger(), rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean(),
+                Mockito.anyMap(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        Mockito.doAnswer(invocation -> {
+            ApiRequest requestArg = invocation.getArgument(0);
+            return buildWorkbenchSendResult(panel, requestArg, activeEnvironmentOverlay(panel), new AtomicInteger(), rawRequestText);
+        }).when(importer).sendSingleRequestWithBuiltRequest(
+                Mockito.any(ApiRequest.class),
+                Mockito.any(ApiCollection.class),
+                Mockito.anyBoolean()
+        );
+
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("exact workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("exact workbench send invocation", () -> rawRequestText.get() != null);
+        awaitCondition("exact workbench send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        assertThat(rawRequestText.get()).contains("Host: alt.example.test");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer first");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer second");
+        assertThat(rawRequestText.get()).contains("Connection: close");
+        assertThat(rawRequestText.get()).contains("Proxy-Connection: keep-alive");
+        assertThat(rawRequestText.get()).doesNotContain("Host: api.example.test");
+        assertThat(rawRequestText.get()).doesNotContain("Accept: application/json, text/plain, */*");
+        assertThat(rawRequestText.get()).doesNotContain("User-Agent: BurpExtensionRuntime");
+        assertThat(rawRequestText.get()).doesNotContain("Cache-Control: no-cache");
+        assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
     void blankUrlWorkbenchSendFailsSafelyWithoutCorruptingEditorState() throws Exception {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("APIM");
