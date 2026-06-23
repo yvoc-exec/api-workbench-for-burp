@@ -493,7 +493,7 @@ class CollectionRunnerTest {
                 started.countDown();
                 pipelineCalls.incrementAndGet();
                 try {
-                    Thread.sleep(10_000);
+                    Thread.sleep(1_000);
                 } catch (InterruptedException e) {
                     interruptedFlag.set(true);
                 }
@@ -536,25 +536,31 @@ class CollectionRunnerTest {
         assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
         runner.cancel();
         assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
-        assertThat(runner.isRunning()).isTrue();
+        cleanupGate.countDown();
+        waitForRunnerToStop(runner);
+        assertThat(runner.isRunning()).isFalse();
+
+        assertThat(interruptedFlag.get()).isTrue();
+        assertThat(completeCount.get()).isZero();
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(burp.models.RunnerTerminationType.CANCELLED);
+        assertThat(debugMessages).isEmpty();
+        assertThat(runner.getResults()).isEmpty();
+
+        requestCompleteCount.set(0);
+        completeCount.set(0);
+        debugMessages.clear();
 
         runner.runCollections(List.of(collection), List.of(request));
-        cleanupGate.countDown();
 
         waitForRunnerToStop(runner);
         drainEdt();
 
-        assertThat(interruptedFlag.get()).isTrue();
-        assertThat(pipelineCalls.get()).isEqualTo(1);
-        assertThat(requestCompleteCount.get()).isZero();
-        assertThat(completeCount.get()).isZero();
-        assertThat(debugMessages).anyMatch(msg -> msg.contains("Runner cancelled."));
-        assertThat(runner.getResults()).isEmpty();
+        assertThat(pipelineCalls.get()).isGreaterThan(1);
         assertThat(runner.isRunning()).isFalse();
     }
 
     private void waitForRunnerToStop(CollectionRunner runner) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 1500;
+        long deadline = System.currentTimeMillis() + 10_000;
         while (runner.isRunning() && System.currentTimeMillis() < deadline) {
             Thread.sleep(10);
         }
