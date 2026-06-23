@@ -202,9 +202,9 @@ class RequestEditorPanelTest {
 
         assertThat(resolvedView(panel))
                 .contains("Request Build Policy")
-                .contains("mode=AUTO_COMPATIBLE")
+                .contains("mode=MANUAL_PRESERVE")
                 .contains("suppressedAutoHeaders=(none)")
-                .contains("Auto-compatible mode may synthesize defaults/auth/body Content-Type.");
+                .contains("Manual preserve mode keeps tester-deleted auto headers deleted.");
     }
 
     @Test
@@ -865,6 +865,170 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void exactHttpToggleRestoresAuthoredTransportHeadersAndPreviewShowsExactFraming() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("Host", "alt.example.test", false),
+                new ApiRequest.Header("Content-Length", "9999", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Host");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "alt.example.test")
+                .containsEntry("Content-Length", "9999")
+                .containsEntry("Transfer-Encoding", "chunked");
+        assertThat(resolvedView(panel))
+                .contains("mode=EXACT_HTTP")
+                .contains("Host: alt.example.test")
+                .contains("Content-Length: 9999")
+                .contains("Transfer-Encoding: chunked");
+
+        byte[] raw = new RequestBuilder(null).buildRequest(panel.buildRequestFromUI(), new VariableResolver());
+        String rawText = new String(raw, StandardCharsets.UTF_8);
+        assertThat(rawText)
+                .contains("Host: alt.example.test")
+                .contains("Content-Length: 9999")
+                .contains("Transfer-Encoding: chunked");
+    }
+
+    @Test
+    void exactHttpToggleRemovesSyntheticDefaultsThatWereNotAuthored() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .doesNotContainKeys("Accept", "User-Agent", "Cache-Control");
+    }
+
+    @Test
+    void exactHttpToggleKeepsAuthoredDefaultsAndDropsOnlyDerivedAuthHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("Accept", "application/xml", false),
+                new ApiRequest.Header("User-Agent", "TestAgent/1.0", false),
+                new ApiRequest.Header("Authorization", "Bearer authored", false),
+                new ApiRequest.Header("Content-Type", "text/plain", false)
+        );
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "derived-secret");
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"hello\":true}";
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer authored");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/xml")
+                .containsEntry("User-Agent", "TestAgent/1.0")
+                .containsEntry("Authorization", "Bearer authored")
+                .containsEntry("Content-Type", "text/plain");
+        assertThat(headerValues(headersModel(panel))).doesNotContainEntry("Authorization", "Bearer derived-secret");
+    }
+
+    @Test
+    void exactHttpToggleDropsDerivedAuthorizationAndContentTypeHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "derived-secret");
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"hello\":true}";
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Authorization", "Bearer derived-secret")
+                .containsEntry("Content-Type", "application/json");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Authorization", "Content-Type");
+    }
+
+    @Test
+    void exactHttpTogglePreservesDuplicateHeaderOrder() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("X-Dupe", "one", false),
+                new ApiRequest.Header("X-Dupe", "two", false),
+                new ApiRequest.Header("x-dupe", "three", false),
+                new ApiRequest.Header("Host", "alt.example.test", false)
+        );
+
+        panel.loadRequest(req);
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerNames(headersModel(panel))).containsExactly("X-Dupe", "X-Dupe", "x-dupe", "Host");
+    }
+
+    @Test
+    void exactHttpToggleBackToNormalizedRestoresDefaultEditorBehavior() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        panel.loadRequest(req);
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache")
+                .doesNotContainKey("Host");
+        assertThat(resolvedView(panel)).contains("mode=MANUAL_PRESERVE");
+    }
+
+    @Test
+    void exactHttpPolicyTextUpdatesImmediatelyAfterCheckboxSelection() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+
+        assertThat(resolvedView(panel)).contains("mode=MANUAL_PRESERVE");
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(resolvedView(panel)).contains("mode=EXACT_HTTP");
+    }
+
+    @Test
     void loadingExactHttpRequestRefreshesControlAndShowsAuthoredTransportHeaders() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -1109,6 +1273,17 @@ class RequestEditorPanelTest {
             String value = (String) model.getValueAt(i, 1);
             if (key != null && !key.isBlank()) {
                 out.put(key, value);
+            }
+        }
+        return out;
+    }
+
+    private static List<String> headerNames(DefaultTableModel model) {
+        List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            if (key != null && !key.isBlank()) {
+                out.add(key);
             }
         }
         return out;

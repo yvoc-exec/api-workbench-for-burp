@@ -59,6 +59,15 @@ Workbench is where you inspect and modify a single API request without leaving B
 
 Per-request state stays attached to the request you are working on, which makes it easier to refine a request, test it, and then hand it off to Repeater when you need more control.
 
+#### Exact HTTP / Preserve authored headers
+
+Exact HTTP is an opt-in, per-request mode for advanced testing. Normalized mode remains the default.
+
+- Exact mode preserves authored structured headers, including order, duplicates, casing, Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.
+- Exact mode does not automatically synthesize framing, defaults, auth, or body-driven headers.
+- Arbitrary malformed raw lines and exact whitespace are not supported by the structured editor.
+- Burp, Montoya, proxies, HTTP/2 conversion, and targets may still normalize or reject the traffic.
+
 ### Environment and OAuth2
 
 Environment profiles are independent workspace objects. The Environment tab selects an environment profile, not a collection.

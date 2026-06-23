@@ -405,6 +405,11 @@ public class HistoryEntry {
         sb.append("URL Template: ").append(requestSnapshot != null && requestSnapshot.urlTemplate != null ? requestSnapshot.urlTemplate : "").append('\n');
         sb.append("Final Resolved URL: ").append(finalResolvedUrl != null && !finalResolvedUrl.isBlank() ? finalResolvedUrl : "Not yet sent").append('\n');
         sb.append("Host: ").append(host != null && !host.isBlank() ? host : "Not yet sent").append('\n');
+        sb.append("Build Mode: ").append(requestSnapshot != null && requestSnapshot.buildMode != null
+                ? requestSnapshot.buildMode.name()
+                : requestSnapshot != null && requestSnapshot.authoredRequest != null && requestSnapshot.authoredRequest.resolveBuildMode() != null
+                    ? requestSnapshot.authoredRequest.resolveBuildMode().name()
+                    : "Not yet sent").append('\n');
         sb.append("Active Environment: ").append(environmentName != null ? environmentName : "No Environment").append('\n');
         sb.append("Auth Mode / Auth Source: ").append(resolveAuthLabel()).append('\n');
         sb.append("Execution Source: ").append(executionSource != null && !executionSource.isBlank() ? executionSource : "Not yet sent").append('\n');

@@ -81,7 +81,7 @@ public class RequestBuilder {
             if (colon > 0) {
                 String key = h.substring(0, colon).trim();
                 String lower = key.toLowerCase();
-                if (!lower.equals("content-length") && !lower.equals("transfer-encoding")) {
+                if (policy.exactHttp() || (!lower.equals("content-length") && !lower.equals("transfer-encoding"))) {
                     effective.add(new AbstractMap.SimpleEntry<>(key, h.substring(colon + 1).trim()));
                 }
             }

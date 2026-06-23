@@ -1204,10 +1204,10 @@ class ImporterPanelRequestTreeCreateFlowTest {
         selectTreeNode(panel, requestNode(requestTree(panel), request.id));
         drainEdt();
         edt(() -> requestEditor(panel).setCurrentCollection(collection));
-        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
         removeHeaderRow(requestEditor(panel), "Accept");
         removeHeaderRow(requestEditor(panel), "User-Agent");
         removeHeaderRow(requestEditor(panel), "Cache-Control");
+        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
         populateManualRequestEditor(
                 requestEditor(panel),
                 "POST",
@@ -1264,6 +1264,8 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(rawRequestText.get()).doesNotContain("Accept: application/json, text/plain, */*");
         assertThat(rawRequestText.get()).doesNotContain("User-Agent: BurpExtensionRuntime");
         assertThat(rawRequestText.get()).doesNotContain("Cache-Control: no-cache");
+        String previewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
+        assertThat(rawRequestText.get()).isEqualTo(previewRaw);
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
     }
 

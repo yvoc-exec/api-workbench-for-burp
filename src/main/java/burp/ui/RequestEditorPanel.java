@@ -64,6 +64,7 @@ public class RequestEditorPanel extends JPanel {
     private boolean syncingDerivedHeaders = false;
     private boolean authorizationHeaderMaterialized = false;
     private boolean contentTypeHeaderMaterialized = false;
+    private ApiRequest.BuildMode lastNonExactBuildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
     private Runnable trackedHeaderStateChangeListener;
     private boolean dirty = false;
     private VariableActionBridge variableActionBridge;
@@ -136,7 +137,7 @@ public class RequestEditorPanel extends JPanel {
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
         exactHttpCheckBox = new JCheckBox("Exact HTTP / Preserve authored headers");
         exactHttpCheckBox.setToolTipText("<html><b>Exact HTTP</b> preserves duplicate and conflicting headers, including Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.<br/>Malformed requests may fail.<br/>Burp, proxies, HTTP/2 conversion, and servers may still normalize or reject the request.</html>");
-        exactHttpCheckBox.addActionListener(e -> refreshAllIfReady());
+        exactHttpCheckBox.addActionListener(e -> handleExactHttpModeSelectionChanged());
         urlField = new JTextPane();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         SwingShortcutSupport.installTextComponentShortcuts(urlField);
@@ -414,6 +415,9 @@ public class RequestEditorPanel extends JPanel {
 
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
+        lastNonExactBuildMode = req != null && !req.isExactHttpMode()
+                ? req.resolveBuildMode()
+                : ApiRequest.BuildMode.MANUAL_PRESERVE;
         resetDerivedHeaderMaterializationState();
         materializedAutoHeaders.clear();
         loadingRequest = true;
@@ -432,6 +436,7 @@ public class RequestEditorPanel extends JPanel {
     public void clearRequest() {
         currentCollection = null;
         currentRequest = null;
+        lastNonExactBuildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
         hideAllVariablePopups();
         resetDerivedHeaderMaterializationState();
         materializedAutoHeaders.clear();
@@ -627,6 +632,28 @@ public class RequestEditorPanel extends JPanel {
 
     private ApiRequest.Auth buildAuthFromFields(String authType) {
         return RequestEditorAuthSupport.buildAuthFromFields(authUi, authType);
+    }
+
+    private void handleExactHttpModeSelectionChanged() {
+        if (loadingRequest || updatingVariableStyles || currentRequest == null) {
+            return;
+        }
+        commitAllEdits();
+        ApiRequest.BuildMode restoreMode = lastNonExactBuildMode;
+        ApiRequest next = currentRequest.applyTo(new ApiRequest());
+        if (isExactHttpModeSelected()) {
+            if (!currentRequest.isExactHttpMode()) {
+                lastNonExactBuildMode = currentRequest.resolveBuildMode();
+            }
+            next.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        } else {
+            next.buildMode = lastNonExactBuildMode != null ? lastNonExactBuildMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
+        }
+        loadRequest(next);
+        if (isExactHttpModeSelected()) {
+            lastNonExactBuildMode = restoreMode != null ? restoreMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
+        }
+        markDirty();
     }
 
     static boolean isMeaningfulAuthSource(String source) {
@@ -851,13 +878,19 @@ public class RequestEditorPanel extends JPanel {
             return;
         }
         var vr = buildCurrentResolver();
+        ApiRequest builtForPreview = null;
+        try {
+            builtForPreview = buildRequestFromUI();
+        } catch (Exception ignored) {
+            builtForPreview = null;
+        }
 
         StringBuilder out = new StringBuilder();
         out.append("Resolved URL\n");
         out.append("------------\n");
         out.append(vr.resolve(RequestEditorStateMapper.rebuildUrlWithParams(urlField.getText(), paramsModel))).append("\n\n");
 
-        appendBuildPolicyDiagnostics(out, currentRequest);
+        appendBuildPolicyDiagnostics(out, builtForPreview != null ? builtForPreview : currentRequest);
 
         out.append("Resolved Auth\n");
         out.append("-------------\n");
@@ -873,16 +906,13 @@ public class RequestEditorPanel extends JPanel {
         out.append("\nResolved Headers (Effective)\n");
         out.append("-----------------------------\n");
         boolean usedEffective = false;
-        if (requestBuilder != null) {
+        if (requestBuilder != null && builtForPreview != null) {
             try {
-                ApiRequest built = buildRequestFromUI();
-                if (built != null) {
-                    List<Map.Entry<String, String>> effective = requestBuilder.buildEffectiveHeaders(built, vr);
-                    for (Map.Entry<String, String> e : effective) {
-                        out.append(e.getKey()).append(": ").append(e.getValue()).append("\n");
-                    }
-                    usedEffective = true;
+                List<Map.Entry<String, String>> effective = requestBuilder.buildEffectiveHeaders(builtForPreview, vr);
+                for (Map.Entry<String, String> e : effective) {
+                    out.append(e.getKey()).append(": ").append(e.getValue()).append("\n");
                 }
+                usedEffective = true;
             } catch (Exception ex) {
                 // Fallback to explicit-only view
             }
