@@ -1204,10 +1204,6 @@ class ImporterPanelRequestTreeCreateFlowTest {
         selectTreeNode(panel, requestNode(requestTree(panel), request.id));
         drainEdt();
         edt(() -> requestEditor(panel).setCurrentCollection(collection));
-        removeHeaderRow(requestEditor(panel), "Accept");
-        removeHeaderRow(requestEditor(panel), "User-Agent");
-        removeHeaderRow(requestEditor(panel), "Cache-Control");
-        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
         populateManualRequestEditor(
                 requestEditor(panel),
                 "POST",
@@ -1217,6 +1213,10 @@ class ImporterPanelRequestTreeCreateFlowTest {
                 "{\"login\":true}",
                 null
         );
+        removeHeaderRow(requestEditor(panel), "Accept");
+        removeHeaderRow(requestEditor(panel), "User-Agent");
+        removeHeaderRow(requestEditor(panel), "Cache-Control");
+        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
         edt(() -> {
             headersModel(requestEditor(panel)).addRow(new Object[]{"Host", "alt.example.test"});
             headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer first"});

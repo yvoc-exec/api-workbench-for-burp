@@ -639,19 +639,48 @@ public class RequestEditorPanel extends JPanel {
             return;
         }
         commitAllEdits();
-        ApiRequest.BuildMode restoreMode = lastNonExactBuildMode;
-        ApiRequest next = currentRequest.applyTo(new ApiRequest());
-        if (isExactHttpModeSelected()) {
-            if (!currentRequest.isExactHttpMode()) {
-                lastNonExactBuildMode = currentRequest.resolveBuildMode();
-            }
-            next.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
-        } else {
-            next.buildMode = lastNonExactBuildMode != null ? lastNonExactBuildMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
+        boolean exactSelected = isExactHttpModeSelected();
+        if (exactSelected && !currentRequest.isExactHttpMode()) {
+            lastNonExactBuildMode = currentRequest.resolveBuildMode();
         }
-        loadRequest(next);
-        if (isExactHttpModeSelected()) {
-            lastNonExactBuildMode = restoreMode != null ? restoreMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
+
+        List<ApiRequest.Header> authoredHeaders = copyHeaders(currentRequest.headers);
+        ApiRequest draft = buildRequestFromUI();
+        if (draft == null) {
+            return;
+        }
+
+        ApiRequest.BuildMode targetMode = exactSelected
+                ? ApiRequest.BuildMode.EXACT_HTTP
+                : (lastNonExactBuildMode != null ? lastNonExactBuildMode : ApiRequest.BuildMode.MANUAL_PRESERVE);
+        draft.buildMode = targetMode;
+        draft.applyTo(currentRequest);
+        currentRequest.buildMode = targetMode;
+        currentRequest.editorMaterialized = exactSelected ? true : false;
+        if (!exactSelected) {
+            currentRequest.suppressedAutoHeaders = new LinkedHashSet<>();
+        }
+        currentRequest.headers = buildHeadersForModeSwitch(draft, authoredHeaders, exactSelected);
+
+        ApiRequest headerRefresh = currentRequest.applyTo(new ApiRequest());
+
+        resetDerivedHeaderMaterializationState();
+        loadingRequest = true;
+        try {
+            headersModel.setRowCount(0);
+            RequestEditorStateMapper.loadEditorHeaders(headerRefresh, createStateMapperContext());
+            RequestEditorStateMapper.ensureStarterRow(headersModel);
+            if (!exactSelected) {
+                captureMaterializedDefaultHeaders(headerRefresh);
+                syncAuthorizationHeaderFromCurrentAuth();
+                syncContentTypeHeaderFromCurrentBody();
+            }
+        } finally {
+            loadingRequest = false;
+        }
+        refreshResolvedMirror();
+        if (currentCollection != null) {
+            currentCollection.fireChanged();
         }
         markDirty();
     }
@@ -826,6 +855,86 @@ public class RequestEditorPanel extends JPanel {
         authorizationHeaderMaterialized = false;
         contentTypeHeaderMaterialized = false;
         materializedAutoHeaders.clear();
+    }
+
+    private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> headers) {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header == null) {
+                out.add(null);
+            } else {
+                out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+            }
+        }
+        return out;
+    }
+
+    private List<ApiRequest.Header> buildHeadersForModeSwitch(ApiRequest draft, List<ApiRequest.Header> authoredHeaders, boolean exactSelected) {
+        List<ApiRequest.Header> visibleHeaders = new ArrayList<>();
+        if (draft != null && draft.headers != null) {
+            for (ApiRequest.Header header : draft.headers) {
+                if (header == null || header.key == null || header.key.isBlank()) {
+                    continue;
+                }
+                String normalized = normalizeTrackedHeaderName(header.key);
+                if (normalized == null) {
+                    continue;
+                }
+                if (!exactSelected && isTransportHeaderName(normalized)) {
+                    continue;
+                }
+                if (exactSelected && isSyntheticEditorHeader(normalized)) {
+                    continue;
+                }
+                visibleHeaders.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+            }
+        }
+
+        List<ApiRequest.Header> merged = new ArrayList<>();
+        List<ApiRequest.Header> sourceHeaders = authoredHeaders != null ? authoredHeaders : Collections.emptyList();
+        int visibleIndex = 0;
+        for (ApiRequest.Header authored : sourceHeaders) {
+            if (authored == null || authored.key == null || authored.key.isBlank()) {
+                continue;
+            }
+            String normalized = normalizeTrackedHeaderName(authored.key);
+            if (isTransportHeaderName(normalized)) {
+                merged.add(new ApiRequest.Header(authored.key, authored.value, authored.disabled));
+                continue;
+            }
+            if (visibleIndex < visibleHeaders.size()) {
+                ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
+                merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
+            }
+        }
+        while (visibleIndex < visibleHeaders.size()) {
+            ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
+            merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
+        }
+        return merged;
+    }
+
+    private boolean isTransportHeaderName(String headerName) {
+        if (headerName == null) {
+            return false;
+        }
+        return "host".equals(headerName)
+                || "content-length".equals(headerName)
+                || "transfer-encoding".equals(headerName);
+    }
+
+    private boolean isSyntheticEditorHeader(String headerName) {
+        if (headerName == null) {
+            return false;
+        }
+        if (materializedAutoHeaders.contains(headerName)) {
+            return true;
+        }
+        return ("authorization".equals(headerName) && authorizationHeaderMaterialized)
+                || ("content-type".equals(headerName) && contentTypeHeaderMaterialized);
     }
 
     private void upsertHeaderRow(String key, String value) {

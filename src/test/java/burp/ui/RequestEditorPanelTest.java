@@ -865,6 +865,106 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void exactHttpTogglePreservesLiveObjectAndDraftEditsBothDirections() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.headers = List.of(
+                new ApiRequest.Header("Host", "authored.example.test", false),
+                new ApiRequest.Header("Content-Length", "77", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        request.auth.properties.put("token", "initial-token");
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"initial\":true}";
+        collection.requests.add(request);
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(request);
+
+        ApiRequest before = panel.getCurrentRequest();
+        assertThat(before).isSameAs(request);
+        assertThat(collection.requests.get(0)).isSameAs(request);
+
+        JComboBox<String> methods = methodBox(panel);
+        JTextComponent url = urlField(panel);
+        DefaultTableModel params = paramsModel(panel);
+        JComboBox<String> authTypes = authTypeBox(panel);
+        JTextField authToken = authField(panel, "token");
+        JTextComponent body = bodyRawArea(panel);
+        JTextArea preScripts = preScriptArea(panel);
+        JTextArea postScripts = postScriptArea(panel);
+        DefaultTableModel headers = headersModel(panel);
+
+        SwingUtilities.invokeAndWait(() -> {
+            methods.setSelectedItem("POST");
+            url.setText("https://api.example.test/users");
+            params.setValueAt("active", 0, 0);
+            params.setValueAt("true", 0, 1);
+            authTypes.setSelectedItem("bearer");
+            authToken.setText("draft-token");
+            body.setText("{\"edited\":true}");
+            preScripts.setText("console.log('pre');");
+            postScripts.setText("console.log('post');");
+        });
+        SwingUtilities.invokeAndWait(() -> headers.addRow(new Object[]{"X-Draft", "yes"}));
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+        assertThat(collection.requests.get(0)).isSameAs(before);
+        assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(methods.getSelectedItem()).isEqualTo("POST");
+        assertThat(url.getText()).isEqualTo("https://api.example.test/users");
+        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(body.getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
+        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
+        assertThat(headerValues(headers))
+                .containsEntry("Host", "authored.example.test")
+                .containsEntry("Content-Length", "77")
+                .containsEntry("Transfer-Encoding", "chunked")
+                .containsEntry("X-Draft", "yes");
+
+        WorkspaceState roundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+        ApiRequest restored = roundTrip.collections.get(0).requests.get(0);
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(restored.method).isEqualTo("POST");
+        assertThat(restored.url).isEqualTo("https://api.example.test/users?active=true");
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests()).isNotNull();
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+        assertThat(collection.requests.get(0)).isSameAs(before);
+        assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(methods.getSelectedItem()).isEqualTo("POST");
+        assertThat(url.getText()).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(body.getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
+        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
+        assertThat(headerValues(headers))
+                .doesNotContainKey("Host")
+                .doesNotContainKey("Content-Length")
+                .doesNotContainKey("Transfer-Encoding")
+                .containsEntry("X-Draft", "yes");
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+    }
+
+    @Test
     void exactHttpToggleRestoresAuthoredTransportHeadersAndPreviewShowsExactFraming() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -1186,6 +1286,14 @@ class RequestEditorPanelTest {
         return (DefaultTableModel) f.get(panel);
     }
 
+    private static JComboBox<String> methodBox(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("methodBox");
+        f.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        JComboBox<String> combo = (JComboBox<String>) f.get(panel);
+        return combo;
+    }
+
     private static JTabbedPane tabs(RequestEditorPanel panel) throws Exception {
         Field f = RequestEditorPanel.class.getDeclaredField("tabs");
         f.setAccessible(true);
@@ -1264,6 +1372,24 @@ class RequestEditorPanelTest {
         @SuppressWarnings("unchecked")
         Map<String, JTextField> authFields = (Map<String, JTextField>) authFieldsField.get(authUi);
         return authFields.get(name);
+    }
+
+    private static JTextComponent bodyRawArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("bodyRawArea");
+        f.setAccessible(true);
+        return (JTextComponent) f.get(panel);
+    }
+
+    private static JTextArea preScriptArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("preScriptArea");
+        f.setAccessible(true);
+        return (JTextArea) f.get(panel);
+    }
+
+    private static JTextArea postScriptArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("postScriptArea");
+        f.setAccessible(true);
+        return (JTextArea) f.get(panel);
     }
 
     private static Map<String, String> headerValues(DefaultTableModel model) {
