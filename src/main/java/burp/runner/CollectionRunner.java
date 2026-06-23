@@ -26,6 +26,7 @@ import burp.scripts.ScriptExecutionContext;
 import burp.scripts.ScriptAdHocRequest;
 import burp.scripts.ScriptDependentRequestExecutor;
 import burp.scripts.ScriptDependentRequestResult;
+import burp.scripts.ScriptFlowControl;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -57,6 +58,7 @@ public class CollectionRunner {
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
+    private volatile RunnerTerminationResult lastTerminationResult;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
     private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
@@ -107,6 +109,10 @@ public class CollectionRunner {
     }
     public void setRuntimeVariableSink(SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) {
         this.runtimeVariableSink = runtimeVariableSink;
+    }
+
+    public RunnerTerminationResult getLastTerminationResult() {
+        return lastTerminationResult;
     }
 
     public void pauseAfterCurrent() {
@@ -165,6 +171,7 @@ public class CollectionRunner {
             pauseRequested = startPaused;
             singleStepRequested = startPaused;
         }
+        lastTerminationResult = null;
         results.clear();
         extractedVars.clear();
         extractedVarsByCollection.clear();
@@ -191,10 +198,11 @@ public class CollectionRunner {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         activeExecutor = executor;
         Future<?> future = executor.submit(() -> {
+            int failedResultCount = 0;
+            int completedQueuedCount = 0;
+            TerminationState termination = new TerminationState();
             try {
                 fireOnStart("Runner", ordered.size());
-                int failedResultCount = 0;
-                boolean stoppedByCondition = false;
                 int[] flowControlJumps = new int[]{0};
                 int maxFlowControlJumps = Math.max(ordered.size() * 4, 20);
 
@@ -221,13 +229,25 @@ public class CollectionRunner {
                         ? collectUnresolvedVariables(buildPreviewResolver(req, col), req)
                         : Collections.emptyList();
                     if (activeStopConditions.stopOnMissingVariable && !unresolvedVariables.isEmpty()) {
-                        fireOnError("Stopped on missing variable(s): " + String.join(", ", unresolvedVariables));
-                        stoppedByCondition = true;
+                        RunnerResult trigger = new RunnerResult();
+                        trigger.requestName = req.name;
+                        trigger.requestId = req.id;
+                        trigger.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
+                        termination.stop(RunnerTerminationType.STOPPED_ON_MISSING_VARIABLE,
+                                "Stopped on missing variable(s): " + String.join(", ", unresolvedVariables),
+                                trigger,
+                                null,
+                                "stopOnMissingVariable",
+                                null,
+                                null);
                         break;
                     }
 
                     RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
-                    if (outcome == null || outcome.result == null || cancelled || Thread.currentThread().isInterrupted()) {
+                    if (outcome == null || outcome.result == null) {
+                        if (cancelled || Thread.currentThread().isInterrupted()) {
+                            break;
+                        }
                         break;
                     }
 
@@ -235,6 +255,9 @@ public class CollectionRunner {
                     results.add(result);
                     fireOnRequestComplete(result);
                     fireOnTimeline(buildTimelineRow(req, col, result, outcome.attempts));
+                    if (!result.dependentExecution && !result.adHocExecution) {
+                        completedQueuedCount++;
+                    }
 
                     boolean assertionFailed = hasAssertionFailure(result);
                     boolean statusFailed = hasStatusAtLeast400(result);
@@ -244,32 +267,55 @@ public class CollectionRunner {
                         failedResultCount++;
                     }
 
+                    if (cancelled || Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
+
                     if (activeStopConditions.stopOnError && executionFailed) {
-                        fireOnError("Stopped on error: " + result.errorMessage);
-                        stoppedByCondition = true;
+                        termination.stop(RunnerTerminationType.STOPPED_ON_ERROR,
+                                "Stopped on error: " + safeRunnerReason(result.errorMessage),
+                                result,
+                                null,
+                                "stopOnError",
+                                null,
+                                null);
                         break;
                     }
                     if (activeStopConditions.stopOnAssertionFailure && assertionFailed) {
-                        fireOnError("Stopped on assertion failure for " + result.requestName);
-                        stoppedByCondition = true;
+                        termination.stop(RunnerTerminationType.STOPPED_ON_ASSERTION_FAILURE,
+                                "Stopped on assertion failure for " + safeRunnerLabel(result.requestName),
+                                result,
+                                null,
+                                "stopOnAssertionFailure",
+                                null,
+                                null);
                         break;
                     }
                     if (activeStopConditions.stopOnStatusAtLeast400 && statusFailed) {
-                        fireOnError("Stopped on status >= 400 for " + result.requestName + " (" + result.statusCode + ")");
-                        stoppedByCondition = true;
+                        termination.stop(RunnerTerminationType.STOPPED_ON_STATUS,
+                                "Stopped on status >= 400 for " + safeRunnerLabel(result.requestName) + " (" + result.statusCode + ")",
+                                result,
+                                result.statusCode,
+                                "stopOnStatusAtLeast400",
+                                null,
+                                null);
                         break;
                     }
                     if (activeStopConditions.stopAfterFailureCount > 0 &&
                         failedResultCount >= activeStopConditions.stopAfterFailureCount) {
-                        fireOnError("Stopped after failure count reached: " +
-                            failedResultCount + "/" + activeStopConditions.stopAfterFailureCount);
-                        stoppedByCondition = true;
+                        termination.stop(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT,
+                                "Stopped after failure count reached: " +
+                                        failedResultCount + "/" + activeStopConditions.stopAfterFailureCount,
+                                result,
+                                result.statusCode,
+                                "stopAfterFailureCount",
+                                null,
+                                null);
                         break;
                     }
 
-                    int nextIndex = applyFlowControl(ordered, i, result, flowControlJumps, maxFlowControlJumps);
+                    int nextIndex = applyFlowControl(ordered, i, result, flowControlJumps, maxFlowControlJumps, termination);
                     if (nextIndex == Integer.MIN_VALUE) {
-                        stoppedByCondition = true;
                         break;
                     }
                     if (nextIndex >= 0) {
@@ -277,20 +323,33 @@ public class CollectionRunner {
                     }
                 }
 
-                if (cancelled || Thread.currentThread().isInterrupted()) {
-                    fireOnDebug("Runner cancelled.");
-                } else {
-                    fireOnComplete(results);
+                if (!termination.isSet()) {
+                    if (cancelled || Thread.currentThread().isInterrupted()) {
+                        termination.stop(RunnerTerminationType.CANCELLED,
+                                "User cancelled the runner.",
+                                null,
+                                null,
+                                "cancelled",
+                                null,
+                                null);
+                    } else {
+                        termination.complete("Runner completed successfully.");
+                    }
                 }
             } catch (Exception e) {
-                if (!cancelled && !Thread.currentThread().isInterrupted()) {
-                    fireOnError("Runner error: " + e.getMessage());
-                }
+                termination.internalError(cleanRunnerErrorReason(e), e);
             } finally {
                 running = false;
                 if (activeExecutor == executor) {
                     activeExecutor = null;
                     activeFuture = null;
+                }
+                RunnerTerminationResult terminalResult = termination.toResult(completedQueuedCount, ordered.size(), failedResultCount);
+                lastTerminationResult = terminalResult;
+                recordRunnerTerminationDiagnostic(terminalResult);
+                fireOnTerminal(terminalResult, new ArrayList<>(results));
+                if (terminalResult != null && terminalResult.isCompleted()) {
+                    fireOnComplete(new ArrayList<>(results));
                 }
                 executor.shutdown();
             }
@@ -446,10 +505,6 @@ public class CollectionRunner {
                 } else {
                     exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
                 }
-
-                if (cancelled || Thread.currentThread().isInterrupted()) {
-                    return null;
-                }
                 if (exec == null) {
                     result.success = false;
                     result.errorMessage = "Runner pipeline unavailable";
@@ -467,10 +522,6 @@ public class CollectionRunner {
                     if (rawRequestText != null) {
                         fireOnDebug("=== Runner Raw Request [" + req.name + "] ===\n" + rawRequestText + "\n=== End Runner Raw Request ===");
                     }
-                }
-
-                if (cancelled || Thread.currentThread().isInterrupted()) {
-                    return null;
                 }
 
                 copyScriptOutput(result, exec);
@@ -563,7 +614,9 @@ public class CollectionRunner {
                 } else {
                     result.success = false;
                     result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
-                    fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                    if (!cancelled && !Thread.currentThread().isInterrupted()) {
+                        fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                    }
                     result.attemptNumber = attempts;
                     result.totalAttempts = maxAttempts;
                     fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
@@ -582,7 +635,9 @@ public class CollectionRunner {
             } catch (Exception e) {
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
-                fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                if (!cancelled && !Thread.currentThread().isInterrupted()) {
+                    fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
+                }
                 result.attemptNumber = attempts;
                 result.totalAttempts = maxAttempts;
                 fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
@@ -743,18 +798,35 @@ public class CollectionRunner {
                                  int currentIndex,
                                  RunnerResult result,
                                  int[] flowControlJumps,
-                                 int maxFlowControlJumps) {
+                                 int maxFlowControlJumps,
+                                 TerminationState termination) {
         if (result == null || result.scriptFlowControl == null) {
             return -1;
         }
         return switch (result.scriptFlowControl) {
             case STOP_RUN -> {
-                recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Runner stopped by script", "Flow Control: STOP_RUN");
+                if (termination != null) {
+                    termination.stop(RunnerTerminationType.STOPPED_BY_SCRIPT,
+                            "Runner stopped by script: " + safeRunnerReason(result.scriptFlowMessage),
+                            result,
+                            null,
+                            "STOP_RUN",
+                            ScriptFlowControl.STOP_RUN,
+                            null);
+                }
                 yield Integer.MIN_VALUE;
             }
             case SET_NEXT_REQUEST -> {
                 if (flowControlJumps != null && flowControlJumps.length > 0 && flowControlJumps[0] >= maxFlowControlJumps) {
-                    fireOnError("Stopped after too many flow-control jumps");
+                    if (termination != null) {
+                        termination.stop(RunnerTerminationType.STOPPED_BY_SCRIPT,
+                                "Stopped after too many flow-control jumps",
+                                result,
+                                null,
+                                "SET_NEXT_REQUEST flow-control jump limit",
+                                ScriptFlowControl.SET_NEXT_REQUEST,
+                                null);
+                    }
                     yield Integer.MIN_VALUE;
                 }
                 if (flowControlJumps != null && flowControlJumps.length > 0) {
@@ -781,6 +853,76 @@ public class CollectionRunner {
             }
             default -> -1;
         };
+    }
+
+    private void recordRunnerTerminationDiagnostic(RunnerTerminationResult termination) {
+        if (termination == null) {
+            return;
+        }
+        DiagnosticEvent event = DiagnosticEvent.of(DiagnosticOperation.RUNNER_RUN, termination.type != null ? termination.type.diagnosticSeverity() : DiagnosticSeverity.INFO,
+                "CollectionRunner", termination.displayLabel());
+        event.withAttribute("terminationType", termination.type != null ? termination.type.name() : RunnerTerminationType.INTERNAL_ERROR.name());
+        event.withAttribute("completedCount", String.valueOf(termination.completedCount));
+        event.withAttribute("queuedCount", String.valueOf(termination.totalQueuedCount));
+        event.withAttribute("failureCount", String.valueOf(termination.failureCount));
+        if (termination.requestName != null && !termination.requestName.isBlank()) {
+            event.requestName = termination.requestName;
+        }
+        if (termination.requestId != null && !termination.requestId.isBlank()) {
+            event.requestId = termination.requestId;
+        }
+        if (termination.reason != null && !termination.reason.isBlank()) {
+            event.withAttribute("safeReason", termination.reason);
+            event.withDetails("reason=" + termination.reason
+                    + "\ncompletedCount=" + termination.completedCount
+                    + "\nqueuedCount=" + termination.totalQueuedCount
+                    + "\nfailureCount=" + termination.failureCount
+                    + (termination.configuredCondition != null ? "\nconfiguredCondition=" + termination.configuredCondition : "")
+                    + (termination.statusCode != null ? "\nstatusCode=" + termination.statusCode : "")
+                    + (termination.scriptFlowControl != null ? "\nscriptFlowControl=" + termination.scriptFlowControl : ""));
+        } else {
+            event.withDetails("completedCount=" + termination.completedCount
+                    + "\nqueuedCount=" + termination.totalQueuedCount
+                    + "\nfailureCount=" + termination.failureCount);
+        }
+        if (termination.configuredCondition != null && !termination.configuredCondition.isBlank()) {
+            event.withAttribute("configuredCondition", termination.configuredCondition);
+        }
+        if (termination.statusCode != null) {
+            event.withAttribute("statusCode", String.valueOf(termination.statusCode));
+        }
+        if (termination.scriptFlowControl != null) {
+            event.withAttribute("scriptFlowControl", termination.scriptFlowControl.name());
+        }
+        if (termination.internalErrorMessage != null && !termination.internalErrorMessage.isBlank()) {
+            event.withAttribute("internalError", termination.internalErrorMessage);
+        }
+        DiagnosticStore.getInstance().record(event);
+    }
+
+    private void fireOnTerminal(RunnerTerminationResult termination, List<RunnerResult> resultsSnapshot) {
+        SwingUtilities.invokeLater(() -> {
+            for (RunnerListener l : listeners) {
+                l.onTerminal(termination, resultsSnapshot);
+            }
+        });
+    }
+
+    private String cleanRunnerErrorReason(Exception e) {
+        if (e == null) {
+            return "Unknown runner error";
+        }
+        String message = e.getMessage();
+        String cleaned = burp.diagnostics.DiagnosticSanitizer.sanitizeText(message != null ? message : e.getClass().getSimpleName());
+        return e.getClass().getSimpleName() + (cleaned != null && !cleaned.isBlank() ? ": " + cleaned : "");
+    }
+
+    private String safeRunnerReason(String reason) {
+        return reason != null && !reason.isBlank() ? burp.diagnostics.DiagnosticSanitizer.sanitizeText(reason) : "No details";
+    }
+
+    private String safeRunnerLabel(String value) {
+        return value != null && !value.isBlank() ? value : "request";
     }
 
     private void recordRunnerDiagnostic(RunnerResult result, DiagnosticSeverity severity, String message, String details) {
@@ -1425,6 +1567,64 @@ public class CollectionRunner {
         });
     }
 
+    private static final class TerminationState {
+        private RunnerTerminationType type;
+        private String reason;
+        private String requestName;
+        private String requestId;
+        private Integer statusCode;
+        private String configuredCondition;
+        private ScriptFlowControl scriptFlowControl;
+        private String internalErrorMessage;
+
+        boolean isSet() {
+            return type != null;
+        }
+
+        void complete(String reason) {
+            set(RunnerTerminationType.COMPLETED, reason, null, null, null, null, null);
+        }
+
+        void internalError(String reason, Exception error) {
+            set(RunnerTerminationType.INTERNAL_ERROR, reason, null, null, null, null,
+                    error != null ? error.getClass().getSimpleName() : null);
+        }
+
+        void stop(RunnerTerminationType type,
+                  String reason,
+                  RunnerResult trigger,
+                  Integer statusCode,
+                  String configuredCondition,
+                  ScriptFlowControl flowControl,
+                  String internalErrorMessage) {
+            set(type, reason, trigger, statusCode, configuredCondition, flowControl, internalErrorMessage);
+        }
+
+        private void set(RunnerTerminationType type,
+                         String reason,
+                         RunnerResult trigger,
+                         Integer statusCode,
+                         String configuredCondition,
+                         ScriptFlowControl flowControl,
+                         String internalErrorMessage) {
+            if (this.type != null) {
+                return;
+            }
+            this.type = type != null ? type : RunnerTerminationType.INTERNAL_ERROR;
+            this.reason = reason;
+            this.requestName = trigger != null ? trigger.requestName : null;
+            this.requestId = trigger != null ? trigger.requestId : null;
+            this.statusCode = statusCode != null ? statusCode : trigger != null && trigger.statusCode > 0 ? trigger.statusCode : null;
+            this.configuredCondition = configuredCondition;
+            this.scriptFlowControl = flowControl != null ? flowControl : trigger != null ? trigger.scriptFlowControl : null;
+            this.internalErrorMessage = internalErrorMessage;
+        }
+
+        RunnerTerminationResult toResult(int completedCount, int totalQueuedCount, int failureCount) {
+            return new RunnerTerminationResult(type, reason, requestName, requestId, statusCode, completedCount, totalQueuedCount, failureCount, scriptFlowControl, configuredCondition, internalErrorMessage);
+        }
+    }
+
     public interface RunnerListener {
         void onStart(String collectionName, int totalRequests);
         default void onRequestStart(RunnerResult result) { }
@@ -1433,6 +1633,7 @@ public class CollectionRunner {
         default void onAttemptComplete(RunnerResult result) { }
         default void onTimeline(RunnerTimelineRow row) { }
         void onComplete(List<RunnerResult> results);
+        default void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) { }
         void onError(String message);
         default void onDebug(String message) { }
     }

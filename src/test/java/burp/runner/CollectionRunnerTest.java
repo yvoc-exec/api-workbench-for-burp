@@ -546,10 +546,11 @@ class CollectionRunnerTest {
 
         assertThat(interruptedFlag.get()).isTrue();
         assertThat(pipelineCalls.get()).isEqualTo(1);
-        assertThat(requestCompleteCount.get()).isZero();
+        assertThat(requestCompleteCount.get()).isEqualTo(1);
         assertThat(completeCount.get()).isZero();
-        assertThat(debugMessages).anyMatch(msg -> msg.contains("Runner cancelled."));
-        assertThat(runner.getResults()).isEmpty();
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(burp.models.RunnerTerminationType.CANCELLED);
+        assertThat(debugMessages).isEmpty();
+        assertThat(runner.getResults()).hasSize(1);
         assertThat(runner.isRunning()).isFalse();
     }
 

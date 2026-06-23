@@ -9,6 +9,7 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.RunnerResult;
 import burp.models.RunnerStopConditions;
+import burp.models.RunnerTerminationType;
 import burp.utils.ExecutionResult;
 import burp.utils.SharedRequestPipeline;
 import org.junit.jupiter.api.Test;
@@ -63,7 +64,8 @@ class CollectionRunnerStopConditionsTest {
         assertThat(runner.getResults()).hasSize(1);
         assertThat(runner.getResults().get(0).assertions).hasSize(1);
         assertThat(runner.getResults().get(0).assertions.get(0).passed).isFalse();
-        assertThat(errors).anyMatch(msg -> msg.contains("assertion"));
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_ASSERTION_FAILURE);
+        assertThat(errors).isEmpty();
     }
 
     @Test
@@ -97,13 +99,16 @@ class CollectionRunnerStopConditionsTest {
         assertThat(calls.get()).isEqualTo(1);
         assertThat(runner.getResults()).hasSize(1);
         assertThat(runner.getResults().get(0).statusCode).isEqualTo(500);
-        assertThat(errors).anyMatch(msg -> msg.contains("status"));
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_STATUS);
+        assertThat(errors).isEmpty();
     }
 
     @Test
-    void stopOnStatusStillEmitsCompleteWithPartialResults() throws Exception {
+    void stopOnStatusStopsWithoutCompletingRun() throws Exception {
         AtomicInteger completeCount = new AtomicInteger();
+        AtomicInteger terminalCount = new AtomicInteger();
         CopyOnWriteArrayList<List<RunnerResult>> completedResults = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<burp.models.RunnerTerminationResult> terminalResults = new CopyOnWriteArrayList<>();
         AtomicInteger errorCount = new AtomicInteger();
         CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
             @Override
@@ -126,6 +131,10 @@ class CollectionRunnerStopConditionsTest {
                 completeCount.incrementAndGet();
                 completedResults.add(results);
             }
+            @Override public void onTerminal(burp.models.RunnerTerminationResult termination, List<RunnerResult> results) {
+                terminalCount.incrementAndGet();
+                terminalResults.add(termination);
+            }
             @Override public void onError(String message) { errorCount.incrementAndGet(); }
         });
 
@@ -134,9 +143,12 @@ class CollectionRunnerStopConditionsTest {
         waitForRunnerToStop(runner);
         drainEdt();
 
-        assertThat(errorCount.get()).isEqualTo(1);
-        assertThat(completeCount.get()).isEqualTo(1);
-        assertThat(completedResults.get(0)).hasSize(1);
+        assertThat(errorCount.get()).isZero();
+        assertThat(completeCount.get()).isZero();
+        assertThat(terminalCount.get()).isEqualTo(1);
+        assertThat(terminalResults.get(0).type).isEqualTo(RunnerTerminationType.STOPPED_ON_STATUS);
+        assertThat(completedResults).isEmpty();
+        assertThat(runner.getResults()).hasSize(1);
     }
 
     @Test
@@ -171,7 +183,8 @@ class CollectionRunnerStopConditionsTest {
 
         assertThat(calls.get()).isZero();
         assertThat(runner.getResults()).isEmpty();
-        assertThat(errors).anyMatch(msg -> msg.contains("missing"));
+        assertThat(errors).isEmpty();
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_MISSING_VARIABLE);
     }
 
     @Test
@@ -246,7 +259,40 @@ class CollectionRunnerStopConditionsTest {
         assertThat(calls.get()).isEqualTo(2);
         assertThat(runner.getResults()).hasSize(2);
         assertThat(runner.getResults()).allMatch(result -> !result.success);
-        assertThat(errors).anyMatch(msg -> msg.contains("failure count"));
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT);
+        assertThat(errors).isEmpty();
+    }
+
+    @Test
+    void stopOnErrorStopsWithTerminalState() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                calls.incrementAndGet();
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = false;
+                exec.errorMessage = "boom";
+                exec.requestHeaders = "GET /error HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                return exec;
+            }
+        }, null);
+        runner.setMaxRetries(0);
+        runner.setStopConditions(stopConditions(true, false, false, false, 0));
+        runner.addListener(new TestListener(new CopyOnWriteArrayList<>()));
+
+        ApiCollection collection = collection("Error Collection", request("First", 1, "http://example.com/first"));
+        ApiRequest request2 = request("Second", 2, "http://example.com/second");
+        collection.requests.add(request2);
+
+        runner.runCollections(List.of(collection), List.of(collection.requests.get(0), request2));
+        waitForRunnerToStop(runner);
+        drainEdt();
+
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_ERROR);
     }
 
     private static RunnerStopConditions stopConditions(boolean stopOnError,
