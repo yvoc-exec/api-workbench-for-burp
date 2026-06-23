@@ -1118,6 +1118,113 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void exactHttpTogglePreservesLatestTransportHeaderEditsAcrossHideRestoreAndWorkspaceRoundTrip() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers = new java.util.ArrayList<>(List.of(
+                new ApiRequest.Header("Host", "authored.example.test", false),
+                new ApiRequest.Header("Content-Length", "77", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false),
+                new ApiRequest.Header("Connection", "keep-alive", false)
+        ));
+        collection.requests.add(request);
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(request);
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        DefaultTableModel headers = headersModel(panel);
+
+        SwingUtilities.invokeAndWait(() -> {
+            headers.setValueAt("changed.example.test", 0, 1);
+            headers.setValueAt("321", 1, 1);
+            headers.setValueAt("gzip", 2, 1);
+            headers.removeRow(3);
+            headers.addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.FALSE});
+        });
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(request);
+        assertThat(collection.requests.get(0)).isSameAs(request);
+        assertThat(headerValues(headersModel(panel)))
+                .doesNotContainKeys("Host", "Content-Length", "Transfer-Encoding")
+                .containsEntry("Proxy-Connection", "keep-alive");
+        assertThat(headerRows(panel.getCurrentRequest().headers))
+                .containsExactly(
+                        "Host=changed.example.test|false",
+                        "Content-Length=321|false",
+                        "Transfer-Encoding=gzip|false",
+                        "Proxy-Connection=keep-alive|false"
+                );
+
+        WorkspaceState restoredState = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+        ApiRequest restored = restoredState.collections.get(0).requests.get(0);
+        assertThat(headerRows(restored.headers))
+                .containsExactly(
+                        "Host=changed.example.test|false",
+                        "Content-Length=321|false",
+                        "Transfer-Encoding=gzip|false",
+                        "Proxy-Connection=keep-alive|false"
+                );
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "changed.example.test")
+                .containsEntry("Content-Length", "321")
+                .containsEntry("Transfer-Encoding", "gzip")
+                .containsEntry("Proxy-Connection", "keep-alive");
+    }
+
+    @Test
+    void exactHttpTransportDuplicatesPreserveOrderCasingAndDisabledStateAcrossModeSwitch() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers = new java.util.ArrayList<>(List.of(
+                new ApiRequest.Header("Host", "FirstHost.example.test", false),
+                new ApiRequest.Header("host", "SecondHost.example.test", true),
+                new ApiRequest.Header("Connection", "close", false),
+                new ApiRequest.Header("connection", "keep-alive", true),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        ));
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerRows(headersModel(panel)))
+                .containsExactly(
+                        "Host=FirstHost.example.test|false",
+                        "host=SecondHost.example.test|true",
+                        "Connection=close|false",
+                        "connection=keep-alive|true",
+                        "Transfer-Encoding=chunked|false"
+                );
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Host", "Transfer-Encoding");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(headerRows(headersModel(panel)))
+                .containsExactly(
+                        "Host=FirstHost.example.test|false",
+                        "host=SecondHost.example.test|true",
+                        "Connection=close|false",
+                        "connection=keep-alive|true",
+                        "Transfer-Encoding=chunked|false"
+                );
+    }
+
+    @Test
     void exactHttpPolicyTextUpdatesImmediatelyAfterCheckboxSelection() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -1411,6 +1518,37 @@ class RequestEditorPanelTest {
             if (key != null && !key.isBlank()) {
                 out.add(key);
             }
+        }
+        return out;
+    }
+
+    private static List<String> headerRows(DefaultTableModel model) {
+        List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = (String) model.getValueAt(i, 1);
+            Object disabledValue = model.getColumnCount() > 2 ? model.getValueAt(i, 2) : Boolean.FALSE;
+            boolean disabled = disabledValue instanceof Boolean
+                    ? (Boolean) disabledValue
+                    : Boolean.parseBoolean(String.valueOf(disabledValue));
+            out.add(key + "=" + (value != null ? value : "") + "|" + disabled);
+        }
+        return out;
+    }
+
+    private static List<String> headerRows(List<ApiRequest.Header> headers) {
+        List<String> out = new java.util.ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header == null || header.key == null || header.key.isBlank()) {
+                continue;
+            }
+            out.add(header.key + "=" + (header.value != null ? header.value : "") + "|" + header.disabled);
         }
         return out;
     }
