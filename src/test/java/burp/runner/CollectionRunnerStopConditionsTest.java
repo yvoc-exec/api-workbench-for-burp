@@ -65,7 +65,7 @@ class CollectionRunnerStopConditionsTest {
         assertThat(runner.getResults().get(0).assertions).hasSize(1);
         assertThat(runner.getResults().get(0).assertions.get(0).passed).isFalse();
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_ASSERTION_FAILURE);
-        assertThat(errors).isEmpty();
+        assertThat(errors).containsExactly("Stopped on assertion failure for First");
     }
 
     @Test
@@ -100,7 +100,7 @@ class CollectionRunnerStopConditionsTest {
         assertThat(runner.getResults()).hasSize(1);
         assertThat(runner.getResults().get(0).statusCode).isEqualTo(500);
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_STATUS);
-        assertThat(errors).isEmpty();
+        assertThat(errors).containsExactly("Stopped on status >= 400 for First (500)");
     }
 
     @Test
@@ -143,7 +143,7 @@ class CollectionRunnerStopConditionsTest {
         waitForRunnerToStop(runner);
         drainEdt();
 
-        assertThat(errorCount.get()).isZero();
+        assertThat(errorCount.get()).isEqualTo(1);
         assertThat(completeCount.get()).isZero();
         assertThat(terminalCount.get()).isEqualTo(1);
         assertThat(terminalResults.get(0).type).isEqualTo(RunnerTerminationType.STOPPED_ON_STATUS);
@@ -183,7 +183,7 @@ class CollectionRunnerStopConditionsTest {
 
         assertThat(calls.get()).isZero();
         assertThat(runner.getResults()).isEmpty();
-        assertThat(errors).isEmpty();
+        assertThat(errors).containsExactly("Stopped on missing variable(s): baseUrl");
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_MISSING_VARIABLE);
     }
 
@@ -260,7 +260,7 @@ class CollectionRunnerStopConditionsTest {
         assertThat(runner.getResults()).hasSize(2);
         assertThat(runner.getResults()).allMatch(result -> !result.success);
         assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT);
-        assertThat(errors).isEmpty();
+        assertThat(errors).containsExactly("Stopped after failure count reached: 2/2");
     }
 
     @Test

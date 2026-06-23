@@ -30,6 +30,9 @@ import burp.scripts.ScriptFlowControl;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
@@ -59,6 +62,7 @@ public class CollectionRunner {
     private volatile ExecutorService activeExecutor;
     private volatile Future<?> activeFuture;
     private volatile RunnerTerminationResult lastTerminationResult;
+    private volatile RunLifecycle currentRunLifecycle;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
     private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
@@ -175,6 +179,8 @@ public class CollectionRunner {
         results.clear();
         extractedVars.clear();
         extractedVarsByCollection.clear();
+        RunLifecycle lifecycle = new RunLifecycle();
+        currentRunLifecycle = lifecycle;
 
         // Build collection lookup maps: identity map preferred, name fallback
         Map<ApiRequest, ApiCollection> reqToColMap = new IdentityHashMap<>();
@@ -197,11 +203,26 @@ public class CollectionRunner {
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         activeExecutor = executor;
-        Future<?> future = executor.submit(() -> {
-            int failedResultCount = 0;
-            int completedQueuedCount = 0;
-            TerminationState termination = new TerminationState();
+        AtomicInteger failedResultCount = new AtomicInteger();
+        AtomicInteger completedQueuedCount = new AtomicInteger();
+        TerminationState termination = new TerminationState();
+        AtomicReference<FutureTask<Void>> taskRef = new AtomicReference<>();
+        Callable<Void> worker = () -> {
+            lifecycle.workerStarted.set(true);
+            if (lifecycle.terminalDelivered.get()) {
+                return null;
+            }
             try {
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    termination.stop(RunnerTerminationType.CANCELLED,
+                            "User cancelled the runner.",
+                            null,
+                            null,
+                            "cancelled",
+                            null,
+                            null);
+                    return null;
+                }
                 fireOnStart("Runner", ordered.size());
                 int[] flowControlJumps = new int[]{0};
                 int maxFlowControlJumps = Math.max(ordered.size() * 4, 20);
@@ -211,7 +232,19 @@ public class CollectionRunner {
                         break;
                     }
                     if (i > 0 && delayMs > 0) {
-                        Thread.sleep(delayMs);
+                        try {
+                            Thread.sleep(delayMs);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            if (cancelled) {
+                                break;
+                            }
+                            throw ie;
+                        }
+                    }
+
+                    if (cancelled || Thread.currentThread().isInterrupted()) {
+                        break;
                     }
 
                     ApiRequest req = ordered.get(i);
@@ -244,10 +277,7 @@ public class CollectionRunner {
                     }
 
                     RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
-                    if (outcome == null || outcome.result == null) {
-                        if (cancelled || Thread.currentThread().isInterrupted()) {
-                            break;
-                        }
+                    if (outcome == null || outcome.state == RequestOutcomeState.CANCELLED || outcome.state == RequestOutcomeState.FAILED_BEFORE_RESULT || outcome.result == null) {
                         break;
                     }
 
@@ -256,7 +286,7 @@ public class CollectionRunner {
                     fireOnRequestComplete(result);
                     fireOnTimeline(buildTimelineRow(req, col, result, outcome.attempts));
                     if (!result.dependentExecution && !result.adHocExecution) {
-                        completedQueuedCount++;
+                        completedQueuedCount.incrementAndGet();
                     }
 
                     boolean assertionFailed = hasAssertionFailure(result);
@@ -264,7 +294,7 @@ public class CollectionRunner {
                     boolean executionFailed = !result.success;
                     boolean anyFailure = executionFailed || assertionFailed || statusFailed;
                     if (anyFailure) {
-                        failedResultCount++;
+                        failedResultCount.incrementAndGet();
                     }
 
                     if (cancelled || Thread.currentThread().isInterrupted()) {
@@ -302,10 +332,10 @@ public class CollectionRunner {
                         break;
                     }
                     if (activeStopConditions.stopAfterFailureCount > 0 &&
-                        failedResultCount >= activeStopConditions.stopAfterFailureCount) {
+                        failedResultCount.get() >= activeStopConditions.stopAfterFailureCount) {
                         termination.stop(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT,
                                 "Stopped after failure count reached: " +
-                                        failedResultCount + "/" + activeStopConditions.stopAfterFailureCount,
+                                        failedResultCount.get() + "/" + activeStopConditions.stopAfterFailureCount,
                                 result,
                                 result.statusCode,
                                 "stopAfterFailureCount",
@@ -336,25 +366,57 @@ public class CollectionRunner {
                         termination.complete("Runner completed successfully.");
                     }
                 }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                if (cancelled) {
+                    if (!termination.isSet()) {
+                        termination.stop(RunnerTerminationType.CANCELLED,
+                                "User cancelled the runner.",
+                                null,
+                                null,
+                                "cancelled",
+                                null,
+                                null);
+                    }
+                    return null;
+                }
+                termination.internalError(cleanRunnerErrorReason(ie), ie);
             } catch (Exception e) {
-                termination.internalError(cleanRunnerErrorReason(e), e);
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    if (!termination.isSet()) {
+                        termination.stop(RunnerTerminationType.CANCELLED,
+                                "User cancelled the runner.",
+                                null,
+                                null,
+                                "cancelled",
+                                null,
+                                null);
+                    }
+                } else {
+                    termination.internalError(cleanRunnerErrorReason(e), e);
+                }
             } finally {
-                running = false;
-                if (activeExecutor == executor) {
-                    activeExecutor = null;
-                    activeFuture = null;
+                if (lifecycle.workerStarted.get()) {
+                    FutureTask<Void> currentTask = taskRef.get();
+                    if (currentTask != null) {
+                        finalizeRunnerRun(lifecycle, termination, completedQueuedCount.get(), ordered.size(), failedResultCount.get(), executor, currentTask);
+                    }
                 }
-                RunnerTerminationResult terminalResult = termination.toResult(completedQueuedCount, ordered.size(), failedResultCount);
-                lastTerminationResult = terminalResult;
-                recordRunnerTerminationDiagnostic(terminalResult);
-                fireOnTerminal(terminalResult, new ArrayList<>(results));
-                if (terminalResult != null && terminalResult.isCompleted()) {
-                    fireOnComplete(new ArrayList<>(results));
-                }
-                executor.shutdown();
             }
-        });
-        activeFuture = future;
+            return null;
+        };
+        FutureTask<Void> task = new FutureTask<>(worker) {
+            @Override
+            protected void done() {
+                if (!lifecycle.workerStarted.get()) {
+                    finalizeRunnerRun(lifecycle, termination, completedQueuedCount.get(), ordered.size(), failedResultCount.get(), executor, this);
+                }
+            }
+        };
+        taskRef.set(task);
+        activeFuture = task;
+        executor.execute(task);
     }
 
     public List<RunnerPreviewRow> buildRunPreview(List<ApiCollection> sourceCollections, List<ApiRequest> selectedRequests) {
@@ -432,7 +494,7 @@ public class CollectionRunner {
                                                    boolean adHocExecution,
                                                    String parentRequestName,
                                                    String parentRequestId,
-                                                   int dependentDepth) {
+                                                   int dependentDepth) throws InterruptedException {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
@@ -451,7 +513,7 @@ public class CollectionRunner {
         if (pipeline == null) {
             result.success = false;
             result.errorMessage = "Runner pipeline unavailable";
-            return new RequestExecutionOutcome(result, 0);
+            return new RequestExecutionOutcome(result, 0, RequestOutcomeState.COMPLETED);
         }
 
         Map<String, String> initialOverlay = runtimeOverlayFor(col);
@@ -525,6 +587,9 @@ public class CollectionRunner {
                 }
 
                 copyScriptOutput(result, exec);
+                if ((cancelled || Thread.currentThread().isInterrupted()) && exec.response == null) {
+                    return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                }
                 if (exec.assertions != null && !exec.assertions.isEmpty()) {
                     result.assertions.addAll(exec.assertions);
                 }
@@ -547,7 +612,7 @@ public class CollectionRunner {
                             exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? "Skipped by script" : "Stopped by script",
                             "Flow Control: " + exec.scriptFlowControl);
                     fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
-                    return new RequestExecutionOutcome(result, attempts);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
 
                 if (exec.response != null && exec.response.response() != null) {
@@ -629,10 +694,17 @@ public class CollectionRunner {
                         Thread.sleep(retryDelay);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        return null;
+                        if (cancelled) {
+                            return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                        }
+                        throw ie;
                     }
                 }
             } catch (Exception e) {
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                }
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
                 if (!cancelled && !Thread.currentThread().isInterrupted()) {
@@ -650,7 +722,10 @@ public class CollectionRunner {
                     Thread.sleep(retryDelay);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    return null;
+                    if (cancelled) {
+                        return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                    }
+                    throw ie;
                 }
             }
         }
@@ -662,7 +737,7 @@ public class CollectionRunner {
         result.attemptNumber = attempts;
         result.totalAttempts = maxAttempts;
 
-        return new RequestExecutionOutcome(result, attempts);
+        return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
     }
 
     private RunnerResult snapshotRequestStart(RunnerResult source, ApiRequest req, ApiCollection col) {
@@ -900,12 +975,72 @@ public class CollectionRunner {
         DiagnosticStore.getInstance().record(event);
     }
 
-    private void fireOnTerminal(RunnerTerminationResult termination, List<RunnerResult> resultsSnapshot) {
+    private void finalizeRunnerRun(RunLifecycle lifecycle,
+                                   TerminationState termination,
+                                   int completedCount,
+                                   int totalQueuedCount,
+                                   int failureCount,
+                                   ExecutorService executor,
+                                   Future<?> future) {
+        if (lifecycle == null || !lifecycle.terminalDelivered.compareAndSet(false, true)) {
+            return;
+        }
+        if (termination == null || !termination.isSet()) {
+            if (termination == null) {
+                termination = new TerminationState();
+            }
+            if (cancelled || (future != null && future.isCancelled())) {
+                termination.stop(RunnerTerminationType.CANCELLED,
+                        "User cancelled the runner.",
+                        null,
+                        null,
+                        "cancelled",
+                        null,
+                        null);
+            } else {
+                termination.internalError("Unknown runner termination.", null);
+            }
+        }
+        RunnerTerminationResult terminalResult = termination.toResult(completedCount, totalQueuedCount, failureCount);
+        lastTerminationResult = terminalResult;
+        running = false;
+        if (activeExecutor == executor) {
+            activeExecutor = null;
+        }
+        if (activeFuture == future) {
+            activeFuture = null;
+        }
+        if (currentRunLifecycle == lifecycle) {
+            currentRunLifecycle = null;
+        }
+        recordRunnerTerminationDiagnostic(terminalResult);
+        fireTerminalCallbacks(terminalResult, new ArrayList<>(results));
+        if (executor != null) {
+            executor.shutdown();
+        }
+    }
+
+    private void fireTerminalCallbacks(RunnerTerminationResult termination, List<RunnerResult> resultsSnapshot) {
         SwingUtilities.invokeLater(() -> {
+            List<RunnerResult> snapshot = resultsSnapshot != null ? resultsSnapshot : Collections.emptyList();
             for (RunnerListener l : listeners) {
-                l.onTerminal(termination, resultsSnapshot);
+                l.onTerminal(termination, snapshot);
+            }
+            for (RunnerListener l : listeners) {
+                if (termination == null || termination.isCompleted()) {
+                    l.onComplete(snapshot);
+                } else {
+                    l.onError(safeTerminalLegacyMessage(termination));
+                }
             }
         });
+    }
+
+    private String safeTerminalLegacyMessage(RunnerTerminationResult termination) {
+        if (termination == null || termination.reason == null || termination.reason.isBlank()) {
+            return "Runner terminated.";
+        }
+        return termination.reason;
     }
 
     private String cleanRunnerErrorReason(Exception e) {
@@ -1058,15 +1193,21 @@ public class CollectionRunner {
                 if (targetCollection == null && target.sourceCollection != null) {
                     targetCollection = collectionsByName.get(target.sourceCollection);
                 }
-                RequestExecutionOutcome outcome = executeRequest(target,
-                        targetCollection,
-                        this,
-                        true,
-                        false,
-                        context.request != null ? context.request.name : null,
-                        context.request != null ? context.request.id : null,
-                        currentDepth);
-                RunnerResult child = outcome != null ? outcome.result : null;
+                RequestExecutionOutcome outcome;
+                try {
+                    outcome = executeRequest(target,
+                            targetCollection,
+                            this,
+                            true,
+                            false,
+                            context.request != null ? context.request.name : null,
+                            context.request != null ? context.request.id : null,
+                            currentDepth);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return ScriptDependentRequestResult.failure("Dependent request interrupted.");
+                }
+                RunnerResult child = outcome.result;
                 if (child == null) {
                     return ScriptDependentRequestResult.failure("Dependent request execution produced no result.");
                 }
@@ -1077,7 +1218,7 @@ public class CollectionRunner {
                 child.dependentDepth = currentDepth;
                 results.add(child);
                 fireOnRequestComplete(child);
-                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome.attempts));
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.dependentExecution ? "Dependent request executed" : "Request executed",
@@ -1133,15 +1274,21 @@ public class CollectionRunner {
             try {
                 ApiRequest target = request.toApiRequest();
                 ApiCollection targetCollection = context.collection;
-                RequestExecutionOutcome outcome = executeRequest(target,
-                        targetCollection,
-                        this,
-                        true,
-                        true,
-                        context.request != null ? context.request.name : null,
-                        context.request != null ? context.request.id : null,
-                        currentDepth);
-                RunnerResult child = outcome != null ? outcome.result : null;
+                RequestExecutionOutcome outcome;
+                try {
+                    outcome = executeRequest(target,
+                            targetCollection,
+                            this,
+                            true,
+                            true,
+                            context.request != null ? context.request.name : null,
+                            context.request != null ? context.request.id : null,
+                            currentDepth);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return ScriptDependentRequestResult.failure("Ad-hoc request interrupted.");
+                }
+                RunnerResult child = outcome.result;
                 if (child == null) {
                     return ScriptDependentRequestResult.failure("Ad-hoc request execution produced no result.");
                 }
@@ -1153,7 +1300,7 @@ public class CollectionRunner {
                 child.dependentDepth = currentDepth;
                 results.add(child);
                 fireOnRequestComplete(child);
-                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome != null ? outcome.attempts : 1));
+                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome.attempts));
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.adHocExecution ? "Ad-hoc request executed" : "Request executed",
@@ -1625,6 +1772,17 @@ public class CollectionRunner {
         }
     }
 
+    private static final class RunLifecycle {
+        private final AtomicBoolean workerStarted = new AtomicBoolean(false);
+        private final AtomicBoolean terminalDelivered = new AtomicBoolean(false);
+    }
+
+    private enum RequestOutcomeState {
+        COMPLETED,
+        CANCELLED,
+        FAILED_BEFORE_RESULT
+    }
+
     public interface RunnerListener {
         void onStart(String collectionName, int totalRequests);
         default void onRequestStart(RunnerResult result) { }
@@ -1641,10 +1799,12 @@ public class CollectionRunner {
     private static final class RequestExecutionOutcome {
         private final RunnerResult result;
         private final int attempts;
+        private final RequestOutcomeState state;
 
-        private RequestExecutionOutcome(RunnerResult result, int attempts) {
+        private RequestExecutionOutcome(RunnerResult result, int attempts, RequestOutcomeState state) {
             this.result = result;
             this.attempts = attempts;
+            this.state = state != null ? state : RequestOutcomeState.COMPLETED;
         }
     }
 }
