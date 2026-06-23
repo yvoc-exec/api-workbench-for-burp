@@ -27,6 +27,7 @@ public class RequestEditorPanel extends JPanel {
     private JComboBox<String> methodBox;
     private JTextComponent urlField;
     private JTabbedPane tabs;
+    private JCheckBox exactHttpCheckBox;
 
     // Params
     private DefaultTableModel paramsModel;
@@ -63,6 +64,7 @@ public class RequestEditorPanel extends JPanel {
     private boolean syncingDerivedHeaders = false;
     private boolean authorizationHeaderMaterialized = false;
     private boolean contentTypeHeaderMaterialized = false;
+    private ApiRequest.BuildMode lastNonExactBuildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
     private Runnable trackedHeaderStateChangeListener;
     private boolean dirty = false;
     private VariableActionBridge variableActionBridge;
@@ -133,6 +135,9 @@ public class RequestEditorPanel extends JPanel {
     private JPanel createTopBar() {
         JPanel panel = new JPanel(new BorderLayout(5, 0));
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
+        exactHttpCheckBox = new JCheckBox("Exact HTTP / Preserve authored headers");
+        exactHttpCheckBox.setToolTipText("<html><b>Exact HTTP</b> preserves duplicate and conflicting headers, including Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.<br/>Malformed requests may fail.<br/>Burp, proxies, HTTP/2 conversion, and servers may still normalize or reject the request.</html>");
+        exactHttpCheckBox.addActionListener(e -> handleExactHttpModeSelectionChanged());
         urlField = new JTextPane();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         SwingShortcutSupport.installTextComponentShortcuts(urlField);
@@ -179,7 +184,11 @@ public class RequestEditorPanel extends JPanel {
         sendPanel.add(sendBtn, BorderLayout.CENTER);
         sendPanel.add(sendDropdownBtn, BorderLayout.EAST);
 
-        panel.add(methodBox, BorderLayout.WEST);
+        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        modePanel.add(methodBox);
+        modePanel.add(exactHttpCheckBox);
+
+        panel.add(modePanel, BorderLayout.WEST);
         panel.add(urlScroll, BorderLayout.CENTER);
         panel.add(sendPanel, BorderLayout.EAST);
         return panel;
@@ -406,10 +415,14 @@ public class RequestEditorPanel extends JPanel {
 
     public void loadRequest(ApiRequest req) {
         this.currentRequest = req;
+        lastNonExactBuildMode = req != null && !req.isExactHttpMode()
+                ? req.resolveBuildMode()
+                : ApiRequest.BuildMode.MANUAL_PRESERVE;
         resetDerivedHeaderMaterializationState();
         materializedAutoHeaders.clear();
         loadingRequest = true;
         try {
+            setExactHttpModeSelected(req != null && req.isExactHttpMode());
             RequestEditorStateMapper.Context ctx = createStateMapperContext();
             RequestEditorStateMapper.loadRequest(req, ctx);
         } finally {
@@ -423,11 +436,13 @@ public class RequestEditorPanel extends JPanel {
     public void clearRequest() {
         currentCollection = null;
         currentRequest = null;
+        lastNonExactBuildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
         hideAllVariablePopups();
         resetDerivedHeaderMaterializationState();
         materializedAutoHeaders.clear();
         loadingRequest = true;
         try {
+            setExactHttpModeSelected(false);
             clearAll();
         } finally {
             loadingRequest = false;
@@ -491,7 +506,9 @@ public class RequestEditorPanel extends JPanel {
     public ApiRequest buildRequestFromUI() {
         ApiRequest built = RequestEditorStateMapper.buildRequest(createStateMapperContext());
         if (built != null) {
-            built.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+            built.buildMode = isExactHttpModeSelected()
+                    ? ApiRequest.BuildMode.EXACT_HTTP
+                    : ApiRequest.BuildMode.MANUAL_PRESERVE;
             built.editorMaterialized = true;
             if (built.suppressedAutoHeaders == null) {
                 built.suppressedAutoHeaders = new LinkedHashSet<>();
@@ -617,11 +634,68 @@ public class RequestEditorPanel extends JPanel {
         return RequestEditorAuthSupport.buildAuthFromFields(authUi, authType);
     }
 
+    private void handleExactHttpModeSelectionChanged() {
+        if (loadingRequest || updatingVariableStyles || currentRequest == null) {
+            return;
+        }
+        commitAllEdits();
+        boolean exactSelected = isExactHttpModeSelected();
+        if (exactSelected && !currentRequest.isExactHttpMode()) {
+            lastNonExactBuildMode = currentRequest.resolveBuildMode();
+        }
+
+        List<ApiRequest.Header> headerSnapshot = snapshotHeaderRows();
+        List<ApiRequest.Header> authoredHeaders = copyHeaders(currentRequest.headers);
+        ApiRequest draft = buildRequestFromUI();
+        if (draft == null) {
+            return;
+        }
+
+        ApiRequest.BuildMode targetMode = exactSelected
+                ? ApiRequest.BuildMode.EXACT_HTTP
+                : (lastNonExactBuildMode != null ? lastNonExactBuildMode : ApiRequest.BuildMode.MANUAL_PRESERVE);
+        draft.buildMode = targetMode;
+        draft.applyTo(currentRequest);
+        currentRequest.buildMode = targetMode;
+        currentRequest.editorMaterialized = exactSelected ? true : false;
+        if (exactSelected) {
+            currentRequest.headers = buildHeadersForModeSwitch(draft, authoredHeaders, true);
+        } else {
+            currentRequest.headers = headerSnapshot;
+            currentRequest.suppressedAutoHeaders = new LinkedHashSet<>();
+        }
+
+        ApiRequest headerRefresh = currentRequest.applyTo(new ApiRequest());
+
+        resetDerivedHeaderMaterializationState();
+        loadingRequest = true;
+        try {
+            headersModel.setRowCount(0);
+            RequestEditorStateMapper.loadEditorHeaders(headerRefresh, createStateMapperContext());
+            RequestEditorStateMapper.ensureStarterRow(headersModel);
+            if (!exactSelected) {
+                captureMaterializedDefaultHeaders(headerRefresh);
+                syncAuthorizationHeaderFromCurrentAuth();
+                syncContentTypeHeaderFromCurrentBody();
+            }
+        } finally {
+            loadingRequest = false;
+        }
+        refreshResolvedMirror();
+        if (currentCollection != null) {
+            currentCollection.fireChanged();
+        }
+        markDirty();
+    }
+
     static boolean isMeaningfulAuthSource(String source) {
         return source != null && !source.isBlank() && !"none".equalsIgnoreCase(source.trim());
     }
 
     private void syncAuthorizationHeaderFromCurrentAuth() {
+        if (isExactHttpModeSelected()) {
+            return;
+        }
         if (syncingDerivedHeaders) {
             return;
         }
@@ -714,6 +788,9 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void syncContentTypeHeaderFromCurrentBody() {
+        if (isExactHttpModeSelected()) {
+            return;
+        }
         if (syncingDerivedHeaders) {
             return;
         }
@@ -783,6 +860,104 @@ public class RequestEditorPanel extends JPanel {
         materializedAutoHeaders.clear();
     }
 
+    private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> headers) {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header == null) {
+                out.add(null);
+            } else {
+                out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+            }
+        }
+        return out;
+    }
+
+    private List<ApiRequest.Header> snapshotHeaderRows() {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (headersModel == null) {
+            return out;
+        }
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = (String) headersModel.getValueAt(i, 1);
+            Object disabledValue = headersModel.getColumnCount() > 2 ? headersModel.getValueAt(i, 2) : Boolean.FALSE;
+            boolean disabled = disabledValue instanceof Boolean ? (Boolean) disabledValue : Boolean.parseBoolean(String.valueOf(disabledValue));
+            out.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
+        }
+        return out;
+    }
+
+    private List<ApiRequest.Header> buildHeadersForModeSwitch(ApiRequest draft, List<ApiRequest.Header> authoredHeaders, boolean exactSelected) {
+        List<ApiRequest.Header> visibleHeaders = new ArrayList<>();
+        if (draft != null && draft.headers != null) {
+            for (ApiRequest.Header header : draft.headers) {
+                if (header == null || header.key == null || header.key.isBlank()) {
+                    continue;
+                }
+                String normalized = normalizeTrackedHeaderName(header.key);
+                if (normalized == null) {
+                    continue;
+                }
+                if (!exactSelected && isTransportHeaderName(normalized)) {
+                    continue;
+                }
+                if (exactSelected && isSyntheticEditorHeader(normalized)) {
+                    continue;
+                }
+                visibleHeaders.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+            }
+        }
+
+        List<ApiRequest.Header> merged = new ArrayList<>();
+        List<ApiRequest.Header> sourceHeaders = authoredHeaders != null ? authoredHeaders : Collections.emptyList();
+        int visibleIndex = 0;
+        for (ApiRequest.Header authored : sourceHeaders) {
+            if (authored == null || authored.key == null || authored.key.isBlank()) {
+                continue;
+            }
+            String normalized = normalizeTrackedHeaderName(authored.key);
+            if (isTransportHeaderName(normalized)) {
+                merged.add(new ApiRequest.Header(authored.key, authored.value, authored.disabled));
+                continue;
+            }
+            if (visibleIndex < visibleHeaders.size()) {
+                ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
+                merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
+            }
+        }
+        while (visibleIndex < visibleHeaders.size()) {
+            ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
+            merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
+        }
+        return merged;
+    }
+
+    private boolean isTransportHeaderName(String headerName) {
+        if (headerName == null) {
+            return false;
+        }
+        return "host".equals(headerName)
+                || "content-length".equals(headerName)
+                || "transfer-encoding".equals(headerName);
+    }
+
+    private boolean isSyntheticEditorHeader(String headerName) {
+        if (headerName == null) {
+            return false;
+        }
+        if (materializedAutoHeaders.contains(headerName)) {
+            return true;
+        }
+        return ("authorization".equals(headerName) && authorizationHeaderMaterialized)
+                || ("content-type".equals(headerName) && contentTypeHeaderMaterialized);
+    }
+
     private void upsertHeaderRow(String key, String value) {
         int blankRow = -1;
         for (int i = 0; i < headersModel.getRowCount(); i++) {
@@ -833,13 +1008,19 @@ public class RequestEditorPanel extends JPanel {
             return;
         }
         var vr = buildCurrentResolver();
+        ApiRequest builtForPreview = null;
+        try {
+            builtForPreview = buildRequestFromUI();
+        } catch (Exception ignored) {
+            builtForPreview = null;
+        }
 
         StringBuilder out = new StringBuilder();
         out.append("Resolved URL\n");
         out.append("------------\n");
         out.append(vr.resolve(RequestEditorStateMapper.rebuildUrlWithParams(urlField.getText(), paramsModel))).append("\n\n");
 
-        appendBuildPolicyDiagnostics(out, currentRequest);
+        appendBuildPolicyDiagnostics(out, builtForPreview != null ? builtForPreview : currentRequest);
 
         out.append("Resolved Auth\n");
         out.append("-------------\n");
@@ -855,16 +1036,13 @@ public class RequestEditorPanel extends JPanel {
         out.append("\nResolved Headers (Effective)\n");
         out.append("-----------------------------\n");
         boolean usedEffective = false;
-        if (requestBuilder != null) {
+        if (requestBuilder != null && builtForPreview != null) {
             try {
-                ApiRequest built = buildRequestFromUI();
-                if (built != null) {
-                    List<Map.Entry<String, String>> effective = requestBuilder.buildEffectiveHeaders(built, vr);
-                    for (Map.Entry<String, String> e : effective) {
-                        out.append(e.getKey()).append(": ").append(e.getValue()).append("\n");
-                    }
-                    usedEffective = true;
+                List<Map.Entry<String, String>> effective = requestBuilder.buildEffectiveHeaders(builtForPreview, vr);
+                for (Map.Entry<String, String> e : effective) {
+                    out.append(e.getKey()).append(": ").append(e.getValue()).append("\n");
                 }
+                usedEffective = true;
             } catch (Exception ex) {
                 // Fallback to explicit-only view
             }
@@ -1778,7 +1956,9 @@ public class RequestEditorPanel extends JPanel {
         out.append("suppressedAutoHeaders=")
                 .append(suppressed.isEmpty() ? "(none)" : String.join(", ", suppressed))
                 .append("\n");
-        if (req.isManualPreserveMode()) {
+        if (req.isExactHttpMode()) {
+            out.append("note=Exact HTTP mode preserves authored headers and does not synthesize defaults.\n");
+        } else if (req.isManualPreserveMode()) {
             out.append("note=Manual preserve mode keeps tester-deleted auto headers deleted.\n");
         } else {
             out.append("note=Auto-compatible mode may synthesize defaults/auth/body Content-Type.\n");
@@ -1791,6 +1971,7 @@ public class RequestEditorPanel extends JPanel {
     public JTabbedPane getTabs() { return tabs; }
     JButton getSendButtonForTests() { return sendBtn; }
     JButton getSendDropdownButtonForTests() { return sendDropdownBtn; }
+    JCheckBox getExactHttpToggleForTests() { return exactHttpCheckBox; }
     JTable getHeadersTableForTests() { return headersTable; }
     JTextComponent getBodyRawAreaForTests() { return bodyRawArea; }
     JTextArea getResolvedViewAreaForTests() { return resolvedViewArea; }
@@ -1906,12 +2087,23 @@ public class RequestEditorPanel extends JPanel {
                 postScriptArea,
                 () -> currentRequest,
                 () -> currentCollection,
+                this::isExactHttpModeSelected,
                 this::resolveEditorAuthMode,
                 this::buildAuthFromFields,
                 this::refreshResolvedMirror,
                 requestBuilder
         );
         return ctx;
+    }
+
+    private boolean isExactHttpModeSelected() {
+        return exactHttpCheckBox != null && exactHttpCheckBox.isSelected();
+    }
+
+    private void setExactHttpModeSelected(boolean exactHttpMode) {
+        if (exactHttpCheckBox != null && exactHttpCheckBox.isSelected() != exactHttpMode) {
+            exactHttpCheckBox.setSelected(exactHttpMode);
+        }
     }
 
     private void captureMaterializedDefaultHeaders(ApiRequest req) {
