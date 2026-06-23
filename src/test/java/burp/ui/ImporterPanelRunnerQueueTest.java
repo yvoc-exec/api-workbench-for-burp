@@ -302,6 +302,112 @@ class ImporterPanelRunnerQueueTest {
     }
 
     @Test
+    void runnerTerminalSummaryUsesTerminationFailureCounts() throws Exception {
+        RunnerResult assertion = runnerResult("Assertion", true, 200);
+        RunnerResult status = runnerResult("Status", true, 500);
+        RunnerResult error = runnerResult("Error", true, 200);
+        RunnerResult thresholdOne = runnerResult("Threshold 1", true, 200);
+        RunnerResult thresholdTwo = runnerResult("Threshold 2", true, 200);
+        RunnerResult cancel = runnerResult("Cancel", true, 200);
+        RunnerResult script = runnerResult("Script", true, 200);
+        RunnerResult completeOne = runnerResult("Complete 1", true, 200);
+        RunnerResult completeTwo = runnerResult("Complete 2", false, 500);
+
+        for (SummaryCase summaryCase : List.of(
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.STOPPED_ON_ASSERTION_FAILURE, assertion, 1, 1, 1),
+                        List.of(assertion),
+                        0,
+                        1,
+                        2),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.STOPPED_ON_STATUS, status, 1, 1, 1),
+                        List.of(status),
+                        0,
+                        1,
+                        2),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.STOPPED_ON_ERROR, error, 1, 1, 1),
+                        List.of(error),
+                        0,
+                        1,
+                        2),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT, thresholdTwo, 2, 2, 2),
+                        List.of(thresholdOne, thresholdTwo),
+                        0,
+                        2,
+                        3),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.CANCELLED, cancel, 1, 1, 0),
+                        List.of(cancel),
+                        1,
+                        0,
+                        2),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.STOPPED_BY_SCRIPT, script, 1, 1, 0),
+                        List.of(script),
+                        1,
+                        0,
+                        2),
+                new SummaryCase(
+                        terminationFor(RunnerTerminationType.COMPLETED, completeTwo, 2, 2, 1),
+                        List.of(completeOne, completeTwo),
+                        1,
+                        1,
+                        3))) {
+            AtomicBoolean running = new AtomicBoolean(false);
+            CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+            Mockito.when(runner.isRunning()).thenAnswer(inv -> running.get());
+            Mockito.when(runner.isPaused()).thenReturn(false);
+            Mockito.when(runner.getExtractedVariables()).thenReturn(Collections.emptyMap());
+            RunnerPreviewRow previewRow = previewRow("Login");
+            previewRow.authStatus = "bearer";
+            Mockito.when(runner.buildRunPreview(Mockito.anyList(), Mockito.anyList())).thenReturn(List.of(previewRow));
+            ImporterPanel panel = newPanel(runner);
+
+            ApiRequest request = request("Login");
+            ApiCollection collection = collection("APIM", request);
+            edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+            drainEdt();
+            invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(request));
+            invokePrivate(panel, "startRunner", new Class<?>[]{boolean.class}, false);
+
+            ArgumentCaptor<CollectionRunner.RunnerListener> listenerCaptor = ArgumentCaptor.forClass(CollectionRunner.RunnerListener.class);
+            Mockito.verify(runner).addListener(listenerCaptor.capture());
+            CollectionRunner.RunnerListener listener = listenerCaptor.getValue();
+
+            running.set(true);
+            SwingUtilities.invokeAndWait(() -> listener.onStart("Runner", summaryCase.termination().totalQueuedCount));
+            for (RunnerResult result : summaryCase.results()) {
+                SwingUtilities.invokeAndWait(() -> listener.onRequestComplete(result));
+            }
+            running.set(false);
+            SwingUtilities.invokeAndWait(() -> listener.onTerminal(summaryCase.termination(), summaryCase.results()));
+            drainEdt();
+
+            String log = runnerLog(panel).getText();
+            assertThat(log).contains("=== Runner " + summaryCase.termination().displayLabel() + " ===");
+            assertThat(log.split("=== Runner ", -1)).hasSize(2);
+            assertThat(log).contains("Completed: " + summaryCase.termination().completedCount + "/" + summaryCase.termination().totalQueuedCount);
+            assertThat(log).contains("Successful: " + summaryCase.expectedSuccess + "/" + summaryCase.termination().completedCount);
+            assertThat(log).contains("Failed: " + summaryCase.expectedFailure);
+            assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString())
+                    .contains(summaryCase.termination().displayLabel())
+                    .contains(summaryCase.termination().completedCount + "/" + summaryCase.termination().totalQueuedCount);
+            assertThat(resultModel(panel).getRowCount()).isEqualTo(summaryCase.expectedRows);
+            assertThat(panel.getRunnerDetailPanelForTests().getMetadataArea().getText())
+                    .contains("Runner termination: " + summaryCase.termination().displayLabel())
+                    .contains("Completed Requests: " + summaryCase.termination().completedCount)
+                    .contains("Failure Count: " + summaryCase.expectedFailure);
+            assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isTrue();
+            assertThat(((JButton) privateField(panel, "cancelRunnerBtn")).isEnabled()).isFalse();
+            assertThat(((JButton) privateField(panel, "pauseRunnerBtn")).isEnabled()).isFalse();
+            assertThat(((JButton) privateField(panel, "resumeRunnerBtn")).isEnabled()).isFalse();
+        }
+    }
+
+    @Test
     void cancelButtonWhilePausedUsesRealRunnerAndReturnsIdleControls() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         MontoyaApi api = mockApi(true);
@@ -936,8 +1042,138 @@ class ImporterPanelRunnerQueueTest {
                     null,
                     "internalError",
                     "IllegalStateException");
+            };
+    }
+
+    private static RunnerTerminationResult terminationFor(RunnerTerminationType type, RunnerResult requestResult, int completedCount, int queuedCount, int failureCount) {
+        String requestName = requestResult != null ? requestResult.requestName : null;
+        String requestId = requestResult != null ? requestResult.requestId : null;
+        Integer statusCode = requestResult != null ? requestResult.statusCode : null;
+        return switch (type) {
+            case COMPLETED -> new RunnerTerminationResult(
+                    type,
+                    "Runner completed successfully.",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "completed",
+                    null);
+            case CANCELLED -> new RunnerTerminationResult(
+                    type,
+                    "User cancelled the runner.",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "cancelled",
+                    null);
+            case STOPPED_ON_ERROR -> new RunnerTerminationResult(
+                    type,
+                    "Stopped on error: boom",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "stopOnError",
+                    null);
+            case STOPPED_ON_ASSERTION_FAILURE -> new RunnerTerminationResult(
+                    type,
+                    "Stopped on assertion failure for " + requestName,
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "stopOnAssertionFailure",
+                    null);
+            case STOPPED_ON_STATUS -> new RunnerTerminationResult(
+                    type,
+                    "Stopped on status >= 400 for " + requestName + " (500)",
+                    requestName,
+                    requestId,
+                    statusCode != null ? statusCode : 500,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "stopOnStatusAtLeast400",
+                    null);
+            case STOPPED_ON_FAILURE_COUNT -> new RunnerTerminationResult(
+                    type,
+                    "Stopped after failure count reached: " + failureCount + "/" + queuedCount,
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "stopAfterFailureCount",
+                    null);
+            case STOPPED_BY_SCRIPT -> new RunnerTerminationResult(
+                    type,
+                    "Runner stopped by script: STOP_RUN",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    burp.scripts.ScriptFlowControl.STOP_RUN,
+                    "STOP_RUN",
+                    null);
+            case STOPPED_ON_MISSING_VARIABLE -> new RunnerTerminationResult(
+                    type,
+                    "Stopped on missing variable(s): baseUrl",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "stopOnMissingVariable",
+                    null);
+            case INTERNAL_ERROR -> new RunnerTerminationResult(
+                    type,
+                    "IllegalStateException: boom",
+                    requestName,
+                    requestId,
+                    statusCode,
+                    completedCount,
+                    queuedCount,
+                    failureCount,
+                    null,
+                    "internalError",
+                    "IllegalStateException");
         };
     }
+
+    private static RunnerResult runnerResult(String name, boolean success, Integer statusCode) {
+        RunnerResult result = new RunnerResult();
+        result.requestName = name;
+        result.requestId = name;
+        result.collectionName = "APIM";
+        result.method = "GET";
+        result.requestUrl = "https://example.test/" + name.toLowerCase().replace(' ', '-');
+        result.success = success;
+        result.statusCode = statusCode;
+        return result;
+    }
+
+    private record SummaryCase(RunnerTerminationResult termination, List<RunnerResult> results, int expectedSuccess, int expectedFailure, int expectedRows) {}
 
     @SuppressWarnings("unchecked")
     private static List<ApiRequest> queue(ImporterPanel panel, ApiRequest... requests) throws Exception {
