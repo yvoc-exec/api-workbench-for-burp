@@ -10,6 +10,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.RunnerResult;
+import burp.models.RunnerTerminationResult;
 import burp.models.RunnerTimelineRow;
 import burp.runner.CollectionRunner;
 import burp.scripts.ExecutionSource;
@@ -198,6 +199,7 @@ public final class RunnerScriptTestFixtures {
         public final List<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();
         public final List<String> errors = new CopyOnWriteArrayList<>();
         public final List<List<RunnerResult>> completedRuns = new CopyOnWriteArrayList<>();
+        public final List<RunnerTerminationResult> terminalResults = new CopyOnWriteArrayList<>();
 
         @Override
         public void onStart(String collectionName, int totalRequests) {
@@ -232,6 +234,11 @@ public final class RunnerScriptTestFixtures {
         @Override
         public void onComplete(List<RunnerResult> results) {
             completedRuns.add(results);
+        }
+
+        @Override
+        public void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+            terminalResults.add(termination);
         }
     }
 
