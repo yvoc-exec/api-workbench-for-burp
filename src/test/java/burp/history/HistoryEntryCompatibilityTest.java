@@ -52,6 +52,7 @@ class HistoryEntryCompatibilityTest {
                 List.of("missing_token"));
 
         assertThat(entry.source).isEqualTo(HistorySource.WORKBENCH);
+        assertThat(entry.collectionId).isEqualTo(HistoryTestFixtures.COLLECTION_ID);
         assertThat(entry.attemptDisplay()).isEqualTo("2/4");
         assertThat(entry.requestSnapshot).isNotNull();
         assertThat(entry.requestSnapshot.authoredRequest).isNotSameAs(request);
@@ -59,6 +60,7 @@ class HistoryEntryCompatibilityTest {
         assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("POST /login HTTP/1.1");
         assertThat(entry.requestSnapshot.resolvedUrl).isEqualTo(execution.resolvedUrl);
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
+        assertThat(entry.folderPath).isEqualTo(HistoryTestFixtures.REQUEST_FOLDER);
         assertThat(entry.responseSnapshot).isNotNull();
         assertThat(entry.responseSnapshot.bodyAsText()).contains("{\"ok\":true}");
         assertThat(entry.finalResolvedUrl).isEqualTo(execution.resolvedUrl);
@@ -80,6 +82,34 @@ class HistoryEntryCompatibilityTest {
 
         assertThat(entry.requestSnapshot.rawRequestSent[0]).isNotEqualTo((byte) 'X');
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
+    }
+
+    @Test
+    void workbenchCapturePreservesSameNamedFolderWhenCollectionProvesItExists() {
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-users";
+        collection.name = "Users API";
+        collection.folderPaths = new java.util.ArrayList<>(List.of("Users"));
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-users";
+        request.name = "Users";
+        request.path = "Users";
+        request.sourceCollection = collection.name;
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                collection,
+                request,
+                null,
+                null,
+                1,
+                1,
+                List.of());
+
+        assertThat(entry.collectionId).isEqualTo("col-users");
+        assertThat(entry.folderPath).isEqualTo("Users");
     }
 
     @Test

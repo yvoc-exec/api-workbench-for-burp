@@ -2,6 +2,7 @@ package burp.utils;
 
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.models.ApiCollection;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -39,8 +40,28 @@ public final class WorkspaceStateMigrator {
                 profile.ensureDefaults();
             }
         }
+        normalizeCollectionIds(state);
         normalizeEnvironmentIds(state);
         return state;
+    }
+
+    private static void normalizeCollectionIds(WorkspaceState state) {
+        if (state == null || state.collections == null) {
+            return;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (ApiCollection collection : state.collections) {
+            if (collection == null) {
+                continue;
+            }
+            collection.ensureId();
+            while (collection.id != null && seen.contains(collection.id)) {
+                collection.id = java.util.UUID.randomUUID().toString();
+            }
+            if (collection.id != null) {
+                seen.add(collection.id);
+            }
+        }
     }
 
     private static void normalizeEnvironmentIds(WorkspaceState state) {

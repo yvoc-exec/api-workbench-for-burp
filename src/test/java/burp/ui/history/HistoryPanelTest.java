@@ -90,9 +90,10 @@ class HistoryPanelTest {
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("Content-Type: application/json");
 
-        panel.loadSelectedInWorkbench();
-        panel.replaySelectedFromHistory();
-        panel.sendSelectedToRepeater();
+        panel.getActionsPanel().getLoadButton().doClick();
+        panel.getActionsPanel().getReplayButton().doClick();
+        panel.getActionsPanel().getRepeaterButton().doClick();
+        ImporterPanelTestSupport.awaitEdt();
 
         assertThat(load.get().id).isEqualTo("first");
         assertThat(replay.get().id).isEqualTo("first");
