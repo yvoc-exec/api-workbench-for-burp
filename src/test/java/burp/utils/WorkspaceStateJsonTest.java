@@ -11,6 +11,7 @@ import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
 import burp.ui.tree.RequestTreeMutationService;
 import burp.testsupport.HistoryTestFixtures;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -111,6 +112,7 @@ class WorkspaceStateJsonTest {
     @Test
     void roundTripsLoadedCollectionsAndRuntimeVars() {
         ApiCollection collection = new ApiCollection();
+        collection.id = "col-demo";
         collection.name = "Demo";
         collection.format = "postman";
         collection.runtimeVars.put("baseUrl", "https://api.example.test");
@@ -124,11 +126,30 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.version).isEqualTo(1);
         assertThat(parsed.collections).hasSize(1);
         assertThat(parsed.collections.get(0).name).isEqualTo("Demo");
-        assertThat(parsed.collections.get(0).id).isNotBlank();
+        assertThat(parsed.collections.get(0).id).isEqualTo("col-demo");
         assertThat(parsed.collections.get(0).runtimeVars).containsEntry("baseUrl", "https://api.example.test");
         assertThat(parsed.collections.get(0).runtimeOAuth2).containsEntry("oauth2_token_url", "https://auth.example.test/token");
         assertThat(parsed.collections.get(0).folderVars).containsKey("Admin");
         assertThat(parsed.collections.get(0).folderVars.get("Admin")).containsEntry("role", "admin");
+    }
+
+    @Test
+    void workspaceJsonAssignsMissingCollectionIdBeforeWriteAndPreservesItOnRestore() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        String json = WorkspaceStateJson.toJson(state);
+        String savedId = JsonParser.parseString(json)
+                .getAsJsonObject()
+                .getAsJsonArray("collections")
+                .get(0)
+                .getAsJsonObject()
+                .get("id")
+                .getAsString();
+
+        assertThat(savedId).isNotBlank();
+        assertThat(WorkspaceStateJson.fromJson(json).collections.get(0).id).isEqualTo(savedId);
     }
 
     @Test

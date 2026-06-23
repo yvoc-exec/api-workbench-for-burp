@@ -33,6 +33,7 @@ class CollectionExportServiceTest {
     @Test
     void exportsNativeCollectionJsonWithRoundTripMetadataAndNoRuntimeState() throws Exception {
         ApiCollection collection = ExportTestFixtures.sampleCollection();
+        collection.id = "col-apim";
         Path output = tempDir.resolve("apim.api-workbench.collection.json");
 
         ExportResult result = service.exportCollection(
@@ -46,6 +47,7 @@ class CollectionExportServiceTest {
         JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
         assertThat(root.get("format").getAsString()).isEqualTo("api-workbench-collection");
         JsonObject exported = root.getAsJsonObject("collection");
+        assertThat(exported.get("id").getAsString()).isEqualTo("col-apim");
         assertThat(exported.get("name").getAsString()).isEqualTo("APIM");
         assertThat(exported.get("description").getAsString()).isEqualTo("API collection for exports");
         assertThat(jsonArrayStrings(exported.getAsJsonArray("folderPaths")))
@@ -68,6 +70,7 @@ class CollectionExportServiceTest {
     @Test
     void roundTripsNativeCollectionThroughParserRegistry() throws Exception {
         ApiCollection collection = ExportTestFixtures.sampleCollection();
+        collection.id = "col-apim";
         Path output = tempDir.resolve("apim.api-workbench.collection.json");
 
         service.exportCollection(
@@ -80,6 +83,7 @@ class CollectionExportServiceTest {
         assertThat(parser).isInstanceOf(ApiWorkbenchCollectionParser.class);
 
         ApiCollection imported = parser.parse(output.toFile());
+        assertThat(imported.id).isEqualTo("col-apim");
         assertThat(imported.name).isEqualTo("APIM");
         assertThat(imported.description).isEqualTo("API collection for exports");
         assertThat(imported.format).isEqualTo("api-workbench");
@@ -184,6 +188,20 @@ class CollectionExportServiceTest {
             assertThat(field.fileUpload).isTrue();
             assertThat(field.filePath).isEqualTo("{{upload_path}}");
         });
+    }
+
+    @Test
+    void legacyNativeCollectionWithoutIdStillImportsWithGeneratedId() throws Exception {
+        ApiCollection collection = ExportTestFixtures.sampleCollection();
+        collection.id = null;
+        JsonObject root = ApiWorkbenchCollectionExporter.build(collection, new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, tempDir.resolve("legacy.json"), false, null, Map.of()), new java.util.ArrayList<>());
+        JsonObject exported = root.getAsJsonObject("collection");
+        exported.remove("id");
+        Path output = tempDir.resolve("legacy.api-workbench.collection.json");
+        Files.writeString(output, new com.google.gson.GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(root));
+
+        ApiCollection imported = new ApiWorkbenchCollectionParser().parse(output.toFile());
+        assertThat(imported.id).isNotBlank();
     }
 
     @Test

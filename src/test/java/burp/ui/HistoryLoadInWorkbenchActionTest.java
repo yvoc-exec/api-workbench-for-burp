@@ -8,8 +8,10 @@ import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
+import burp.ui.history.HistoryPanel;
 import org.junit.jupiter.api.Test;
 
+import javax.swing.SwingUtilities;
 import java.time.Instant;
 import java.util.List;
 
@@ -45,13 +47,7 @@ class HistoryLoadInWorkbenchActionTest {
         entry.folderPath = HistoryTestFixtures.REQUEST_FOLDER;
         entry.source = HistorySource.WORKBENCH;
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "loadHistoryEntryIntoWorkbench",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
-
-        ImporterPanelTestSupport.awaitEdt();
+        clickLoadHistoryButton(bundle, entry);
 
         assertThat(notifier.confirmCalls).isEqualTo(1);
         assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
@@ -89,13 +85,7 @@ class HistoryLoadInWorkbenchActionTest {
         entry.folderPath = HistoryTestFixtures.REQUEST_FOLDER;
         entry.source = HistorySource.WORKBENCH;
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "loadHistoryEntryIntoWorkbench",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
-
-        ImporterPanelTestSupport.awaitEdt();
+        clickLoadHistoryButton(bundle, entry);
 
         assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
         assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"fallback-loaded\"}");
@@ -128,13 +118,7 @@ class HistoryLoadInWorkbenchActionTest {
         entry.requestName = liveRequest.name;
         entry.folderPath = HistoryTestFixtures.REQUEST_FOLDER;
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "loadHistoryEntryIntoWorkbench",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
-
-        ImporterPanelTestSupport.awaitEdt();
+        clickLoadHistoryButton(bundle, entry);
 
         assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
         assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"stable-loaded\"}");
@@ -180,16 +164,109 @@ class HistoryLoadInWorkbenchActionTest {
         entry.requestName = request.name;
         entry.folderPath = "Admin/List Users";
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "loadHistoryEntryIntoWorkbench",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
-
-        ImporterPanelTestSupport.awaitEdt();
+        clickLoadHistoryButton(bundle, entry);
 
         assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
         assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"canonical-loaded\"}");
+        assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
+    }
+
+    @Test
+    void loadingHistoryIntoWorkbenchResolvesSameNamedFolderWhenCollectionProvesItExists() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-users";
+        collection.name = "Users API";
+        collection.folderPaths = new java.util.ArrayList<>(List.of("Users"));
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-users";
+        request.name = "Users";
+        request.path = "Users";
+        request.sourceCollection = collection.name;
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"username\":\"same-folder\"}";
+        collection.requests.add(request);
+
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        ApiRequest changedRequest = HistoryTestFixtures.copyRequest(request);
+        changedRequest.body.raw = "{\"username\":\"same-folder-loaded\"}";
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "same-folder-entry", Instant.parse("2026-06-15T01:41:15Z"));
+        entry.collectionId = collection.id;
+        entry.collectionName = collection.name;
+        entry.requestSnapshot = HistoryRequestSnapshot.from(changedRequest);
+        entry.requestSnapshot.authoredRequest.id = null;
+        entry.requestId = null;
+        entry.requestName = request.name;
+        entry.folderPath = "Users";
+
+        clickLoadHistoryButton(bundle, entry);
+
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"same-folder-loaded\"}");
+        assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
+    }
+
+    @Test
+    void loadingHistoryIntoWorkbenchResolvesRootRequestWithLegacySameNameFolderPath() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-root-users";
+        collection.name = "Users API";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-root-users";
+        request.name = "Users";
+        request.path = "";
+        request.sourceCollection = collection.name;
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"username\":\"root\"}";
+        collection.requests.add(request);
+
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        ApiRequest changedRequest = HistoryTestFixtures.copyRequest(request);
+        changedRequest.body.raw = "{\"username\":\"root-loaded\"}";
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "root-legacy", Instant.parse("2026-06-15T01:41:20Z"));
+        entry.collectionId = collection.id;
+        entry.collectionName = collection.name;
+        entry.requestSnapshot = HistoryRequestSnapshot.from(changedRequest);
+        entry.requestSnapshot.authoredRequest.id = null;
+        entry.requestId = null;
+        entry.requestName = request.name;
+        entry.folderPath = "Users";
+
+        clickLoadHistoryButton(bundle, entry);
+
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"root-loaded\"}");
         assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
     }
 
@@ -218,13 +295,7 @@ class HistoryLoadInWorkbenchActionTest {
         entry.folderPath = HistoryTestFixtures.REQUEST_FOLDER;
         entry.source = HistorySource.WORKBENCH;
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "loadHistoryEntryIntoWorkbench",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
-
-        ImporterPanelTestSupport.awaitEdt();
+        clickLoadHistoryButton(bundle, entry);
 
         assertThat(notifier.loadedReplayCalls).isEqualTo(1);
         assertThat(collectionNames(loadedCollections)).contains("History Replays");
@@ -278,6 +349,18 @@ class HistoryLoadInWorkbenchActionTest {
         return collections.stream()
                 .map(collection -> collection != null ? collection.name : null)
                 .toList();
+    }
+
+    private static void clickLoadHistoryButton(ImporterPanelTestSupport.PanelBundle bundle, HistoryEntry entry) throws Exception {
+        HistoryPanel historyPanel = bundle.panel.getHistoryPanelForTests();
+        historyPanel.getHistoryStore().addEntry(entry);
+        historyPanel.refreshFromStore(entry.id);
+        ImporterPanelTestSupport.awaitEdt();
+        SwingUtilities.invokeAndWait(() -> {
+            historyPanel.getHistoryTable().setRowSelectionInterval(0, 0);
+            historyPanel.getActionsPanel().getLoadButton().doClick();
+        });
+        ImporterPanelTestSupport.awaitEdt();
     }
 
     private static final class RecordingNotifier extends burp.ui.history.HistoryLoadResultNotifier {

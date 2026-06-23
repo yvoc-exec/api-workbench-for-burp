@@ -492,7 +492,7 @@ public class HistoryEntry {
         if (request != null) {
             entry.requestId = request.id;
             entry.requestName = request.name;
-            entry.folderPath = RequestPathResolver.getCanonicalFolderPath(request.path, request.name);
+            entry.folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
         }
         if (environment != null) {
             entry.environmentId = environment.id;
