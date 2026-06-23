@@ -66,6 +66,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
 
         JsonObject collectionObj = root.getAsJsonObject("collection");
         ApiCollection collection = new ApiCollection();
+        collection.id = getString(collectionObj, "id", null);
         collection.name = firstNonBlank(getString(collectionObj, "name"), "Untitled Collection");
         collection.description = getString(collectionObj, "description", "");
         collection.format = getString(collectionObj, "format", "api-workbench");
@@ -89,6 +90,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
                 entry.getKey().authSource = entry.getValue();
             }
         }
+        collection.ensureId();
         return collection;
     }
 

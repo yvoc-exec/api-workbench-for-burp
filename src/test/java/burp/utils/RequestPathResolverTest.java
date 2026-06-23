@@ -26,6 +26,10 @@ class RequestPathResolverTest {
 
             assertThat(RequestPathResolver.getRequestFolderPath(collection, request)).isEmpty();
 
+            collection.folderPaths = java.util.List.of("Users");
+            assertThat(RequestPathResolver.getRequestFolderPath(collection, request)).isEqualTo("Users");
+
+            collection.folderPaths = java.util.Collections.emptyList();
             collection.folderAuth = new LinkedHashMap<>();
             collection.folderAuth.put("Users", new ApiRequest.Auth());
 
@@ -57,5 +61,12 @@ class RequestPathResolverTest {
         collection.requests.add(childRequest);
 
         assertThat(RequestPathResolver.getRequestFolderPath(collection, rootRequest)).isEqualTo("Users");
+    }
+
+    @Test
+    void canonicalFolderPathRetainsLegacyFolderOnlyValuesAndTrimsLegacyFullPaths() {
+        assertThat(RequestPathResolver.getCanonicalFolderPath("Admin/List Users", "List Users")).isEqualTo("Admin");
+        assertThat(RequestPathResolver.getCanonicalFolderPath("Users", "Users")).isEmpty();
+        assertThat(RequestPathResolver.getRequestFolderPath("Users", "Users", false)).isEmpty();
     }
 }
