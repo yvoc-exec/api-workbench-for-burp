@@ -27,6 +27,7 @@ public class RequestEditorPanel extends JPanel {
     private JComboBox<String> methodBox;
     private JTextComponent urlField;
     private JTabbedPane tabs;
+    private JCheckBox exactHttpCheckBox;
 
     // Params
     private DefaultTableModel paramsModel;
@@ -133,6 +134,9 @@ public class RequestEditorPanel extends JPanel {
     private JPanel createTopBar() {
         JPanel panel = new JPanel(new BorderLayout(5, 0));
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
+        exactHttpCheckBox = new JCheckBox("Exact HTTP / Preserve authored headers");
+        exactHttpCheckBox.setToolTipText("<html><b>Exact HTTP</b> preserves duplicate and conflicting headers, including Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.<br/>Malformed requests may fail.<br/>Burp, proxies, HTTP/2 conversion, and servers may still normalize or reject the request.</html>");
+        exactHttpCheckBox.addActionListener(e -> refreshAllIfReady());
         urlField = new JTextPane();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         SwingShortcutSupport.installTextComponentShortcuts(urlField);
@@ -179,7 +183,11 @@ public class RequestEditorPanel extends JPanel {
         sendPanel.add(sendBtn, BorderLayout.CENTER);
         sendPanel.add(sendDropdownBtn, BorderLayout.EAST);
 
-        panel.add(methodBox, BorderLayout.WEST);
+        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        modePanel.add(methodBox);
+        modePanel.add(exactHttpCheckBox);
+
+        panel.add(modePanel, BorderLayout.WEST);
         panel.add(urlScroll, BorderLayout.CENTER);
         panel.add(sendPanel, BorderLayout.EAST);
         return panel;
@@ -410,6 +418,7 @@ public class RequestEditorPanel extends JPanel {
         materializedAutoHeaders.clear();
         loadingRequest = true;
         try {
+            setExactHttpModeSelected(req != null && req.isExactHttpMode());
             RequestEditorStateMapper.Context ctx = createStateMapperContext();
             RequestEditorStateMapper.loadRequest(req, ctx);
         } finally {
@@ -428,6 +437,7 @@ public class RequestEditorPanel extends JPanel {
         materializedAutoHeaders.clear();
         loadingRequest = true;
         try {
+            setExactHttpModeSelected(false);
             clearAll();
         } finally {
             loadingRequest = false;
@@ -491,7 +501,9 @@ public class RequestEditorPanel extends JPanel {
     public ApiRequest buildRequestFromUI() {
         ApiRequest built = RequestEditorStateMapper.buildRequest(createStateMapperContext());
         if (built != null) {
-            built.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+            built.buildMode = isExactHttpModeSelected()
+                    ? ApiRequest.BuildMode.EXACT_HTTP
+                    : ApiRequest.BuildMode.MANUAL_PRESERVE;
             built.editorMaterialized = true;
             if (built.suppressedAutoHeaders == null) {
                 built.suppressedAutoHeaders = new LinkedHashSet<>();
@@ -622,6 +634,9 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void syncAuthorizationHeaderFromCurrentAuth() {
+        if (isExactHttpModeSelected()) {
+            return;
+        }
         if (syncingDerivedHeaders) {
             return;
         }
@@ -714,6 +729,9 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void syncContentTypeHeaderFromCurrentBody() {
+        if (isExactHttpModeSelected()) {
+            return;
+        }
         if (syncingDerivedHeaders) {
             return;
         }
@@ -1778,7 +1796,9 @@ public class RequestEditorPanel extends JPanel {
         out.append("suppressedAutoHeaders=")
                 .append(suppressed.isEmpty() ? "(none)" : String.join(", ", suppressed))
                 .append("\n");
-        if (req.isManualPreserveMode()) {
+        if (req.isExactHttpMode()) {
+            out.append("note=Exact HTTP mode preserves authored headers and does not synthesize defaults.\n");
+        } else if (req.isManualPreserveMode()) {
             out.append("note=Manual preserve mode keeps tester-deleted auto headers deleted.\n");
         } else {
             out.append("note=Auto-compatible mode may synthesize defaults/auth/body Content-Type.\n");
@@ -1791,6 +1811,7 @@ public class RequestEditorPanel extends JPanel {
     public JTabbedPane getTabs() { return tabs; }
     JButton getSendButtonForTests() { return sendBtn; }
     JButton getSendDropdownButtonForTests() { return sendDropdownBtn; }
+    JCheckBox getExactHttpToggleForTests() { return exactHttpCheckBox; }
     JTable getHeadersTableForTests() { return headersTable; }
     JTextComponent getBodyRawAreaForTests() { return bodyRawArea; }
     JTextArea getResolvedViewAreaForTests() { return resolvedViewArea; }
@@ -1906,12 +1927,23 @@ public class RequestEditorPanel extends JPanel {
                 postScriptArea,
                 () -> currentRequest,
                 () -> currentCollection,
+                this::isExactHttpModeSelected,
                 this::resolveEditorAuthMode,
                 this::buildAuthFromFields,
                 this::refreshResolvedMirror,
                 requestBuilder
         );
         return ctx;
+    }
+
+    private boolean isExactHttpModeSelected() {
+        return exactHttpCheckBox != null && exactHttpCheckBox.isSelected();
+    }
+
+    private void setExactHttpModeSelected(boolean exactHttpMode) {
+        if (exactHttpCheckBox != null && exactHttpCheckBox.isSelected() != exactHttpMode) {
+            exactHttpCheckBox.setSelected(exactHttpMode);
+        }
     }
 
     private void captureMaterializedDefaultHeaders(ApiRequest req) {

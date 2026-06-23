@@ -22,6 +22,7 @@ public class HistoryRequestSnapshot {
     public byte[] bodyAsAuthored;
     public String bodyMode;
     public String authType;
+    public ApiRequest.BuildMode buildMode;
     public Map<String, String> requestVariablesAsAuthored = new LinkedHashMap<>();
     public ApiRequest authoredRequest;
     public byte[] rawRequestSent;
@@ -41,6 +42,7 @@ public class HistoryRequestSnapshot {
         snapshot.authType = request.auth != null && request.auth.type != null
                 ? request.auth.type
                 : request.authOverrideMode;
+        snapshot.buildMode = request.resolveBuildMode();
         if (request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
                 if (header == null) {
@@ -80,6 +82,7 @@ public class HistoryRequestSnapshot {
         copy.bodyAsAuthored = source.bodyAsAuthored != null ? source.bodyAsAuthored.clone() : null;
         copy.bodyMode = source.bodyMode;
         copy.authType = source.authType;
+        copy.buildMode = source.buildMode;
         copy.requestVariablesAsAuthored = source.requestVariablesAsAuthored != null
                 ? new LinkedHashMap<>(source.requestVariablesAsAuthored)
                 : new LinkedHashMap<>();
@@ -142,7 +145,7 @@ public class HistoryRequestSnapshot {
             }
         }
         request.suppressedAutoHeaders = new LinkedHashSet<>();
-        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.buildMode = buildMode != null ? buildMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
         request.editorMaterialized = true;
         return request;
     }

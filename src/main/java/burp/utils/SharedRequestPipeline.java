@@ -655,6 +655,7 @@ public class SharedRequestPipeline {
             event.requestName = request.name;
             event.requestId = request.id;
             event.folderPath = request.path;
+            event.withAttribute("buildMode", request.resolveBuildMode() != null ? request.resolveBuildMode().name() : null);
         }
         if (environment != null) {
             event.environmentName = environment.displayName();

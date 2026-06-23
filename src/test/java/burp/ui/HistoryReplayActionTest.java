@@ -47,6 +47,7 @@ class HistoryReplayActionTest {
         bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
 
         HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        entry.requestSnapshot.authoredRequest.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
         ExecutionResult exec = HistoryTestFixtures.sampleWorkbenchExecutionResult();
         exec.executionSource = burp.scripts.ExecutionSource.HISTORY_REPLAY;
         HttpRequest builtRequest = org.mockito.Mockito.mock(HttpRequest.class);
@@ -95,6 +96,7 @@ class HistoryReplayActionTest {
                 eq(activeEnvironment),
                 eq(burp.scripts.ExecutionSource.HISTORY_REPLAY));
         assertThat(requestCaptor.getValue().url).isEqualTo("{{base_url}}/login");
+        assertThat(requestCaptor.getValue().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
         assertThat(capturedEnvironment.get()).isSameAs(activeEnvironment);
         assertThat(capturedExecutionSource.get()).isEqualTo(burp.scripts.ExecutionSource.HISTORY_REPLAY);
 

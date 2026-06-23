@@ -11579,6 +11579,11 @@ public class ImporterPanel {
         event.requestName = safeRequestName(requestEditor != null ? requestEditor.getCurrentRequest() : null);
         event.requestId = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().id : null;
         event.folderPath = requestEditor != null && requestEditor.getCurrentRequest() != null ? requestEditor.getCurrentRequest().path : null;
+        if (requestEditor != null && requestEditor.getCurrentRequest() != null) {
+            event.withAttribute("buildMode", requestEditor.getCurrentRequest().resolveBuildMode() != null
+                    ? requestEditor.getCurrentRequest().resolveBuildMode().name()
+                    : null);
+        }
         EnvironmentProfile active = getActiveEnvironment();
         event.environmentName = active != null ? active.displayName() : null;
         event.details = details;
@@ -11606,6 +11611,7 @@ public class ImporterPanel {
         if (request != null) {
             event.requestName = request.name;
             event.requestId = request.id;
+            event.withAttribute("buildMode", request.resolveBuildMode() != null ? request.resolveBuildMode().name() : null);
         } else if (entry != null) {
             event.requestName = resolveHistoryRequestName(entry);
             event.requestId = resolveHistoryRequestId(entry);

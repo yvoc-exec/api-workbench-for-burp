@@ -43,6 +43,7 @@ final class RequestEditorStateMapper {
         final JTextArea postScriptArea;
         final Supplier<ApiRequest> currentRequestSupplier;
         final Supplier<ApiCollection> currentCollectionSupplier;
+        final Supplier<Boolean> exactHttpModeSupplier;
         final Function<ApiRequest, String> resolveEditorAuthMode;
         final Function<String, ApiRequest.Auth> buildAuthFromFields;
         final Runnable refreshResolvedMirror;
@@ -62,6 +63,7 @@ final class RequestEditorStateMapper {
                 JTextArea postScriptArea,
                 Supplier<ApiRequest> currentRequestSupplier,
                 Supplier<ApiCollection> currentCollectionSupplier,
+                Supplier<Boolean> exactHttpModeSupplier,
                 Function<ApiRequest, String> resolveEditorAuthMode,
                 Function<String, ApiRequest.Auth> buildAuthFromFields,
                 Runnable refreshResolvedMirror,
@@ -80,6 +82,7 @@ final class RequestEditorStateMapper {
             this.postScriptArea = postScriptArea;
             this.currentRequestSupplier = currentRequestSupplier;
             this.currentCollectionSupplier = currentCollectionSupplier;
+            this.exactHttpModeSupplier = exactHttpModeSupplier;
             this.resolveEditorAuthMode = resolveEditorAuthMode;
             this.buildAuthFromFields = buildAuthFromFields;
             this.refreshResolvedMirror = refreshResolvedMirror;
@@ -167,7 +170,9 @@ final class RequestEditorStateMapper {
         req.method = (String) ctx.methodBox.getSelectedItem();
         req.url = rebuildUrlWithParams(ctx.urlField.getText(), ctx.paramsModel);
         req.editorMaterialized = true;
-        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.buildMode = Boolean.TRUE.equals(ctx.exactHttpModeSupplier.get())
+                ? ApiRequest.BuildMode.EXACT_HTTP
+                : ApiRequest.BuildMode.MANUAL_PRESERVE;
         req.suppressedAutoHeaders = currentRequest.suppressedAutoHeaders != null
                 ? new LinkedHashSet<>(currentRequest.suppressedAutoHeaders)
                 : new LinkedHashSet<>();
@@ -188,7 +193,7 @@ final class RequestEditorStateMapper {
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            if (TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
+            if (!req.isExactHttpMode() && TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
                 continue;
             }
             req.headers.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
@@ -270,10 +275,10 @@ final class RequestEditorStateMapper {
                     continue;
                 }
                 String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
-                if (req.isAutoHeaderSuppressed(lowerKey)) {
+                if (!req.isExactHttpMode() && req.isAutoHeaderSuppressed(lowerKey)) {
                     continue;
                 }
-                if (!TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
+                if (req.isExactHttpMode() || !TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
                     ctx.headersModel.addRow(headerRow(header.key, header.value != null ? header.value : "", header.disabled, ctx.headersModel));
                 }
             }

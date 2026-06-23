@@ -189,6 +189,45 @@ class SharedRequestPipelineTest {
     }
 
     @Test
+    void buildHonorsExactHttpModeForRunnerSourceWithoutSynthesizingHeaders() throws Exception {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection col = new ApiCollection();
+        col.name = "Collection";
+
+        ApiRequest req = new ApiRequest();
+        req.name = "Exact Request";
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.headers.add(new ApiRequest.Header("Host", "alt.example.test", false));
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer first", false));
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer second", false));
+        req.headers.add(new ApiRequest.Header("Connection", "close", false));
+        req.headers.add(new ApiRequest.Header("Proxy-Connection", "keep-alive", false));
+        req.headers.add(new ApiRequest.Header("Content-Length", "9999", false));
+        req.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+
+        ExecutionResult exec = pipeline.build(req, col, null, null, null, null, ExecutionSource.RUNNER);
+
+        assertThat(exec.executionSource).isEqualTo(ExecutionSource.RUNNER);
+        assertThat(exec.rawRequestText).contains("Host: alt.example.test");
+        assertThat(exec.rawRequestText).contains("Authorization: Bearer first");
+        assertThat(exec.rawRequestText).contains("Authorization: Bearer second");
+        assertThat(exec.rawRequestText).contains("Connection: close");
+        assertThat(exec.rawRequestText).contains("Proxy-Connection: keep-alive");
+        assertThat(exec.rawRequestText).contains("Content-Length: 9999");
+        assertThat(exec.rawRequestText).contains("Transfer-Encoding: chunked");
+        assertThat(exec.rawRequestText).doesNotContain("User-Agent: BurpExtensionRuntime");
+        assertThat(exec.rawRequestText).doesNotContain("Cache-Control: no-cache");
+        assertThat(exec.rawRequestText).doesNotContain("Host: example.com");
+    }
+
+    @Test
     void preRequestScriptCanReadCollectionVariablesThroughPostmanApi() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
