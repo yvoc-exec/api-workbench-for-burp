@@ -171,7 +171,9 @@ public class ImporterPanel {
     private RunnerQueueTransferHandler runnerQueueTransferHandler;
     private int runnerExecutingQueueIndex = -1;
     private boolean runnerQueueFresh = false;
+    private volatile boolean runnerTerminalHandled = false;
     private int runnerExecutionSequence = 0;
+    private int runnerCompletedQueueCount = 0;
     private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
     private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
 
@@ -2294,23 +2296,57 @@ public class ImporterPanel {
     }
 
     private HistoryEntry buildRunnerCompleteEntry(List<RunnerResult> results) {
+        return buildRunnerTerminalEntry(
+                new RunnerTerminationResult(
+                        RunnerTerminationType.COMPLETED,
+                        "Runner completed successfully.",
+                        null,
+                        null,
+                        null,
+                        results != null ? (int) results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution).count() : 0,
+                        results != null ? (int) results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution).count() : 0,
+                        results != null ? (int) results.stream().filter(r -> r != null && !r.success).count() : 0,
+                        null,
+                        "completed",
+                        null),
+                results);
+    }
+
+    private HistoryEntry buildRunnerTerminalEntry(RunnerTerminationResult termination, List<RunnerResult> results) {
         HistoryEntry entry = new HistoryEntry();
         entry.id = UUID.randomUUID().toString();
         entry.timestamp = java.time.Instant.now();
         entry.source = HistorySource.RUNNER;
-        entry.requestName = "Runner Complete";
+        entry.requestName = "Runner " + (termination != null ? termination.displayLabel() : "Terminal");
         entry.collectionName = "Runner";
         entry.collectionId = "Runner";
-        entry.result = HistoryResult.SUCCESS;
-        entry.resultClassification = HistoryResult.SUCCESS.displayName();
+        entry.result = termination != null && termination.isCompleted() ? HistoryResult.SUCCESS
+                : termination != null && termination.isInternalError() ? HistoryResult.ERROR
+                : HistoryResult.STOPPED;
+        entry.resultClassification = termination != null ? termination.displayLabel() : HistoryResult.UNKNOWN.displayName();
         entry.scriptMode = scriptMode != null ? scriptMode.label : null;
-        int count = results != null ? results.size() : 0;
-        long success = results != null ? results.stream().filter(r -> r != null && r.success).count() : 0L;
-        long failure = count - success;
+        int count = terminalCompletedCount(termination, results);
+        long failure = terminalFailureCount(termination, count, results);
+        long success = Math.max(0, count - (int) failure);
         long extracted = results != null ? results.stream().mapToLong(r -> r != null && r.extractedVariables != null ? r.extractedVariables.size() : 0).sum() : 0L;
-        entry.variablesSummaryText = "Runner completed.\nTotal requests: " + count + "\nSuccessful: " + success + "\nFailed: " + failure + "\nExtracted variables: " + extracted;
-        entry.scriptOutputSummaryText = "Runner completed.\nSuccess: " + success + "/" + count;
+        String reason = termination != null && termination.reason != null && !termination.reason.isBlank()
+                ? termination.reason
+                : "No additional details.";
+        entry.variablesSummaryText = "Runner " + (termination != null ? termination.displayLabel() : "Terminal") + ".\n"
+                + "Total requests: " + count + "\n"
+                + "Successful: " + success + "\n"
+                + "Failed: " + failure + "\n"
+                + "Extracted variables: " + extracted;
+        entry.scriptOutputSummaryText = "Runner " + (termination != null ? termination.displayLabel() : "Terminal") + ".\n"
+                + "Reason: " + reason
+                + "\nCompleted: " + (termination != null ? termination.completedCount : count)
+                + "/" + (termination != null ? termination.totalQueuedCount : count);
         entry.assertionsSummaryText = count > 0 ? "Final request count: " + count : "No runner requests executed.";
+        entry.metadataSummaryText = "Runner termination: " + (termination != null ? termination.displayLabel() : "Unknown") + "\n"
+                + "Reason: " + reason + "\n"
+                + "Completed Requests: " + count + "\n"
+                + "Queued Requests: " + (termination != null ? termination.totalQueuedCount : count) + "\n"
+                + "Failure Count: " + failure;
         return entry;
     }
 
@@ -2936,17 +2972,17 @@ public class ImporterPanel {
         );
     }
 
-    private RunnerExecutionTableModel.Entry buildExecutionRowFromRunComplete(List<RunnerResult> results) {
-        HistoryEntry detailEntry = buildRunnerCompleteEntry(results);
-        String summary = detailEntry != null ? detailEntry.scriptOutputSummaryText : "Runner completed.";
+    private RunnerExecutionTableModel.Entry buildExecutionRowFromRunnerTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+        HistoryEntry detailEntry = buildRunnerTerminalEntry(termination, results);
+        String summary = detailEntry != null ? detailEntry.scriptOutputSummaryText : (termination != null ? termination.displayLabel() : "Runner terminal.");
         return createExecutionEntry(
-                "RUN_COMPLETED",
-                "COMPLETED",
-                "Runner Complete",
+                termination != null && termination.isCompleted() ? "RUN_COMPLETED" : "RUN_TERMINATED",
+                termination != null ? termination.displayLabel() : "TERMINAL",
+                "Runner " + (termination != null ? termination.displayLabel() : "Terminal"),
                 "Runner",
                 "",
-                "DONE",
-                HistoryResult.SUCCESS.displayName(),
+                termination != null ? termination.displayLabel() : "DONE",
+                termination != null ? termination.displayLabel() : HistoryResult.SUCCESS.displayName(),
                 "",
                 "",
                 summary,
@@ -2956,6 +2992,27 @@ public class ImporterPanel {
                 null,
                 "Runner"
         );
+    }
+
+    private int terminalCompletedCount(RunnerTerminationResult termination, List<RunnerResult> results) {
+        if (termination != null) {
+            return Math.max(0, termination.completedCount);
+        }
+        if (results == null) {
+            return 0;
+        }
+        return (int) results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution).count();
+    }
+
+    private int terminalFailureCount(RunnerTerminationResult termination, int completedCount, List<RunnerResult> results) {
+        if (termination != null) {
+            return Math.max(0, Math.min(termination.failureCount, completedCount));
+        }
+        if (results == null) {
+            return 0;
+        }
+        long failure = results.stream().filter(r -> r != null && !r.dependentExecution && !r.adHocExecution && !r.success).count();
+        return (int) Math.max(0, Math.min(failure, completedCount));
     }
 
     static boolean isRunnerPreviewMissingAuth(RunnerPreviewRow row) {
@@ -10875,7 +10932,10 @@ public class ImporterPanel {
                     setRunnerControlsRunning(true);
                     cancelRunnerBtn.setEnabled(true);
                     runnerProgress.setMaximum(total);
+                    runnerProgress.setValue(0);
+                    runnerProgress.setString("0/" + total);
                     runnerQueueFresh = true;
+                    runnerCompletedQueueCount = 0;
                     updateRunnerQueueUiState();
                 });
             }
@@ -10912,7 +10972,11 @@ public class ImporterPanel {
                     if (timelineModel != null) {
                         timelineModel.addRow(buildTimelineRow(result));
                     }
-                    runnerProgress.setValue(resultModel.getRequestResultCount());
+                    if (result != null && !result.dependentExecution && !result.adHocExecution) {
+                        runnerCompletedQueueCount++;
+                    }
+                    runnerProgress.setValue(runnerCompletedQueueCount);
+                    runnerProgress.setString(runnerCompletedQueueCount + "/" + runnerProgress.getMaximum());
                     String status = result != null ? result.displayLogStatusLabel() : "FAIL";
                     appendRunnerLog((resultModel.getRequestResultCount()) + ". " + (result != null && result.requestName != null ? result.requestName : "Request") + " -> " + status);
                     if (!result.extractedVariables.isEmpty()) {
@@ -10939,17 +11003,49 @@ public class ImporterPanel {
                 });
             }
             @Override public void onComplete(List<RunnerResult> results) {
+                // Terminal state now drives the runner summary.
+            }
+            @Override public void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+                runnerTerminalHandled = true;
                 SwingUtilities.invokeLater(() -> {
-                    long success = results.stream().filter(r -> r.success).count();
-                    appendRunnerLog("\n=== Runner Complete ===");
-                    appendRunnerLog("Success: " + success + "/" + results.size());
+                    RunnerTerminationResult terminal = termination != null ? termination : new RunnerTerminationResult(
+                            RunnerTerminationType.INTERNAL_ERROR,
+                            "Missing runner termination state.",
+                            null,
+                            null,
+                            null,
+                            runnerCompletedQueueCount,
+                            runnerProgress != null ? runnerProgress.getMaximum() : runnerCompletedQueueCount,
+                            0,
+                            null,
+                            "terminal callback missing",
+                            null);
+                    int total = Math.max(1, terminal.totalQueuedCount);
+                    int completed = terminalCompletedCount(terminal, results);
+                    int failure = terminalFailureCount(terminal, completed, results);
+                    int success = Math.max(0, completed - failure);
+                    appendRunnerLog("\n=== Runner " + terminal.displayLabel() + " ===");
+                    appendRunnerLog("Reason: " + (terminal.reason != null && !terminal.reason.isBlank() ? terminal.reason : "none"));
+                    appendRunnerLog("Completed: " + completed + "/" + total);
+                    appendRunnerLog("Successful: " + success + "/" + completed);
+                    appendRunnerLog("Failed: " + failure);
                     appendRunnerLog("Total extracted vars: " + runner.getExtractedVariables().size());
+                    if (runnerProgress != null) {
+                        runnerProgress.setMaximum(total);
+                        runnerProgress.setValue(completed);
+                        runnerProgress.setString(terminal.displayLabel() + " (" + completed + "/" + total + ")");
+                    }
+                    RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRunnerTerminal(terminal, results);
+                    resultModel.addEntry(entry);
+                    if (timelineModel != null) {
+                        timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
+                    }
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
                     runnerExecutingQueueIndex = -1;
                     runnerQueueFresh = false;
                     updateRunnerQueueUiState();
-                    runnerDetailPanel.showEntry(buildRunnerCompleteEntry(results));
+                    runnerDetailPanel.showEntry(buildRunnerTerminalEntry(terminal, results));
                 });
             }
             @Override public void onDebug(String message) {
@@ -10959,6 +11055,9 @@ public class ImporterPanel {
                 });
             }
             @Override public void onError(String message) {
+                if (runnerTerminalHandled) {
+                    return;
+                }
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
                     resultModel.addEntry(buildExecutionRowFromError(message));
@@ -11091,11 +11190,14 @@ public class ImporterPanel {
         runnerQueueFresh = false;
         runnerExecutingQueueIndex = -1;
         runnerExecutionSequence = 0;
+        runnerCompletedQueueCount = 0;
         runnerResultById.clear();
         runnerResultByName.clear();
+        runnerTerminalHandled = false;
         refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
+            runnerProgress.setString("0/0");
         }
         clearRunnerDetailPane();
         setRunnerControlsRunning(false);
@@ -11694,10 +11796,15 @@ public class ImporterPanel {
     }
 
     public void appendRunnerLog(String msg) {
-        SwingUtilities.invokeLater(() -> {
+        Runnable append = () -> {
             runnerLog.append(msg + "\n");
             runnerLog.setCaretPosition(runnerLog.getDocument().getLength());
-        });
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            append.run();
+        } else {
+            SwingUtilities.invokeLater(append);
+        }
     }
 
     private void updateRunnerDetailPane(HistoryEntry entry) {

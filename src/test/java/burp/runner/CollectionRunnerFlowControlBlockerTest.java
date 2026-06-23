@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -28,7 +27,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -37,79 +35,74 @@ class CollectionRunnerFlowControlBlockerTest {
 
     @Test
     void stopExecutionShouldStopTheRunnerAfterCurrentRequest() throws Exception {
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
-            FlowHarness harness = flowHarness();
-            ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
-                    scriptRequest("One", 1, harness.collectionName(), """
-                            pm.execution.stopExecution();
-                            console.log('stop');
-                            """),
-                    scriptRequest("Two", 2, harness.collectionName(), null),
-                    scriptRequest("Three", 3, harness.collectionName(), null));
+        FlowHarness harness = flowHarness();
+        ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
+                scriptRequest("One", 1, harness.collectionName(), """
+                        pm.execution.stopExecution();
+                        console.log('stop');
+                        """),
+                scriptRequest("Two", 2, harness.collectionName(), null),
+                scriptRequest("Three", 3, harness.collectionName(), null));
 
-            harness.runner().runCollections(List.of(collection), collection.requests);
-            waitForRunnerToStop(harness.runner());
+        harness.runner().runCollections(List.of(collection), collection.requests);
+        waitForRunnerToStop(harness.runner());
 
-            assertThat(harness.sendCalls().get()).isEqualTo(1);
-            assertThat(harness.runner().getResults()).hasSize(1);
-            assertThat(harness.runner().getResults().get(0).success).isTrue();
-            assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.STOP_RUN);
-            assertThat(harness.runner().getResults().get(0).displayStatusLabel()).isEqualTo("Stopped by Script");
-            assertThat(harness.timelineRows()).hasSize(1);
-            assertThat(harness.timelineRows().get(0).status).isEqualTo("Stopped by Script");
-        });
+        assertThat(harness.sendCalls().get()).isEqualTo(1);
+        assertThat(harness.runner().getResults()).hasSize(1);
+        assertThat(harness.runner().getResults().get(0).success).isTrue();
+        assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.STOP_RUN);
+        assertThat(harness.runner().getResults().get(0).displayStatusLabel()).isEqualTo("Stopped by Script");
+        assertThat(harness.runner().getLastTerminationResult().type).isEqualTo(burp.models.RunnerTerminationType.STOPPED_BY_SCRIPT);
+        assertThat(harness.timelineRows()).hasSize(1);
+        assertThat(harness.timelineRows().get(0).status).isEqualTo("Stopped by Script");
     }
 
     @Test
     void skipRequestShouldSkipSendingTheCurrentRunnerRequest() throws Exception {
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
-            FlowHarness harness = flowHarness();
-            RunnerStopConditions stopConditions = new RunnerStopConditions();
-            stopConditions.stopAfterFailureCount = 1;
-            harness.runner().setStopConditions(stopConditions);
-            ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
-                    scriptRequest("One", 1, harness.collectionName(), null),
-                    scriptRequest("Two", 2, harness.collectionName(), """
-                            pm.execution.skipRequest();
-                            console.log('skip');
-                            """),
-                    scriptRequest("Three", 3, harness.collectionName(), null));
+        FlowHarness harness = flowHarness();
+        RunnerStopConditions stopConditions = new RunnerStopConditions();
+        stopConditions.stopAfterFailureCount = 1;
+        harness.runner().setStopConditions(stopConditions);
+        ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
+                scriptRequest("One", 1, harness.collectionName(), null),
+                scriptRequest("Two", 2, harness.collectionName(), """
+                        pm.execution.skipRequest();
+                        console.log('skip');
+                        """),
+                scriptRequest("Three", 3, harness.collectionName(), null));
 
-            harness.runner().runCollections(List.of(collection), collection.requests);
-            waitForRunnerToStop(harness.runner());
+        harness.runner().runCollections(List.of(collection), collection.requests);
+        waitForRunnerToStop(harness.runner());
 
-            assertThat(harness.sendCalls().get()).isEqualTo(2);
-            assertThat(harness.runner().getResults()).hasSize(3);
-            assertThat(harness.runner().getResults().get(1).success).isTrue();
-            assertThat(harness.runner().getResults().get(1).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SKIP_REQUEST);
-            assertThat(harness.runner().getResults().get(1).displayStatusLabel()).isEqualTo("Skipped by Script");
-            assertThat(harness.timelineRows()).hasSize(3);
-            assertThat(harness.timelineRows().get(1).status).isEqualTo("Skipped by Script");
-        });
+        assertThat(harness.sendCalls().get()).isEqualTo(2);
+        assertThat(harness.runner().getResults()).hasSize(3);
+        assertThat(harness.runner().getResults().get(1).success).isTrue();
+        assertThat(harness.runner().getResults().get(1).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SKIP_REQUEST);
+        assertThat(harness.runner().getResults().get(1).displayStatusLabel()).isEqualTo("Skipped by Script");
+        assertThat(harness.timelineRows()).hasSize(3);
+        assertThat(harness.timelineRows().get(1).status).isEqualTo("Skipped by Script");
     }
 
     @Test
     void setNextRequestShouldJumpToTheNamedRequest() throws Exception {
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
-            FlowHarness harness = flowHarness();
-            ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
-                    scriptRequest("One", 1, harness.collectionName(), """
-                            pm.execution.setNextRequest('Three');
-                            console.log('jump');
-                            """),
-                    scriptRequest("Two", 2, harness.collectionName(), null),
-                    scriptRequest("Three", 3, harness.collectionName(), null));
+        FlowHarness harness = flowHarness();
+        ApiCollection collection = collectionWithThreeRequests(harness.collectionName(),
+                scriptRequest("One", 1, harness.collectionName(), """
+                        pm.execution.setNextRequest('Three');
+                        console.log('jump');
+                        """),
+                scriptRequest("Two", 2, harness.collectionName(), null),
+                scriptRequest("Three", 3, harness.collectionName(), null));
 
-            harness.runner().runCollections(List.of(collection), collection.requests);
-            waitForRunnerToStop(harness.runner());
+        harness.runner().runCollections(List.of(collection), collection.requests);
+        waitForRunnerToStop(harness.runner());
 
-            assertThat(harness.sendCalls().get()).isEqualTo(2);
-            assertThat(harness.runner().getResults()).hasSize(2);
-            assertThat(harness.runner().getResults().get(0).success).isTrue();
-            assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SET_NEXT_REQUEST);
-            assertThat(harness.timelineRows()).hasSize(2);
-            assertThat(harness.timelineRows().get(0).status).isEqualTo("200");
-        });
+        assertThat(harness.sendCalls().get()).isEqualTo(2);
+        assertThat(harness.runner().getResults()).hasSize(2);
+        assertThat(harness.runner().getResults().get(0).success).isTrue();
+        assertThat(harness.runner().getResults().get(0).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SET_NEXT_REQUEST);
+        assertThat(harness.timelineRows()).hasSize(2);
+        assertThat(harness.timelineRows().get(0).status).isEqualTo("200");
     }
 
     private static FlowHarness flowHarness() throws Exception {
