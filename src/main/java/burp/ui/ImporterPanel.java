@@ -1990,6 +1990,7 @@ public class ImporterPanel {
         if (authLine != null) {
             meta.append(authLine);
         }
+        meta.append("Build Mode: ").append(edited != null && edited.resolveBuildMode() != null ? edited.resolveBuildMode() : "Not yet sent").append("\n");
         meta.append("Active Environment Name: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append("\n");
         meta.append("URL Template: ").append(urlTemplate).append("\n");
         meta.append("Final Resolved URL: ").append(finalResolvedUrl.isBlank() ? "Not yet sent" : finalResolvedUrl).append("\n");
