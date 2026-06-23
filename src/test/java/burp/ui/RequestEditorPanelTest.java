@@ -202,9 +202,9 @@ class RequestEditorPanelTest {
 
         assertThat(resolvedView(panel))
                 .contains("Request Build Policy")
-                .contains("mode=AUTO_COMPATIBLE")
+                .contains("mode=MANUAL_PRESERVE")
                 .contains("suppressedAutoHeaders=(none)")
-                .contains("Auto-compatible mode may synthesize defaults/auth/body Content-Type.");
+                .contains("Manual preserve mode keeps tester-deleted auto headers deleted.");
     }
 
     @Test
@@ -851,6 +851,414 @@ class RequestEditorPanelTest {
     }
 
     @Test
+    void exactHttpToggleMarksEditorDirtyAndPersistsExactBuildMode() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+        panel.markClean();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.isDirty()).isTrue();
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
+    void exactHttpTogglePreservesLiveObjectAndDraftEditsBothDirections() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        request.headers = List.of(
+                new ApiRequest.Header("Host", "authored.example.test", false),
+                new ApiRequest.Header("Content-Length", "77", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        request.auth.properties.put("token", "initial-token");
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"initial\":true}";
+        collection.requests.add(request);
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(request);
+
+        ApiRequest before = panel.getCurrentRequest();
+        assertThat(before).isSameAs(request);
+        assertThat(collection.requests.get(0)).isSameAs(request);
+
+        JComboBox<String> methods = methodBox(panel);
+        JTextComponent url = urlField(panel);
+        DefaultTableModel params = paramsModel(panel);
+        JComboBox<String> authTypes = authTypeBox(panel);
+        JTextField authToken = authField(panel, "token");
+        JTextComponent body = bodyRawArea(panel);
+        JTextArea preScripts = preScriptArea(panel);
+        JTextArea postScripts = postScriptArea(panel);
+        DefaultTableModel headers = headersModel(panel);
+
+        SwingUtilities.invokeAndWait(() -> {
+            methods.setSelectedItem("POST");
+            url.setText("https://api.example.test/users");
+            params.setValueAt("active", 0, 0);
+            params.setValueAt("true", 0, 1);
+            authTypes.setSelectedItem("bearer");
+            authToken.setText("draft-token");
+            body.setText("{\"edited\":true}");
+            preScripts.setText("console.log('pre');");
+            postScripts.setText("console.log('post');");
+        });
+        SwingUtilities.invokeAndWait(() -> headers.addRow(new Object[]{"X-Draft", "yes"}));
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+        assertThat(collection.requests.get(0)).isSameAs(before);
+        assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(methods.getSelectedItem()).isEqualTo("POST");
+        assertThat(url.getText()).isEqualTo("https://api.example.test/users");
+        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(body.getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
+        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
+        assertThat(headerValues(headers))
+                .containsEntry("Host", "authored.example.test")
+                .containsEntry("Content-Length", "77")
+                .containsEntry("Transfer-Encoding", "chunked")
+                .containsEntry("X-Draft", "yes");
+
+        WorkspaceState roundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+        ApiRequest restored = roundTrip.collections.get(0).requests.get(0);
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(restored.method).isEqualTo("POST");
+        assertThat(restored.url).isEqualTo("https://api.example.test/users?active=true");
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests()).isNotNull();
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+        assertThat(collection.requests.get(0)).isSameAs(before);
+        assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(methods.getSelectedItem()).isEqualTo("POST");
+        assertThat(url.getText()).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(body.getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
+        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
+        assertThat(headerValues(headers))
+                .doesNotContainKey("Host")
+                .doesNotContainKey("Content-Length")
+                .doesNotContainKey("Transfer-Encoding")
+                .containsEntry("X-Draft", "yes");
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(panel.getCurrentRequest()).isSameAs(before);
+    }
+
+    @Test
+    void exactHttpToggleRestoresAuthoredTransportHeadersAndPreviewShowsExactFraming() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("Host", "alt.example.test", false),
+                new ApiRequest.Header("Content-Length", "9999", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Host");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "alt.example.test")
+                .containsEntry("Content-Length", "9999")
+                .containsEntry("Transfer-Encoding", "chunked");
+        assertThat(resolvedView(panel))
+                .contains("mode=EXACT_HTTP")
+                .contains("Host: alt.example.test")
+                .contains("Content-Length: 9999")
+                .contains("Transfer-Encoding: chunked");
+
+        byte[] raw = new RequestBuilder(null).buildRequest(panel.buildRequestFromUI(), new VariableResolver());
+        String rawText = new String(raw, StandardCharsets.UTF_8);
+        assertThat(rawText)
+                .contains("Host: alt.example.test")
+                .contains("Content-Length: 9999")
+                .contains("Transfer-Encoding: chunked");
+    }
+
+    @Test
+    void exactHttpToggleRemovesSyntheticDefaultsThatWereNotAuthored() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .doesNotContainKeys("Accept", "User-Agent", "Cache-Control");
+    }
+
+    @Test
+    void exactHttpToggleKeepsAuthoredDefaultsAndDropsOnlyDerivedAuthHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("Accept", "application/xml", false),
+                new ApiRequest.Header("User-Agent", "TestAgent/1.0", false),
+                new ApiRequest.Header("Authorization", "Bearer authored", false),
+                new ApiRequest.Header("Content-Type", "text/plain", false)
+        );
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "derived-secret");
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"hello\":true}";
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer authored");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/xml")
+                .containsEntry("User-Agent", "TestAgent/1.0")
+                .containsEntry("Authorization", "Bearer authored")
+                .containsEntry("Content-Type", "text/plain");
+        assertThat(headerValues(headersModel(panel))).doesNotContainEntry("Authorization", "Bearer derived-secret");
+    }
+
+    @Test
+    void exactHttpToggleDropsDerivedAuthorizationAndContentTypeHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "derived-secret");
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"hello\":true}";
+
+        panel.loadRequest(req);
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Authorization", "Bearer derived-secret")
+                .containsEntry("Content-Type", "application/json");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Authorization", "Content-Type");
+    }
+
+    @Test
+    void exactHttpTogglePreservesDuplicateHeaderOrder() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers = List.of(
+                new ApiRequest.Header("X-Dupe", "one", false),
+                new ApiRequest.Header("X-Dupe", "two", false),
+                new ApiRequest.Header("x-dupe", "three", false),
+                new ApiRequest.Header("Host", "alt.example.test", false)
+        );
+
+        panel.loadRequest(req);
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerNames(headersModel(panel))).containsExactly("X-Dupe", "X-Dupe", "x-dupe", "Host");
+    }
+
+    @Test
+    void exactHttpToggleBackToNormalizedRestoresDefaultEditorBehavior() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        panel.loadRequest(req);
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache")
+                .doesNotContainKey("Host");
+        assertThat(resolvedView(panel)).contains("mode=MANUAL_PRESERVE");
+    }
+
+    @Test
+    void exactHttpTogglePreservesLatestTransportHeaderEditsAcrossHideRestoreAndWorkspaceRoundTrip() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers = new java.util.ArrayList<>(List.of(
+                new ApiRequest.Header("Host", "authored.example.test", false),
+                new ApiRequest.Header("Content-Length", "77", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false),
+                new ApiRequest.Header("Connection", "keep-alive", false)
+        ));
+        collection.requests.add(request);
+
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(request);
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        DefaultTableModel headers = headersModel(panel);
+
+        SwingUtilities.invokeAndWait(() -> {
+            headers.setValueAt("changed.example.test", 0, 1);
+            headers.setValueAt("321", 1, 1);
+            headers.setValueAt("gzip", 2, 1);
+            headers.removeRow(3);
+            headers.addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.FALSE});
+        });
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(panel.getCurrentRequest()).isSameAs(request);
+        assertThat(collection.requests.get(0)).isSameAs(request);
+        assertThat(headerValues(headersModel(panel)))
+                .doesNotContainKeys("Host", "Content-Length", "Transfer-Encoding")
+                .containsEntry("Proxy-Connection", "keep-alive");
+        assertThat(headerRows(panel.getCurrentRequest().headers))
+                .containsExactly(
+                        "Host=changed.example.test|false",
+                        "Content-Length=321|false",
+                        "Transfer-Encoding=gzip|false",
+                        "Proxy-Connection=keep-alive|false"
+                );
+
+        WorkspaceState restoredState = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+        ApiRequest restored = restoredState.collections.get(0).requests.get(0);
+        assertThat(headerRows(restored.headers))
+                .containsExactly(
+                        "Host=changed.example.test|false",
+                        "Content-Length=321|false",
+                        "Transfer-Encoding=gzip|false",
+                        "Proxy-Connection=keep-alive|false"
+                );
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "changed.example.test")
+                .containsEntry("Content-Length", "321")
+                .containsEntry("Transfer-Encoding", "gzip")
+                .containsEntry("Proxy-Connection", "keep-alive");
+    }
+
+    @Test
+    void exactHttpTransportDuplicatesPreserveOrderCasingAndDisabledStateAcrossModeSwitch() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest request = minimalRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers = new java.util.ArrayList<>(List.of(
+                new ApiRequest.Header("Host", "FirstHost.example.test", false),
+                new ApiRequest.Header("host", "SecondHost.example.test", true),
+                new ApiRequest.Header("Connection", "close", false),
+                new ApiRequest.Header("connection", "keep-alive", true),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        ));
+
+        panel.loadRequest(request);
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerRows(headersModel(panel)))
+                .containsExactly(
+                        "Host=FirstHost.example.test|false",
+                        "host=SecondHost.example.test|true",
+                        "Connection=close|false",
+                        "connection=keep-alive|true",
+                        "Transfer-Encoding=chunked|false"
+                );
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Host", "Transfer-Encoding");
+
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(headerRows(headersModel(panel)))
+                .containsExactly(
+                        "Host=FirstHost.example.test|false",
+                        "host=SecondHost.example.test|true",
+                        "Connection=close|false",
+                        "connection=keep-alive|true",
+                        "Transfer-Encoding=chunked|false"
+                );
+    }
+
+    @Test
+    void exactHttpPolicyTextUpdatesImmediatelyAfterCheckboxSelection() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+        panel.loadRequest(minimalRequest());
+
+        assertThat(resolvedView(panel)).contains("mode=MANUAL_PRESERVE");
+        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        assertThat(resolvedView(panel)).contains("mode=EXACT_HTTP");
+    }
+
+    @Test
+    void loadingExactHttpRequestRefreshesControlAndShowsAuthoredTransportHeaders() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        panel.setRequestBuilder(new RequestBuilder(null));
+
+        ApiRequest req = minimalRequest();
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.headers = List.of(
+                new ApiRequest.Header("Host", "alt.example.test", false),
+                new ApiRequest.Header("Content-Length", "9999", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
+        );
+
+        panel.loadRequest(req);
+
+        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Host", "alt.example.test")
+                .containsEntry("Content-Length", "9999")
+                .containsEntry("Transfer-Encoding", "chunked");
+        assertThat(resolvedView(panel)).contains("mode=EXACT_HTTP");
+    }
+
+    @Test
     void buildRequestFromUiStillResolvesBearerVariableBackedAuthorizationAtExecutionTime() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
@@ -985,6 +1393,14 @@ class RequestEditorPanelTest {
         return (DefaultTableModel) f.get(panel);
     }
 
+    private static JComboBox<String> methodBox(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("methodBox");
+        f.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        JComboBox<String> combo = (JComboBox<String>) f.get(panel);
+        return combo;
+    }
+
     private static JTabbedPane tabs(RequestEditorPanel panel) throws Exception {
         Field f = RequestEditorPanel.class.getDeclaredField("tabs");
         f.setAccessible(true);
@@ -1065,6 +1481,24 @@ class RequestEditorPanelTest {
         return authFields.get(name);
     }
 
+    private static JTextComponent bodyRawArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("bodyRawArea");
+        f.setAccessible(true);
+        return (JTextComponent) f.get(panel);
+    }
+
+    private static JTextArea preScriptArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("preScriptArea");
+        f.setAccessible(true);
+        return (JTextArea) f.get(panel);
+    }
+
+    private static JTextArea postScriptArea(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("postScriptArea");
+        f.setAccessible(true);
+        return (JTextArea) f.get(panel);
+    }
+
     private static Map<String, String> headerValues(DefaultTableModel model) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
         for (int i = 0; i < model.getRowCount(); i++) {
@@ -1073,6 +1507,48 @@ class RequestEditorPanelTest {
             if (key != null && !key.isBlank()) {
                 out.put(key, value);
             }
+        }
+        return out;
+    }
+
+    private static List<String> headerNames(DefaultTableModel model) {
+        List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            if (key != null && !key.isBlank()) {
+                out.add(key);
+            }
+        }
+        return out;
+    }
+
+    private static List<String> headerRows(DefaultTableModel model) {
+        List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = (String) model.getValueAt(i, 1);
+            Object disabledValue = model.getColumnCount() > 2 ? model.getValueAt(i, 2) : Boolean.FALSE;
+            boolean disabled = disabledValue instanceof Boolean
+                    ? (Boolean) disabledValue
+                    : Boolean.parseBoolean(String.valueOf(disabledValue));
+            out.add(key + "=" + (value != null ? value : "") + "|" + disabled);
+        }
+        return out;
+    }
+
+    private static List<String> headerRows(List<ApiRequest.Header> headers) {
+        List<String> out = new java.util.ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header == null || header.key == null || header.key.isBlank()) {
+                continue;
+            }
+            out.add(header.key + "=" + (header.value != null ? header.value : "") + "|" + header.disabled);
         }
         return out;
     }

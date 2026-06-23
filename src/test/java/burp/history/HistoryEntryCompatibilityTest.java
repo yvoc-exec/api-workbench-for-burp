@@ -61,6 +61,7 @@ class HistoryEntryCompatibilityTest {
         assertThat(entry.requestSnapshot.resolvedUrl).isEqualTo(execution.resolvedUrl);
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
         assertThat(entry.folderPath).isEqualTo(HistoryTestFixtures.REQUEST_FOLDER);
+        assertThat(entry.toMetadataText()).contains("Build Mode: MANUAL_PRESERVE");
         assertThat(entry.responseSnapshot).isNotNull();
         assertThat(entry.responseSnapshot.bodyAsText()).contains("{\"ok\":true}");
         assertThat(entry.finalResolvedUrl).isEqualTo(execution.resolvedUrl);
@@ -82,6 +83,26 @@ class HistoryEntryCompatibilityTest {
 
         assertThat(entry.requestSnapshot.rawRequestSent[0]).isNotEqualTo((byte) 'X');
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
+    }
+
+    @Test
+    void exactHttpBuildModeAppearsInHistoryMetadata() {
+        ApiCollection collection = HistoryTestFixtures.sampleCollection();
+        ApiRequest request = HistoryTestFixtures.sampleRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers.add(new ApiRequest.Header("Host", "alt.example.test", false));
+
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                collection,
+                request,
+                null,
+                null,
+                1,
+                1,
+                List.of());
+
+        assertThat(entry.requestSnapshot.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(entry.toMetadataText()).contains("Build Mode: EXACT_HTTP");
     }
 
     @Test

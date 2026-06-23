@@ -38,22 +38,25 @@ public class RequestBuilder {
     }
 
     public byte[] buildRequest(ApiRequest request, VariableResolver resolver) throws Exception {
-        BuildContext ctx = buildHeadersAndBody(request, resolver);
+        RequestBuildPolicy policy = RequestBuildPolicy.forRequest(request);
+        BuildContext ctx = buildHeadersAndBody(request, resolver, policy);
         List<String> rawHeaders = ctx.rawHeaders;
         byte[] body = ctx.body;
 
-        // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
-        // have leaked through, then compute exact Content-Length from body bytes.
-        rawHeaders.removeIf(h -> {
-            String lower = h.toLowerCase();
-            return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
-        });
-        boolean shouldSendContentLength = body.length > 0
-                || ctx.method.equals("POST")
-                || ctx.method.equals("PUT")
-                || ctx.method.equals("PATCH");
-        if (shouldSendContentLength) {
-            rawHeaders.add("Content-Length: " + body.length);
+        if (!policy.exactHttp()) {
+            // Final sanitization: strip any stale Content-Length / Transfer-Encoding that may
+            // have leaked through, then compute exact Content-Length from body bytes.
+            rawHeaders.removeIf(h -> {
+                String lower = h.toLowerCase();
+                return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
+            });
+            boolean shouldSendContentLength = body.length > 0
+                    || ctx.method.equals("POST")
+                    || ctx.method.equals("PUT")
+                    || ctx.method.equals("PATCH");
+            if (shouldSendContentLength) {
+                rawHeaders.add("Content-Length: " + body.length);
+            }
         }
 
         // Build raw request bytes preserving CRLF line endings
@@ -70,14 +73,15 @@ public class RequestBuilder {
      * Transfer-Encoding.
      */
     public List<Map.Entry<String, String>> buildEffectiveHeaders(ApiRequest request, VariableResolver resolver) throws Exception {
-        BuildContext ctx = buildHeadersAndBody(request, resolver);
+        RequestBuildPolicy policy = RequestBuildPolicy.forRequest(request);
+        BuildContext ctx = buildHeadersAndBody(request, resolver, policy);
         List<Map.Entry<String, String>> effective = new ArrayList<>();
         for (String h : ctx.rawHeaders) {
             int colon = h.indexOf(':');
             if (colon > 0) {
                 String key = h.substring(0, colon).trim();
                 String lower = key.toLowerCase();
-                if (!lower.equals("content-length") && !lower.equals("transfer-encoding")) {
+                if (policy.exactHttp() || (!lower.equals("content-length") && !lower.equals("transfer-encoding"))) {
                     effective.add(new AbstractMap.SimpleEntry<>(key, h.substring(colon + 1).trim()));
                 }
             }
@@ -85,7 +89,7 @@ public class RequestBuilder {
         return effective;
     }
 
-    private BuildContext buildHeadersAndBody(ApiRequest request, VariableResolver resolver) throws Exception {
+    private BuildContext buildHeadersAndBody(ApiRequest request, VariableResolver resolver, RequestBuildPolicy policy) throws Exception {
         if (request == null) {
             throw new IllegalArgumentException("Request cannot be null");
         }
@@ -99,38 +103,47 @@ public class RequestBuilder {
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
         String requestTarget = parsed.pathWithQuery;
-        HeaderStore headers = new HeaderStore();
-        RequestBuildPolicy policy = RequestBuildPolicy.forRequest(request);
-
-        if (policy.shouldApplyDefaultHeaders(request)) {
-            if (!policy.isSuppressed(request, "accept")) {
-                headers.putDefault("Accept", "application/json, text/plain, */*");
-            }
-            if (!policy.isSuppressed(request, "user-agent")) {
-                headers.putDefault("User-Agent", "BurpExtensionRuntime");
-            }
-            if (!policy.isSuppressed(request, "cache-control")) {
-                headers.putDefault("Cache-Control", "no-cache");
-            }
-        }
-
-        applyExplicitHeaders(request, headers, resolver);
-
-        if (policy.shouldApplyAuthentication(request)) {
-            requestTarget = applyAuthentication(request, headers, requestTarget, resolver, policy);
-        }
-
-        String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
-        headers.putComputed("Host", hostValue);
-
+        HeaderStore headers = new HeaderStore(policy.exactHttp());
         byte[] body;
-        if (policy.shouldSynthesizeBodyContentType(request)) {
-            body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver, policy);
-            if (body == null) {
-                body = buildBody(request.body, headers, request.name, resolver, true, !policy.isSuppressed(request, "content-type"));
-            }
-        } else {
+
+        if (policy.exactHttp()) {
+            applyExplicitHeaders(request, headers, resolver, true);
             body = buildBody(request.body, headers, request.name, resolver, false, false);
+        } else {
+            if (policy.shouldApplyDefaultHeaders(request)) {
+                if (!policy.isSuppressed(request, "accept")) {
+                    headers.putDefault("Accept", "application/json, text/plain, */*");
+                }
+                if (!policy.isSuppressed(request, "user-agent")) {
+                    headers.putDefault("User-Agent", "BurpExtensionRuntime");
+                }
+                if (!policy.isSuppressed(request, "cache-control")) {
+                    headers.putDefault("Cache-Control", "no-cache");
+                }
+            }
+
+            applyExplicitHeaders(request, headers, resolver, false);
+
+            if (policy.shouldApplyAuthentication(request)) {
+                requestTarget = applyAuthentication(request, headers, requestTarget, resolver, policy);
+            }
+
+            String hostValue = HttpUtils.buildHostWithPort(parsed.host, parsed.port, parsed.useHttps);
+            headers.putComputed("Host", hostValue);
+
+            if (policy.shouldSynthesizeBodyContentType(request)) {
+                body = maybeBuildOAuth2TokenBody(request, method, resolvedUrl, headers, resolver, policy);
+                if (body == null) {
+                    body = buildBody(request.body, headers, request.name, resolver, true, !policy.isSuppressed(request, "content-type"));
+                }
+            } else if (request.body != null
+                    && "formdata".equals(request.body.mode)
+                    && !policy.isSuppressed(request, "content-type")
+                    && (!policy.manualPreserve() || headers.has("Content-Type"))) {
+                body = buildBody(request.body, headers, request.name, resolver, true, true);
+            } else {
+                body = buildBody(request.body, headers, request.name, resolver, false, false);
+            }
         }
 
         // Insert request line at index 0
@@ -182,13 +195,25 @@ public class RequestBuilder {
      * precedence levels: default (lowest) -> put (medium) -> computed (highest).
      */
     private static class HeaderStore {
+        private final boolean preserveDuplicates;
         private final LinkedHashMap<String, String> headers = new LinkedHashMap<>();
+        private final List<Map.Entry<String, String>> exactHeaders = new ArrayList<>();
         private final Set<String> keysLower = new HashSet<>();
+
+        HeaderStore(boolean preserveDuplicates) {
+            this.preserveDuplicates = preserveDuplicates;
+        }
 
         /** Adds only if absent (lowest precedence). */
         void putDefault(String key, String value) {
             String normalizedKey = normalizeHeaderName(key);
             if (normalizedKey == null) {
+                return;
+            }
+            if (preserveDuplicates) {
+                if (!has(normalizedKey)) {
+                    append(normalizedKey, value);
+                }
                 return;
             }
             String lower = normalizedKey.toLowerCase();
@@ -202,6 +227,11 @@ public class RequestBuilder {
         void put(String key, String value) {
             String normalizedKey = normalizeHeaderName(key);
             if (normalizedKey == null) {
+                return;
+            }
+            if (preserveDuplicates) {
+                append(normalizedKey, value);
+                keysLower.add(normalizedKey.toLowerCase());
                 return;
             }
             String lower = normalizedKey.toLowerCase();
@@ -218,6 +248,11 @@ public class RequestBuilder {
 
         /** Merges a cookie into a single Cookie header. */
         void mergeCookie(String cookieValue) {
+            if (preserveDuplicates) {
+                append("Cookie", cookieValue);
+                keysLower.add("cookie");
+                return;
+            }
             String existing = get("Cookie");
             if (existing != null) {
                 putComputed("Cookie", existing + "; " + normalizeHeaderValue(cookieValue));
@@ -227,6 +262,15 @@ public class RequestBuilder {
         }
 
         String get(String key) {
+            if (key == null) {
+                return null;
+            }
+            if (preserveDuplicates) {
+                for (Map.Entry<String, String> e : exactHeaders) {
+                    if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
+                }
+                return null;
+            }
             for (Map.Entry<String, String> e : headers.entrySet()) {
                 if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
             }
@@ -234,11 +278,33 @@ public class RequestBuilder {
         }
 
         boolean has(String key) {
+            if (key == null) {
+                return false;
+            }
+            if (preserveDuplicates) {
+                for (Map.Entry<String, String> e : exactHeaders) {
+                    if (e.getKey().equalsIgnoreCase(key)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
             return keysLower.contains(key.toLowerCase());
         }
 
         Collection<Map.Entry<String, String>> entries() {
+            if (preserveDuplicates) {
+                return new ArrayList<>(exactHeaders);
+            }
             return new ArrayList<>(headers.entrySet());
+        }
+
+        private void append(String key, String value) {
+            String normalizedKey = normalizeHeaderName(key);
+            if (normalizedKey == null) {
+                return;
+            }
+            exactHeaders.add(new AbstractMap.SimpleEntry<>(normalizedKey, normalizeHeaderValue(value)));
         }
 
         private static String normalizeHeaderName(String value) {
@@ -257,7 +323,7 @@ public class RequestBuilder {
         }
     }
 
-    private void applyExplicitHeaders(ApiRequest request, HeaderStore headers, VariableResolver resolver) {
+    private void applyExplicitHeaders(ApiRequest request, HeaderStore headers, VariableResolver resolver, boolean exactHttp) {
         if (request.headers == null) {
             return;
         }
@@ -267,8 +333,11 @@ public class RequestBuilder {
             }
             String key = resolve(resolver, header.key);
             String value = resolve(resolver, header.value);
-            if (key != null && !SKIP_HEADER_NAMES.contains(key.trim().toLowerCase())) {
-                headers.put(key.trim(), value);
+            if (key != null) {
+                String trimmedKey = key.trim();
+                if (exactHttp || !SKIP_HEADER_NAMES.contains(trimmedKey.toLowerCase())) {
+                    headers.put(trimmedKey, value);
+                }
             }
         }
     }
@@ -426,9 +495,6 @@ public class RequestBuilder {
                             }
                         }
                         hs.put("Content-Type", expected);
-                    } else if (existingContentType != null && existingContentType.toLowerCase().startsWith("multipart/form-data")
-                            && !existingContentType.toLowerCase().contains("boundary=")) {
-                        hs.put("Content-Type", "multipart/form-data; boundary=" + boundary);
                     }
                     result = buildMultipartBody(body.formdata, boundary, resolver);
                 } else {
