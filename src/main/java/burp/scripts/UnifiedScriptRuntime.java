@@ -359,6 +359,7 @@ public class UnifiedScriptRuntime {
         }
         String normalized = source.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
+            case "history_replay", "history replay", "historyreplay" -> ExecutionSource.HISTORY_REPLAY;
             case "runner" -> ExecutionSource.RUNNER;
             case "build", "build_preview", "preview", "buildpreview" -> ExecutionSource.BUILD_PREVIEW;
             default -> ExecutionSource.WORKBENCH_SEND;

@@ -122,6 +122,7 @@ public class WorkspaceState {
 
     private static ApiCollection copyCollection(ApiCollection src) {
         ApiCollection copy = new ApiCollection();
+        copy.id = src.id;
         copy.name = src.name;
         copy.description = src.description;
         copy.format = src.format;

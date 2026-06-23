@@ -61,6 +61,21 @@ public final class RequestPathResolver {
         return normalizeFolderPath(rawPath);
     }
 
+    public static String getCanonicalFolderPath(String requestPath, String requestName) {
+        String rawPath = normalizePathToken(requestPath);
+        if (rawPath.isEmpty()) {
+            return "";
+        }
+        String normalizedName = normalizePathToken(requestName);
+        if (isLegacyFullRequestPath(requestPath, requestName)) {
+            return maybeLegacyFolderPath(requestPath, requestName);
+        }
+        if (!rawPath.contains("/") && Objects.equals(rawPath, normalizedName)) {
+            return "";
+        }
+        return normalizeFolderPath(rawPath);
+    }
+
     public static String getRequestFolderPath(ApiRequest request) {
         if (request == null) {
             return "";

@@ -72,6 +72,7 @@ public final class WorkspaceStateJson {
         normalizeEnvironmentProfiles(out);
         JsonObject rawRoot = raw != null && raw.isJsonObject() ? raw.getAsJsonObject() : null;
         JsonElement rawCollections = rawRoot != null ? rawRoot.get("collections") : null;
+        normalizeCollectionProfiles(out);
         for (int i = 0; i < out.collections.size(); i++) {
             burp.models.ApiCollection collection = out.collections.get(i);
             if (collection == null) {
@@ -115,6 +116,25 @@ public final class WorkspaceStateJson {
             out.version = 1;
         }
         return out;
+    }
+
+    private static void normalizeCollectionProfiles(WorkspaceState state) {
+        if (state == null || state.collections == null) {
+            return;
+        }
+        java.util.Set<String> seenIds = new java.util.LinkedHashSet<>();
+        for (burp.models.ApiCollection collection : state.collections) {
+            if (collection == null) {
+                continue;
+            }
+            collection.ensureId();
+            while (collection.id != null && seenIds.contains(collection.id)) {
+                collection.id = java.util.UUID.randomUUID().toString();
+            }
+            if (collection.id != null) {
+                seenIds.add(collection.id);
+            }
+        }
     }
 
     private static java.util.List<String> normalizeFolderPaths(java.util.List<String> folderPaths) {

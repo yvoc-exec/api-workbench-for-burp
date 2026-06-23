@@ -23,6 +23,7 @@ public final class RequestTreeMutationService {
 
     public ApiCollection createCollection(List<ApiCollection> loadedCollections) {
         ApiCollection collection = new ApiCollection();
+        collection.ensureId();
         collection.name = RequestTreeNamingPolicy.uniqueCollectionName(loadedCollections, "Untitled Collection");
         collection.requests = new ArrayList<>();
         collection.folderPaths = new ArrayList<>();
@@ -1112,6 +1113,7 @@ public final class RequestTreeMutationService {
             return null;
         }
         ApiCollection copy = new ApiCollection();
+        copy.ensureId();
         copy.name = RequestTreeNamingPolicy.normalizeTreeLabel(targetName);
         copy.description = source.description;
         copy.format = source.format;

@@ -15,6 +15,7 @@ import burp.diagnostics.DiagnosticStore;
 import burp.ui.ImporterPanel;
 import burp.utils.HttpUtils;
 import burp.utils.ExecutionResult;
+import burp.utils.RequestPathResolver;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
 import java.time.Instant;
@@ -486,12 +487,12 @@ public class HistoryEntry {
         entry.totalAttempts = Math.max(1, totalAttempts);
         if (collection != null) {
             entry.collectionName = collection.name;
-            entry.collectionId = collection.name;
+            entry.collectionId = collection.ensureId();
         }
         if (request != null) {
             entry.requestId = request.id;
             entry.requestName = request.name;
-            entry.folderPath = request.path;
+            entry.folderPath = RequestPathResolver.getCanonicalFolderPath(request.path, request.name);
         }
         if (environment != null) {
             entry.environmentId = environment.id;

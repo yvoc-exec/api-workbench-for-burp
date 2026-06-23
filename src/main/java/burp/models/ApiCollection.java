@@ -13,6 +13,7 @@ import burp.scripts.ScriptBlock;
 public class ApiCollection {
     private static final Logger LOGGER = Logger.getLogger(ApiCollection.class.getName());
 
+    public String id;
     public String name;
     public String description;
     public String format;         // postman, bruno, openapi, insomnia, har
@@ -56,6 +57,13 @@ public class ApiCollection {
 
     public void clearChangeListeners() {
         changeListeners.clear();
+    }
+
+    public String ensureId() {
+        if (id == null || id.isBlank()) {
+            id = UUID.randomUUID().toString();
+        }
+        return id;
     }
 
     public void fireChanged() {
