@@ -1267,6 +1267,38 @@ class ImporterPanelRequestTreeCreateFlowTest {
         String previewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
         assertThat(rawRequestText.get()).isEqualTo(previewRaw);
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+
+        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        rawRequestText.set(null);
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("normalized workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("normalized workbench send invocation", () -> rawRequestText.get() != null);
+        awaitCondition("normalized workbench send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        String normalizedPreviewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
+        assertThat(rawRequestText.get()).isEqualTo(normalizedPreviewRaw);
+        assertThat(rawRequestText.get()).contains("Host: api.example.test");
+        assertThat(rawRequestText.get()).doesNotContain("Host: alt.example.test");
+        assertThat(rawRequestText.get()).doesNotContain("Content-Length: 321");
+        assertThat(rawRequestText.get()).doesNotContain("Transfer-Encoding: gzip");
+        assertThat(rawRequestText.get()).doesNotContain("Proxy-Connection: keep-alive");
+        assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+
+        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        rawRequestText.set(null);
+        invokeOnEdt(panel, "executeWorkbenchSend");
+        awaitCondition("exact workbench resend started", () -> !requestEditorUnchecked(panel).isSendEnabled());
+        awaitCondition("exact workbench resend invocation", () -> rawRequestText.get() != null);
+        awaitCondition("exact workbench resend completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+        drainEdt();
+
+        String exactPreviewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
+        assertThat(rawRequestText.get()).isEqualTo(exactPreviewRaw);
+        assertThat(rawRequestText.get()).contains("Host: alt.example.test");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer first");
+        assertThat(rawRequestText.get()).contains("Authorization: Bearer second");
+        assertThat(rawRequestText.get()).contains("Proxy-Connection: keep-alive");
     }
 
     @Test

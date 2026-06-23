@@ -644,6 +644,7 @@ public class RequestEditorPanel extends JPanel {
             lastNonExactBuildMode = currentRequest.resolveBuildMode();
         }
 
+        List<ApiRequest.Header> headerSnapshot = snapshotHeaderRows();
         List<ApiRequest.Header> authoredHeaders = copyHeaders(currentRequest.headers);
         ApiRequest draft = buildRequestFromUI();
         if (draft == null) {
@@ -657,10 +658,12 @@ public class RequestEditorPanel extends JPanel {
         draft.applyTo(currentRequest);
         currentRequest.buildMode = targetMode;
         currentRequest.editorMaterialized = exactSelected ? true : false;
-        if (!exactSelected) {
+        if (exactSelected) {
+            currentRequest.headers = buildHeadersForModeSwitch(draft, authoredHeaders, true);
+        } else {
+            currentRequest.headers = headerSnapshot;
             currentRequest.suppressedAutoHeaders = new LinkedHashSet<>();
         }
-        currentRequest.headers = buildHeadersForModeSwitch(draft, authoredHeaders, exactSelected);
 
         ApiRequest headerRefresh = currentRequest.applyTo(new ApiRequest());
 
@@ -868,6 +871,24 @@ public class RequestEditorPanel extends JPanel {
             } else {
                 out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
             }
+        }
+        return out;
+    }
+
+    private List<ApiRequest.Header> snapshotHeaderRows() {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (headersModel == null) {
+            return out;
+        }
+        for (int i = 0; i < headersModel.getRowCount(); i++) {
+            String key = (String) headersModel.getValueAt(i, 0);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = (String) headersModel.getValueAt(i, 1);
+            Object disabledValue = headersModel.getColumnCount() > 2 ? headersModel.getValueAt(i, 2) : Boolean.FALSE;
+            boolean disabled = disabledValue instanceof Boolean ? (Boolean) disabledValue : Boolean.parseBoolean(String.valueOf(disabledValue));
+            out.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
         }
         return out;
     }
