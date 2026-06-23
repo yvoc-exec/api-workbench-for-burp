@@ -877,7 +877,7 @@ public class ImporterPanel {
             entry.collectionId = entry.collectionName;
         }
         if (entry.folderPath == null) {
-            entry.folderPath = result.folderPath;
+            entry.folderPath = resolveHistoryFolderPath(collection, request, entry);
         }
         if (entry.requestSnapshot == null && request != null) {
             entry.requestSnapshot = HistoryRequestSnapshot.from(request);
@@ -961,7 +961,7 @@ public class ImporterPanel {
                         ? existingContext.collection.id
                         : existingContext.collection.ensureId();
                 loadedEntry.collectionName = existingContext.collection.name;
-                loadedEntry.folderPath = RequestPathResolver.getCanonicalFolderPath(existingContext.request.path, existingContext.request.name);
+                loadedEntry.folderPath = RequestPathResolver.getRequestFolderPath(existingContext.collection, existingContext.request);
                 loadedEntry.requestId = existingContext.request.id;
                 loadedEntry.requestName = existingContext.request.name;
                 historyLoadResultNotifier.showLoadedIntoOriginalRequest(mainPanel, loadedEntry);
@@ -976,7 +976,7 @@ public class ImporterPanel {
             return;
         }
         ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
-        snapshotRequest.path = resolveHistoryFolderPath(entry);
+        snapshotRequest.path = resolveHistoryFolderPath(fallbackContext.collection, fallbackContext.request, entry);
         if (entry.requestName != null && !entry.requestName.isBlank()) {
             snapshotRequest.name = entry.requestName;
         }
@@ -1230,6 +1230,7 @@ public class ImporterPanel {
         String collectionIdentity = resolveHistoryCollectionIdentity(entry);
         String collectionName = resolveHistoryCollectionName(entry);
         String requestName = resolveHistoryRequestName(entry);
+        List<String> folderCandidates = resolveHistoryFolderPathCandidates(entry);
         String folderPath = resolveHistoryFolderPath(entry);
         String method = resolveHistoryMethod(entry);
         String urlTemplate = resolveHistoryUrlTemplate(entry);
@@ -1265,7 +1266,7 @@ public class ImporterPanel {
             }
         }
 
-        List<HistoryRequestMatch> fallbackMatches = findFallbackRequestMatches(collectionIdentity, requestName, folderPath, method, urlTemplate);
+        List<HistoryRequestMatch> fallbackMatches = findFallbackRequestMatches(collectionIdentity, requestName, folderCandidates, method, urlTemplate);
         if (fallbackMatches.size() == 1) {
             HistoryRequestMatch match = fallbackMatches.get(0);
             return new HistoryRequestContext(match.collection, match.request, true, false, null);
@@ -1323,7 +1324,7 @@ public class ImporterPanel {
 
     private List<HistoryRequestMatch> findFallbackRequestMatches(String collectionIdentity,
                                                                  String requestName,
-                                                                 String folderPath,
+                                                                 List<String> folderCandidates,
                                                                  String method,
                                                                  String urlTemplate) {
         List<HistoryRequestMatch> matches = new ArrayList<>();
@@ -1341,9 +1342,9 @@ public class ImporterPanel {
                 if (requestName != null && !requestName.isBlank() && !Objects.equals(request.name, requestName)) {
                     continue;
                 }
-                if (folderPath != null && !folderPath.isBlank()) {
-                    String requestFolderPath = RequestPathResolver.getCanonicalFolderPath(request.path, request.name);
-                    if (!Objects.equals(RequestPathResolver.normalizeFolderPath(folderPath), requestFolderPath)) {
+                if (folderCandidates != null && !folderCandidates.isEmpty()) {
+                    List<String> requestFolderCandidates = resolveRequestFolderPathCandidates(collection, request);
+                    if (!matchesAnyFolderCandidate(folderCandidates, requestFolderCandidates)) {
                         continue;
                     }
                 }
@@ -1457,13 +1458,90 @@ public class ImporterPanel {
             return "";
         }
         if (entry.folderPath != null && !entry.folderPath.isBlank()) {
-            return RequestPathResolver.getCanonicalFolderPath(entry.folderPath, resolveHistoryRequestName(entry));
+            return RequestPathResolver.normalizeFolderPath(entry.folderPath);
         }
         if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null) {
             ApiRequest authoredRequest = entry.requestSnapshot.authoredRequest;
-            return RequestPathResolver.getCanonicalFolderPath(authoredRequest.path, authoredRequest.name);
+            return RequestPathResolver.normalizeFolderPath(authoredRequest.path);
         }
         return "";
+    }
+
+    private String resolveHistoryFolderPath(ApiCollection collection, ApiRequest request, HistoryEntry entry) {
+        if (collection != null && request != null) {
+            return RequestPathResolver.getRequestFolderPath(collection, request);
+        }
+        return resolveHistoryFolderPath(entry);
+    }
+
+    private List<String> resolveHistoryFolderPathCandidates(HistoryEntry entry) {
+        List<String> candidates = new ArrayList<>();
+        if (entry == null) {
+            return candidates;
+        }
+        String requestName = resolveHistoryRequestName(entry);
+        addHistoryFolderCandidate(candidates, entry.folderPath);
+        addLegacyRootFolderCandidate(candidates, entry.folderPath, requestName);
+        if (entry.folderPath != null && !entry.folderPath.isBlank()) {
+            addHistoryFolderCandidate(candidates, RequestPathResolver.getRequestFolderPath(entry.folderPath, requestName, false));
+            addHistoryFolderCandidate(candidates, RequestPathResolver.getCanonicalFolderPath(entry.folderPath, requestName));
+        }
+        if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null) {
+            ApiRequest authoredRequest = entry.requestSnapshot.authoredRequest;
+            addHistoryFolderCandidate(candidates, authoredRequest.path);
+            addLegacyRootFolderCandidate(candidates, authoredRequest.path, authoredRequest.name);
+            addHistoryFolderCandidate(candidates, RequestPathResolver.getRequestFolderPath(authoredRequest.path, authoredRequest.name, false));
+            addHistoryFolderCandidate(candidates, RequestPathResolver.getCanonicalFolderPath(authoredRequest.path, authoredRequest.name));
+        }
+        return candidates;
+    }
+
+    private List<String> resolveRequestFolderPathCandidates(ApiCollection collection, ApiRequest request) {
+        List<String> candidates = new ArrayList<>();
+        if (request == null) {
+            return candidates;
+        }
+        String collectionAwareFolder = RequestPathResolver.getRequestFolderPath(collection, request);
+        if (collectionAwareFolder == null || collectionAwareFolder.isBlank()) {
+            candidates.add("");
+        } else {
+            addHistoryFolderCandidate(candidates, collectionAwareFolder);
+        }
+        addHistoryFolderCandidate(candidates, RequestPathResolver.getRequestFolderPath(request.path, request.name, false));
+        addHistoryFolderCandidate(candidates, RequestPathResolver.getCanonicalFolderPath(request.path, request.name));
+        return candidates;
+    }
+
+    private boolean matchesAnyFolderCandidate(List<String> entryCandidates, List<String> requestCandidates) {
+        if (entryCandidates == null || entryCandidates.isEmpty() || requestCandidates == null || requestCandidates.isEmpty()) {
+            return false;
+        }
+        for (String entryCandidate : entryCandidates) {
+            for (String requestCandidate : requestCandidates) {
+                if (Objects.equals(entryCandidate, requestCandidate)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void addHistoryFolderCandidate(List<String> candidates, String candidate) {
+        String normalized = RequestPathResolver.normalizeFolderPath(candidate);
+        if (!normalized.isBlank() && !candidates.contains(normalized)) {
+            candidates.add(normalized);
+        }
+    }
+
+    private void addLegacyRootFolderCandidate(List<String> candidates, String candidate, String requestName) {
+        String normalizedCandidate = RequestPathResolver.normalizeFolderPath(candidate);
+        String normalizedName = RequestPathResolver.normalizeFolderPath(requestName);
+        if (!normalizedCandidate.isBlank()
+                && !normalizedCandidate.contains("/")
+                && Objects.equals(normalizedCandidate, normalizedName)
+                && !candidates.contains("")) {
+            candidates.add("");
+        }
     }
 
     private String resolveHistoryMethod(HistoryEntry entry) {
@@ -6464,6 +6542,7 @@ public class ImporterPanel {
                         appendImportLog("Rejected duplicate collection name: \"" + collection.name + "\"");
                         return;
                     }
+                    ensureImportedCollectionId(collection, file.getName());
                     ensureRequestIds(collection);
                     registerCollectionRuntimeListener(collection);
                     loadedCollections.add(collection);
@@ -6625,6 +6704,7 @@ public class ImporterPanel {
             if (isLoadedCollectionNameInUse(collection.name)) {
                 collection.name = RequestTreeNamingPolicy.uniqueCollectionCopyName(loadedCollections, collection.name);
             }
+            ensureImportedCollectionId(collection, "drop import");
             ensureRequestIds(collection);
             registerCollectionRuntimeListener(collection);
             loadedCollections.add(collection);
@@ -6659,6 +6739,44 @@ public class ImporterPanel {
                 "ImporterPanel",
                 "Collection drop import completed",
                 "imported=" + appended.size() + "\nfailed=" + result.failedCount);
+    }
+
+    private void ensureImportedCollectionId(ApiCollection collection, String importSource) {
+        if (collection == null) {
+            return;
+        }
+        String previousId = collection.id;
+        collection.ensureId();
+        if (collection.id != null && isLoadedCollectionIdInUse(collection.id, collection)) {
+            collection.id = UUID.randomUUID().toString();
+            String message = "Regenerated imported collection ID to avoid collision.";
+            appendImportLog(message);
+            recordDiagnostic(
+                    DiagnosticOperation.IMPORT,
+                    DiagnosticSeverity.WARNING,
+                    "ImporterPanel",
+                    "Imported collection ID collision resolved",
+                    "source=" + importSource + "\ncollection=" + safeDiagnosticValue(collection.name) + "\npreviousId=" + safeDiagnosticValue(previousId));
+        }
+    }
+
+    private boolean isLoadedCollectionIdInUse(String collectionId, ApiCollection excludedCollection) {
+        if (collectionId == null || collectionId.isBlank()) {
+            return false;
+        }
+        for (ApiCollection loaded : loadedCollections) {
+            if (loaded == null || loaded == excludedCollection) {
+                continue;
+            }
+            if (collectionId.equals(loaded.id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String safeDiagnosticValue(String value) {
+        return value != null ? value : "";
     }
 
     private void showRemoveCollectionsDialog() {

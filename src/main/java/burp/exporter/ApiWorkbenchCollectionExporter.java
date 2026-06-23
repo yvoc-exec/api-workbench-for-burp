@@ -28,6 +28,7 @@ public final class ApiWorkbenchCollectionExporter {
 
         JsonObject col = new JsonObject();
         if (collection != null) {
+            col.addProperty("id", collection.ensureId());
             VariableResolver collectionResolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
             col.addProperty("name", CollectionExportSupport.resolve(collection.name, collectionResolver, resolve) != null ? CollectionExportSupport.resolve(collection.name, collectionResolver, resolve) : "");
             if (collection.description != null) {

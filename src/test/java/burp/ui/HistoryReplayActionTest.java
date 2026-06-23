@@ -12,11 +12,13 @@ import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
+import burp.ui.history.HistoryPanel;
 import burp.utils.ExecutionResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
 import org.mockito.ArgumentCaptor;
 
+import javax.swing.SwingUtilities;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -80,11 +82,7 @@ class HistoryReplayActionTest {
 
         DiagnosticStore.getInstance().setCaptureEnabled(true);
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "replayHistoryEntry",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
+        clickReplayHistoryButton(bundle, entry);
 
         ArgumentCaptor<ApiRequest> requestCaptor = ArgumentCaptor.forClass(ApiRequest.class);
         verify(bundle.importer, timeout(3000)).sendSingleRequestWithBuiltRequest(
@@ -101,9 +99,9 @@ class HistoryReplayActionTest {
         assertThat(capturedExecutionSource.get()).isEqualTo(burp.scripts.ExecutionSource.HISTORY_REPLAY);
 
         ImporterPanelTestSupport.awaitCondition(
-                () -> bundle.panel.getWorkspaceStateSnapshot().historyEntries.size() == 1,
+                () -> bundle.panel.getWorkspaceStateSnapshot().historyEntries.size() == 2,
                 Duration.ofSeconds(3));
-        assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries).hasSize(1);
+        assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries).hasSize(2);
         assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries.get(0).requestSnapshot.urlTemplate)
                 .isEqualTo("{{base_url}}/login");
         assertThat(bundle.panel.getWorkspaceStateSnapshot().historyEntries.get(0).executionSource)
@@ -134,11 +132,7 @@ class HistoryReplayActionTest {
                 eq(burp.scripts.ExecutionSource.HISTORY_REPLAY)))
                 .thenThrow(new Exception("Replay failed: missing token"));
 
-        ImporterPanelTestSupport.invokeVoid(
-                bundle.panel,
-                "replayHistoryEntry",
-                new Class<?>[]{HistoryEntry.class},
-                entry);
+        clickReplayHistoryButton(bundle, entry);
 
         ImporterPanelTestSupport.awaitCondition(
                 () -> DiagnosticStore.getInstance().snapshot().stream()
@@ -163,5 +157,17 @@ class HistoryReplayActionTest {
         return collections.stream()
                 .map(collection -> collection != null ? collection.name : null)
                 .toList();
+    }
+
+    private static void clickReplayHistoryButton(ImporterPanelTestSupport.PanelBundle bundle, HistoryEntry entry) throws Exception {
+        HistoryPanel historyPanel = bundle.panel.getHistoryPanelForTests();
+        historyPanel.getHistoryStore().addEntry(entry);
+        historyPanel.refreshFromStore(entry.id);
+        ImporterPanelTestSupport.awaitEdt();
+        SwingUtilities.invokeAndWait(() -> {
+            historyPanel.getHistoryTable().setRowSelectionInterval(0, 0);
+            historyPanel.getActionsPanel().getReplayButton().doClick();
+        });
+        ImporterPanelTestSupport.awaitEdt();
     }
 }

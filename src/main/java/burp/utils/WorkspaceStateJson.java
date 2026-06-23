@@ -24,7 +24,9 @@ public final class WorkspaceStateJson {
     private WorkspaceStateJson() {}
 
     public static String toJson(WorkspaceState state) {
-        return GSON.toJson(state != null ? state : new WorkspaceState());
+        WorkspaceState snapshot = WorkspaceState.copyOf(state);
+        normalizeCollectionProfiles(snapshot);
+        return GSON.toJson(snapshot);
     }
 
     public static WorkspaceState fromJson(String json) {

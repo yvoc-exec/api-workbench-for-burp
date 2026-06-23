@@ -85,6 +85,34 @@ class HistoryEntryCompatibilityTest {
     }
 
     @Test
+    void workbenchCapturePreservesSameNamedFolderWhenCollectionProvesItExists() {
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-users";
+        collection.name = "Users API";
+        collection.folderPaths = new java.util.ArrayList<>(List.of("Users"));
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-users";
+        request.name = "Users";
+        request.path = "Users";
+        request.sourceCollection = collection.name;
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                collection,
+                request,
+                null,
+                null,
+                1,
+                1,
+                List.of());
+
+        assertThat(entry.collectionId).isEqualTo("col-users");
+        assertThat(entry.folderPath).isEqualTo("Users");
+    }
+
+    @Test
     void runnerCaptureClassifiesSkippedStoppedAndFailedAttemptMetadata() {
         ApiCollection collection = HistoryTestFixtures.sampleCollection();
         ApiRequest request = HistoryTestFixtures.sampleRequest();
