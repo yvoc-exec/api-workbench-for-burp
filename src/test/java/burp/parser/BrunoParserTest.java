@@ -67,12 +67,15 @@ class BrunoParserTest {
                 .first()
                 .extracting(script -> script.exec)
                 .asString()
-                .contains("if (responseCode.code === 200) {")
-                .contains("pm.environment.set(\"done\", \"yes\");");
+                .contains("if (res.status === 200) {")
+                .contains("bru.setVar(\"done\", \"yes\");");
         assertThat(req.scriptBlocks)
                 .hasSize(1);
         assertThat(req.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.BRUNO);
         assertThat(req.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
+        assertThat(req.scriptBlocks.get(0).source)
+                .contains("if (res.status === 200) {")
+                .contains("bru.setVar(\"done\", \"yes\");");
     }
 
     @Test
