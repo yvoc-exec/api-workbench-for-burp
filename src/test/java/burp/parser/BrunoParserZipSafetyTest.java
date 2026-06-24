@@ -217,9 +217,52 @@ class BrunoParserZipSafetyTest {
             assertThat(store.snapshot())
                     .filteredOn(event -> event.operation == DiagnosticOperation.IMPORT && event.severity == DiagnosticSeverity.WARNING)
                     .anySatisfy(event -> {
-                        assertThat(event.message).contains("Malformed Bruno file skipped");
+                        assertThat(event.message).contains("Bruno import warning");
                         assertThat(event.attributes).containsKey("path");
                     });
+        } finally {
+            store.clear();
+            store.setCaptureEnabled(previousCapture);
+        }
+    }
+
+    @Test
+    void parseRecoversValidSiblingRequestsFromSameFileWithUnclosedBlock() throws Exception {
+        DiagnosticStore store = DiagnosticStore.getInstance();
+        boolean previousCapture = store.isCaptureEnabled();
+        store.setCaptureEnabled(true);
+        store.clear();
+        try {
+            Path root = Files.createTempDirectory(tempDir, "bruno-recover");
+            Files.writeString(root.resolve("BrokenAndRecovered.bru"), """
+                    meta {
+                      name: Broken And Recovered
+                      type: http
+                      seq: 1
+                    }
+
+                    post {
+                      url: https://api.example.test/broken
+
+                    body:json {
+                      {
+                        "broken": true
+                      }
+
+                    get {
+                      url: https://api.example.test/recovered
+                    }
+                    """, StandardCharsets.UTF_8);
+
+            ApiCollection collection = new BrunoParser().parse(root.toFile());
+
+            assertThat(collection.requests).hasSize(1);
+            assertThat(collection.requests.get(0).method).isEqualTo("GET");
+            assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/recovered");
+            assertThat(collection.importedRequestCount).isEqualTo(1);
+            assertThat(collection.skippedRequestCount).isGreaterThanOrEqualTo(1);
+            assertThat(collection.importWarnings).isNotEmpty();
+            assertThat(collection.importWarnings.get(0)).contains("BrokenAndRecovered.bru").contains("Unclosed Bruno block");
         } finally {
             store.clear();
             store.setCaptureEnabled(previousCapture);
