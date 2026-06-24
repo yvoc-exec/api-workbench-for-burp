@@ -41,18 +41,45 @@ class BrunoImportPipelineTest {
 
                 post {
                   url: https://api.example.test/pipeline
+                  auth: bearer
+                  body: json
                 }
 
                 headers {
                   X-Flow: {{flow}}
                 }
 
-                body:text {
-                  payload-{{flow}}
+                auth:basic {
+                  username: ignored
+                  password: ignored
+                }
+
+                auth:bearer {
+                  token: {{token}}
+                }
+
+                body:graphql {
+                  query Ignored {
+                    ignored
+                  }
+                }
+
+                body:json {
+                  {
+                    "payload": "{{flow}}"
+                  }
                 }
 
                 script:pre-request {
                   bru.setVar('flow', 'from-script');
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(bru.getParent().resolve("bruno.json"), """
+                {
+                  "name": "Pipeline",
+                  "vars": {
+                    "token": "pipeline-token"
+                  }
                 }
                 """, StandardCharsets.UTF_8);
 
@@ -63,6 +90,12 @@ class BrunoImportPipelineTest {
             assertThat(block.dialect).isEqualTo(ScriptDialect.BRUNO);
             assertThat(block.source).contains("bru.setVar('flow', 'from-script');");
         });
+        assertThat(imported.authOverrideMode).isEqualTo("explicit");
+        assertThat(imported.auth).isNotNull();
+        assertThat(imported.auth.type).isEqualTo("bearer");
+        assertThat(imported.body).isNotNull();
+        assertThat(imported.body.mode).isEqualTo("raw");
+        assertThat(imported.body.contentType).isEqualTo("application/json");
 
         RequestEditorPanel editor = new RequestEditorPanel();
         editor.setRequestBuilder(new RequestBuilder(null));
@@ -94,7 +127,8 @@ class BrunoImportPipelineTest {
         assertThat(sendCount).hasValue(1);
         assertThat(result.success).isTrue();
         assertThat(result.rawRequestText).contains("X-Flow: from-script");
-        assertThat(result.rawRequestText).contains("Content-Type: text/plain");
-        assertThat(result.rawRequestText).contains("payload-from-script");
+        assertThat(result.rawRequestText).contains("Authorization: Bearer pipeline-token");
+        assertThat(result.rawRequestText).contains("Content-Type: application/json");
+        assertThat(result.rawRequestText).contains("\"payload\": \"from-script\"");
     }
 }

@@ -64,6 +64,121 @@ class BrunoParserTypedSyntaxTest {
     }
 
     @Test
+    void methodSelectorsChooseBearerAndJsonEvenWhenStaleBlocksAppearFirst() throws Exception {
+        ApiRequest request = parse("""
+                meta {
+                  name: Selector Priority
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/selector
+                  body: json
+                  auth: bearer
+                }
+
+                auth:basic {
+                  username: ignored-user
+                  password: ignored-pass
+                }
+
+                auth:bearer {
+                  token: {{token}}
+                }
+
+                body:graphql {
+                  query ExampleQuery {
+                    viewer {
+                      id
+                    }
+                  }
+                }
+
+                body:json {
+                  {
+                    "payload": "{{flow}}"
+                  }
+                }
+                """);
+
+        assertThat(request.authOverrideMode).isEqualTo("explicit");
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "{{token}}");
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).contains("\"payload\": \"{{flow}}\"");
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("token", "bearer-token");
+        resolver.addCustomVariable("flow", "resolved-flow");
+        String raw = rawRequestText(request, resolver);
+
+        assertThat(raw).contains("Authorization: Bearer bearer-token");
+        assertThat(raw).contains("\"payload\": \"resolved-flow\"");
+        assertThat(raw).doesNotContain("ignored-user");
+        assertThat(raw).doesNotContain("ExampleQuery");
+    }
+
+    @Test
+    void typedBasicApiKeyAndOauth2AuthModesAreImportedAndBuilt() throws Exception {
+        ApiRequest basicRequest = parse("""
+                meta {
+                  name: Basic
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/basic
+                }
+
+                auth:basic {
+                  username: user1
+                  password: pass1
+                }
+                """);
+        assertThat(rawRequestText(basicRequest, new VariableResolver())).contains("Authorization: Basic ");
+
+        ApiRequest apiKeyRequest = parse("""
+                meta {
+                  name: ApiKey
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/apikey
+                }
+
+                auth:apikey {
+                  key: X-Api-Key
+                  value: key-123
+                  in: header
+                }
+                """);
+        assertThat(rawRequestText(apiKeyRequest, new VariableResolver())).contains("X-Api-Key: key-123");
+
+        ApiRequest oauth2Request = parse("""
+                meta {
+                  name: OAuth2
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/oauth
+                }
+
+                auth:oauth2 {
+                  accessToken: oauth-token
+                }
+                """);
+        assertThat(rawRequestText(oauth2Request, new VariableResolver())).contains("Authorization: Bearer oauth-token");
+    }
+
+    @Test
     void typedJsonBodyWithNestedObjectsAndTemplateTokensBuildsJsonPostRequest() throws Exception {
         ApiRequest request = parse("""
                 meta {
@@ -305,6 +420,167 @@ class BrunoParserTypedSyntaxTest {
         assertThat(request.authExplicitlyDisabled).isTrue();
         assertThat(request.authInherited).isFalse();
         assertThat(rawRequestText(request, new VariableResolver())).doesNotContain("Authorization:");
+    }
+
+    @Test
+    void typedNoAuthAndNoBodySelectorsBlockInheritanceAndStaleBlocks() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("noauth-selector"));
+        Files.writeString(root.resolve("bruno.json"), """
+                {
+                  "name": "NoAuthSelector"
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("Collection.bru"), """
+                auth:bearer {
+                  token: collection-token
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("Request.bru"), """
+                meta {
+                  name: NoAuth
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/public
+                  auth: none
+                  body: none
+                }
+
+                auth:bearer {
+                  token: should-not-apply
+                }
+
+                body:json {
+                  {
+                    "stale": true
+                  }
+                }
+                """, StandardCharsets.UTF_8);
+
+        ApiCollection collection = new BrunoParser().parse(root.toFile());
+        ApiRequest request = collection.requests.get(0);
+
+        assertThat(collection.auth).isNotNull();
+        assertThat(collection.auth.type).isEqualTo("bearer");
+        assertThat(request.authOverrideMode).isEqualTo("none");
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("none");
+        assertThat(request.authExplicitlyDisabled).isTrue();
+        assertThat(request.authInherited).isFalse();
+        assertThat(request.hasAuth()).isFalse();
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("none");
+        assertThat(request.body.raw).isNull();
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+        assertThat(request.auth.type).isEqualTo("none");
+        assertThat(request.authInherited).isFalse();
+
+        String raw = rawRequestText(request, new VariableResolver());
+        assertThat(raw).doesNotContain("Authorization:");
+        assertThat(raw).doesNotContain("stale");
+    }
+
+    @Test
+    void quotedDictionaryKeysArePreservedForHeadersAndFormFields() throws Exception {
+        ApiRequest request = parse("""
+                meta {
+                  name: Quoted Keys
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/quoted
+                }
+
+                headers {
+                  "key with spaces": value:with:colons
+                  "colon:header": header:value
+                  ~"disabled:colon:header": disabled:value:with:colon
+                  "nested escaped \\"quote\\"": q:value
+                }
+
+                body:form-urlencoded {
+                  "field with spaces": value:with:colons
+                  "colon:field": field:value:with:colons
+                  ~"disabled:colon:field": disabled:field:value
+                }
+                """);
+
+        assertThat(request.headers).extracting(h -> h.key).containsExactly(
+                "key with spaces",
+                "colon:header",
+                "disabled:colon:header",
+                "nested escaped \"quote\""
+        );
+        assertThat(request.headers).extracting(h -> h.value).containsExactly(
+                "value:with:colons",
+                "header:value",
+                "disabled:value:with:colon",
+                "q:value"
+        );
+        assertThat(request.headers).extracting(h -> h.disabled).containsExactly(false, false, true, false);
+
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("urlencoded");
+        assertThat(request.body.urlencoded).extracting(f -> f.key).containsExactly(
+                "field with spaces",
+                "colon:field",
+                "disabled:colon:field"
+        );
+        assertThat(request.body.urlencoded).extracting(f -> f.value).containsExactly(
+                "value:with:colons",
+                "field:value:with:colons",
+                "disabled:field:value"
+        );
+        assertThat(request.body.urlencoded).extracting(f -> f.disabled).containsExactly(false, false, true);
+    }
+
+    @Test
+    void multipartQuotedDictionaryKeysArePreservedAndInvalidHeaderNamesStayImportedOnly() throws Exception {
+        ApiRequest request = parse("""
+                meta {
+                  name: Multipart Quoted Keys
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/multipart
+                }
+
+                headers {
+                  "invalid header name": value:with:colons
+                }
+
+                body:multipart-form {
+                  "field with spaces": text:value:with:colons
+                  "colon:field": field:value:with:colons
+                  ~"disabled:colon:field": disabled:field:value:with:colon
+                }
+                """);
+
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("invalid header name");
+            assertThat(header.value).isEqualTo("value:with:colons");
+            assertThat(header.disabled).isFalse();
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("formdata");
+        assertThat(request.body.formdata).extracting(f -> f.key).containsExactly(
+                "field with spaces",
+                "colon:field",
+                "disabled:colon:field"
+        );
+        assertThat(request.body.formdata).extracting(f -> f.value).containsExactly(
+                "text:value:with:colons",
+                "field:value:with:colons",
+                "disabled:field:value:with:colon"
+        );
+        assertThat(request.body.formdata).extracting(f -> f.disabled).containsExactly(false, false, true);
     }
 
     @Test
