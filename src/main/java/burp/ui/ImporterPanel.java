@@ -6657,7 +6657,19 @@ public class ImporterPanel {
                     loadedCollections.add(collection);
                     runWithWorkspaceChangeNotificationsSuppressed(ImporterPanel.this::rebuildTree);
                     refreshCollectionCombos();
-                    appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
+                    boolean hasBrunoSummary = collection != null && "bruno".equalsIgnoreCase(collection.format);
+                    if (hasBrunoSummary) {
+                        appendImportLog("Loaded \"" + collection.name + "\" (" + collection.importedRequestCount + " imported, " + collection.skippedRequestCount + " skipped requests)");
+                        if (collection.importWarnings != null) {
+                            for (String warning : collection.importWarnings) {
+                                if (warning != null && !warning.isBlank()) {
+                                    appendImportLog("[WARN] " + warning);
+                                }
+                            }
+                        }
+                    } else {
+                        appendImportLog("Loaded \"" + collection.name + "\" (" + collection.requests.size() + " requests)");
+                    }
                     importBtn.setEnabled(true);
                     sendToRunnerBtn.setEnabled(true);
                     updateRunnerQueueUiState();
