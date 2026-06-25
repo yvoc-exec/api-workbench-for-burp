@@ -213,6 +213,173 @@ class BrunoBlockScannerTest {
         assertThat(request.body.raw).isEqualTo("trailing body");
     }
 
+    @Test
+    void bodyTextWithUnindentedBraceLineRemainsLiteralAndKeepsLaterHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                name: Body Text Brace Recovery
+                type: http
+                seq: 1
+                }
+
+                post {
+                url: https://api.example.test/body-text-brace
+                }
+
+                body:text {
+                X-Pattern: literal {
+                }
+
+                headers {
+                X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:text",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("X-Pattern: literal {");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+        assertThat(rawRequestText(request)).contains("X-Pattern: literal {");
+    }
+
+    @Test
+    void scriptPreRequestWithUnindentedFunctionLineRemainsOpaqueAndKeepsLaterHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                name: Script Brace Recovery
+                type: http
+                seq: 1
+                }
+
+                post {
+                url: https://api.example.test/script-brace
+                }
+
+                script:pre-request {
+                function run() {
+                  return /}/;
+                }
+                }
+
+                headers {
+                X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "script:pre-request",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.preRequestScripts).singleElement().extracting(script -> script.exec)
+                .asString()
+                .isEqualTo("""
+                        function run() {
+                          return /}/;
+                        }
+                        """.trim());
+        assertThat(request.scriptBlocks).singleElement().satisfies(block -> {
+            assertThat(block.phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+            assertThat(block.source).contains("function run() {");
+        });
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).doesNotContain("function run() {");
+        assertThat(rawRequestText(request)).doesNotContain("return /}/;");
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+    }
+
+    @Test
+    void graphqlBodyWithUnindentedQueryLineRemainsOpaqueAndKeepsLaterHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                name: GraphQL Brace Recovery
+                type: http
+                seq: 1
+                }
+
+                post {
+                url: https://api.example.test/graphql-brace
+                }
+
+                body:graphql {
+                query GetUser {
+                  user {
+                    id
+                  }
+                }
+                }
+
+                headers {
+                X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:graphql",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("graphql");
+        assertThat(request.body.graphql).isNotNull();
+        assertThat(request.body.graphql.query).isEqualTo("""
+                query GetUser {
+                  user {
+                    id
+                  }
+                }
+                """.trim());
+        assertThat(request.body.graphql.variables).isEqualTo("{}");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).contains("query GetUser");
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+    }
+
     @ParameterizedTest
     @MethodSource("headerValueCases")
     void multilineHeaderDictionaryValuesStayImported(String source, String expectedHeaderKey, String expectedHeaderValue) throws Exception {

@@ -21,6 +21,46 @@ final class BrunoBlockScanner {
             "yield", "await", "async", "typeof", "instanceof", "in", "of", "void", "delete"
     );
 
+    private static final Set<String> KNOWN_BRUNO_DECLARATION_NAMES = Set.of(
+            "meta",
+            "vars",
+            "headers",
+            "auth",
+            "body",
+            "script",
+            "params",
+            "assert",
+            "test",
+            "tests",
+            "docs",
+            "body:none",
+            "body:json",
+            "body:text",
+            "body:xml",
+            "body:graphql",
+            "body:graphql:vars",
+            "body:form-urlencoded",
+            "body:multipart-form",
+            "body:test",
+            "auth:none",
+            "auth:noauth",
+            "auth:no_auth",
+            "auth:basic",
+            "auth:bearer",
+            "auth:apikey",
+            "auth:oauth2",
+            "script:pre-request",
+            "script:post-response",
+            "params:query",
+            "params:path",
+            "vars:pre-request",
+            "vars:post-response"
+    );
+
+    private static final Set<String> STANDARD_HTTP_METHODS = Set.of(
+            "get", "post", "put", "delete", "patch", "head", "options", "trace", "connect"
+    );
+
     private static final Set<String> TEXT_BLOCK_NAMES = Set.of(
             "body", "body:json", "body:text", "body:xml", "body:graphql", "body:graphql:vars",
             "script:pre-request", "script:post-response", "tests", "assert", "test", "body:test",
@@ -210,6 +250,7 @@ final class BrunoBlockScanner {
 
     private static int findStructuralTextBlockClose(String source, int declarationLineStart, int declarationLineEnd, int openBraceIndex) {
         int declarationIndent = skipLeadingWhitespace(source, declarationLineStart, declarationLineEnd) - declarationLineStart;
+        int candidateClose = -1;
         if (openBraceIndex >= 0) {
             for (int cursor = declarationLineEnd - 1; cursor > openBraceIndex; cursor--) {
                 if (source.charAt(cursor) == '}'
@@ -226,14 +267,14 @@ final class BrunoBlockScanner {
                     && source.charAt(cursor) == '}'
                     && isOnlyWhitespaceAfter(source, cursor + 1, lineEnd)
                     && (cursor - lineStart) == declarationIndent) {
-                return cursor;
+                candidateClose = cursor;
             }
             if ((cursor - lineStart) <= declarationIndent && isBlockDeclarationLine(source, cursor, lineEnd)) {
-                return -1;
+                return candidateClose >= 0 ? candidateClose : -1;
             }
             lineStart = nextLineStart(source, lineEnd);
         }
-        return -1;
+        return candidateClose;
     }
 
     private static boolean isBlockDeclarationLine(String source, int cursor, int lineEnd) {
@@ -244,11 +285,28 @@ final class BrunoBlockScanner {
             return false;
         }
         int nameEnd = cursor + 1;
-        while (nameEnd < lineEnd && isBlockNameChar(source.charAt(nameEnd))) {
+        while (nameEnd < lineEnd) {
+            char ch = source.charAt(nameEnd);
+            if (Character.isWhitespace(ch) || ch == '{') {
+                break;
+            }
+            if (!isBlockNameChar(ch)) {
+                return false;
+            }
             nameEnd++;
         }
+        if (nameEnd <= cursor) {
+            return false;
+        }
+        String candidate = source.substring(cursor, nameEnd).trim();
+        if (candidate.isEmpty() || candidate.endsWith(":")) {
+            return false;
+        }
         int braceIndex = findOpenBraceIndex(source, nameEnd, lineEnd);
-        return braceIndex >= 0;
+        if (braceIndex < 0 || !isOnlyWhitespaceAfter(source, nameEnd, braceIndex)) {
+            return false;
+        }
+        return isRecognizedBrunoDeclarationToken(candidate);
     }
 
     private static boolean isOnlyWhitespaceAfter(String source, int start, int end) {
@@ -347,5 +405,45 @@ final class BrunoBlockScanner {
             return false;
         }
         return TEXT_BLOCK_NAMES.contains(name.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isRecognizedBrunoDeclarationToken(String candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        String normalized = candidate.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        if (normalized.contains(":")) {
+            return KNOWN_BRUNO_DECLARATION_NAMES.contains(normalized);
+        }
+        if (STANDARD_HTTP_METHODS.contains(normalized) || KNOWN_BRUNO_DECLARATION_NAMES.contains(normalized)) {
+            return true;
+        }
+        return isEligibleCustomHttpMethod(candidate);
+    }
+
+    private static boolean isEligibleCustomHttpMethod(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        String normalizedCandidate = candidate.trim();
+        if (normalizedCandidate.isEmpty()) {
+            return false;
+        }
+        boolean hasLetter = false;
+        for (int i = 0; i < normalizedCandidate.length(); i++) {
+            char ch = normalizedCandidate.charAt(i);
+            if (Character.isLetter(ch)) {
+                hasLetter = true;
+                if (!Character.isUpperCase(ch)) {
+                    return false;
+                }
+            } else if (!Character.isDigit(ch) && ch != '-' && ch != '_') {
+                return false;
+            }
+        }
+        return hasLetter;
     }
 }
