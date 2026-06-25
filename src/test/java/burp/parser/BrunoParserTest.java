@@ -398,6 +398,66 @@ class BrunoParserTest {
     }
 
     @Test
+    void lowercaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("delete");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void uppercaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("DELETE");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void mixedCaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("Delete");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void lowercaseCustomMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("propfind");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("PROPFIND");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void mixedCaseCustomMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("mSearch");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("MSEARCH");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
     void customMethodIsDetectedWhenMetaSaysHttp() throws Exception {
         Path root = Files.createTempDirectory("bruno-custom-method");
         Files.writeString(root.resolve("Custom.bru"), """
@@ -509,5 +569,22 @@ class BrunoParserTest {
         }
         zip.toFile().deleteOnExit();
         return zip;
+    }
+
+    private ApiCollection parseSingleRequestBru(String methodToken) throws Exception {
+        Path root = Files.createTempDirectory("bruno-method");
+        Files.writeString(root.resolve("Request.bru"), """
+                meta {
+                  name: %s
+                  type: http
+                  seq: 1
+                }
+
+                %s {
+                  url: https://api.example.test/resource
+                }
+                """.formatted(methodToken, methodToken));
+
+        return new BrunoParser().parse(root.toFile());
     }
 }

@@ -171,11 +171,11 @@ final class BrunoBlockScanner {
                 nameEnd++;
             }
             String name = source.substring(nameStart, nameEnd).trim();
-            if (name.isEmpty() || JAVA_SCRIPT_KEYWORDS.contains(name.toLowerCase(Locale.ROOT))) {
+            if (name.isEmpty()) {
                 index = nextLineStart(source, lineEnd);
                 continue;
             }
-            if (!isRecognizedBrunoDeclarationToken(name)) {
+            if (!isTopLevelDeclarationCandidate(source, nameStart, lineEnd)) {
                 index = nextLineStart(source, lineEnd);
                 continue;
             }
@@ -273,16 +273,28 @@ final class BrunoBlockScanner {
 
         int declarationIndent = skipLeadingWhitespace(source, lineStart, lineEnd) - lineStart;
         lineStart = nextLineStart(source, lineEnd);
+        boolean inTripleQuotedValue = false;
         while (lineStart < source.length()) {
             lineEnd = findLineEnd(source, lineStart);
             int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
+            if (containsTripleApostropheDelimiter(source, lineStart, lineEnd)) {
+                if ((countTripleApostropheDelimiters(source, lineStart, lineEnd) & 1) == 1) {
+                    inTripleQuotedValue = !inTripleQuotedValue;
+                }
+                lineStart = nextLineStart(source, lineEnd);
+                continue;
+            }
+            if (inTripleQuotedValue) {
+                lineStart = nextLineStart(source, lineEnd);
+                continue;
+            }
             if (cursor < lineEnd
                     && source.charAt(cursor) == '}'
                     && isOnlyWhitespaceAfter(source, cursor + 1, lineEnd)) {
                 if ((cursor - lineStart) == declarationIndent) {
                     return cursor;
                 }
-            } else if ((cursor - lineStart) <= declarationIndent && isBlockDeclarationLine(source, cursor, lineEnd)) {
+            } else if ((cursor - lineStart) <= declarationIndent && isRecoverySiblingDeclaration(source, cursor, lineEnd)) {
                 return -1;
             }
             lineStart = nextLineStart(source, lineEnd);
@@ -311,7 +323,7 @@ final class BrunoBlockScanner {
                     && (cursor - lineStart) == declarationIndent) {
                 candidateClose = cursor;
             }
-            if ((cursor - lineStart) <= declarationIndent && isBlockDeclarationLine(source, cursor, lineEnd)) {
+            if ((cursor - lineStart) <= declarationIndent && isRecoverySiblingDeclaration(source, cursor, lineEnd)) {
                 return candidateClose >= 0 ? candidateClose : -1;
             }
             lineStart = nextLineStart(source, lineEnd);
@@ -319,12 +331,54 @@ final class BrunoBlockScanner {
         return candidateClose;
     }
 
-    private static boolean isBlockDeclarationLine(String source, int cursor, int lineEnd) {
+    private static boolean isTopLevelDeclarationCandidate(String source, int cursor, int lineEnd) {
         if (source == null || cursor < 0 || lineEnd <= cursor || cursor >= source.length()) {
             return false;
         }
-        if (!isBlockStartChar(source.charAt(cursor))) {
+        String candidate = extractDeclarationCandidate(source, cursor, lineEnd);
+        if (candidate == null || candidate.isEmpty() || candidate.endsWith(":")) {
             return false;
+        }
+        int braceIndex = findOpenBraceIndex(source, cursor + candidate.length(), lineEnd);
+        if (braceIndex < 0 || !isOnlyWhitespaceAfter(source, cursor + candidate.length(), braceIndex)) {
+            return false;
+        }
+        if (isKnownBrunoDeclaration(candidate) || isStandardHttpMethod(candidate)) {
+            return true;
+        }
+        if (candidate.indexOf(':') >= 0) {
+            return isStructurallyValidColonQualifiedDeclaration(candidate);
+        }
+        if (JAVA_SCRIPT_KEYWORDS.contains(candidate.toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        return isBareHttpMethod(candidate);
+    }
+
+    private static boolean isRecoverySiblingDeclaration(String source, int cursor, int lineEnd) {
+        if (source == null || cursor < 0 || lineEnd <= cursor || cursor >= source.length()) {
+            return false;
+        }
+        String candidate = extractDeclarationCandidate(source, cursor, lineEnd);
+        if (candidate == null || candidate.isEmpty() || candidate.endsWith(":")) {
+            return false;
+        }
+        int braceIndex = findOpenBraceIndex(source, cursor + candidate.length(), lineEnd);
+        if (braceIndex < 0 || !isOnlyWhitespaceAfter(source, cursor + candidate.length(), braceIndex)) {
+            return false;
+        }
+        if (isKnownBrunoDeclaration(candidate) || isStandardHttpMethod(candidate)) {
+            return true;
+        }
+        return isConservativeCustomMethod(candidate);
+    }
+
+    private static String extractDeclarationCandidate(String source, int cursor, int lineEnd) {
+        if (source == null || cursor < 0 || lineEnd <= cursor || cursor >= source.length()) {
+            return null;
+        }
+        if (!isBlockStartChar(source.charAt(cursor))) {
+            return null;
         }
         int nameEnd = cursor + 1;
         while (nameEnd < lineEnd) {
@@ -333,22 +387,14 @@ final class BrunoBlockScanner {
                 break;
             }
             if (!isBlockNameChar(ch)) {
-                return false;
+                return null;
             }
             nameEnd++;
         }
         if (nameEnd <= cursor) {
-            return false;
+            return null;
         }
-        String candidate = source.substring(cursor, nameEnd).trim();
-        if (candidate.isEmpty() || candidate.endsWith(":")) {
-            return false;
-        }
-        int braceIndex = findOpenBraceIndex(source, nameEnd, lineEnd);
-        if (braceIndex < 0 || !isOnlyWhitespaceAfter(source, nameEnd, braceIndex)) {
-            return false;
-        }
-        return isRecognizedBrunoDeclarationToken(candidate);
+        return source.substring(cursor, nameEnd).trim();
     }
 
     private static boolean isOnlyWhitespaceAfter(String source, int start, int end) {
@@ -449,7 +495,7 @@ final class BrunoBlockScanner {
         return OPAQUE_TEXT_BLOCK_NAMES.contains(name.trim().toLowerCase(Locale.ROOT));
     }
 
-    private static boolean isRecognizedBrunoDeclarationToken(String candidate) {
+    private static boolean isKnownBrunoDeclaration(String candidate) {
         if (candidate == null) {
             return false;
         }
@@ -457,16 +503,37 @@ final class BrunoBlockScanner {
         if (normalized.isEmpty()) {
             return false;
         }
-        if (normalized.contains(":")) {
-            return KNOWN_BRUNO_DECLARATION_NAMES.contains(normalized);
-        }
-        if (STANDARD_HTTP_METHODS.contains(normalized) || KNOWN_BRUNO_DECLARATION_NAMES.contains(normalized)) {
-            return true;
-        }
-        return isEligibleCustomHttpMethod(candidate);
+        return KNOWN_BRUNO_DECLARATION_NAMES.contains(normalized);
     }
 
-    private static boolean isEligibleCustomHttpMethod(String candidate) {
+    private static boolean isStandardHttpMethod(String candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        return STANDARD_HTTP_METHODS.contains(candidate.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isBareHttpMethod(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        String normalizedCandidate = candidate.trim();
+        if (normalizedCandidate.isEmpty()) {
+            return false;
+        }
+        boolean hasLetter = false;
+        for (int i = 0; i < normalizedCandidate.length(); i++) {
+            char ch = normalizedCandidate.charAt(i);
+            if (Character.isLetter(ch)) {
+                hasLetter = true;
+            } else if (!Character.isDigit(ch) && ch != '-' && ch != '_') {
+                return false;
+            }
+        }
+        return hasLetter;
+    }
+
+    private static boolean isConservativeCustomMethod(String candidate) {
         if (candidate == null || candidate.isBlank()) {
             return false;
         }
@@ -487,5 +554,41 @@ final class BrunoBlockScanner {
             }
         }
         return hasLetter;
+    }
+
+    private static boolean isStructurallyValidColonQualifiedDeclaration(String candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        String normalized = candidate.trim();
+        return !normalized.isEmpty()
+                && normalized.indexOf(':') > 0
+                && !normalized.endsWith(":");
+    }
+
+    private static boolean containsTripleApostropheDelimiter(String source, int lineStart, int lineEnd) {
+        if (source == null || lineStart < 0 || lineEnd <= lineStart) {
+            return false;
+        }
+        for (int index = lineStart; index <= lineEnd - 3; index++) {
+            if (source.charAt(index) == '\'' && source.charAt(index + 1) == '\'' && source.charAt(index + 2) == '\'') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int countTripleApostropheDelimiters(String source, int lineStart, int lineEnd) {
+        if (source == null || lineStart < 0 || lineEnd <= lineStart) {
+            return 0;
+        }
+        int count = 0;
+        for (int index = lineStart; index <= lineEnd - 3; index++) {
+            if (source.charAt(index) == '\'' && source.charAt(index + 1) == '\'' && source.charAt(index + 2) == '\'') {
+                count++;
+                index += 2;
+            }
+        }
+        return count;
     }
 }
