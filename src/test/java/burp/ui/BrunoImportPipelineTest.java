@@ -112,6 +112,11 @@ class BrunoImportPipelineTest {
             assertThat(block.dialect).isEqualTo(ScriptDialect.BRUNO);
             assertThat(block.source).contains("bru.setVar('flow', 'from-script');");
         });
+        assertThat(built.auth).isNotNull();
+        assertThat(built.auth.type).isEqualTo("bearer");
+        assertThat(built.body).isNotNull();
+        assertThat(built.body.mode).isEqualTo("raw");
+        assertThat(built.body.raw).contains("\"payload\": \"{{flow}}\"");
 
         AtomicInteger sendCount = new AtomicInteger();
         CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> captured = new CopyOnWriteArrayList<>();

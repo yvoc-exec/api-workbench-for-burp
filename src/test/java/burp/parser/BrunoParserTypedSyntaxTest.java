@@ -9,11 +9,17 @@ import burp.utils.RequestBuilder;
 import burp.parser.VariableResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -176,6 +182,112 @@ class BrunoParserTypedSyntaxTest {
                 }
                 """);
         assertThat(rawRequestText(oauth2Request, new VariableResolver())).contains("Authorization: Bearer oauth-token");
+    }
+
+    @ParameterizedTest
+    @MethodSource("authSelectorCases")
+    void methodBlockAuthSelectorsChooseRequestedAuthEvenWhenStaleBlocksAppearFirst(String selector, String source) throws Exception {
+        ApiRequest request = parse(source);
+
+        assertThat(request.authOverrideMode).isEqualTo("explicit");
+        assertThat(request.authInherited).isFalse();
+        assertThat(request.authExplicitlyDisabled).isFalse();
+        assertThat(request.auth).isNotNull();
+
+        String raw = rawRequestText(request, new VariableResolver());
+        switch (selector) {
+            case "basic" -> {
+                assertThat(request.auth.type).isEqualTo("basic");
+                assertThat(request.auth.properties).containsEntry("username", "user1");
+                assertThat(request.auth.properties).containsEntry("password", "pass1");
+                assertThat(raw).contains("Authorization: Basic ");
+                assertThat(raw).doesNotContain("stale-bearer");
+            }
+            case "apikey" -> {
+                assertThat(request.auth.type).isEqualTo("apikey");
+                assertThat(request.auth.properties).containsEntry("key", "X-Api-Key");
+                assertThat(request.auth.properties).containsEntry("value", "key-123");
+                assertThat(request.auth.properties).containsEntry("in", "header");
+                assertThat(raw).contains("X-Api-Key: key-123");
+                assertThat(raw).doesNotContain("stale-basic");
+            }
+            case "oauth2" -> {
+                assertThat(request.auth.type).isEqualTo("oauth2");
+                assertThat(request.auth.properties).containsEntry("accessToken", "oauth-token");
+                assertThat(raw).contains("Authorization: Bearer oauth-token");
+                assertThat(raw).doesNotContain("stale-bearer");
+            }
+            default -> throw new IllegalStateException("Unexpected selector: " + selector);
+        }
+    }
+
+    private static Stream<Arguments> authSelectorCases() {
+        return Stream.of(
+                Arguments.of("basic", """
+                        meta {
+                          name: Basic Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/basic-selector
+                          auth: basic
+                        }
+
+                        auth:bearer {
+                          token: stale-bearer
+                        }
+
+                        auth:basic {
+                          username: user1
+                          password: pass1
+                        }
+                        """),
+                Arguments.of("apikey", """
+                        meta {
+                          name: ApiKey Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/apikey-selector
+                          auth: apikey
+                        }
+
+                        auth:basic {
+                          username: stale-basic
+                          password: stale-pass
+                        }
+
+                        auth:apikey {
+                          key: X-Api-Key
+                          value: key-123
+                          in: header
+                        }
+                        """),
+                Arguments.of("oauth2", """
+                        meta {
+                          name: OAuth2 Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/oauth-selector
+                          auth: oauth2
+                        }
+
+                        auth:bearer {
+                          token: stale-bearer
+                        }
+
+                        auth:oauth2 {
+                          accessToken: oauth-token
+                        }
+                        """)
+        );
     }
 
     @Test
@@ -365,6 +477,13 @@ class BrunoParserTypedSyntaxTest {
 
                 post {
                   url: https://api.example.test/upload
+                  body: multipart-form
+                }
+
+                body:json {
+                  {
+                    "stale": true
+                  }
                 }
 
                 body:multipart-form {
@@ -384,6 +503,166 @@ class BrunoParserTypedSyntaxTest {
         assertThat(raw).contains("name=\"description\"");
         assertThat(raw).contains("name=\"upload\"; filename=\"");
         assertThat(raw).contains("file-content");
+        assertThat(raw).doesNotContain("stale");
+    }
+
+    @ParameterizedTest
+    @MethodSource("bodySelectorCases")
+    void methodBlockBodySelectorsChooseRequestedBodyEvenWhenStaleBlocksAppearFirst(String selector, String source) throws Exception {
+        ApiRequest request = parse(source);
+        VariableResolver resolver = new VariableResolver();
+        if ("xml".equals(selector)) {
+            resolver.addCustomVariable("name", "Widget");
+        }
+        String raw = rawRequestText(request, resolver);
+
+        switch (selector) {
+            case "text" -> {
+                assertThat(request.body).isNotNull();
+                assertThat(request.body.mode).isEqualTo("raw");
+                assertThat(request.body.raw).isEqualTo("plain text body");
+                assertThat(request.body.contentType).isEqualTo("text/plain");
+                assertThat(raw).contains("Content-Type: text/plain");
+                assertThat(raw).contains("plain text body");
+                assertThat(raw).doesNotContain("stale-json");
+            }
+            case "xml" -> {
+                assertThat(request.body).isNotNull();
+                assertThat(request.body.mode).isEqualTo("raw");
+                assertThat(request.body.raw).contains("<item><name>{{name}}</name></item>");
+                assertThat(request.body.contentType).isEqualTo("text/xml");
+                assertThat(raw).contains("Content-Type: text/xml");
+                assertThat(raw).contains("<name>Widget</name>");
+                assertThat(raw).doesNotContain("stale-text");
+            }
+            case "graphql" -> {
+                assertThat(request.body).isNotNull();
+                assertThat(request.body.mode).isEqualTo("graphql");
+                assertThat(request.body.graphql).isNotNull();
+                assertThat(request.body.graphql.query).contains("query GetUser");
+                assertThat(request.body.graphql.variables).contains("\"userId\": \"abc-123\"");
+                assertThat(request.body.contentType).isEqualTo("application/json");
+                assertThat(raw).contains("\"query\"");
+                assertThat(raw).contains("\"variables\"");
+                assertThat(raw).doesNotContain("stale-json");
+            }
+            case "form-urlencoded" -> {
+                assertThat(request.body).isNotNull();
+                assertThat(request.body.mode).isEqualTo("urlencoded");
+                assertThat(request.body.urlencoded).extracting(field -> field.key).containsExactly("grant_type", "client_id");
+                assertThat(request.body.urlencoded).extracting(field -> field.value).containsExactly("client_credentials", "client-123");
+                assertThat(request.body.contentType).isEqualTo("application/x-www-form-urlencoded");
+                assertThat(raw).contains("grant_type=client_credentials");
+                assertThat(raw).contains("client_id=client-123");
+                assertThat(raw).doesNotContain("stale-json");
+            }
+            default -> throw new IllegalStateException("Unexpected selector: " + selector);
+        }
+    }
+
+    private static Stream<Arguments> bodySelectorCases() {
+        return Stream.of(
+                Arguments.of("text", """
+                        meta {
+                          name: Text Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/text-selector
+                          body: text
+                        }
+
+                        body:json {
+                          {
+                            "stale-json": true
+                          }
+                        }
+
+                        body:text {
+                          plain text body
+                        }
+                        """),
+                Arguments.of("xml", """
+                        meta {
+                          name: Xml Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/xml-selector
+                          body: xml
+                        }
+
+                        body:text {
+                          stale-text
+                        }
+
+                        headers {
+                          Content-Type: text/xml
+                        }
+
+                        body:xml {
+                          <item><name>{{name}}</name></item>
+                        }
+                        """),
+                Arguments.of("graphql", """
+                        meta {
+                          name: GraphQL Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/graphql-selector
+                          body: graphql
+                        }
+
+                        body:json {
+                          {
+                            "stale-json": true
+                          }
+                        }
+
+                        body:graphql {
+                          query GetUser {
+                            user(id: "{{userId}}") {
+                              id
+                              name
+                            }
+                          }
+                        }
+
+                        body:graphql:vars {
+                          {
+                            "userId": "abc-123"
+                          }
+                        }
+                        """),
+                Arguments.of("form-urlencoded", """
+                        meta {
+                          name: Urlencoded Selector
+                          type: http
+                          seq: 1
+                        }
+
+                        post {
+                          url: https://api.example.test/form-selector
+                          body: form-urlencoded
+                        }
+
+                        body:text {
+                          stale-json
+                        }
+
+                        body:form-urlencoded {
+                          grant_type: client_credentials
+                          client_id: client-123
+                        }
+                        """)
+        );
     }
 
     @Test
@@ -481,6 +760,58 @@ class BrunoParserTypedSyntaxTest {
         String raw = rawRequestText(request, new VariableResolver());
         assertThat(raw).doesNotContain("Authorization:");
         assertThat(raw).doesNotContain("stale");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"none", "noauth", "no_auth"})
+    void methodBlockNoAuthAliasesCanonicalizeAndBlockInheritance(String selector) throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("noauth-alias-" + selector));
+        Files.writeString(root.resolve("bruno.json"), """
+                {
+                  "name": "NoAuthAliases"
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("Collection.bru"), """
+                auth:bearer {
+                  token: collection-token
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("Request.bru"), """
+                meta {
+                  name: NoAuth Alias
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/public
+                  auth: %s
+                }
+
+                auth:bearer {
+                  token: stale-request-token
+                }
+                """.formatted(selector), StandardCharsets.UTF_8);
+
+        ApiCollection collection = new BrunoParser().parse(root.toFile());
+        ApiRequest request = collection.requests.get(0);
+
+        ApiRequest.Auth collectionAuth = collection.auth;
+        assertThat(collectionAuth).isNotNull();
+        assertThat(collectionAuth.type).isEqualTo("bearer");
+
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+        assertThat(request.authOverrideMode).isEqualTo("none");
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("none");
+        assertThat(request.authExplicitlyDisabled).isTrue();
+        assertThat(request.authInherited).isFalse();
+        assertThat(request.hasAuth()).isFalse();
+
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        String raw = rawRequestText(request, new VariableResolver());
+        assertThat(raw).doesNotContain("Authorization:");
     }
 
     @Test

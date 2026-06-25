@@ -200,7 +200,6 @@ class BrunoParserZipSafetyTest {
                         body:json {
                           {
                             "broken": true
-                        }
                         """);
             }});
 
