@@ -427,11 +427,7 @@ class ImporterPanelRunnerQueueTest {
         runner.setMaxRetries(0);
         ImporterPanel panel = newPanel(runner);
         ApiRequest first = request("One");
-        first.auth = new ApiRequest.Auth();
-        first.auth.type = "bearer";
         ApiRequest second = request("Two");
-        second.auth = new ApiRequest.Auth();
-        second.auth.type = "bearer";
         ApiCollection collection = collection("Paused", first, second);
         edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
         drainEdt();
@@ -471,11 +467,7 @@ class ImporterPanelRunnerQueueTest {
         runner.setMaxRetries(0);
         ImporterPanel panel = newPanel(runner);
         ApiRequest first = request("One");
-        first.auth = new ApiRequest.Auth();
-        first.auth.type = "bearer";
         ApiRequest second = request("Two");
-        second.auth = new ApiRequest.Auth();
-        second.auth.type = "bearer";
         ApiCollection collection = collection("Delay", first, second);
         edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
         drainEdt();

@@ -380,6 +380,318 @@ class BrunoBlockScannerTest {
         assertThat(rawRequestText(request)).contains("X-After: yes");
     }
 
+    @Test
+    void bodyTextFollowedBySparqlAndHeadersSeparatesBlocksAndImportsSupportedBody() throws Exception {
+        String source = """
+                meta {
+                  name: SPARQL Sibling
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/query
+                }
+
+                body:text {
+                  supported body
+                }
+
+                body:sparql {
+                SELECT * WHERE {
+                  ?s ?p ?o
+                }
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:text",
+                "body:sparql",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("supported body");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(request.body.raw).doesNotContain("SELECT * WHERE");
+        assertThat(rawRequestText(request)).contains("supported body");
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+    }
+
+    @Test
+    void scriptPreRequestFollowedByMetadataSeparatesBlocksAndKeepsHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Script Metadata Sibling
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/script-metadata
+                }
+
+                script:pre-request {
+                  bru.setVar('pre', 'value');
+                }
+
+                metadata {
+                  kind: audit
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "script:pre-request",
+                "metadata",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.preRequestScripts).singleElement().extracting(script -> script.exec)
+                .asString()
+                .isEqualTo("bru.setVar('pre', 'value');");
+        assertThat(request.scriptBlocks).singleElement().satisfies(block -> {
+            assertThat(block.phase).isEqualTo(ScriptPhase.PRE_REQUEST);
+            assertThat(block.source).contains("bru.setVar('pre', 'value');");
+        });
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).doesNotContain("kind: audit");
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+    }
+
+    @Test
+    void bodyGraphqlFollowedByBodyFileSeparatesBlocksAndPreservesGraphqlRequest() throws Exception {
+        String source = """
+                meta {
+                  name: GraphQL File Sibling
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/graphql-file
+                }
+
+                body:graphql {
+                query GetUser {
+                  user {
+                    id
+                  }
+                }
+                }
+
+                body:file {
+                  path: ./payload.txt
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:graphql",
+                "body:file",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("graphql");
+        assertThat(request.body.graphql).isNotNull();
+        assertThat(request.body.graphql.query).contains("query GetUser");
+        assertThat(request.body.graphql.variables).isEqualTo("{}");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).contains("query GetUser");
+        assertThat(rawRequestText(request)).contains("X-After: yes");
+        assertThat(rawRequestText(request)).doesNotContain("path: ./payload.txt");
+    }
+
+    @Test
+    void unclosedDictionaryBlockBeforeDigestAuthIsReportedAndStopsAtSiblingDeclaration() {
+        String source = """
+                meta {
+                  name: Digest Recovery
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/digest-recovery
+                }
+
+                headers {
+                  X-Pattern: literal {
+
+                auth:digest {
+                  username: digest-user
+                  password: digest-pass
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "auth:digest",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).containsExactly("headers");
+    }
+
+    @Test
+    void unclosedTextBlockBeforeExampleIsReportedAndStopsAtSiblingDeclaration() {
+        String source = """
+                meta {
+                  name: Example Recovery
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/example-recovery
+                }
+
+                body:text {
+                  supported body
+
+                example {
+                  name: Example sibling
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "example",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).containsExactly("body:text");
+    }
+
+    @Test
+    void appSettingsGrpcAndWsBlocksAreScannedIndependently() {
+        String source = """
+                app {
+                  name: App Sibling
+                }
+
+                settings {
+                  theme: dark
+                }
+
+                grpc {
+                  endpoint: localhost:9000
+                }
+
+                ws {
+                  url: wss://api.example.test/socket
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "app",
+                "settings",
+                "grpc",
+                "ws"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+    }
+
+    @Test
+    void oauth2AdditionalParamsBlockIsScannedSeparately() {
+        String source = """
+                meta {
+                  name: OAuth2 Additional Params
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/oauth2-additional-params
+                }
+
+                auth:oauth2 {
+                  grant_type: client_credentials
+                  access_token: token-123
+                }
+
+                auth:oauth2:additional_params:auth_req:headers {
+                  X-Auth: yes
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "auth:oauth2",
+                "auth:oauth2:additional_params:auth_req:headers",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+    }
+
     @ParameterizedTest
     @MethodSource("headerValueCases")
     void multilineHeaderDictionaryValuesStayImported(String source, String expectedHeaderKey, String expectedHeaderValue) throws Exception {

@@ -23,48 +23,86 @@ final class BrunoBlockScanner {
 
     private static final Set<String> KNOWN_BRUNO_DECLARATION_NAMES = Set.of(
             "meta",
-            "vars",
+            "app",
+            "settings",
+            "grpc",
+            "ws",
+            "http",
+            "query",
             "headers",
-            "auth",
-            "body",
-            "script",
+            "metadata",
             "params",
+            "params:path",
+            "params:query",
+            "vars",
+            "vars:pre-request",
+            "vars:post-response",
             "assert",
             "test",
             "tests",
             "docs",
+            "example",
+            "body",
             "body:none",
             "body:json",
             "body:text",
             "body:xml",
+            "body:sparql",
             "body:graphql",
             "body:graphql:vars",
+            "body:grpc",
+            "body:ws",
             "body:form-urlencoded",
             "body:multipart-form",
+            "body:file",
             "body:test",
+            "auth",
             "auth:none",
             "auth:noauth",
             "auth:no_auth",
             "auth:basic",
             "auth:bearer",
             "auth:apikey",
+            "auth:awsv4",
+            "auth:digest",
+            "auth:ntlm",
+            "auth:oauth1",
             "auth:oauth2",
+            "auth:wsse",
+            "auth:oauth2:additional_params:auth_req:headers",
+            "auth:oauth2:additional_params:auth_req:queryparams",
+            "auth:oauth2:additional_params:auth_req:body",
+            "auth:oauth2:additional_params:access_token_req:headers",
+            "auth:oauth2:additional_params:access_token_req:queryparams",
+            "auth:oauth2:additional_params:access_token_req:body",
+            "auth:oauth2:additional_params:refresh_token_req:headers",
+            "auth:oauth2:additional_params:refresh_token_req:queryparams",
+            "auth:oauth2:additional_params:refresh_token_req:body",
+            "script",
             "script:pre-request",
-            "script:post-response",
-            "params:query",
-            "params:path",
-            "vars:pre-request",
-            "vars:post-response"
+            "script:post-response"
     );
 
     private static final Set<String> STANDARD_HTTP_METHODS = Set.of(
             "get", "post", "put", "delete", "patch", "head", "options", "trace", "connect"
     );
 
-    private static final Set<String> TEXT_BLOCK_NAMES = Set.of(
-            "body", "body:json", "body:text", "body:xml", "body:graphql", "body:graphql:vars",
-            "script:pre-request", "script:post-response", "tests", "assert", "test", "body:test",
-            "docs"
+    private static final Set<String> OPAQUE_TEXT_BLOCK_NAMES = Set.of(
+            "body",
+            "body:json",
+            "body:text",
+            "body:xml",
+            "body:sparql",
+            "body:graphql",
+            "body:graphql:vars",
+            "script:pre-request",
+            "script:post-response",
+            "tests",
+            "docs",
+            "example",
+            "assert",
+            "test",
+            "body:test"
     );
 
     static final class Block {
@@ -137,9 +175,13 @@ final class BrunoBlockScanner {
                 index = nextLineStart(source, lineEnd);
                 continue;
             }
+            if (!isRecognizedBrunoDeclarationToken(name)) {
+                index = nextLineStart(source, lineEnd);
+                continue;
+            }
 
             int openBraceIndex = findOpenBraceIndex(source, nameEnd, lineEnd);
-            if (openBraceIndex < 0) {
+            if (openBraceIndex < 0 || !isOnlyWhitespaceAfter(source, nameEnd, openBraceIndex)) {
                 index = nextLineStart(source, lineEnd);
                 continue;
             }
@@ -404,7 +446,7 @@ final class BrunoBlockScanner {
         if (name == null) {
             return false;
         }
-        return TEXT_BLOCK_NAMES.contains(name.trim().toLowerCase(Locale.ROOT));
+        return OPAQUE_TEXT_BLOCK_NAMES.contains(name.trim().toLowerCase(Locale.ROOT));
     }
 
     private static boolean isRecognizedBrunoDeclarationToken(String candidate) {
