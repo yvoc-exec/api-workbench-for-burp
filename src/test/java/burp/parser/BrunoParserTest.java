@@ -597,6 +597,118 @@ class BrunoParserTest {
     }
 
     @Test
+    void closingDelimiterLineWithFakeHeadersDeclarationKeepsBodyVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Prefix Header
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/test
+                }
+
+                vars {
+                  payload: '''
+                line one
+                headers {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("survived");
+        assertThat(rawRequestText(request)).contains("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithDeleteKeepsHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Delete Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                headers {
+                  X-Description: '''
+                line one
+                delete {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.method).isEqualTo("POST");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Description");
+            assertThat(header.value).isEqualTo("'''");
+        });
+        assertThat(request.body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithTypedDeclarationKeepsLaterHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Typed Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                auth:bearer {
+                  token: '''
+                line one
+                body:json {'''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+    }
+
+    @Test
     void metadataOnlyBruWithVarsStillBecomesCollectionVariablesNotRequests() throws Exception {
         Path root = Files.createTempDirectory("bruno-metadata-only");
         Files.writeString(root.resolve("MyCollection.bru"), """
