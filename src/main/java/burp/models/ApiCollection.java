@@ -40,6 +40,10 @@ public class ApiCollection {
     public Map<String, String> runtimeVars = new HashMap<>();
     /** Collection-scoped OAuth2 overrides bound to this collection. */
     public Map<String, String> runtimeOAuth2 = new HashMap<>();
+    /** Bruno import summary metadata; transient so it does not persist to workspace exports. */
+    public transient int importedRequestCount;
+    public transient int skippedRequestCount;
+    public transient List<String> importWarnings = new ArrayList<>();
 
     private transient final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 

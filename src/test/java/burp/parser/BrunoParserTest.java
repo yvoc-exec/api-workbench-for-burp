@@ -67,12 +67,15 @@ class BrunoParserTest {
                 .first()
                 .extracting(script -> script.exec)
                 .asString()
-                .contains("if (responseCode.code === 200) {")
-                .contains("pm.environment.set(\"done\", \"yes\");");
+                .contains("if (res.status === 200) {")
+                .contains("bru.setVar(\"done\", \"yes\");");
         assertThat(req.scriptBlocks)
                 .hasSize(1);
         assertThat(req.scriptBlocks.get(0).dialect).isEqualTo(ScriptDialect.BRUNO);
         assertThat(req.scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.POST_RESPONSE);
+        assertThat(req.scriptBlocks.get(0).source)
+                .contains("if (res.status === 200) {")
+                .contains("bru.setVar(\"done\", \"yes\");");
     }
 
     @Test
@@ -395,6 +398,66 @@ class BrunoParserTest {
     }
 
     @Test
+    void lowercaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("delete");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void uppercaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("DELETE");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void mixedCaseDeleteMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("Delete");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("DELETE");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void lowercaseCustomMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("propfind");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("PROPFIND");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
+    void mixedCaseCustomMethodIsDetectedAsRequest() throws Exception {
+        ApiCollection collection = parseSingleRequestBru("mSearch");
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("MSEARCH");
+        assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/resource");
+    }
+
+    @Test
     void customMethodIsDetectedWhenMetaSaysHttp() throws Exception {
         Path root = Files.createTempDirectory("bruno-custom-method");
         Files.writeString(root.resolve("Custom.bru"), """
@@ -413,6 +476,236 @@ class BrunoParserTest {
 
         assertThat(collection.requests).hasSize(1);
         assertThat(collection.requests.get(0).method).isEqualTo("LIST");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInHeadersRemainSingleLineValuesAndKeepBodyVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Header Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/header
+                }
+
+                headers {
+                  X-Pattern: prefix'''suffix
+                }
+
+                body:text {
+                  request survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("prefix'''suffix");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+        assertThat(rawRequestText(request)).contains("X-Pattern: prefix'''suffix");
+        assertThat(rawRequestText(request)).contains("request survived");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInVarsRemainSingleLineValuesAndResolveFully() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Vars Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/vars
+                }
+
+                vars {
+                  token: abc'''def
+                }
+
+                headers {
+                  X-Token: {{token}}
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.variables).singleElement().satisfies(variable -> {
+            assertThat(variable.key).isEqualTo("token");
+            assertThat(variable.value).isEqualTo("abc'''def");
+        });
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCollectionVariables(collection);
+        resolver.addFolderVariables(collection, request);
+        resolver.addRequestVariables(request);
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("abc'''def");
+        assertThat(rawRequestText(request, resolver)).contains("X-Token: abc'''def");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInBearerAuthRemainSingleLineValuesAndKeepLaterHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Bearer Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/auth
+                }
+
+                auth:bearer {
+                  token: "'''"
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "'''");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).contains("Authorization: Bearer '''");
+    }
+
+    @Test
+    void closingDelimiterLineWithFakeHeadersDeclarationKeepsBodyVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Prefix Header
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/test
+                }
+
+                vars {
+                  payload: '''
+                line one
+                headers {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("survived");
+        assertThat(rawRequestText(request)).contains("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithDeleteKeepsHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Delete Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                headers {
+                  X-Description: '''
+                line one
+                delete {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.method).isEqualTo("POST");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Description");
+            assertThat(header.value).isEqualTo("'''");
+        });
+        assertThat(request.body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithTypedDeclarationKeepsLaterHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Closing Typed Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                auth:bearer {
+                  token: '''
+                line one
+                body:json {'''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
     }
 
     @Test
@@ -506,5 +799,36 @@ class BrunoParserTest {
         }
         zip.toFile().deleteOnExit();
         return zip;
+    }
+
+    private ApiCollection parseCollection(String content) throws Exception {
+        Path root = Files.createTempDirectory("bruno-collection");
+        Files.writeString(root.resolve("Request.bru"), content);
+        return new BrunoParser().parse(root.toFile());
+    }
+
+    private String rawRequestText(ApiRequest request) throws Exception {
+        return rawRequestText(request, new VariableResolver());
+    }
+
+    private String rawRequestText(ApiRequest request, VariableResolver resolver) throws Exception {
+        return new String(new RequestBuilder(null).buildRequest(request, resolver), StandardCharsets.UTF_8);
+    }
+
+    private ApiCollection parseSingleRequestBru(String methodToken) throws Exception {
+        Path root = Files.createTempDirectory("bruno-method");
+        Files.writeString(root.resolve("Request.bru"), """
+                meta {
+                  name: %s
+                  type: http
+                  seq: 1
+                }
+
+                %s {
+                  url: https://api.example.test/resource
+                }
+                """.formatted(methodToken, methodToken));
+
+        return new BrunoParser().parse(root.toFile());
     }
 }
