@@ -105,7 +105,9 @@ final class BrunoBlockScanner {
             }
 
             String inlineText = source.substring(nameEnd, openBraceIndex).trim();
-            int closeIndex = findStructuralTextBlockClose(source, lineStart, lineEnd);
+            int closeIndex = isKnownTextBlock(name)
+                    ? findStructuralTextBlockClose(source, lineStart, lineEnd, openBraceIndex)
+                    : findMatchingBraceStructural(source, openBraceIndex);
             if (closeIndex < 0) {
                 malformedBlocks.add(name);
                 malformedStarts.add(nameStart);
@@ -235,25 +237,14 @@ final class BrunoBlockScanner {
         return -1;
     }
 
-    private static int findStructuralTextBlockClose(String source, int declarationLineStart, int declarationLineEnd) {
+    private static int findStructuralTextBlockClose(String source, int declarationLineStart, int declarationLineEnd, int openBraceIndex) {
         int declarationIndent = skipLeadingWhitespace(source, declarationLineStart, declarationLineEnd) - declarationLineStart;
-        int openBraceIndex = -1;
-        for (int i = declarationLineStart; i < declarationLineEnd; i++) {
-            if (source.charAt(i) == '{') {
-                openBraceIndex = i;
-                break;
-            }
-        }
         if (openBraceIndex >= 0) {
-            int cursor = openBraceIndex + 1;
-            while (cursor < declarationLineEnd && Character.isWhitespace(source.charAt(cursor))) {
-                cursor++;
-            }
-            if (cursor < declarationLineEnd
-                    && source.charAt(cursor) == '}'
-                    && isOnlyWhitespaceAfter(source, cursor + 1, declarationLineEnd)
-                    && (cursor - declarationLineStart) == declarationIndent) {
-                return cursor;
+            for (int cursor = declarationLineEnd - 1; cursor > openBraceIndex; cursor--) {
+                if (source.charAt(cursor) == '}'
+                        && isOnlyWhitespaceAfter(source, cursor + 1, declarationLineEnd)) {
+                    return cursor;
+                }
             }
         }
         int lineStart = nextLineStart(source, declarationLineEnd);
