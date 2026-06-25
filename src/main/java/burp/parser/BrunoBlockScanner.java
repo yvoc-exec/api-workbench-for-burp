@@ -179,60 +179,34 @@ final class BrunoBlockScanner {
         if (source == null || openBraceIndex < 0 || openBraceIndex >= source.length() || source.charAt(openBraceIndex) != '{') {
             return -1;
         }
-        int depth = 0;
-        boolean inSingleQuote = false;
-        boolean inDoubleQuote = false;
-        boolean inTemplateLiteral = false;
-        boolean escaped = false;
+        int lineStart = findLineStart(source, openBraceIndex);
+        int lineEnd = findLineEnd(source, lineStart);
 
-        for (int i = openBraceIndex; i < source.length(); i++) {
-            char ch = source.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
+        for (int cursor = lineEnd - 1; cursor > openBraceIndex; cursor--) {
+            if (source.charAt(cursor) == '}'
+                    && isOnlyWhitespaceAfter(source, cursor + 1, lineEnd)) {
+                return cursor;
             }
-            if (ch == '\\' && (inSingleQuote || inDoubleQuote || inTemplateLiteral)) {
-                escaped = true;
-                continue;
-            }
-            if (inSingleQuote) {
-                if (ch == '\'') {
-                    inSingleQuote = false;
-                }
-                continue;
-            }
-            if (inDoubleQuote) {
-                if (ch == '"') {
-                    inDoubleQuote = false;
-                }
-                continue;
-            }
-            if (inTemplateLiteral) {
-                if (ch == '`') {
-                    inTemplateLiteral = false;
-                }
-                continue;
-            }
-            if (ch == '\'') {
-                inSingleQuote = true;
-                continue;
-            }
-            if (ch == '"') {
-                inDoubleQuote = true;
-                continue;
-            }
-            if (ch == '`') {
-                inTemplateLiteral = true;
-                continue;
-            }
-            if (ch == '{') {
-                depth++;
-            } else if (ch == '}') {
+        }
+
+        int depth = 1;
+        lineStart = nextLineStart(source, lineEnd);
+        while (lineStart < source.length()) {
+            lineEnd = findLineEnd(source, lineStart);
+            int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
+            int trimmedEnd = trimTrailingWhitespace(source, lineStart, lineEnd);
+            if (cursor < lineEnd
+                    && source.charAt(cursor) == '}'
+                    && isOnlyWhitespaceAfter(source, cursor + 1, lineEnd)) {
                 depth--;
                 if (depth == 0) {
-                    return i;
+                    return cursor;
                 }
+            } else if (cursor < trimmedEnd
+                    && source.charAt(trimmedEnd - 1) == '{') {
+                depth++;
             }
+            lineStart = nextLineStart(source, lineEnd);
         }
         return -1;
     }
@@ -349,6 +323,36 @@ final class BrunoBlockScanner {
                 break;
             }
             cursor++;
+        }
+        return cursor;
+    }
+
+    private static int trimTrailingWhitespace(String source, int lineStart, int lineEnd) {
+        int cursor = lineEnd;
+        while (cursor > lineStart) {
+            char ch = source.charAt(cursor - 1);
+            if (!Character.isWhitespace(ch)) {
+                break;
+            }
+            cursor--;
+        }
+        return cursor;
+    }
+
+    private static int findLineStart(String source, int index) {
+        if (source == null || source.isEmpty()) {
+            return -1;
+        }
+        if (index <= 0) {
+            return 0;
+        }
+        int cursor = Math.min(index, source.length());
+        while (cursor > 0) {
+            char ch = source.charAt(cursor - 1);
+            if (ch == '\n' || ch == '\r') {
+                break;
+            }
+            cursor--;
         }
         return cursor;
     }
