@@ -837,7 +837,8 @@ public class BrunoParser implements CollectionParser {
             return null;
         }
         return switch (normalized) {
-            case "none", "noauth", "no_auth", "basic", "bearer", "apikey", "oauth2" -> normalized;
+            case "none", "noauth", "no_auth" -> "none";
+            case "basic", "bearer", "apikey", "oauth2" -> normalized;
             default -> normalized;
         };
     }
