@@ -394,6 +394,297 @@ class BrunoBlockScannerTest {
     }
 
     @Test
+    void headersValueEndingWithOpenBraceStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Header Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/header-brace
+                }
+
+                headers {
+                  X-Pattern: literal {
+                }
+
+                body:text {
+                  request survived
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("literal {");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+        assertThat(rawRequestText(request)).contains("X-Pattern: literal {");
+        assertThat(rawRequestText(request)).contains("request survived");
+    }
+
+    @Test
+    void varsValueEndingWithOpenBraceStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Vars Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/vars-brace
+                }
+
+                vars {
+                  prefix: {
+                }
+
+                headers {
+                  X-Resolved: {{prefix}}
+                }
+
+                body:text {
+                  request survived
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "vars",
+                "headers",
+                "body:text"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.variables).singleElement().satisfies(variable -> {
+            assertThat(variable.key).isEqualTo("prefix");
+            assertThat(variable.value).isEqualTo("{");
+        });
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Resolved");
+            assertThat(header.value).isEqualTo("{{prefix}}");
+        });
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("prefix", "{");
+        assertThat(rawRequestText(request, resolver)).contains("X-Resolved: {");
+        assertThat(rawRequestText(request, resolver)).contains("request survived");
+    }
+
+    @Test
+    void bearerAuthValueEndingWithOpenBraceStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Bearer Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/auth-brace
+                }
+
+                auth:bearer {
+                  token: abc{
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "auth:bearer",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "abc{");
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+        assertThat(rawRequestText(request)).contains("Authorization: Bearer abc{");
+    }
+
+    @Test
+    void urlencodedBodyValueEndingWithOpenBraceStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Urlencoded Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/form-brace
+                }
+
+                body:form-urlencoded {
+                  pattern: literal {
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:form-urlencoded",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("urlencoded");
+        assertThat(request.body.urlencoded).singleElement().satisfies(field -> {
+            assertThat(field.key).isEqualTo("pattern");
+            assertThat(field.value).isEqualTo("literal {");
+        });
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+        assertThat(rawRequestText(request)).contains("pattern=literal+%7B");
+    }
+
+    @Test
+    void multipartBodyValueEndingWithOpenBraceStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Multipart Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/upload-brace
+                }
+
+                body:multipart-form {
+                  description: literal {
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "body:multipart-form",
+                "headers"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("formdata");
+        assertThat(request.body.formdata).singleElement().satisfies(field -> {
+            assertThat(field.key).isEqualTo("description");
+            assertThat(field.value).isEqualTo("literal {");
+        });
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+        assertThat(rawRequestText(request)).contains("literal {");
+    }
+
+    @Test
+    void sameLineMethodAndBraceValueBlocksSurviveMalformedSiblingFiltering() throws Exception {
+        String source = """
+                meta {
+                  name: Brace Value
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/patterns
+                }
+
+                headers {
+                  X-Pattern: literal {
+                }
+
+                body:text {
+                  request survived
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.method).isEqualTo("GET");
+        assertThat(request.url).isEqualTo("https://api.example.test/patterns");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("literal {");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+    }
+
+    @Test
     void sameLineMethodBlockIsNotRemovedWhenLaterDictionaryLinesContainQuotes() throws Exception {
         String source = """
                 meta {

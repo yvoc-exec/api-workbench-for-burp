@@ -189,22 +189,19 @@ final class BrunoBlockScanner {
             }
         }
 
-        int depth = 1;
+        int declarationIndent = skipLeadingWhitespace(source, lineStart, lineEnd) - lineStart;
         lineStart = nextLineStart(source, lineEnd);
         while (lineStart < source.length()) {
             lineEnd = findLineEnd(source, lineStart);
             int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
-            int trimmedEnd = trimTrailingWhitespace(source, lineStart, lineEnd);
             if (cursor < lineEnd
                     && source.charAt(cursor) == '}'
                     && isOnlyWhitespaceAfter(source, cursor + 1, lineEnd)) {
-                depth--;
-                if (depth == 0) {
+                if ((cursor - lineStart) == declarationIndent) {
                     return cursor;
                 }
-            } else if (cursor < trimmedEnd
-                    && source.charAt(trimmedEnd - 1) == '{') {
-                depth++;
+            } else if ((cursor - lineStart) <= declarationIndent && isBlockDeclarationLine(source, cursor, lineEnd)) {
+                return -1;
             }
             lineStart = nextLineStart(source, lineEnd);
         }
@@ -323,18 +320,6 @@ final class BrunoBlockScanner {
                 break;
             }
             cursor++;
-        }
-        return cursor;
-    }
-
-    private static int trimTrailingWhitespace(String source, int lineStart, int lineEnd) {
-        int cursor = lineEnd;
-        while (cursor > lineStart) {
-            char ch = source.charAt(cursor - 1);
-            if (!Character.isWhitespace(ch)) {
-                break;
-            }
-            cursor--;
         }
         return cursor;
     }
