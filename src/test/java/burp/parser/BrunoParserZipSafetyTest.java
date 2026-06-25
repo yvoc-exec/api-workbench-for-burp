@@ -1,6 +1,11 @@
 package burp.parser;
 
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -155,6 +160,187 @@ class BrunoParserZipSafetyTest {
                 System.clearProperty("java.io.tmpdir");
             }
         }
+    }
+
+    @Test
+    void parseReportsMalformedBrunoRequestsAndKeepsValidSiblings() throws Exception {
+        DiagnosticStore store = DiagnosticStore.getInstance();
+        boolean previousCapture = store.isCaptureEnabled();
+        store.setCaptureEnabled(true);
+        store.clear();
+        try {
+            Path zip = createZip("malformed.zip", new LinkedHashMap<>() {{
+                put("collection/bruno.json", """
+                        {
+                          "name": "Malformed Bruno"
+                        }
+                        """);
+                put("collection/requests/Valid.bru", """
+                        meta {
+                          name: Valid
+                          type: http
+                          seq: 1
+                        }
+
+                        get {
+                          url: https://api.example.test/valid
+                        }
+                        """);
+                put("collection/requests/Broken.bru", """
+                        meta {
+                          name: Broken
+                          type: http
+                          seq: 2
+                        }
+
+                        post {
+                          url: https://api.example.test/broken
+                        }
+
+                        body:json {
+                          {
+                            "broken": true
+                        """);
+            }});
+
+            ApiCollection collection = new BrunoParser().parse(zip.toFile());
+
+            assertThat(collection.requests).hasSize(1);
+            assertThat(collection.requests.get(0).name).isEqualTo("Valid");
+            assertThat(collection.importedRequestCount).isEqualTo(1);
+            assertThat(collection.skippedRequestCount).isEqualTo(1);
+            assertThat(collection.importWarnings).hasSize(1);
+            assertThat(collection.importWarnings.get(0))
+                    .contains("Broken.bru")
+                    .contains("Unclosed Bruno block");
+            assertThat(store.snapshot())
+                    .filteredOn(event -> event.operation == DiagnosticOperation.IMPORT && event.severity == DiagnosticSeverity.WARNING)
+                    .anySatisfy(event -> {
+                        assertThat(event.message).contains("Bruno import warning");
+                        assertThat(event.attributes).containsKey("path");
+                    });
+        } finally {
+            store.clear();
+            store.setCaptureEnabled(previousCapture);
+        }
+    }
+
+    @Test
+    void parseRecoversValidSiblingRequestsFromSameFileWithUnclosedBlock() throws Exception {
+        DiagnosticStore store = DiagnosticStore.getInstance();
+        boolean previousCapture = store.isCaptureEnabled();
+        store.setCaptureEnabled(true);
+        store.clear();
+        try {
+            Path root = Files.createTempDirectory(tempDir, "bruno-recover");
+            Files.writeString(root.resolve("BrokenAndRecovered.bru"), """
+                    meta {
+                      name: Broken And Recovered
+                      type: http
+                      seq: 1
+                    }
+
+                    post {
+                      url: https://api.example.test/broken
+
+                    body:json {
+                      {
+                        "broken": true
+                      }
+
+                    get {
+                      url: https://api.example.test/recovered
+                    }
+                    """, StandardCharsets.UTF_8);
+
+            ApiCollection collection = new BrunoParser().parse(root.toFile());
+
+            assertThat(collection.requests).hasSize(1);
+            assertThat(collection.requests.get(0).method).isEqualTo("GET");
+            assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/recovered");
+            assertThat(collection.importedRequestCount).isEqualTo(1);
+            assertThat(collection.skippedRequestCount).isGreaterThanOrEqualTo(1);
+            assertThat(collection.importWarnings).isNotEmpty();
+            assertThat(collection.importWarnings.get(0)).contains("BrokenAndRecovered.bru").contains("Unclosed Bruno block");
+        } finally {
+            store.clear();
+            store.setCaptureEnabled(previousCapture);
+        }
+    }
+
+    @Test
+    void folderAndZipImportsProduceEquivalentBrunoRequestModels() throws Exception {
+        Path folder = Files.createDirectories(tempDir.resolve("folder-import"));
+        Files.writeString(folder.resolve("bruno.json"), """
+                {
+                  "name": "Equivalence",
+                  "vars": {
+                    "baseUrl": "https://api.example.test"
+                  }
+                }
+                """, StandardCharsets.UTF_8);
+        Files.createDirectories(folder.resolve("Admin"));
+        Files.writeString(folder.resolve("Admin").resolve("Users.bru"), """
+                meta {
+                  name: Users
+                  type: http
+                  seq: 7
+                }
+
+                get {
+                  url: {{baseUrl}}/users
+                }
+
+                headers {
+                  Authorization: Bearer {{token}}
+                }
+
+                auth:bearer {
+                  token: {{token}}
+                }
+                """, StandardCharsets.UTF_8);
+
+        Path zip = createZip("equivalence.zip", new LinkedHashMap<>() {{
+            put("collection/bruno.json", """
+                    {
+                      "name": "Equivalence",
+                      "vars": {
+                        "baseUrl": "https://api.example.test"
+                      }
+                    }
+                    """);
+            put("collection/Admin/Users.bru", """
+                    meta {
+                      name: Users
+                      type: http
+                      seq: 7
+                    }
+
+                    get {
+                      url: {{baseUrl}}/users
+                    }
+
+                    headers {
+                      Authorization: Bearer {{token}}
+                    }
+
+                    auth:bearer {
+                      token: {{token}}
+                    }
+                    """);
+        }});
+
+        ApiCollection folderCollection = new BrunoParser().parse(folder.toFile());
+        ApiCollection zipCollection = new BrunoParser().parse(zip.toFile());
+
+        assertThat(zipCollection.name).isEqualTo(folderCollection.name);
+        assertThat(zipCollection.environment).isEqualTo(folderCollection.environment);
+        assertThat(zipCollection.requests).hasSize(folderCollection.requests.size());
+        assertThat(zipCollection.requests.get(0).name).isEqualTo(folderCollection.requests.get(0).name);
+        assertThat(zipCollection.requests.get(0).path).isEqualTo(folderCollection.requests.get(0).path);
+        assertThat(zipCollection.requests.get(0).method).isEqualTo(folderCollection.requests.get(0).method);
+        assertThat(zipCollection.requests.get(0).auth.type).isEqualTo(folderCollection.requests.get(0).auth.type);
+        assertThat(zipCollection.requests.get(0).auth.properties).isEqualTo(folderCollection.requests.get(0).auth.properties);
     }
 
     private Path createZip(String name, Map<String, String> entries) throws Exception {

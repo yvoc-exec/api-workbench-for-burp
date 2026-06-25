@@ -426,6 +426,23 @@ class ImporterPanelRunnerQueueTest {
         runner.setDelayMs(0);
         runner.setMaxRetries(0);
         ImporterPanel panel = newPanel(runner);
+        CountDownLatch startedDelivered = new CountDownLatch(1);
+        CountDownLatch firstResultDelivered = new CountDownLatch(1);
+        CountDownLatch terminalDelivered = new CountDownLatch(1);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) {
+                startedDelivered.countDown();
+            }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) {
+                firstResultDelivered.countDown();
+            }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+                terminalDelivered.countDown();
+            }
+        });
         ApiRequest first = request("One");
         ApiRequest second = request("Two");
         ApiCollection collection = collection("Paused", first, second);
@@ -433,18 +450,16 @@ class ImporterPanelRunnerQueueTest {
         drainEdt();
         invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
         invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
-        waitUntil(() -> runner.isRunning() && runner.isPaused(), 2000);
-        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn"), 2000);
+        assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(firstResultDelivered.await(5, TimeUnit.SECONDS)).isTrue();
+        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn")
+                && !buttonEnabled(panel, "pauseRunnerBtn")
+                && buttonEnabled(panel, "resumeRunnerBtn"), 5000);
         edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
-        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
-        drainEdt();
-
-        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
-        waitUntil(() -> !buttonEnabled(panel, "cancelRunnerBtn"), 2000);
-        waitUntil(() -> !buttonEnabled(panel, "pauseRunnerBtn"), 2000);
-        waitUntil(() -> !buttonEnabled(panel, "resumeRunnerBtn"), 2000);
-        assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).containsIgnoringCase("cancelled");
-        assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+        awaitRunnerTerminalUi(panel, runner, terminalDelivered, RunnerTerminationType.CANCELLED, () -> {
+            assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).containsIgnoringCase("cancelled");
+            assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+        });
     }
 
     @Test
@@ -463,9 +478,26 @@ class ImporterPanelRunnerQueueTest {
                 return exec;
             }
         }, null);
-        runner.setDelayMs(1000);
+        runner.setDelayMs(5000);
         runner.setMaxRetries(0);
         ImporterPanel panel = newPanel(runner);
+        CountDownLatch startedDelivered = new CountDownLatch(1);
+        CountDownLatch firstResultDelivered = new CountDownLatch(1);
+        CountDownLatch terminalDelivered = new CountDownLatch(1);
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) {
+                startedDelivered.countDown();
+            }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) {
+                firstResultDelivered.countDown();
+            }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+            @Override public void onTerminal(RunnerTerminationResult termination, List<RunnerResult> results) {
+                terminalDelivered.countDown();
+            }
+        });
         ApiRequest first = request("One");
         ApiRequest second = request("Two");
         ApiCollection collection = collection("Delay", first, second);
@@ -473,24 +505,26 @@ class ImporterPanelRunnerQueueTest {
         drainEdt();
         invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
         edt(() -> {
-            ((JSpinner) privateField(panel, "runnerDelaySpinner")).setValue(1000);
+            ((JSpinner) privateField(panel, "runnerDelaySpinner")).setValue(5000);
             ((JSpinner) privateField(panel, "runnerRetriesSpinner")).setValue(0);
         });
 
         invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, false);
-        waitUntil(() -> runner.getResults().size() == 1, 5000);
-        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn"), 2000);
-        edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
-        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(firstResultDelivered.await(5, TimeUnit.SECONDS)).isTrue();
         drainEdt();
-
-        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
-        assertThat(runner.getLastTerminationResult().completedCount).isEqualTo(1);
-        assertThat(runner.getLastTerminationResult().totalQueuedCount).isEqualTo(2);
         assertThat(runner.getResults()).hasSize(1);
         assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
-        assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).contains("1/2");
-        assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn"), 2000);
+        edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
+        awaitRunnerTerminalUi(panel, runner, terminalDelivered, RunnerTerminationType.CANCELLED, () -> {
+            assertThat(runner.getLastTerminationResult().completedCount).isEqualTo(1);
+            assertThat(runner.getLastTerminationResult().totalQueuedCount).isEqualTo(2);
+            assertThat(runner.getResults()).hasSize(1);
+            assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
+            assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).contains("1/2");
+            assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+        });
     }
 
     @Test
@@ -1333,6 +1367,29 @@ class ImporterPanelRunnerQueueTest {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private static void awaitRunnerTerminalUi(ImporterPanel panel,
+                                              CollectionRunner runner,
+                                              CountDownLatch terminalDelivered,
+                                              RunnerTerminationType expectedType,
+                                              ThrowingRunnable uiAssertions) throws Exception {
+        assertThat(terminalDelivered.await(10, TimeUnit.SECONDS))
+                .as("Timed out waiting for runner terminal callback")
+                .isTrue();
+        drainEdt();
+        assertThat(runner.isRunning()).isFalse();
+        assertThat(runner.getLastTerminationResult()).isNotNull();
+        assertThat(runner.getLastTerminationResult().type).isEqualTo(expectedType);
+        waitUntil(() -> !buttonEnabled(panel, "cancelRunnerBtn")
+                && !buttonEnabled(panel, "pauseRunnerBtn")
+                && !buttonEnabled(panel, "resumeRunnerBtn"), 5000);
+        assertThat(buttonEnabled(panel, "cancelRunnerBtn")).isFalse();
+        assertThat(buttonEnabled(panel, "pauseRunnerBtn")).isFalse();
+        assertThat(buttonEnabled(panel, "resumeRunnerBtn")).isFalse();
+        if (uiAssertions != null) {
+            uiAssertions.run();
+        }
     }
 
     private static void waitUntil(BooleanSupplier condition, long timeoutMs) throws Exception {
