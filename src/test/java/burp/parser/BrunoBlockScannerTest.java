@@ -851,6 +851,226 @@ class BrunoBlockScannerTest {
     }
 
     @Test
+    void closingDelimiterLineWithFakeHeadersDeclarationStaysOpaque() throws Exception {
+        String source = """
+                meta {
+                  name: Closing Prefix Header
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/test
+                }
+
+                vars {
+                  payload: '''
+                line one
+                headers {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "vars",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithDeleteStaysOpaque() throws Exception {
+        String source = """
+                meta {
+                  name: Closing Delete Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                headers {
+                  X-Description: '''
+                line one
+                delete {'''
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).method).isEqualTo("POST");
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithTypedDeclarationStaysOpaque() throws Exception {
+        String source = """
+                meta {
+                  name: Closing Typed Prefix
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/test
+                }
+
+                auth:bearer {
+                  token: '''
+                line one
+                body:json {'''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "auth:bearer",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+    }
+
+    @Test
+    void closingDelimiterLineInsideAnnotationStaysOpaque() throws Exception {
+        String source = """
+                meta {
+                  name: Closing Annotation Prefix
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/annotation
+                }
+
+                headers {
+                  @description('''
+                line one
+                headers {''')
+                  X-Test: yes
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Test");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void closingDelimiterLineStartingWithStandaloneBraceStaysOpaque() throws Exception {
+        String source = """
+                meta {
+                  name: Closing Brace Prefix
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/brace
+                }
+
+                vars {
+                  payload: '''
+                line one
+                }'''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "vars",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+    }
+
+    @Test
     void embeddedTripleApostrophesInHeadersStaySingleLineAndKeepLaterBodyVisible() throws Exception {
         String source = """
                 meta {

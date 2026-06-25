@@ -278,12 +278,13 @@ final class BrunoBlockScanner {
             lineEnd = findLineEnd(source, lineStart);
             int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
             if (inTripleQuotedValue) {
-                int closingDelimiter = findTripleApostropheIndex(source, lineStart, lineEnd);
-                if (closingDelimiter < 0) {
+                if (findTripleApostropheIndex(source, lineStart, lineEnd) < 0) {
                     lineStart = nextLineStart(source, lineEnd);
                     continue;
                 }
                 inTripleQuotedValue = false;
+                lineStart = nextLineStart(source, lineEnd);
+                continue;
             } else {
                 TripleQuoteTransition transition = findTripleQuotedValueTransition(source, lineStart, lineEnd);
                 if (transition.entersMultiline()) {
