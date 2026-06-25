@@ -141,10 +141,14 @@ class BrunoBlockScannerTest {
                   {
                     const value = `${format("}")}`;
                   }
+                  delete cache[key];
                   {
                     const value = `${(() => {
                       return "}";
                     })()}`;
+                  }
+                  query GetUser {
+                    return /}/;
                   }
                   function matcher() {
                     return /}/;
@@ -190,7 +194,9 @@ class BrunoBlockScannerTest {
         assertThat(request.preRequestScripts).singleElement().extracting(script -> script.exec)
                 .asString()
                 .contains("const value = `${format(\"}\")}`;")
+                .contains("delete cache[key];")
                 .contains("const value = `${(() => {")
+                .contains("query GetUser {")
                 .contains("function matcher() {")
                 .contains("return /}/;");
         assertThat(request.postResponseScripts).singleElement().extracting(script -> script.exec)
@@ -690,6 +696,158 @@ class BrunoBlockScannerTest {
                 "headers"
         );
         assertThat(result.malformedBlocks).isEmpty();
+    }
+
+    @Test
+    void varsTripleQuotedValueKeepsFakeHeadersLiteralAndLaterHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Vars Triple Quote Recovery
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/vars-triple-quote
+                }
+
+                vars {
+                  payload: '''
+                line one
+                }
+                headers {
+                line four
+                '''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "vars",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+    }
+
+    @Test
+    void headersTripleQuotedValueKeepsStandaloneBraceLiteralAndLaterSiblingVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Headers Triple Quote Recovery
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/headers-triple-quote
+                }
+
+                headers {
+                  X-Pattern: '''
+                line one
+                }
+                query GetUser {
+                line four
+                '''
+                }
+
+                script:pre-request {
+                  bru.setVar('after', 'ok');
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "headers",
+                "script:pre-request"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("'''");
+        });
+        assertThat(request.preRequestScripts).singleElement().extracting(script -> script.exec)
+                .asString()
+                .contains("bru.setVar('after', 'ok');");
+    }
+
+    @Test
+    void bearerAuthTripleQuotedValueKeepsLaterSiblingVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Bearer Triple Quote Recovery
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/bearer-triple-quote
+                }
+
+                auth:bearer {
+                  token: '''
+                line one
+                }
+                query GetUser {
+                line four
+                '''
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "post",
+                "auth:bearer",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsKey("token");
+        assertThat(request.auth.properties.get("token")).isNotBlank();
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
     }
 
     @ParameterizedTest
