@@ -4,6 +4,8 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
+import burp.utils.RequestBuilder;
+import burp.parser.VariableResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -211,6 +213,235 @@ class BrunoBlockScannerTest {
         assertThat(request.body.raw).isEqualTo("trailing body");
     }
 
+    @ParameterizedTest
+    @MethodSource("headerValueCases")
+    void multilineHeaderDictionaryValuesStayImported(String source, String expectedHeaderKey, String expectedHeaderValue) throws Exception {
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).contains("headers", "script:post-response");
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo(expectedHeaderKey);
+            assertThat(header.value).isEqualTo(expectedHeaderValue);
+        });
+        assertThat(rawRequestText(request)).contains(expectedHeaderKey + ": " + expectedHeaderValue);
+    }
+
+    @Test
+    void bearerTokenValueWithApostropheStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Bearer Token Quotes
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/auth-quote
+                }
+
+                auth:bearer {
+                  token: It's working
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "It's working");
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+        assertThat(rawRequestText(request)).contains("Authorization: Bearer It's working");
+    }
+
+    @Test
+    void varsValueWithDoubleQuoteStaysImportableAndResolvable() throws Exception {
+        String source = """
+                meta {
+                  name: Vars Quotes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/vars
+                }
+
+                vars {
+                  baseUrl: He said "hello
+                }
+
+                headers {
+                  X-Resolved: {{baseUrl}}
+                  X-After: yes
+                }
+                """;
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.variables).singleElement().satisfies(variable -> {
+            assertThat(variable.key).isEqualTo("baseUrl");
+            assertThat(variable.value).isEqualTo("He said \"hello");
+        });
+        assertThat(request.headers).extracting(header -> header.key).containsExactly("X-Resolved", "X-After");
+
+        burp.parser.VariableResolver resolver = new burp.parser.VariableResolver();
+        resolver.addCustomVariable("baseUrl", "He said \"hello");
+        assertThat(rawRequestText(request, resolver)).contains("X-Resolved: He said \"hello");
+    }
+
+    @Test
+    void urlencodedBodyValueWithBacktickStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Urlencoded Quotes
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/form
+                }
+
+                body:form-urlencoded {
+                  note: `literal
+                  message: It's working
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("urlencoded");
+        assertThat(request.body.urlencoded).extracting(field -> field.key + "=" + field.value)
+                .containsExactly("note=`literal", "message=It's working");
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+
+        String raw = rawRequestText(request);
+        assertThat(raw).contains("note=%60literal");
+        assertThat(raw).contains("message=It%27s+working");
+    }
+
+    @Test
+    void multipartBodyValueWithQuotesStaysImportable() throws Exception {
+        String source = """
+                meta {
+                  name: Multipart Quotes
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://api.example.test/upload
+                }
+
+                body:multipart-form {
+                  description: It's working
+                  note: He said "hello
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """;
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("formdata");
+        assertThat(request.body.formdata).extracting(field -> field.key + "=" + field.value)
+                .containsExactly("description=It's working", "note=He said \"hello");
+        assertThat(request.headers).singleElement().satisfies(header -> assertThat(header.key).isEqualTo("X-After"));
+
+        String raw = rawRequestText(request);
+        assertThat(raw).contains("name=\"description\"");
+        assertThat(raw).contains("It's working");
+        assertThat(raw).contains("He said \"hello");
+    }
+
+    @Test
+    void sameLineMethodBlockIsNotRemovedWhenLaterDictionaryLinesContainQuotes() throws Exception {
+        String source = """
+                meta {
+                  name: Messages
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/messages
+                }
+
+                headers {
+                  X-Message: It's working
+                }
+
+                body:text {
+                  request survived
+                }
+                """;
+
+        List<BrunoBlockScanner.Block> blocks = BrunoBlockScanner.scan(source);
+        assertThat(blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.method).isEqualTo("GET");
+        assertThat(request.url).isEqualTo("https://api.example.test/messages");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Message");
+            assertThat(header.value).isEqualTo("It's working");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+        assertThat(rawRequestText(request)).contains("GET /messages HTTP/1.1");
+    }
+
     private static Stream<Arguments> textBodyCases() {
         return Stream.of(
                 Arguments.of("""
@@ -289,9 +520,79 @@ class BrunoBlockScannerTest {
         );
     }
 
+    private static Stream<Arguments> headerValueCases() {
+        return Stream.of(
+                Arguments.of("""
+                        meta {
+                          name: Header Apostrophe
+                          type: http
+                          seq: 1
+                        }
+
+                        get {
+                          url: https://api.example.test/header-apostrophe
+                        }
+
+                        headers {
+                          X-Message: It's working
+                        }
+
+                        script:post-response {
+                          bru.setVar('after', 'ok');
+                        }
+                """, "X-Message", "It's working"),
+                Arguments.of("""
+                        meta {
+                          name: Header Quote
+                          type: http
+                          seq: 1
+                        }
+
+                        get {
+                          url: https://api.example.test/header-quote
+                        }
+
+                        headers {
+                          X-Message: He said "hello
+                        }
+
+                        script:post-response {
+                          bru.setVar('after', 'ok');
+                        }
+                        """, "X-Message", "He said \"hello"),
+                Arguments.of("""
+                        meta {
+                          name: Header Backtick
+                          type: http
+                          seq: 1
+                        }
+
+                        get {
+                          url: https://api.example.test/header-backtick
+                        }
+
+                        headers {
+                          X-Code: `literal
+                        }
+
+                        script:post-response {
+                          bru.setVar('after', 'ok');
+                        }
+                        """, "X-Code", "`literal")
+        );
+    }
+
     private ApiCollection parseCollection(String content) throws Exception {
         Path file = Files.createTempFile(tempDir, "bruno-", ".bru");
         Files.writeString(file, content, StandardCharsets.UTF_8);
         return new BrunoParser().parse(file.toFile());
+    }
+
+    private String rawRequestText(ApiRequest request) throws Exception {
+        return rawRequestText(request, new VariableResolver());
+    }
+
+    private String rawRequestText(ApiRequest request, VariableResolver resolver) throws Exception {
+        return new String(new RequestBuilder(null).buildRequest(request, resolver), StandardCharsets.UTF_8);
     }
 }
