@@ -850,6 +850,240 @@ class BrunoBlockScannerTest {
         });
     }
 
+    @Test
+    void embeddedTripleApostrophesInHeadersStaySingleLineAndKeepLaterBodyVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Embedded Header Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/header
+                }
+
+                headers {
+                  X-Pattern: prefix'''suffix
+                }
+
+                body:text {
+                  request survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("prefix'''suffix");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+        assertThat(rawRequestText(request)).contains("X-Pattern: prefix'''suffix");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInVarsStaySingleLineAndKeepLaterHeadersVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Embedded Vars Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/vars
+                }
+
+                vars {
+                  token: abc'''def
+                }
+
+                headers {
+                  X-Token: {{token}}
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "vars",
+                "headers"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.variables).singleElement().satisfies(variable -> {
+            assertThat(variable.key).isEqualTo("token");
+            assertThat(variable.value).isEqualTo("abc'''def");
+        });
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCollectionVariables(collection);
+        resolver.addFolderVariables(collection, request);
+        resolver.addRequestVariables(request);
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("abc'''def");
+        assertThat(rawRequestText(request, resolver)).contains("X-Token: abc'''def");
+    }
+
+    @Test
+    void ordinaryAnnotationArgumentsWithEmbeddedTripleApostrophesStaySingleLine() throws Exception {
+        String source = """
+                meta {
+                  name: Annotation Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/annotation
+                }
+
+                headers {
+                  @description("prefix'''suffix")
+                  X-Test: yes
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Test");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void multilineAnnotationArgumentsIgnoreStructuralLookingLinesAndKeepLaterBodyVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Annotation Multiline Safety
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/annotation-multiline
+                }
+
+                headers {
+                  @description('''
+                line one
+                }
+                headers {
+                line four
+                ''')
+                  X-Test: yes
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Test");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
+    @Test
+    void inlineTripleQuotedValueKeepsLaterSiblingVisible() throws Exception {
+        String source = """
+                meta {
+                  name: Inline Triple Quote Safety
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/inline-triple-quote
+                }
+
+                headers {
+                  X-Description: '''inline'''
+                  X-Test: yes
+                }
+
+                body:text {
+                  survived
+                }
+                """;
+
+        BrunoBlockScanner.ScanResult result = BrunoBlockScanner.scanDetailed(source);
+        assertThat(result.blocks).extracting(block -> block.name).containsExactly(
+                "meta",
+                "get",
+                "headers",
+                "body:text"
+        );
+        assertThat(result.malformedBlocks).isEmpty();
+
+        ApiCollection collection = parseCollection(source);
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+        assertThat(collection.requests.get(0).headers).extracting(header -> header.key + "=" + header.value)
+                .containsExactly("X-Description='''inline'''", "X-Test=yes");
+        assertThat(collection.requests.get(0).body.raw).isEqualTo("survived");
+    }
+
     @ParameterizedTest
     @MethodSource("headerValueCases")
     void multilineHeaderDictionaryValuesStayImported(String source, String expectedHeaderKey, String expectedHeaderValue) throws Exception {

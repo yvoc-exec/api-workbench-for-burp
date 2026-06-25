@@ -277,16 +277,20 @@ final class BrunoBlockScanner {
         while (lineStart < source.length()) {
             lineEnd = findLineEnd(source, lineStart);
             int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
-            if (containsTripleApostropheDelimiter(source, lineStart, lineEnd)) {
-                if ((countTripleApostropheDelimiters(source, lineStart, lineEnd) & 1) == 1) {
-                    inTripleQuotedValue = !inTripleQuotedValue;
-                }
-                lineStart = nextLineStart(source, lineEnd);
-                continue;
-            }
             if (inTripleQuotedValue) {
-                lineStart = nextLineStart(source, lineEnd);
-                continue;
+                int closingDelimiter = findTripleApostropheIndex(source, lineStart, lineEnd);
+                if (closingDelimiter < 0) {
+                    lineStart = nextLineStart(source, lineEnd);
+                    continue;
+                }
+                inTripleQuotedValue = false;
+            } else {
+                TripleQuoteTransition transition = findTripleQuotedValueTransition(source, lineStart, lineEnd);
+                if (transition.entersMultiline()) {
+                    inTripleQuotedValue = true;
+                    lineStart = nextLineStart(source, lineEnd);
+                    continue;
+                }
             }
             if (cursor < lineEnd
                     && source.charAt(cursor) == '}'
@@ -329,6 +333,164 @@ final class BrunoBlockScanner {
             lineStart = nextLineStart(source, lineEnd);
         }
         return candidateClose;
+    }
+
+    private static TripleQuoteTransition findTripleQuotedValueTransition(String source, int lineStart, int lineEnd) {
+        int dictionaryValueStart = startsTripleQuotedDictionaryValue(source, lineStart, lineEnd);
+        if (dictionaryValueStart >= 0) {
+            return TripleQuoteTransition.enter();
+        }
+        int annotationArgumentStart = startsTripleQuotedAnnotationArgument(source, lineStart, lineEnd);
+        if (annotationArgumentStart >= 0) {
+            return TripleQuoteTransition.enter();
+        }
+        return TripleQuoteTransition.none();
+    }
+
+    private static int startsTripleQuotedDictionaryValue(String source, int lineStart, int lineEnd) {
+        int valueStart = findDictionaryValueStart(source, lineStart, lineEnd);
+        if (valueStart < 0 || !startsTripleApostropheAt(source, valueStart, lineEnd)) {
+            return -1;
+        }
+        return findTripleApostropheIndex(source, valueStart + 3, lineEnd) < 0 ? valueStart : -1;
+    }
+
+    private static int startsTripleQuotedAnnotationArgument(String source, int lineStart, int lineEnd) {
+        int valueStart = findAnnotationArgumentValueStart(source, lineStart, lineEnd);
+        if (valueStart < 0 || !startsTripleApostropheAt(source, valueStart, lineEnd)) {
+            return -1;
+        }
+        return findTripleApostropheIndex(source, valueStart + 3, lineEnd) < 0 ? valueStart : -1;
+    }
+
+    private static int findDictionaryValueStart(String source, int lineStart, int lineEnd) {
+        if (source == null || lineStart < 0 || lineEnd <= lineStart || lineEnd > source.length()) {
+            return -1;
+        }
+        int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
+        if (cursor >= lineEnd) {
+            return -1;
+        }
+        if (source.charAt(cursor) == '~') {
+            cursor++;
+            while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) {
+                cursor++;
+            }
+        }
+        if (cursor >= lineEnd) {
+            return -1;
+        }
+        int colonIndex;
+        if (source.charAt(cursor) == '"') {
+            int keyEnd = findQuotedDictionaryKeyEnd(source, cursor, lineEnd);
+            if (keyEnd < 0) {
+                return -1;
+            }
+            cursor = keyEnd + 1;
+            while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) {
+                cursor++;
+            }
+            if (cursor >= lineEnd || source.charAt(cursor) != ':') {
+                return -1;
+            }
+            colonIndex = cursor;
+        } else {
+            colonIndex = -1;
+            for (int i = cursor; i < lineEnd; i++) {
+                char ch = source.charAt(i);
+                if (ch == ':') {
+                    colonIndex = i;
+                    break;
+                }
+                if (ch == '{' || ch == '}' || ch == '(' || ch == ')') {
+                    return -1;
+                }
+            }
+            if (colonIndex < 0) {
+                return -1;
+            }
+        }
+        if (colonIndex <= cursor) {
+            return -1;
+        }
+        int valueStart = colonIndex + 1;
+        while (valueStart < lineEnd && Character.isWhitespace(source.charAt(valueStart))) {
+            valueStart++;
+        }
+        return valueStart < lineEnd ? valueStart : -1;
+    }
+
+    private static int findQuotedDictionaryKeyEnd(String source, int keyStart, int lineEnd) {
+        boolean escaped = false;
+        for (int i = keyStart + 1; i < lineEnd; i++) {
+            char ch = source.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int findAnnotationArgumentValueStart(String source, int lineStart, int lineEnd) {
+        if (source == null || lineStart < 0 || lineEnd <= lineStart || lineEnd > source.length()) {
+            return -1;
+        }
+        int cursor = skipLeadingWhitespace(source, lineStart, lineEnd);
+        if (cursor >= lineEnd || source.charAt(cursor) != '@') {
+            return -1;
+        }
+        cursor++;
+        int nameStart = cursor;
+        while (cursor < lineEnd && isAnnotationNameChar(source.charAt(cursor))) {
+            cursor++;
+        }
+        if (cursor == nameStart) {
+            return -1;
+        }
+        while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) {
+            cursor++;
+        }
+        if (cursor >= lineEnd || source.charAt(cursor) != '(') {
+            return -1;
+        }
+        cursor++;
+        while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) {
+            cursor++;
+        }
+        return cursor < lineEnd ? cursor : -1;
+    }
+
+    private static boolean isAnnotationNameChar(char ch) {
+        return Character.isLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == ':';
+    }
+
+    private static boolean startsTripleApostropheAt(String source, int index, int lineEnd) {
+        return source != null
+                && index >= 0
+                && index <= lineEnd - 3
+                && source.charAt(index) == '\''
+                && source.charAt(index + 1) == '\''
+                && source.charAt(index + 2) == '\'';
+    }
+
+    private static int findTripleApostropheIndex(String source, int fromIndex, int lineEnd) {
+        if (source == null || fromIndex < 0 || lineEnd <= fromIndex) {
+            return -1;
+        }
+        for (int index = fromIndex; index <= lineEnd - 3; index++) {
+            if (startsTripleApostropheAt(source, index, lineEnd)) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private static boolean isTopLevelDeclarationCandidate(String source, int cursor, int lineEnd) {
@@ -566,29 +728,13 @@ final class BrunoBlockScanner {
                 && !normalized.endsWith(":");
     }
 
-    private static boolean containsTripleApostropheDelimiter(String source, int lineStart, int lineEnd) {
-        if (source == null || lineStart < 0 || lineEnd <= lineStart) {
-            return false;
+    private record TripleQuoteTransition(boolean entersMultiline) {
+        static TripleQuoteTransition none() {
+            return new TripleQuoteTransition(false);
         }
-        for (int index = lineStart; index <= lineEnd - 3; index++) {
-            if (source.charAt(index) == '\'' && source.charAt(index + 1) == '\'' && source.charAt(index + 2) == '\'') {
-                return true;
-            }
-        }
-        return false;
-    }
 
-    private static int countTripleApostropheDelimiters(String source, int lineStart, int lineEnd) {
-        if (source == null || lineStart < 0 || lineEnd <= lineStart) {
-            return 0;
+        static TripleQuoteTransition enter() {
+            return new TripleQuoteTransition(true);
         }
-        int count = 0;
-        for (int index = lineStart; index <= lineEnd - 3; index++) {
-            if (source.charAt(index) == '\'' && source.charAt(index + 1) == '\'' && source.charAt(index + 2) == '\'') {
-                count++;
-                index += 2;
-            }
-        }
-        return count;
     }
 }

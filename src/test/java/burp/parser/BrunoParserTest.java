@@ -479,6 +479,124 @@ class BrunoParserTest {
     }
 
     @Test
+    void embeddedTripleApostrophesInHeadersRemainSingleLineValuesAndKeepBodyVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Header Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/header
+                }
+
+                headers {
+                  X-Pattern: prefix'''suffix
+                }
+
+                body:text {
+                  request survived
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-Pattern");
+            assertThat(header.value).isEqualTo("prefix'''suffix");
+        });
+        assertThat(request.body).isNotNull();
+        assertThat(request.body.mode).isEqualTo("raw");
+        assertThat(request.body.raw).isEqualTo("request survived");
+        assertThat(rawRequestText(request)).contains("X-Pattern: prefix'''suffix");
+        assertThat(rawRequestText(request)).contains("request survived");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInVarsRemainSingleLineValuesAndResolveFully() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Vars Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/vars
+                }
+
+                vars {
+                  token: abc'''def
+                }
+
+                headers {
+                  X-Token: {{token}}
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.variables).singleElement().satisfies(variable -> {
+            assertThat(variable.key).isEqualTo("token");
+            assertThat(variable.value).isEqualTo("abc'''def");
+        });
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCollectionVariables(collection);
+        resolver.addFolderVariables(collection, request);
+        resolver.addRequestVariables(request);
+        assertThat(resolver.resolve("{{token}}")).isEqualTo("abc'''def");
+        assertThat(rawRequestText(request, resolver)).contains("X-Token: abc'''def");
+    }
+
+    @Test
+    void embeddedTripleApostrophesInBearerAuthRemainSingleLineValuesAndKeepLaterHeadersVisible() throws Exception {
+        ApiCollection collection = parseCollection("""
+                meta {
+                  name: Embedded Bearer Apostrophes
+                  type: http
+                  seq: 1
+                }
+
+                get {
+                  url: https://api.example.test/auth
+                }
+
+                auth:bearer {
+                  token: "'''"
+                }
+
+                headers {
+                  X-After: yes
+                }
+                """);
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.importedRequestCount).isEqualTo(1);
+        assertThat(collection.skippedRequestCount).isEqualTo(0);
+        assertThat(collection.importWarnings).isNullOrEmpty();
+
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.auth).isNotNull();
+        assertThat(request.auth.type).isEqualTo("bearer");
+        assertThat(request.auth.properties).containsEntry("token", "'''");
+        assertThat(request.headers).singleElement().satisfies(header -> {
+            assertThat(header.key).isEqualTo("X-After");
+            assertThat(header.value).isEqualTo("yes");
+        });
+        assertThat(rawRequestText(request)).contains("Authorization: Bearer '''");
+    }
+
+    @Test
     void metadataOnlyBruWithVarsStillBecomesCollectionVariablesNotRequests() throws Exception {
         Path root = Files.createTempDirectory("bruno-metadata-only");
         Files.writeString(root.resolve("MyCollection.bru"), """
@@ -569,6 +687,20 @@ class BrunoParserTest {
         }
         zip.toFile().deleteOnExit();
         return zip;
+    }
+
+    private ApiCollection parseCollection(String content) throws Exception {
+        Path root = Files.createTempDirectory("bruno-collection");
+        Files.writeString(root.resolve("Request.bru"), content);
+        return new BrunoParser().parse(root.toFile());
+    }
+
+    private String rawRequestText(ApiRequest request) throws Exception {
+        return rawRequestText(request, new VariableResolver());
+    }
+
+    private String rawRequestText(ApiRequest request, VariableResolver resolver) throws Exception {
+        return new String(new RequestBuilder(null).buildRequest(request, resolver), StandardCharsets.UTF_8);
     }
 
     private ApiCollection parseSingleRequestBru(String methodToken) throws Exception {
