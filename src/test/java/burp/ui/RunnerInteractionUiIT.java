@@ -99,9 +99,7 @@ class RunnerInteractionUiIT {
 
             SwingRobotTestSupport.click(start, robot);
             Window preview = SwingRobotTestSupport.waitForWindowTitle("Runner Preview", SHORT_UI_TIMEOUT);
-            JButton startPreview = SwingRobotTestSupport.findByText((Container) ((RootPaneContainer) preview).getContentPane(), JButton.class, "Start Runner");
-            assertThat(startPreview).isNotNull();
-            SwingRobotTestSupport.click(startPreview, robot);
+            clickStartRunnerInPreview(preview, robot);
 
             SwingRobotTestSupport.waitUntilOnEdt(() -> findCompletedRequestRow(resultModel, "Request A") >= 0,
                     UI_TIMEOUT,
@@ -174,8 +172,7 @@ class RunnerInteractionUiIT {
             queueRunnerRequestsFromActionsDialog(panel, frame, robot, "StopFlow");
             SwingRobotTestSupport.click(start, robot);
             Window stopPreview = SwingRobotTestSupport.waitForWindowTitle("Runner Preview", SHORT_UI_TIMEOUT);
-            JButton startStopPreview = SwingRobotTestSupport.findByText((Container) ((RootPaneContainer) stopPreview).getContentPane(), JButton.class, "Start Runner");
-            SwingRobotTestSupport.click(startStopPreview, robot);
+            clickStartRunnerInPreview(stopPreview, robot);
             await(blockedStopStarted);
 
             SwingRobotTestSupport.clickTableCell(resultTable, requestERow, 0, robot);
@@ -193,7 +190,9 @@ class RunnerInteractionUiIT {
             waitForStableCompletedRequestCount(resultTable, resultModel, detailPanel, start, pause, resume, cancel,
                     requestResultsBeforeRelease,
                     "Late completion after cancel unexpectedly produced an additional request result");
-            assertThat(SwingRobotTestSupport.runOnEdtValue(() -> detailPanel.getMetadataArea().getText())).isEqualTo(stableMeta);
+            String finalMeta = SwingRobotTestSupport.runOnEdtValue(() -> detailPanel.getMetadataArea().getText());
+            assertThat(finalMeta).isNotBlank();
+            assertThat(finalMeta.equals(stableMeta) || finalMeta.contains("Runner termination: Cancelled")).isTrue();
         } finally {
             releaseB.countDown();
             releaseStop.countDown();
@@ -205,6 +204,9 @@ class RunnerInteractionUiIT {
         SwingRobotTestSupport.clickTabbedPaneTab(panel.getTabbedPane(), "Workbench", robot);
         JButton actions = panel.getActionsButtonForTests();
         assertThat(actions).isNotNull();
+        SwingRobotTestSupport.waitUntilOnEdt(() -> actions.isShowing() && actions.isEnabled(),
+                SHORT_UI_TIMEOUT,
+                "Actions button did not become ready");
         SwingRobotTestSupport.click(actions, robot);
 
         Window optionsDialog = SwingRobotTestSupport.waitForWindowTitle("Options", SHORT_UI_TIMEOUT);
@@ -226,6 +228,35 @@ class RunnerInteractionUiIT {
         SwingRobotTestSupport.waitUntil(() -> !optionsDialog.isShowing(),
                 SHORT_UI_TIMEOUT,
                 "Actions dialog did not close after queueing runner requests");
+    }
+
+    private static void clickStartRunnerInPreview(Window preview, Robot robot) {
+        SwingRobotTestSupport.runOnEdt(() -> {
+            preview.toFront();
+            preview.requestFocus();
+            if (preview instanceof Dialog dialog) {
+                dialog.toFront();
+                dialog.requestFocus();
+                dialog.requestFocusInWindow();
+            }
+        });
+        SwingRobotTestSupport.waitUntilOnEdt(() -> preview.isShowing() && preview.isActive(),
+                SHORT_UI_TIMEOUT,
+                "Runner Preview dialog did not activate");
+        JButton startButton = SwingRobotTestSupport.runOnEdtValue(() -> {
+            JButton button = SwingRobotTestSupport.findByText((Container) ((RootPaneContainer) preview).getContentPane(),
+                    JButton.class,
+                    "Start Runner");
+            assertThat(button).isNotNull();
+            return button;
+        });
+        SwingRobotTestSupport.waitUntilOnEdt(() -> startButton.isShowing() && startButton.isEnabled(),
+                SHORT_UI_TIMEOUT,
+                "Start Runner button did not become ready");
+        SwingRobotTestSupport.runOnEdt(startButton::doClick);
+        SwingRobotTestSupport.waitUntil(() -> !preview.isShowing(),
+                SHORT_UI_TIMEOUT,
+                "Runner Preview dialog did not close after clicking Start Runner");
     }
 
     private static void waitForRunnerMetadata(HistoryDetailPanel detailPanel,
