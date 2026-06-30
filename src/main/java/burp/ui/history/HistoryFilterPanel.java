@@ -5,12 +5,17 @@ import burp.history.HistoryResult;
 import burp.history.HistorySource;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public class HistoryFilterPanel extends JPanel {
+    private static final int LIVE_FILTER_DEBOUNCE_MS = 200;
+    private static final long LIVE_FILTER_DEBOUNCE_NANOS = TimeUnit.MILLISECONDS.toNanos(LIVE_FILTER_DEBOUNCE_MS);
     private final JTextField freeTextField = new JTextField(12);
     private final JComboBox<String> sourceCombo = new JComboBox<>(new String[]{"All", "Workbench", "Runner"});
     private final JComboBox<String> methodCombo = new JComboBox<>(new String[]{"All", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"});
@@ -30,7 +35,27 @@ public class HistoryFilterPanel extends JPanel {
     private final JTextField totalAttemptsField = new JTextField(4);
     private final JCheckBox retriesOnlyBox = new JCheckBox("Retries only");
     private final JButton clearButton = new JButton("Clear Filters");
+    private final Timer liveFilterTimer = new Timer(LIVE_FILTER_DEBOUNCE_MS, e -> handleLiveFilterTimer());
+    private final DocumentListener liveFilterDocumentListener = new DocumentListener() {
+        @Override
+        public void insertUpdate(DocumentEvent e) {
+            scheduleLiveFilterChange();
+        }
+
+        @Override
+        public void removeUpdate(DocumentEvent e) {
+            scheduleLiveFilterChange();
+        }
+
+        @Override
+        public void changedUpdate(DocumentEvent e) {
+            scheduleLiveFilterChange();
+        }
+    };
     private Runnable changeListener;
+    private boolean suppressChangeNotifications;
+    private boolean liveFilterTimerArmed;
+    private long liveFilterDueAtNanos;
 
     public HistoryFilterPanel() {
         setLayout(new BorderLayout(0, 2));
@@ -48,6 +73,7 @@ public class HistoryFilterPanel extends JPanel {
         setMinimumSize(new Dimension(0, 72));
         setMaximumSize(new Dimension(Integer.MAX_VALUE, 108));
 
+        liveFilterTimer.setRepeats(false);
         installListeners();
         clear();
     }
@@ -84,25 +110,32 @@ public class HistoryFilterPanel extends JPanel {
     }
 
     public void setCriteria(HistoryFilterCriteria criteria) {
+        cancelLiveFilterTimer();
         HistoryFilterCriteria next = criteria != null ? HistoryFilterCriteria.copyOf(criteria) : new HistoryFilterCriteria();
-        freeTextField.setText(next.freeText != null ? next.freeText : "");
-        sourceCombo.setSelectedItem(next.source != null ? next.source.displayName() : "All");
-        methodCombo.setSelectedItem(next.method != null ? next.method.toUpperCase(Locale.ROOT) : "All");
-        statusClassCombo.setSelectedItem(next.statusClass != null ? next.statusClass : "All");
-        exactStatusField.setText(next.exactStatusCode != null ? String.valueOf(next.exactStatusCode) : "");
-        collectionField.setText(next.collection != null ? next.collection : "");
-        folderField.setText(next.folder != null ? next.folder : "");
-        requestField.setText(next.requestName != null ? next.requestName : "");
-        environmentField.setText(next.environment != null ? next.environment : "");
-        resultCombo.setSelectedItem(next.resultType != null ? next.resultType.displayName() : "All");
-        fromField.setText(next.fromTimestamp != null ? next.fromTimestamp.toString() : "");
-        toField.setText(next.toTimestamp != null ? next.toTimestamp.toString() : "");
-        hasResponseBodyBox.setSelected(Boolean.TRUE.equals(next.hasResponseBody));
-        hasErrorBox.setSelected(Boolean.TRUE.equals(next.hasError));
-        hasAssertionFailureBox.setSelected(Boolean.TRUE.equals(next.hasAssertionFailure));
-        attemptField.setText(next.attemptNumber != null ? String.valueOf(next.attemptNumber) : "");
-        totalAttemptsField.setText(next.totalAttempts != null ? String.valueOf(next.totalAttempts) : "");
-        retriesOnlyBox.setSelected(Boolean.TRUE.equals(next.retriesOnly));
+        boolean previous = suppressChangeNotifications;
+        suppressChangeNotifications = true;
+        try {
+            freeTextField.setText(next.freeText != null ? next.freeText : "");
+            sourceCombo.setSelectedItem(next.source != null ? next.source.displayName() : "All");
+            methodCombo.setSelectedItem(next.method != null ? next.method.toUpperCase(Locale.ROOT) : "All");
+            statusClassCombo.setSelectedItem(next.statusClass != null ? next.statusClass : "All");
+            exactStatusField.setText(next.exactStatusCode != null ? String.valueOf(next.exactStatusCode) : "");
+            collectionField.setText(next.collection != null ? next.collection : "");
+            folderField.setText(next.folder != null ? next.folder : "");
+            requestField.setText(next.requestName != null ? next.requestName : "");
+            environmentField.setText(next.environment != null ? next.environment : "");
+            resultCombo.setSelectedItem(next.resultType != null ? next.resultType.displayName() : "All");
+            fromField.setText(next.fromTimestamp != null ? next.fromTimestamp.toString() : "");
+            toField.setText(next.toTimestamp != null ? next.toTimestamp.toString() : "");
+            hasResponseBodyBox.setSelected(Boolean.TRUE.equals(next.hasResponseBody));
+            hasErrorBox.setSelected(Boolean.TRUE.equals(next.hasError));
+            hasAssertionFailureBox.setSelected(Boolean.TRUE.equals(next.hasAssertionFailure));
+            attemptField.setText(next.attemptNumber != null ? String.valueOf(next.attemptNumber) : "");
+            totalAttemptsField.setText(next.totalAttempts != null ? String.valueOf(next.totalAttempts) : "");
+            retriesOnlyBox.setSelected(Boolean.TRUE.equals(next.retriesOnly));
+        } finally {
+            suppressChangeNotifications = previous;
+        }
     }
 
     public void clear() {
@@ -120,29 +153,44 @@ public class HistoryFilterPanel extends JPanel {
     }
 
     private void installListeners() {
-        java.awt.event.ActionListener listener = e -> notifyChanged();
-        freeTextField.addActionListener(listener);
-        sourceCombo.addActionListener(listener);
-        methodCombo.addActionListener(listener);
-        statusClassCombo.addActionListener(listener);
-        exactStatusField.addActionListener(listener);
-        collectionField.addActionListener(listener);
-        folderField.addActionListener(listener);
-        requestField.addActionListener(listener);
-        environmentField.addActionListener(listener);
-        resultCombo.addActionListener(listener);
-        fromField.addActionListener(listener);
-        toField.addActionListener(listener);
-        attemptField.addActionListener(listener);
-        totalAttemptsField.addActionListener(listener);
-        hasResponseBodyBox.addActionListener(listener);
-        hasErrorBox.addActionListener(listener);
-        hasAssertionFailureBox.addActionListener(listener);
-        retriesOnlyBox.addActionListener(listener);
+        java.awt.event.ActionListener immediateListener = e -> notifyChangedImmediately();
+        attachLiveFilterListeners(freeTextField);
+        freeTextField.addActionListener(immediateListener);
+        sourceCombo.addActionListener(immediateListener);
+        methodCombo.addActionListener(immediateListener);
+        statusClassCombo.addActionListener(immediateListener);
+        attachLiveFilterListeners(exactStatusField);
+        exactStatusField.addActionListener(immediateListener);
+        attachLiveFilterListeners(collectionField);
+        collectionField.addActionListener(immediateListener);
+        attachLiveFilterListeners(folderField);
+        folderField.addActionListener(immediateListener);
+        attachLiveFilterListeners(requestField);
+        requestField.addActionListener(immediateListener);
+        attachLiveFilterListeners(environmentField);
+        environmentField.addActionListener(immediateListener);
+        resultCombo.addActionListener(immediateListener);
+        attachLiveFilterListeners(fromField);
+        fromField.addActionListener(immediateListener);
+        attachLiveFilterListeners(toField);
+        toField.addActionListener(immediateListener);
+        hasResponseBodyBox.addActionListener(immediateListener);
+        hasErrorBox.addActionListener(immediateListener);
+        hasAssertionFailureBox.addActionListener(immediateListener);
+        attachLiveFilterListeners(attemptField);
+        attemptField.addActionListener(immediateListener);
+        attachLiveFilterListeners(totalAttemptsField);
+        totalAttemptsField.addActionListener(immediateListener);
+        retriesOnlyBox.addActionListener(immediateListener);
         clearButton.addActionListener(e -> {
+            cancelLiveFilterTimer();
             clear();
-            notifyChanged();
+            notifyChangedImmediately();
         });
+    }
+
+    private void attachLiveFilterListeners(JTextField field) {
+        field.getDocument().addDocumentListener(liveFilterDocumentListener);
     }
 
     private JPanel buildPrimaryRow() {
@@ -182,8 +230,51 @@ public class HistoryFilterPanel extends JPanel {
     }
 
     private void notifyChanged() {
+        if (suppressChangeNotifications) {
+            return;
+        }
         if (changeListener != null) {
             changeListener.run();
+        }
+    }
+
+    private void notifyChangedImmediately() {
+        if (suppressChangeNotifications) {
+            return;
+        }
+        cancelLiveFilterTimer();
+        notifyChanged();
+    }
+
+    private void scheduleLiveFilterChange() {
+        if (suppressChangeNotifications) {
+            return;
+        }
+        liveFilterTimerArmed = true;
+        liveFilterDueAtNanos = System.nanoTime() + LIVE_FILTER_DEBOUNCE_NANOS;
+        liveFilterTimer.setInitialDelay(LIVE_FILTER_DEBOUNCE_MS);
+        liveFilterTimer.restart();
+    }
+
+    private void handleLiveFilterTimer() {
+        if (suppressChangeNotifications || !liveFilterTimerArmed) {
+            return;
+        }
+        long remainingNanos = liveFilterDueAtNanos - System.nanoTime();
+        if (remainingNanos > 0) {
+            liveFilterTimer.setInitialDelay((int) Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+            liveFilterTimer.restart();
+            return;
+        }
+        liveFilterTimerArmed = false;
+        notifyChanged();
+    }
+
+    private void cancelLiveFilterTimer() {
+        liveFilterTimerArmed = false;
+        liveFilterDueAtNanos = 0L;
+        if (liveFilterTimer.isRunning()) {
+            liveFilterTimer.stop();
         }
     }
 
