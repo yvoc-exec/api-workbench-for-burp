@@ -414,6 +414,7 @@ public class ImporterPanel {
     }
 
     private JPanel createCollectionControls() {
+        ensureWorkbenchActionDefaultsInitialized();
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         panel.setBorder(BorderFactory.createTitledBorder("Collections"));
         addCollectionBtn = new JButton("+ Add Collection");
@@ -421,8 +422,15 @@ public class ImporterPanel {
         removeCollectionBtn = new JButton("- Remove Collection");
         removeCollectionBtn.addActionListener(e -> showRemoveCollectionsDialog());
         removeCollectionBtn.setEnabled(false);
+        importBtn = new JButton("Actions");
+        importBtn.setEnabled(false);
+        importBtn.addActionListener(e -> showActionsDialog());
+        actionsBtn = importBtn;
+        sendToRunnerBtn = new JButton("Run Checked");
+        sendToRunnerBtn.setEnabled(false);
         panel.add(addCollectionBtn);
         panel.add(removeCollectionBtn);
+        panel.add(importBtn);
         return panel;
     }
 
@@ -439,12 +447,7 @@ public class ImporterPanel {
         mountMainRequestTree(buildMainRequestTree());
         requestTreeScrollPane.setBorder(BorderFactory.createTitledBorder("Request Tree"));
         panel.add(requestTreeScrollPane, BorderLayout.CENTER);
-
-        JPanel lowerControls = new JPanel();
-        lowerControls.setLayout(new BoxLayout(lowerControls, BoxLayout.Y_AXIS));
-        lowerControls.add(createEnvBindingRow());
-        lowerControls.add(createActionsRow());
-        panel.add(lowerControls, BorderLayout.SOUTH);
+        panel.add(createEnvBindingRow(), BorderLayout.SOUTH);
 
         return panel;
     }
@@ -636,21 +639,6 @@ public class ImporterPanel {
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
         delaySpinner.setPreferredSize(new Dimension(70, 22));
         debugRawRequestBox = new JCheckBox("Debug final raw request");
-    }
-
-    private JPanel createActionsRow() {
-        ensureWorkbenchActionDefaultsInitialized();
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        panel.setBorder(BorderFactory.createTitledBorder("Options"));
-
-        importBtn = new JButton("Actions");
-        importBtn.setEnabled(false);
-        importBtn.addActionListener(e -> showActionsDialog());
-        actionsBtn = importBtn;
-        sendToRunnerBtn = new JButton("Run Checked");
-        sendToRunnerBtn.setEnabled(false);
-        panel.add(importBtn);
-        return panel;
     }
 
     private JPanel createWorkbenchLogRow() {
