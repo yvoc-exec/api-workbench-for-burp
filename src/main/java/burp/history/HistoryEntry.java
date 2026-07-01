@@ -4,6 +4,8 @@ import burp.auth.TokenStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectHop;
+import burp.models.RedirectTerminationReason;
 import burp.models.RunnerResult;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
@@ -62,6 +64,10 @@ public class HistoryEntry {
     public String scriptFlowNextRequestName;
     public String scriptFlowNextRequestId;
     public String finalResolvedUrl;
+    public Boolean redirectsEnabled;
+    public String initialResolvedUrl;
+    public RedirectTerminationReason redirectTerminationReason;
+    public List<RedirectHop> redirectHops = new ArrayList<>();
     public String host;
     public String scriptMode;
     public String scriptDialect;
@@ -110,8 +116,8 @@ public class HistoryEntry {
                         hasFailedAssertion(exec.assertions),
                         unresolvedVariables != null && !unresolvedVariables.isEmpty());
             }
-            entry.finalResolvedUrl = exec.resolvedUrl;
-            entry.host = parseHost(exec.resolvedUrl);
+            entry.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : exec.resolvedUrl;
+            entry.host = parseHost(entry.finalResolvedUrl);
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
@@ -125,6 +131,10 @@ public class HistoryEntry {
             entry.scriptFlowMessage = exec.scriptFlowMessage;
             entry.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
             entry.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
+            entry.redirectsEnabled = exec.redirectsEnabled;
+            entry.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : exec.resolvedUrl;
+            entry.redirectTerminationReason = exec.redirectTerminationReason;
+            entry.redirectHops = copyRedirectHops(exec.redirectHops);
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
@@ -172,8 +182,12 @@ public class HistoryEntry {
             entry.scriptFlowMessage = result.scriptFlowMessage;
             entry.scriptFlowNextRequestName = result.scriptFlowNextRequestName;
             entry.scriptFlowNextRequestId = result.scriptFlowNextRequestId;
-            entry.finalResolvedUrl = result.requestUrl;
-            entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(result.requestUrl);
+            entry.redirectsEnabled = result.redirectsEnabled;
+            entry.initialResolvedUrl = result.initialResolvedUrl != null ? result.initialResolvedUrl : result.requestUrl;
+            entry.finalResolvedUrl = result.finalResolvedUrl != null ? result.finalResolvedUrl : result.requestUrl;
+            entry.redirectTerminationReason = result.redirectTerminationReason;
+            entry.redirectHops = copyRedirectHops(result.redirectHops);
+            entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(entry.finalResolvedUrl);
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSnapshot != null) {
                 entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
@@ -208,6 +222,46 @@ public class HistoryEntry {
         if (entry.responseSnapshot == null && entry.statusCode <= 0 && entry.errorMessage != null && !entry.errorMessage.isBlank()) {
             entry.result = HistoryResult.ERROR;
         }
+        return entry;
+    }
+
+    public static HistoryEntry fromRedirectHop(RunnerResult parent, RedirectHop hop) {
+        HistoryEntry entry = createBase(HistorySource.RUNNER, null, null, null,
+                parent != null ? Math.max(1, parent.attemptNumber) : 1,
+                parent != null ? Math.max(1, parent.totalAttempts) : 1);
+        entry.timestamp = Instant.now();
+        entry.requestName = parent != null ? parent.requestName : null;
+        entry.requestId = parent != null ? parent.requestId : null;
+        entry.collectionId = parent != null ? parent.collectionName : null;
+        entry.collectionName = parent != null ? parent.collectionName : null;
+        entry.folderPath = parent != null ? parent.folderPath : null;
+        entry.statusCode = hop != null ? hop.statusCode : -1;
+        entry.durationMillis = hop != null ? hop.elapsedMs : 0L;
+        entry.requestSizeBytes = hop != null && hop.rawRequestBytes != null ? hop.rawRequestBytes.length : 0L;
+        entry.responseSnapshot = responseSnapshotFromRedirectHop(hop);
+        entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null ? entry.responseSnapshot.body.length : 0L;
+        entry.errorMessage = hop != null ? hop.failureReason : null;
+        entry.result = hop != null && hop.followed ? HistoryResult.SUCCESS : HistoryResult.STOPPED;
+        entry.resultClassification = entry.result.displayName();
+        entry.executionSource = parent != null && parent.executionSource != null ? parent.executionSource.name() : null;
+        entry.redirectsEnabled = parent != null ? parent.redirectsEnabled : null;
+        entry.initialResolvedUrl = parent != null ? parent.initialResolvedUrl : null;
+        entry.finalResolvedUrl = hop != null ? hop.targetUrl : null;
+        entry.redirectTerminationReason = parent != null ? parent.redirectTerminationReason : RedirectTerminationReason.NONE;
+        entry.redirectHops = hop != null ? List.of(RedirectHop.copyOf(hop)) : new ArrayList<>();
+        entry.requestSnapshot = new HistoryRequestSnapshot();
+        entry.requestSnapshot.method = hop != null ? hop.sourceMethod : null;
+        entry.requestSnapshot.urlTemplate = hop != null ? hop.sourceUrl : null;
+        entry.requestSnapshot.resolvedUrl = hop != null ? hop.sourceUrl : null;
+        entry.requestSnapshot.rawRequestSent = hop != null && hop.rawRequestBytes != null ? hop.rawRequestBytes.clone() : null;
+        entry.requestSnapshot.rawRequestSentText = hop != null ? hop.rawRequestText : null;
+        entry.requestSnapshot.authoredRequest = null;
+        entry.requestSnapshot.resolvedVariables = new LinkedHashMap<>();
+        entry.requestSnapshot.headersAsAuthored = new ArrayList<>();
+        if (hop != null && hop.rawRequestText != null) {
+            entry.requestSnapshot.bodyAsAuthored = hop.rawRequestText.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        }
+        entry.metadataSummaryText = buildRedirectHopMetadataText(hop);
         return entry;
     }
 
@@ -249,7 +303,11 @@ public class HistoryEntry {
         copy.scriptFlowMessage = source.scriptFlowMessage;
         copy.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
         copy.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
+        copy.redirectsEnabled = source.redirectsEnabled;
+        copy.initialResolvedUrl = source.initialResolvedUrl;
         copy.finalResolvedUrl = source.finalResolvedUrl;
+        copy.redirectTerminationReason = source.redirectTerminationReason;
+        copy.redirectHops = copyRedirectHops(source.redirectHops);
         copy.host = source.host;
         copy.scriptMode = source.scriptMode;
         copy.scriptDialect = source.scriptDialect;
@@ -306,6 +364,12 @@ public class HistoryEntry {
         }
         if (scriptFlowControl == null) {
             scriptFlowControl = ScriptFlowControl.CONTINUE;
+        }
+        if (redirectTerminationReason == null) {
+            redirectTerminationReason = RedirectTerminationReason.NONE;
+        }
+        if (redirectHops == null) {
+            redirectHops = new ArrayList<>();
         }
         if (result == null) {
             result = HistoryResult.UNKNOWN;
@@ -403,7 +467,11 @@ public class HistoryEntry {
         sb.append("Request Name: ").append(requestName != null ? requestName : "").append('\n');
         sb.append("Method: ").append(requestSnapshot != null && requestSnapshot.method != null ? requestSnapshot.method : "").append('\n');
         sb.append("URL Template: ").append(requestSnapshot != null && requestSnapshot.urlTemplate != null ? requestSnapshot.urlTemplate : "").append('\n');
+        sb.append("Redirects Enabled: ").append(redirectsEnabled != null ? redirectsEnabled : "Not yet sent").append('\n');
+        sb.append("Initial Resolved URL: ").append(initialResolvedUrl != null && !initialResolvedUrl.isBlank() ? initialResolvedUrl : "Not yet sent").append('\n');
         sb.append("Final Resolved URL: ").append(finalResolvedUrl != null && !finalResolvedUrl.isBlank() ? finalResolvedUrl : "Not yet sent").append('\n');
+        sb.append("Redirect Termination Reason: ").append(redirectTerminationReason != null ? redirectTerminationReason.displayLabel() : "Not yet sent").append('\n');
+        sb.append("Followed Redirect Hops: ").append(countFollowedRedirectHops()).append('\n');
         sb.append("Host: ").append(host != null && !host.isBlank() ? host : "Not yet sent").append('\n');
         sb.append("Build Mode: ").append(requestSnapshot != null && requestSnapshot.buildMode != null
                 ? requestSnapshot.buildMode.name()
@@ -433,6 +501,14 @@ public class HistoryEntry {
         sb.append("Script Mutations: ").append(scriptVariableMutations != null ? scriptVariableMutations.size() : 0).append('\n');
         sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
         sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
+        if (redirectHops != null && !redirectHops.isEmpty()) {
+            sb.append("Redirect Hop Evidence:").append('\n');
+            for (RedirectHop hop : redirectHops) {
+                if (hop != null) {
+                    sb.append(" - ").append(hop.safeSummary()).append('\n');
+                }
+            }
+        }
         return sb.toString().trim();
     }
 
@@ -466,6 +542,115 @@ public class HistoryEntry {
             sb.append(" (").append(requestSnapshot.authoredRequest.authSource).append(")");
         }
         return sb.toString();
+    }
+
+    private static HistoryResponseSnapshot responseSnapshotFromRedirectHop(RedirectHop hop) {
+        HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
+        if (hop == null) {
+            return snapshot;
+        }
+        snapshot.statusCode = hop.statusCode;
+        snapshot.reasonPhrase = parseReasonPhrase(hop.responseHeadersText);
+        snapshot.headers = parseHeaders(hop.responseHeadersText);
+        snapshot.body = hop.responseBody != null ? hop.responseBody.clone() : null;
+        snapshot.mimeType = findContentType(snapshot.headers);
+        return snapshot;
+    }
+
+    private static List<HistoryHeader> parseHeaders(String responseHeaders) {
+        List<HistoryHeader> headers = new ArrayList<>();
+        if (responseHeaders == null || responseHeaders.isBlank()) {
+            return headers;
+        }
+        String[] lines = responseHeaders.replace("\r", "").split("\n");
+        for (int i = 1; i < lines.length; i++) {
+            String line = lines[i];
+            int colon = line.indexOf(':');
+            if (colon <= 0) {
+                continue;
+            }
+            String name = line.substring(0, colon).trim();
+            String value = line.substring(colon + 1).trim();
+            headers.add(new HistoryHeader(name, value, false));
+        }
+        return headers;
+    }
+
+    private static String parseReasonPhrase(String responseHeaders) {
+        if (responseHeaders == null || responseHeaders.isBlank()) {
+            return "";
+        }
+        String[] lines = responseHeaders.replace("\r", "").split("\n");
+        if (lines.length == 0) {
+            return "";
+        }
+        String statusLine = lines[0].trim();
+        int firstSpace = statusLine.indexOf(' ');
+        if (firstSpace < 0) {
+            return "";
+        }
+        String remainder = statusLine.substring(firstSpace + 1).trim();
+        int secondSpace = remainder.indexOf(' ');
+        if (secondSpace < 0) {
+            return remainder;
+        }
+        return remainder.substring(secondSpace + 1).trim();
+    }
+
+    private static String findContentType(List<HistoryHeader> headers) {
+        for (HistoryHeader header : headers != null ? headers : List.<HistoryHeader>of()) {
+            if (header != null && header.name != null && "content-type".equalsIgnoreCase(header.name)) {
+                return header.value;
+            }
+        }
+        return null;
+    }
+
+    private static List<RedirectHop> copyRedirectHops(List<RedirectHop> hops) {
+        List<RedirectHop> copy = new ArrayList<>();
+        if (hops == null) {
+            return copy;
+        }
+        for (RedirectHop hop : hops) {
+            RedirectHop hopCopy = RedirectHop.copyOf(hop);
+            if (hopCopy != null) {
+                copy.add(hopCopy);
+            }
+        }
+        return copy;
+    }
+
+    private static String buildRedirectHopMetadataText(RedirectHop hop) {
+        if (hop == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Redirect Hop: ").append(hop.hopNumber > 0 ? hop.hopNumber : "?").append('\n');
+        sb.append("Source URL: ").append(hop.sourceUrl != null ? hop.sourceUrl : "").append('\n');
+        sb.append("Source Method: ").append(hop.sourceMethod != null ? hop.sourceMethod : "").append('\n');
+        sb.append("Redirect Status: ").append(hop.statusCode > 0 ? hop.statusCode : "").append('\n');
+        sb.append("Location: ").append(hop.location != null ? hop.location : "").append('\n');
+        sb.append("Target URL: ").append(hop.targetUrl != null ? hop.targetUrl : "").append('\n');
+        sb.append("Target Method: ").append(hop.targetMethod != null ? hop.targetMethod : "").append('\n');
+        sb.append("Elapsed: ").append(hop.elapsedMs > 0 ? hop.elapsedMs + " ms" : "").append('\n');
+        sb.append("Followed: ").append(hop.followed).append('\n');
+        sb.append("Failure Reason: ").append(hop.failureReason != null ? hop.failureReason : "").append('\n');
+        sb.append("Forwarded Sensitive Header Names: ").append(String.join(", ", hop.forwardedSensitiveHeaderNames != null ? hop.forwardedSensitiveHeaderNames : List.of())).append('\n');
+        sb.append("Stripped Sensitive Header Names: ").append(String.join(", ", hop.strippedSensitiveHeaderNames != null ? hop.strippedSensitiveHeaderNames : List.of())).append('\n');
+        return sb.toString().trim();
+    }
+
+    private int countFollowedRedirectHops() {
+        if (redirectHops == null || redirectHops.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (RedirectHop hop : redirectHops) {
+            if (hop != null && hop.followed) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String parseHost(String resolvedUrl) {

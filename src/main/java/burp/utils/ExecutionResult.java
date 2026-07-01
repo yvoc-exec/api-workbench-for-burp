@@ -2,6 +2,8 @@ package burp.utils;
 
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.models.RedirectHop;
+import burp.models.RedirectTerminationReason;
 import burp.models.RunnerResult;
 import burp.scripts.ExecutionSource;
 import burp.scripts.ScriptDependentRequestResult;
@@ -23,6 +25,7 @@ public class ExecutionResult {
     public boolean success;
     public HttpRequestResponse response;
     public HttpRequest builtRequest;
+    public HttpRequest finalRequest;
     public final Map<String, String> extractedVars = new HashMap<>();
     public final Set<String> removedVars = new LinkedHashSet<>();
     public final List<RunnerResult.AssertionResult> assertions = new ArrayList<>();
@@ -34,6 +37,11 @@ public class ExecutionResult {
     public String requestHeaders;
     public String requestBody;
     public String resolvedUrl;
+    public String initialResolvedUrl;
+    public String finalResolvedUrl;
+    public boolean redirectsEnabled;
+    public RedirectTerminationReason redirectTerminationReason = RedirectTerminationReason.NONE;
+    public final List<RedirectHop> redirectHops = new ArrayList<>();
     public String scriptEngineName;
     public ExecutionSource executionSource;
     public final List<ScriptLogEntry> scriptLogs = new ArrayList<>();
