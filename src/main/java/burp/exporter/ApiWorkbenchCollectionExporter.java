@@ -197,9 +197,6 @@ public final class ApiWorkbenchCollectionExporter {
             if (header == null || header.key == null || header.key.isBlank()) {
                 continue;
             }
-            if (CollectionExportSupport.isTransportHeader(header.key)) {
-                continue;
-            }
             JsonObject obj = new JsonObject();
             obj.addProperty("key", CollectionExportSupport.resolve(header.key, resolver, resolve) != null ? CollectionExportSupport.resolve(header.key, resolver, resolve) : "");
             obj.addProperty("value", CollectionExportSupport.resolve(header.value, resolver, resolve) != null ? CollectionExportSupport.resolve(header.value, resolver, resolve) : "");

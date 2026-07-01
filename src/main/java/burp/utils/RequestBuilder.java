@@ -232,14 +232,9 @@ public class RequestBuilder {
             append(normalizedKey, value);
         }
 
-        /** Merges a cookie into a single Cookie header. */
-        void mergeCookie(String cookieValue) {
-            String existing = get("Cookie");
-            if (existing != null) {
-                putComputed("Cookie", existing + "; " + normalizeHeaderValue(cookieValue));
-            } else {
-                putDefault("Cookie", cookieValue);
-            }
+        /** Appends generated cookie auth without collapsing authored Cookie rows. */
+        void appendGeneratedCookie(String cookieValue) {
+            appendComputed("Cookie", cookieValue);
         }
 
         String get(String key) {
@@ -394,7 +389,7 @@ public class RequestBuilder {
                                 : requestTarget + "?" + param;
                     } else if ("cookie".equalsIgnoreCase(in)) {
                         String cookieValue = resolve(resolver, keyName) + "=" + resolve(resolver, keyValue);
-                        headers.mergeCookie(cookieValue);
+                        headers.appendGeneratedCookie(cookieValue);
                     } else {
                         String resolvedKeyName = resolve(resolver, keyName);
                         String resolvedKeyValue = resolve(resolver, keyValue);
@@ -408,7 +403,7 @@ public class RequestBuilder {
                 String cookieValue = auth.properties.get("value");
                 if (cookieValue != null) {
                     String resolvedCookie = resolver != null ? resolver.resolve(cookieValue) : cookieValue;
-                    headers.mergeCookie(resolvedCookie);
+                    headers.appendGeneratedCookie(resolvedCookie);
                 }
                 break;
             case "oauth2":

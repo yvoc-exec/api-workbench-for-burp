@@ -195,39 +195,34 @@ final class RequestEditorStateMapper {
         String bodyMode = ctx.getBodyModeInternal.get();
         if (!"none".equals(bodyMode)) {
             req.body = new ApiRequest.Body();
+            ApiRequest.Body existingBody = currentRequest.body;
             req.body.mode = bodyMode;
+            if (existingBody != null) {
+                req.body.contentType = existingBody.contentType;
+                req.body.formdata = copyFormFields(existingBody.formdata);
+                req.body.urlencoded = copyFormFields(existingBody.urlencoded);
+                req.body.graphql = copyGraphQL(existingBody.graphql);
+            }
             if ("raw".equals(bodyMode)) {
                 req.body.raw = ctx.bodyRawArea.getText();
             } else if ("graphql".equals(bodyMode)) {
-                ApiRequest.Body.GraphQL graphQL = new ApiRequest.Body.GraphQL();
-                if (currentRequest.body != null && currentRequest.body.graphql != null) {
-                    graphQL.variables = currentRequest.body.graphql.variables;
+                ApiRequest.Body.GraphQL graphQL = existingBody != null
+                        ? copyGraphQL(existingBody.graphql)
+                        : null;
+                if (graphQL == null) {
+                    graphQL = new ApiRequest.Body.GraphQL();
                 }
                 graphQL.query = ctx.bodyRawArea.getText();
                 req.body.graphql = graphQL;
-                if (currentRequest.body != null) {
-                    req.body.contentType = currentRequest.body.contentType;
-                }
             } else if ("file".equals(bodyMode)) {
-                if (currentRequest.body != null) {
-                    req.body.raw = ctx.bodyRawArea.getText();
-                    req.body.contentType = currentRequest.body.contentType;
-                    req.body.formdata = currentRequest.body.formdata != null ? new ArrayList<>(currentRequest.body.formdata) : new ArrayList<>();
-                    req.body.urlencoded = currentRequest.body.urlencoded != null ? new ArrayList<>(currentRequest.body.urlencoded) : new ArrayList<>();
-                }
+                req.body.raw = ctx.bodyRawArea.getText();
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
-                List<ApiRequest.Body.FormField> fields = new ArrayList<>();
-                for (int i = 0; i < ctx.bodyFormModel.getRowCount(); i++) {
-                    String k = (String) ctx.bodyFormModel.getValueAt(i, 0);
-                    String v = (String) ctx.bodyFormModel.getValueAt(i, 1);
-                    if (k != null && !k.trim().isEmpty()) {
-                        fields.add(new ApiRequest.Body.FormField(k, v != null ? v : ""));
-                    }
-                }
                 if ("urlencoded".equals(bodyMode)) {
-                    req.body.urlencoded = fields;
+                    req.body.urlencoded = mergeFormFields(ctx.bodyFormModel,
+                            existingBody != null ? existingBody.urlencoded : null);
                 } else {
-                    req.body.formdata = fields;
+                    req.body.formdata = mergeFormFields(ctx.bodyFormModel,
+                            existingBody != null ? existingBody.formdata : null);
                 }
             }
         }
@@ -473,6 +468,96 @@ final class RequestEditorStateMapper {
                 copy.add(cloned);
             }
         }
+        return copy;
+    }
+
+    private static List<ApiRequest.Body.FormField> mergeFormFields(DefaultTableModel model, List<ApiRequest.Body.FormField> existing) {
+        List<ApiRequest.Body.FormField> merged = new ArrayList<>();
+        Set<Integer> consumed = new HashSet<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = (String) model.getValueAt(i, 0);
+            String value = (String) model.getValueAt(i, 1);
+            if (key == null || key.trim().isEmpty()) {
+                continue;
+            }
+            int match = findMatchingEnabledField(existing, consumed, key, value);
+            ApiRequest.Body.FormField field = match >= 0
+                    ? copyFormField(existing.get(match))
+                    : new ApiRequest.Body.FormField(key, value != null ? value : "");
+            if (match >= 0) {
+                consumed.add(match);
+            }
+            field.key = key;
+            field.value = value != null ? value : "";
+            field.disabled = false;
+            merged.add(field);
+        }
+        if (existing != null) {
+            for (int i = 0; i < existing.size(); i++) {
+                ApiRequest.Body.FormField field = existing.get(i);
+                if (field != null && field.disabled) {
+                    merged.add(copyFormField(field));
+                }
+            }
+        }
+        return merged;
+    }
+
+    private static int findMatchingEnabledField(List<ApiRequest.Body.FormField> existing,
+                                                Set<Integer> consumed,
+                                                String key,
+                                                String value) {
+        if (existing == null) {
+            return -1;
+        }
+        for (int i = 0; i < existing.size(); i++) {
+            ApiRequest.Body.FormField field = existing.get(i);
+            if (field == null || field.disabled || consumed.contains(i)) {
+                continue;
+            }
+            if (Objects.equals(field.key, key) && Objects.equals(field.value, value != null ? value : "")) {
+                return i;
+            }
+        }
+        for (int i = 0; i < existing.size(); i++) {
+            ApiRequest.Body.FormField field = existing.get(i);
+            if (field != null && !field.disabled && !consumed.contains(i)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static List<ApiRequest.Body.FormField> copyFormFields(List<ApiRequest.Body.FormField> fields) {
+        List<ApiRequest.Body.FormField> copy = new ArrayList<>();
+        if (fields == null) {
+            return copy;
+        }
+        for (ApiRequest.Body.FormField field : fields) {
+            copy.add(copyFormField(field));
+        }
+        return copy;
+    }
+
+    private static ApiRequest.Body.FormField copyFormField(ApiRequest.Body.FormField field) {
+        if (field == null) {
+            return null;
+        }
+        ApiRequest.Body.FormField copy = new ApiRequest.Body.FormField(field.key, field.value);
+        copy.type = field.type;
+        copy.fileUpload = field.fileUpload;
+        copy.filePath = field.filePath;
+        copy.disabled = field.disabled;
+        return copy;
+    }
+
+    private static ApiRequest.Body.GraphQL copyGraphQL(ApiRequest.Body.GraphQL graphQL) {
+        if (graphQL == null) {
+            return null;
+        }
+        ApiRequest.Body.GraphQL copy = new ApiRequest.Body.GraphQL();
+        copy.query = graphQL.query;
+        copy.variables = graphQL.variables;
         return copy;
     }
 

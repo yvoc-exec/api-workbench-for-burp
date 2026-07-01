@@ -387,6 +387,35 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void workspaceRoundTripPreservesExactTransportRequestStateAndRestoresIndicator() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-exact";
+        collection.name = "Exact Demo";
+        ApiRequest request = exactTransportRequest();
+        collection.requests.add(request);
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.selectedRequestIdentityKey = "Exact Demo\u001Fid=req-exact";
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        ApiRequest restored = parsed.collections.get(0).requests.get(0);
+        assertExactTransportRequest(restored);
+
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(parsed);
+        RequestEditorPanel editor = (RequestEditorPanel) ImporterPanelTestSupport.requestEditor(bundle.panel).raw();
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            editor.setCurrentCollection(parsed.collections.get(0));
+            editor.loadRequest(restored);
+        });
+        javax.swing.JLabel indicator = ImporterPanelTestSupport.getField(editor, "exactTransportIndicator");
+
+        assertThat(editor.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(editor.getCurrentRequest().description).isEqualTo("exact description");
+        assertThat(indicator.isVisible()).isTrue();
+    }
+
+    @Test
     void legacyWorkspaceDefaultsBuildModeAndSuppressedAutoHeadersSafely() {
         String json = """
                 {
@@ -921,5 +950,62 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.collections.get(0).scriptBlocks.get(0).phase).isEqualTo(ScriptPhase.PRE_REQUEST);
         assertThat(parsed.collections.get(0).scriptBlocks.get(0).scope).isEqualTo(ScriptScope.REQUEST);
         assertThat(parsed.collections.get(0).scriptBlocks.get(0).source).contains("pm.environment.set");
+    }
+
+    private static ApiRequest exactTransportRequest() {
+        ApiRequest request = new ApiRequest();
+        request.id = "req-exact";
+        request.name = "Exact";
+        request.path = "Folder/Exact";
+        request.sourceCollection = "Exact Demo";
+        request.method = "POST";
+        request.url = "https://api.example.test/exact";
+        request.description = "exact description";
+        request.disabled = true;
+        request.sequenceOrder = 9;
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.editorMaterialized = true;
+        request.suppressedAutoHeaders = new java.util.LinkedHashSet<>(List.of("accept", "authorization"));
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "tenant";
+        variable.value = "acme";
+        variable.enabled = false;
+        request.variables.add(variable);
+        request.headers.add(new ApiRequest.Header("Host", "one.example", false));
+        request.headers.add(new ApiRequest.Header("Host", "two.example", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        request.headers.add(new ApiRequest.Header("X-Test", "one", false));
+        request.headers.add(new ApiRequest.Header("X-Test", "two", false));
+        request.headers.add(new ApiRequest.Header("Content-Length", "999", false));
+        request.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        request.headers.add(new ApiRequest.Header("Connection", "keep-alive", true));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "hello";
+        request.body.contentType = "text/plain";
+        ApiRequest.Body.FormField upload = new ApiRequest.Body.FormField("upload", "");
+        upload.type = "file";
+        upload.fileUpload = true;
+        upload.filePath = "payload.bin";
+        request.body.formdata.add(upload);
+        return request;
+    }
+
+    private static void assertExactTransportRequest(ApiRequest restored) {
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(restored.editorMaterialized).isTrue();
+        assertThat(restored.description).isEqualTo("exact description");
+        assertThat(restored.disabled).isTrue();
+        assertThat(restored.variables).hasSize(1);
+        assertThat(restored.variables.get(0).enabled).isFalse();
+        assertThat(restored.suppressedAutoHeaders).containsExactly("accept", "authorization");
+        assertThat(restored.headers).extracting(header -> header.key)
+                .containsExactly("Host", "Host", "Cookie", "Cookie", "X-Test", "X-Test",
+                        "Content-Length", "Transfer-Encoding", "Connection");
+        assertThat(restored.headers.get(8).disabled).isTrue();
+        assertThat(restored.body.contentType).isEqualTo("text/plain");
+        assertThat(restored.body.formdata.get(0).fileUpload).isTrue();
+        assertThat(restored.body.formdata.get(0).filePath).isEqualTo("payload.bin");
     }
 }
