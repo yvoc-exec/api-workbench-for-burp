@@ -191,6 +191,35 @@ class CollectionExportServiceTest {
     }
 
     @Test
+    void nativeCollectionRoundTripPreservesExactTransportRequestState() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-exact";
+        collection.name = "Exact";
+        collection.requests.add(exactNativeRequest());
+        Path output = tempDir.resolve("exact.api-workbench.collection.json");
+
+        service.exportCollection(
+                collection,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, output, false, null, Map.of())
+        );
+
+        ApiCollection imported = new ApiWorkbenchCollectionParser().parse(output.toFile());
+        ApiRequest restored = imported.requests.get(0);
+
+        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(restored.editorMaterialized).isTrue();
+        assertThat(restored.description).isEqualTo("exact description");
+        assertThat(restored.disabled).isTrue();
+        assertThat(restored.variables).hasSize(1);
+        assertThat(restored.headers).extracting(header -> header.key)
+                .containsExactly("Host", "Host", "Cookie", "Cookie", "Content-Length", "Transfer-Encoding", "Connection");
+        assertThat(restored.headers.get(6).disabled).isTrue();
+        assertThat(restored.body.contentType).isEqualTo("text/plain");
+        assertThat(restored.body.formdata.get(0).fileUpload).isTrue();
+        assertThat(restored.body.formdata.get(0).filePath).isEqualTo("payload.bin");
+    }
+
+    @Test
     void legacyNativeCollectionWithoutIdStillImportsWithGeneratedId() throws Exception {
         ApiCollection collection = ExportTestFixtures.sampleCollection();
         collection.id = null;
@@ -319,6 +348,41 @@ class CollectionExportServiceTest {
         request.body.raw = "{\"password\":\"{{missing_password}}\"}";
         collection.requests = new java.util.ArrayList<>(List.of(request));
         return collection;
+    }
+
+    private static ApiRequest exactNativeRequest() {
+        ApiRequest request = new ApiRequest();
+        request.id = "req-exact";
+        request.name = "Exact";
+        request.path = "Folder/Exact";
+        request.sourceCollection = "Exact";
+        request.method = "POST";
+        request.url = "https://api.example.test/exact";
+        request.description = "exact description";
+        request.disabled = true;
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.editorMaterialized = true;
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "tenant";
+        variable.value = "acme";
+        request.variables.add(variable);
+        request.headers.add(new ApiRequest.Header("Host", "one.example", false));
+        request.headers.add(new ApiRequest.Header("Host", "two.example", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        request.headers.add(new ApiRequest.Header("Content-Length", "999", false));
+        request.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        request.headers.add(new ApiRequest.Header("Connection", "keep-alive", true));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "hello";
+        request.body.contentType = "text/plain";
+        ApiRequest.Body.FormField upload = new ApiRequest.Body.FormField("upload", "");
+        upload.type = "file";
+        upload.fileUpload = true;
+        upload.filePath = "payload.bin";
+        request.body.formdata.add(upload);
+        return request;
     }
 
     private static JsonObject requestByName(JsonArray requests, String name) {

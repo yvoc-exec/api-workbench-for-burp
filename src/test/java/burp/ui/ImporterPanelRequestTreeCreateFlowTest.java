@@ -641,12 +641,25 @@ class ImporterPanelRequestTreeCreateFlowTest {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("APIM");
         ApiRequest request = request("req-1", "Login", "POST", "https://api.example.test/login", 0);
-        request.headers.add(new ApiRequest.Header("X-Test", "1"));
+        request.description = "duplicate exact description";
+        request.disabled = true;
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.editorMaterialized = true;
+        request.suppressedAutoHeaders.add("accept");
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "tenant";
+        variable.value = "acme";
+        request.variables.add(variable);
+        request.headers.add(new ApiRequest.Header("Host", "one.example", false));
+        request.headers.add(new ApiRequest.Header("Host", "two.example", false));
+        request.headers.add(new ApiRequest.Header("X-Test", "1", false));
+        request.headers.add(new ApiRequest.Header("X-Test", "2", true));
         request.preRequestScripts.add(new ApiRequest.Script("js", "console.log('pre');"));
         request.postResponseScripts.add(new ApiRequest.Script("js", "console.log('post');"));
         request.body = new ApiRequest.Body();
         request.body.mode = "raw";
         request.body.raw = "{\"login\":true}";
+        request.body.contentType = "application/json";
         collection.requests.add(request);
         panel.restoreWorkspaceCollections(List.of(collection));
         drainEdt();
@@ -660,11 +673,19 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(duplicate.name).isEqualTo("Login Copy");
         assertThat(duplicate.method).isEqualTo("POST");
         assertThat(duplicate.url).isEqualTo("https://api.example.test/login");
-        assertThat(duplicate.headers).extracting(header -> ((ApiRequest.Header) header).key).contains("X-Test");
+        assertThat(duplicate.description).isEqualTo("duplicate exact description");
+        assertThat(duplicate.disabled).isTrue();
+        assertThat(duplicate.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(duplicate.suppressedAutoHeaders).containsExactly("accept");
+        assertThat(duplicate.variables).extracting(variableItem -> variableItem.key).containsExactly("tenant");
+        assertThat(duplicate.headers).extracting(header -> ((ApiRequest.Header) header).key)
+                .containsExactly("Host", "Host", "X-Test", "X-Test");
+        assertThat(duplicate.headers.get(3).disabled).isTrue();
         assertThat(duplicate.preRequestScripts).hasSize(1);
         assertThat(duplicate.postResponseScripts).hasSize(1);
         assertThat(duplicate.body).isNotNull();
         assertThat(duplicate.body.raw).isEqualTo("{\"login\":true}");
+        assertThat(duplicate.body.contentType).isEqualTo("application/json");
         assertThat(duplicate.id).isNotEqualTo(request.id);
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(duplicate);
     }

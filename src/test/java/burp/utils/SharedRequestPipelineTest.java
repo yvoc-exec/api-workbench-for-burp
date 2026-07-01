@@ -225,6 +225,27 @@ class SharedRequestPipelineTest {
         assertThat(exec.rawRequestText).doesNotContain("User-Agent: BurpExtensionRuntime");
         assertThat(exec.rawRequestText).doesNotContain("Cache-Control: no-cache");
         assertThat(exec.rawRequestText).doesNotContain("Host: example.com");
+
+        ApiRequest safe = new ApiRequest();
+        safe.name = "Safe Request";
+        safe.method = "POST";
+        safe.url = "http://example.com/api";
+        safe.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        safe.editorMaterialized = true;
+        safe.headers.add(new ApiRequest.Header("Host", "alt.example.test", false));
+        safe.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        safe.headers.add(new ApiRequest.Header("X-Keep", "yes", false));
+        safe.body = new ApiRequest.Body();
+        safe.body.mode = "raw";
+        safe.body.raw = "hello";
+
+        ExecutionResult safeExec = pipeline.build(safe, col, null, null, null, null, ExecutionSource.RUNNER);
+
+        assertThat(safeExec.rawRequestText).contains("Host: example.com");
+        assertThat(safeExec.rawRequestText).contains("Content-Length: 5");
+        assertThat(safeExec.rawRequestText).contains("X-Keep: yes");
+        assertThat(safeExec.rawRequestText).doesNotContain("Host: alt.example.test");
+        assertThat(safeExec.rawRequestText).doesNotContain("Transfer-Encoding: chunked");
     }
 
     @Test

@@ -65,6 +65,44 @@ class HistoryRequestSnapshotTest {
     }
 
     @Test
+    void exactSnapshotRoundTripPreservesMetadataDuplicatesTransportRowsAndBodyState() {
+        ApiRequest request = request("POST", "https://api.example.test/exact");
+        request.description = "history exact";
+        request.disabled = true;
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.headers.add(new ApiRequest.Header("Host", "one.example", false));
+        request.headers.add(new ApiRequest.Header("Host", "two.example", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        request.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        request.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        request.headers.add(new ApiRequest.Header("Connection", "close", true));
+        request.variables.add(variable("tenant", "acme"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "hello";
+        request.body.contentType = "text/plain";
+        request.preRequestScripts.add(new ApiRequest.Script("js", "pre();"));
+        request.postResponseScripts.add(new ApiRequest.Script("js", "post();"));
+        request.auth = new ApiRequest.Auth();
+        request.auth.type = "bearer";
+        request.auth.properties.put("token", "secret");
+
+        ApiRequest rebuilt = HistoryRequestSnapshot.from(request).toApiRequest();
+
+        assertThat(rebuilt.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(rebuilt.description).isEqualTo("history exact");
+        assertThat(rebuilt.disabled).isTrue();
+        assertThat(rebuilt.headers).extracting(header -> header.key)
+                .containsExactly("Host", "Host", "Cookie", "Cookie", "Transfer-Encoding", "Connection");
+        assertThat(rebuilt.headers.get(5).disabled).isTrue();
+        assertThat(rebuilt.variables).extracting(variable -> variable.key).containsExactly("tenant");
+        assertThat(rebuilt.body.contentType).isEqualTo("text/plain");
+        assertThat(rebuilt.preRequestScripts.get(0).exec).isEqualTo("pre();");
+        assertThat(rebuilt.postResponseScripts.get(0).exec).isEqualTo("post();");
+        assertThat(rebuilt.auth.type).isEqualTo("bearer");
+    }
+
+    @Test
     void copyOfHandlesNullNestedStateAndDeepCopiesArraysMapsAndRequest() {
         HistoryRequestSnapshot source = new HistoryRequestSnapshot();
         source.method = "POST";

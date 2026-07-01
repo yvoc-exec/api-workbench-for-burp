@@ -97,7 +97,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void cookieMergeProducesSingleCookieHeader() throws Exception {
+    void cookieAuthAppendsGeneratedCookieHeader() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";
         req.url = "http://example.com/api";
@@ -108,16 +108,10 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "xyz");
         req.auth.properties.put("in", "cookie");
 
-        byte[] raw = builder.buildRequest(req, resolver);
-        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String raw = new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
 
-        assertThat(parsed.hasHeader("Cookie")).isTrue();
-        String cookie = parsed.headerValue("Cookie");
-        assertThat(cookie).contains("a=1").contains("session=xyz");
-        long cookieCount = parsed.headers.keySet().stream()
-                .filter(k -> k.equalsIgnoreCase("Cookie"))
-                .count();
-        assertThat(cookieCount).isEqualTo(1);
+        assertThat(raw).contains("Cookie: a=1").contains("Cookie: session=xyz");
+        assertThat(raw.indexOf("Cookie: a=1")).isLessThan(raw.indexOf("Cookie: session=xyz"));
     }
 
     // ===================================================================
@@ -629,7 +623,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void apiKeyInCookieMergesWithExistingCookie() throws Exception {
+    void apiKeyInCookieAppendsAfterExistingCookie() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";
         req.url = "http://example.com/api";
@@ -640,11 +634,10 @@ class RequestBuilderTest {
         req.auth.properties.put("value", "abc");
         req.auth.properties.put("in", "cookie");
 
-        byte[] raw = builder.buildRequest(req, resolver);
-        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String raw = new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
 
-        String cookie = parsed.headerValue("Cookie");
-        assertThat(cookie).contains("existing=1").contains("session=abc");
+        assertThat(raw).contains("Cookie: existing=1").contains("Cookie: session=abc");
+        assertThat(raw.indexOf("Cookie: existing=1")).isLessThan(raw.indexOf("Cookie: session=abc"));
     }
 
     @Test
@@ -671,7 +664,7 @@ class RequestBuilderTest {
     }
 
     @Test
-    void cookieAuthMergesIntoCookieHeader() throws Exception {
+    void cookieAuthAppendsAfterExistingCookie() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";
         req.url = "http://example.com/api";
@@ -680,11 +673,10 @@ class RequestBuilderTest {
         req.auth.type = "cookie";
         req.auth.properties.put("value", "b=2");
 
-        byte[] raw = builder.buildRequest(req, resolver);
-        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String raw = new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
 
-        String cookie = parsed.headerValue("Cookie");
-        assertThat(cookie).contains("a=1").contains("b=2");
+        assertThat(raw).contains("Cookie: a=1").contains("Cookie: b=2");
+        assertThat(raw.indexOf("Cookie: a=1")).isLessThan(raw.indexOf("Cookie: b=2"));
     }
 
     // ===================================================================

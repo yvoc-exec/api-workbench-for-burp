@@ -402,7 +402,7 @@ class RequestBuilderPolicyTest {
     @Test
     void duplicateAuthoredAuthorizationPreventsGeneratedBearerAuth() throws Exception {
         ApiRequest req = baseRequest();
-        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
         req.headers.add(new ApiRequest.Header("Authorization", "Bearer first", false));
         req.headers.add(new ApiRequest.Header("Authorization", "Bearer second", false));
         req.auth = new ApiRequest.Auth();
@@ -414,6 +414,92 @@ class RequestBuilderPolicyTest {
         assertThat(raw).contains("Authorization: Bearer first");
         assertThat(raw).contains("Authorization: Bearer second");
         assertThat(raw).doesNotContain("Authorization: Bearer generated");
+    }
+
+    @Test
+    void generatedCookieAuthAppendsAfterAuthoredCookiesWithoutCollapsingDuplicates() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        req.headers.add(new ApiRequest.Header("X-Test", "one", false));
+        req.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "cookie";
+        req.auth.properties.put("value", "generated=3");
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Cookie: a=1", "X-Test: one", "Cookie: b=2", "Cookie: generated=3");
+        assertThat(raw.indexOf("Cookie: a=1")).isLessThan(raw.indexOf("X-Test: one"));
+        assertThat(raw.indexOf("X-Test: one")).isLessThan(raw.indexOf("Cookie: b=2"));
+        assertThat(raw.indexOf("Cookie: b=2")).isLessThan(raw.indexOf("Cookie: generated=3"));
+    }
+
+    @Test
+    void apiKeyInCookieAppendsAfterAuthoredCookiesWithoutCollapsingDuplicates() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        req.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "apikey";
+        req.auth.properties.put("in", "cookie");
+        req.auth.properties.put("key", "api_key");
+        req.auth.properties.put("value", "secret");
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Cookie: a=1", "Cookie: b=2", "Cookie: api_key=secret");
+        assertThat(raw.indexOf("Cookie: a=1")).isLessThan(raw.indexOf("Cookie: b=2"));
+        assertThat(raw.indexOf("Cookie: b=2")).isLessThan(raw.indexOf("Cookie: api_key=secret"));
+    }
+
+    @Test
+    void generatedCookieAuthEmitsOnceWhenNoAuthoredCookieExists() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "cookie";
+        req.auth.properties.put("value", "generated=3");
+
+        String raw = requestText(req);
+
+        assertThat(count(raw, "Cookie: ")).isEqualTo(1);
+        assertThat(raw).contains("Cookie: generated=3");
+    }
+
+    @Test
+    void generatedCookieAuthSkipsDisabledAuthoredCookieButStillEmitsGeneratedCookie() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers.add(new ApiRequest.Header("Cookie", "disabled=1", true));
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "cookie";
+        req.auth.properties.put("value", "generated=3");
+
+        String raw = requestText(req);
+
+        assertThat(raw).doesNotContain("Cookie: disabled=1");
+        assertThat(count(raw, "Cookie: ")).isEqualTo(1);
+        assertThat(raw).contains("Cookie: generated=3");
+    }
+
+    @Test
+    void exactModePreservesOnlyEnabledAuthoredCookiesAndDoesNotSynthesizeCookieAuth() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        req.headers.add(new ApiRequest.Header("Cookie", "disabled=1", true));
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "cookie";
+        req.auth.properties.put("value", "generated=3");
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Cookie: a=1");
+        assertThat(raw).doesNotContain("Cookie: disabled=1");
+        assertThat(raw).doesNotContain("Cookie: generated=3");
+        assertThat(count(raw, "Cookie: ")).isEqualTo(1);
     }
 
     @Test
@@ -453,5 +539,15 @@ class RequestBuilderPolicyTest {
 
     private String requestText(ApiRequest req) throws Exception {
         return new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
+    }
+
+    private static int count(String text, String needle) {
+        int count = 0;
+        int idx = text.indexOf(needle);
+        while (idx >= 0) {
+            count++;
+            idx = text.indexOf(needle, idx + needle.length());
+        }
+        return count;
     }
 }
