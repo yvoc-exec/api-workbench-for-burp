@@ -109,6 +109,9 @@ class RequestEditorPanelAuthMetadataTest {
         edited.explicitAuth.properties.put("username", "u");
         edited.explicitAuth.properties.put("password", "p");
         edited.auth = AuthInheritanceResolver.copyAuth(edited.explicitAuth);
+        edited.variables.add(new ApiRequest.Variable());
+        edited.variables.get(0).key = "request_var";
+        edited.variables.get(0).value = "request_value";
 
         ImporterPanel.applyEditedRequestToLiveRequest(collection, liveRequest, edited);
 

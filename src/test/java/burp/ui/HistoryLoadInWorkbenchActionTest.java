@@ -408,6 +408,75 @@ class HistoryLoadInWorkbenchActionTest {
     }
 
     @Test
+    void loadInWorkbenchClearsDescriptionAndVariablesFromSnapshot() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+        liveRequest.description = "Old description";
+        liveRequest.variables = new ArrayList<>();
+        liveRequest.variables.add(variable("oldToken", "abc"));
+        liveRequest.variables.add(variable("stale", "true"));
+
+        ApiRequest emptySnapshotRequest = HistoryTestFixtures.copyRequest(HistoryTestFixtures.sampleRequest());
+        emptySnapshotRequest.description = null;
+        emptySnapshotRequest.variables = new ArrayList<>();
+        emptySnapshotRequest.body.raw = "{\"username\":\"loaded\"}";
+
+        HistoryEntry clearEntry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "load-clear", Instant.parse("2026-06-15T01:41:00Z"));
+        clearEntry.collectionId = liveCollection.id;
+        clearEntry.collectionName = liveCollection.name;
+        clearEntry.requestId = liveRequest.id;
+        clearEntry.requestName = liveRequest.name;
+        clearEntry.folderPath = liveRequest.path;
+        clearEntry.requestSnapshot = HistoryRequestSnapshot.from(emptySnapshotRequest);
+        clearEntry.source = HistorySource.WORKBENCH;
+
+        clickLoadHistoryButton(bundle, clearEntry);
+
+        assertThat(notifier.confirmCalls).isEqualTo(1);
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(liveRequest.description).isNull();
+        assertThat(liveRequest.variables).isNotNull().isEmpty();
+        assertThat(variableKeys(liveRequest.variables)).doesNotContain("oldToken", "stale");
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"loaded\"}");
+
+        ApiRequest variableSnapshotRequest = HistoryTestFixtures.copyRequest(HistoryTestFixtures.sampleRequest());
+        variableSnapshotRequest.description = null;
+        variableSnapshotRequest.variables = new ArrayList<>();
+        variableSnapshotRequest.variables.add(variable("newToken", "xyz"));
+        variableSnapshotRequest.body.raw = "{\"username\":\"loaded-again\"}";
+
+        HistoryEntry variableEntry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "load-variable", Instant.parse("2026-06-15T01:42:00Z"));
+        variableEntry.collectionId = liveCollection.id;
+        variableEntry.collectionName = liveCollection.name;
+        variableEntry.requestId = liveRequest.id;
+        variableEntry.requestName = liveRequest.name;
+        variableEntry.folderPath = liveRequest.path;
+        variableEntry.requestSnapshot = HistoryRequestSnapshot.from(variableSnapshotRequest);
+        variableEntry.source = HistorySource.WORKBENCH;
+
+        clickLoadHistoryButton(bundle, variableEntry);
+
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(2);
+        assertThat(liveRequest.description).isNull();
+        assertThat(liveRequest.variables).hasSize(1);
+        assertThat(liveRequest.variables.get(0).key).isEqualTo("newToken");
+        assertThat(liveRequest.variables.get(0).value).isEqualTo("xyz");
+        assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"loaded-again\"}");
+
+        variableEntry.requestSnapshot.authoredRequest.variables.get(0).value = "mutated-after-load";
+        assertThat(liveRequest.variables.get(0).value).isEqualTo("xyz");
+    }
+
+    @Test
     void ambiguousFallbackMatchDoesNotSilentlyChooseARequest() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
         ApiCollection collection = HistoryTestFixtures.sampleCollection();
@@ -485,6 +554,26 @@ class HistoryLoadInWorkbenchActionTest {
         return collections.stream()
                 .map(collection -> collection != null ? collection.name : null)
                 .toList();
+    }
+
+    private static List<String> variableKeys(List<ApiRequest.Variable> variables) {
+        List<String> keys = new ArrayList<>();
+        if (variables == null) {
+            return keys;
+        }
+        for (ApiRequest.Variable variable : variables) {
+            if (variable != null && variable.key != null) {
+                keys.add(variable.key);
+            }
+        }
+        return keys;
+    }
+
+    private static ApiRequest.Variable variable(String key, String value) {
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = value;
+        return variable;
     }
 
     private static void clickLoadHistoryButton(ImporterPanelTestSupport.PanelBundle bundle, HistoryEntry entry) throws Exception {

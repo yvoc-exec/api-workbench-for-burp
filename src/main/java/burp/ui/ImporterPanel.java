@@ -596,7 +596,6 @@ public class ImporterPanel {
             notifyWorkspaceChangedImmediately();
         });
         requestEditor.setRequestBuildModeChangeListener(() -> {
-            runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
         });
         requestEditor.setFollowRedirectsChangeListener(selected -> notifyWorkspaceChanged());
@@ -1767,9 +1766,7 @@ public class ImporterPanel {
 
         liveRequest.method = edited.method;
         liveRequest.url = edited.url;
-        if (edited.description != null) {
-            liveRequest.description = edited.description;
-        }
+        liveRequest.description = edited.description;
         liveRequest.editorMaterialized = edited.editorMaterialized;
         liveRequest.buildMode = edited.buildMode;
         liveRequest.suppressedAutoHeaders = edited.suppressedAutoHeaders != null
@@ -1777,9 +1774,9 @@ public class ImporterPanel {
                 : new LinkedHashSet<>();
         liveRequest.headers = copyHeaders(edited.headers);
         liveRequest.body = copyBody(edited.body);
-        if (edited.variables != null && !edited.variables.isEmpty()) {
-            liveRequest.variables = copyVariables(edited.variables);
-        }
+        liveRequest.variables = copyVariables(
+                edited.variables != null ? edited.variables : Collections.emptyList()
+        );
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
         liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
         liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
