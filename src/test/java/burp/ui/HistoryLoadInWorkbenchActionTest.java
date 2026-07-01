@@ -11,9 +11,12 @@ import burp.testsupport.ImporterPanelTestSupport;
 import burp.ui.history.HistoryPanel;
 import org.junit.jupiter.api.Test;
 
-import javax.swing.SwingUtilities;
+import javax.swing.*;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -313,6 +316,98 @@ class HistoryLoadInWorkbenchActionTest {
     }
 
     @Test
+    void loadingExactHistoryIntoWorkbenchKeepsExactFramingAndDoesNotWarn() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        ApiCollection collection = HistoryTestFixtures.sampleCollection();
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
+        bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
+
+        RecordingNotifier notifier = new RecordingNotifier();
+        ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", notifier);
+
+        RequestEditorPanel requestEditor = ImporterPanelTestSupport.getField(bundle.panel, "requestEditor");
+        AtomicInteger warnings = new AtomicInteger();
+        requestEditor.setExactTransportWarningProviderForTests((parent, title, message) -> {
+            warnings.incrementAndGet();
+            return true;
+        });
+
+        ApiRequest liveRequest = collection.requests.get(0);
+        ApiRequest exact = HistoryTestFixtures.copyRequest(liveRequest);
+        exact.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        exact.url = "https://api.example.test/search?q=hello%20world&path=a%2Fb&plus=%2B&pct=%25&empty=&flag&repeat=1&repeat=2#fragment";
+        exact.description = "exact history";
+        exact.variables = new ArrayList<>();
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "tenant";
+        variable.value = "acme";
+        variable.type = "string";
+        variable.enabled = false;
+        exact.variables.add(variable);
+        exact.headers = new ArrayList<>(List.of(
+                new ApiRequest.Header("Host", "authored.example.test", false),
+                new ApiRequest.Header("Host", "duplicate.example.test", false),
+                new ApiRequest.Header("Content-Length", "123", false),
+                new ApiRequest.Header("Content-Length", "456", false),
+                new ApiRequest.Header("Transfer-Encoding", "chunked", false),
+                new ApiRequest.Header("Cookie", "a=1", false),
+                new ApiRequest.Header("Cookie", "b=2", false),
+                new ApiRequest.Header("X-Disabled", "skip", true)
+        ));
+        exact.body = new ApiRequest.Body();
+        exact.body.mode = "raw";
+        exact.body.raw = "{\"exact\":true}";
+        exact.body.contentType = "application/json";
+        exact.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "pre-one();")));
+        exact.postResponseScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "post-one();")));
+
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "exact-history", Instant.parse("2026-06-15T01:44:00Z"));
+        entry.collectionId = collection.id;
+        entry.collectionName = collection.name;
+        entry.requestId = liveRequest.id;
+        entry.requestName = liveRequest.name;
+        entry.folderPath = liveRequest.path;
+        entry.requestSnapshot = HistoryRequestSnapshot.from(exact);
+        entry.source = HistorySource.WORKBENCH;
+
+        clickLoadHistoryButton(bundle, entry);
+
+        assertThat(warnings).hasValue(0);
+        assertThat(notifier.loadedOriginalCalls).isEqualTo(1);
+        assertThat(requestEditor.getCurrentRequest()).isNotNull();
+        assertThat(requestEditor.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(requestEditor.isExactTransportHeadersSelectedForTests()).isTrue();
+        assertThat(requestEditor.getExactTransportIndicatorForTests().isVisible()).isTrue();
+        assertThat(requestEditor.getCurrentRequest().url).isEqualTo(exact.url);
+        assertThat(requestEditor.getCurrentRequest().description).isEqualTo("exact history");
+        assertThat(requestEditor.getCurrentRequest().headers)
+                .extracting(header -> header.key + ":" + header.value + "|" + header.disabled)
+                .containsExactly(
+                        "Host:authored.example.test|false",
+                        "Host:duplicate.example.test|false",
+                        "Content-Length:123|false",
+                        "Content-Length:456|false",
+                        "Transfer-Encoding:chunked|false",
+                        "Cookie:a=1|false",
+                        "Cookie:b=2|false",
+                        "X-Disabled:skip|true");
+        assertThat(requestEditor.getCurrentRequest().variables)
+                .extracting(variable1 -> variable1.key + ":" + variable1.value + "|" + variable1.type + "|" + variable1.enabled)
+                .containsExactly("tenant:acme|string|false");
+        assertThat(requestEditor.getCurrentRequest().body.raw).isEqualTo("{\"exact\":true}");
+
+        String loadedSnapshot = snapshot(liveRequest);
+
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(requestEditor));
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(requestEditor));
+
+        assertThat(snapshot(liveRequest)).isEqualTo(loadedSnapshot);
+        assertThat(requestEditor.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
     void ambiguousFallbackMatchDoesNotSilentlyChooseARequest() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
         ApiCollection collection = HistoryTestFixtures.sampleCollection();
@@ -343,6 +438,47 @@ class HistoryLoadInWorkbenchActionTest {
         assertThat((Object) ImporterPanelTestSupport.getField(context, "request")).isNull();
         assertThat(collectionNames(ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections")))
                 .doesNotContain("History Replays");
+    }
+
+    private static String snapshot(ApiRequest request) {
+        if (request == null) {
+            return "null";
+        }
+        return "id=" + request.id
+                + "|name=" + request.name
+                + "|path=" + request.path
+                + "|sourceCollection=" + request.sourceCollection
+                + "|description=" + request.description
+                + "|method=" + request.method
+                + "|url=" + request.url
+                + "|headers=" + (request.headers != null ? request.headers : List.<ApiRequest.Header>of()).stream()
+                .map(header -> header.key + ":" + header.value + "|" + header.disabled)
+                .toList()
+                + "|bodyMode=" + (request.body != null ? request.body.mode : null)
+                + "|bodyRaw=" + (request.body != null ? request.body.raw : null)
+                + "|contentType=" + (request.body != null ? request.body.contentType : null)
+                + "|variables=" + (request.variables != null ? request.variables : List.<ApiRequest.Variable>of()).stream()
+                .map(variable -> variable.key + ":" + variable.value + "|" + variable.type + "|" + variable.enabled)
+                .toList()
+                + "|pre=" + (request.preRequestScripts != null ? request.preRequestScripts : List.<ApiRequest.Script>of()).stream().map(script -> script.type + ":" + script.exec).toList()
+                + "|post=" + (request.postResponseScripts != null ? request.postResponseScripts : List.<ApiRequest.Script>of()).stream().map(script -> script.type + ":" + script.exec).toList()
+                + "|buildMode=" + request.buildMode
+                + "|disabled=" + request.disabled
+                + "|sequenceOrder=" + request.sequenceOrder
+                + "|editorMaterialized=" + request.editorMaterialized
+                + "|suppressed=" + new LinkedHashSet<>(request.suppressedAutoHeaders);
+    }
+
+    private static void toggleExactTransport(RequestEditorPanel editor) {
+        JPopupMenu menu = editor.createSendDropdownMenuForTests();
+        for (java.awt.Component component : menu.getComponents()) {
+            if (component instanceof JCheckBoxMenuItem item
+                    && "Exact transport headers \u2014 Advanced".equals(item.getText())) {
+                item.doClick();
+                return;
+            }
+        }
+        throw new AssertionError("Exact transport menu item not found");
     }
 
     private static List<String> collectionNames(List<ApiCollection> collections) {

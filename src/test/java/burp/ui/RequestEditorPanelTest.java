@@ -865,103 +865,53 @@ class RequestEditorPanelTest {
     }
 
     @Test
-    void exactHttpTogglePreservesLiveObjectAndDraftEditsBothDirections() throws Exception {
+    void exactHttpTogglePreservesPendingEditsUntilExplicitBuild() throws Exception {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
 
-        ApiCollection collection = new ApiCollection();
         ApiRequest request = minimalRequest();
         request.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
-        request.headers = List.of(
-                new ApiRequest.Header("Host", "authored.example.test", false),
-                new ApiRequest.Header("Content-Length", "77", false),
-                new ApiRequest.Header("Transfer-Encoding", "chunked", false)
-        );
-        request.auth = new ApiRequest.Auth();
-        request.auth.type = "bearer";
-        request.auth.properties.put("token", "initial-token");
+        request.editorMaterialized = false;
+        request.url = "https://example.com/original";
         request.body = new ApiRequest.Body();
         request.body.mode = "raw";
-        request.body.raw = "{\"initial\":true}";
-        collection.requests.add(request);
+        request.body.raw = "{\"original\":true}";
+        request.preRequestScripts = List.of(new ApiRequest.Script("js", "pre();"));
 
-        panel.setCurrentCollection(collection);
         panel.loadRequest(request);
 
-        ApiRequest before = panel.getCurrentRequest();
-        assertThat(before).isSameAs(request);
-        assertThat(collection.requests.get(0)).isSameAs(request);
-
-        JComboBox<String> methods = methodBox(panel);
+        DefaultTableModel headers = headersModel(panel);
+        int acceptRow = findRow(headers, "Accept");
+        assertThat(acceptRow).isGreaterThanOrEqualTo(0);
         JTextComponent url = urlField(panel);
-        DefaultTableModel params = paramsModel(panel);
-        JComboBox<String> authTypes = authTypeBox(panel);
-        JTextField authToken = authField(panel, "token");
         JTextComponent body = bodyRawArea(panel);
         JTextArea preScripts = preScriptArea(panel);
-        JTextArea postScripts = postScriptArea(panel);
-        DefaultTableModel headers = headersModel(panel);
 
         SwingUtilities.invokeAndWait(() -> {
-            methods.setSelectedItem("POST");
-            url.setText("https://api.example.test/users");
-            params.setValueAt("active", 0, 0);
-            params.setValueAt("true", 0, 1);
-            authTypes.setSelectedItem("bearer");
-            authToken.setText("draft-token");
+            url.setText("https://example.com/edited");
+            headers.setValueAt("application/xml", acceptRow, 1);
             body.setText("{\"edited\":true}");
             preScripts.setText("console.log('pre');");
-            postScripts.setText("console.log('post');");
         });
-        SwingUtilities.invokeAndWait(() -> headers.addRow(new Object[]{"X-Draft", "yes"}));
 
         SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
-        assertThat(panel.getCurrentRequest()).isSameAs(before);
-        assertThat(collection.requests.get(0)).isSameAs(before);
+        assertThat(panel.getCurrentRequest()).isSameAs(request);
         assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
-        assertThat(methods.getSelectedItem()).isEqualTo("POST");
-        assertThat(url.getText()).isEqualTo("https://api.example.test/users");
-        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
+        assertThat(url.getText()).isEqualTo("https://example.com/edited");
+        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
         assertThat(body.getText()).isEqualTo("{\"edited\":true}");
         assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
-        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
-        assertThat(headerValues(headers))
-                .containsEntry("Host", "authored.example.test")
-                .containsEntry("Content-Length", "77")
-                .containsEntry("Transfer-Encoding", "chunked")
-                .containsEntry("X-Draft", "yes");
+        assertThat(panel.getCurrentRequest().url).isEqualTo("https://example.com/original");
+        assertThat(panel.getCurrentRequest().body.raw).isEqualTo("{\"original\":true}");
 
-        WorkspaceState roundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
-        ApiRequest restored = roundTrip.collections.get(0).requests.get(0);
-        assertThat(restored.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
-        assertThat(restored.method).isEqualTo("POST");
-        assertThat(restored.url).isEqualTo("https://api.example.test/users?active=true");
-
-        panel.loadRequest(request);
-        assertThat(panel.getExactTransportIndicatorForTests()).isNotNull();
-        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
-
-        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
-
-        assertThat(panel.getCurrentRequest()).isSameAs(before);
-        assertThat(collection.requests.get(0)).isSameAs(before);
-        assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
-        assertThat(methods.getSelectedItem()).isEqualTo("POST");
-        assertThat(url.getText()).isEqualTo("https://api.example.test/users?active=true");
-        assertThat(panel.getCurrentRequest().url).isEqualTo("https://api.example.test/users?active=true");
-        assertThat(body.getText()).isEqualTo("{\"edited\":true}");
-        assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
-        assertThat(postScripts.getText()).isEqualTo("console.log('post');");
-        assertThat(headerValues(headers))
-                .containsEntry("Host", "authored.example.test")
-                .containsEntry("Content-Length", "77")
-                .containsEntry("Transfer-Encoding", "chunked")
-                .containsEntry("X-Draft", "yes");
-
-        panel.loadRequest(request);
-        assertThat(panel.isExactTransportHeadersSelectedForTests()).isFalse();
-        assertThat(panel.getCurrentRequest()).isSameAs(before);
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(built.url).isEqualTo("https://example.com/edited");
+        assertThat(headerValues(headersModel(panel))).containsEntry("Accept", "application/xml");
+        assertThat(built.body.raw).isEqualTo("{\"edited\":true}");
+        assertThat(built.preRequestScripts).extracting(script -> script.type + ":" + script.exec)
+                .containsExactly("js:console.log('pre');");
     }
 
     @Test
@@ -1136,6 +1086,7 @@ class RequestEditorPanelTest {
                 new ApiRequest.Header("Connection", "keep-alive", false)
         ));
         collection.requests.add(request);
+        List<String> originalHeaders = headerRows(request.headers);
 
         panel.setCurrentCollection(collection);
         panel.loadRequest(request);
@@ -1160,7 +1111,10 @@ class RequestEditorPanelTest {
                 .containsEntry("Content-Length", "321")
                 .containsEntry("Transfer-Encoding", "gzip")
                 .containsEntry("Proxy-Connection", "keep-alive");
-        assertThat(headerRows(panel.getCurrentRequest().headers))
+        assertThat(headerRows(panel.getCurrentRequest().headers)).containsExactlyElementsOf(originalHeaders);
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(headerRows(built.headers))
                 .containsExactly(
                         "Host=changed.example.test|false",
                         "Content-Length=321|false",
@@ -1170,24 +1124,7 @@ class RequestEditorPanelTest {
 
         WorkspaceState restoredState = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
         ApiRequest restored = restoredState.collections.get(0).requests.get(0);
-        assertThat(headerRows(restored.headers))
-                .containsExactly(
-                        "Host=changed.example.test|false",
-                        "Content-Length=321|false",
-                        "Transfer-Encoding=gzip|false",
-                        "Proxy-Connection=keep-alive|false"
-                );
-
-        panel.loadRequest(request);
-        assertThat(panel.isExactTransportHeadersSelectedForTests()).isFalse();
-
-        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
-
-        assertThat(headerValues(headersModel(panel)))
-                .containsEntry("Host", "changed.example.test")
-                .containsEntry("Content-Length", "321")
-                .containsEntry("Transfer-Encoding", "gzip")
-                .containsEntry("Proxy-Connection", "keep-alive");
+        assertThat(headerRows(restored.headers)).containsExactlyElementsOf(originalHeaders);
     }
 
     @Test
@@ -1510,6 +1447,16 @@ class RequestEditorPanelTest {
         Field f = RequestEditorPanel.class.getDeclaredField("postScriptArea");
         f.setAccessible(true);
         return (JTextArea) f.get(panel);
+    }
+
+    private static int findRow(DefaultTableModel model, String key) {
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object value = model.getValueAt(i, 0);
+            if (value != null && key.equals(value.toString())) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static Map<String, String> headerValues(DefaultTableModel model) {

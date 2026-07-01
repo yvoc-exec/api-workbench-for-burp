@@ -723,7 +723,6 @@ public class RequestEditorPanel extends JPanel {
         if (enable == exactTransportHeadersSelected && currentRequest.isExactHttpMode() == enable) {
             return true;
         }
-        commitAllEdits();
         if (enable && userInitiated && !exactTransportWarningAcknowledged) {
             boolean accepted = exactTransportWarningProvider.confirmEnable(
                     this,
@@ -734,13 +733,13 @@ public class RequestEditorPanel extends JPanel {
             }
             exactTransportWarningAcknowledged = true;
         }
+        commitAllEdits();
         applyExactTransportMode(enable);
         return true;
     }
 
     private void applyExactTransportMode(boolean enabled) {
-        ApiRequest draft = buildRequestFromUI();
-        if (draft == null || currentRequest == null) {
+        if (currentRequest == null) {
             return;
         }
         ApiRequest.BuildMode targetMode;
@@ -755,10 +754,7 @@ public class RequestEditorPanel extends JPanel {
                     ? lastNonExactBuildMode
                     : ApiRequest.BuildMode.MANUAL_PRESERVE;
         }
-        draft.buildMode = targetMode;
-        applyEditorOwnedStatePreservingMetadata(draft, currentRequest);
         currentRequest.buildMode = targetMode;
-        currentRequest.editorMaterialized = true;
         exactTransportHeadersSelected = enabled;
         updateExactTransportIndicator();
         refreshResolvedMirror();
@@ -769,66 +765,6 @@ public class RequestEditorPanel extends JPanel {
         if (requestBuildModeChangeListener != null) {
             requestBuildModeChangeListener.run();
         }
-    }
-
-    private void applyEditorOwnedStatePreservingMetadata(ApiRequest draft, ApiRequest target) {
-        if (draft == null || target == null) {
-            return;
-        }
-        target.method = draft.method;
-        target.url = draft.url;
-        target.headers = editorHeadersPreservingMetadata(draft.headers, target.headers);
-        target.body = draft.body;
-        target.auth = draft.auth;
-        target.explicitAuth = draft.explicitAuth;
-        target.authOverrideMode = draft.authOverrideMode;
-        target.preRequestScripts = draft.preRequestScripts != null
-                ? new ArrayList<>(draft.preRequestScripts)
-                : new ArrayList<>();
-        target.postResponseScripts = draft.postResponseScripts != null
-                ? new ArrayList<>(draft.postResponseScripts)
-                : new ArrayList<>();
-        target.scriptBlocks = draft.scriptBlocks != null
-                ? new ArrayList<>(draft.scriptBlocks)
-                : new ArrayList<>();
-        target.editorMaterialized = draft.editorMaterialized;
-        target.suppressedAutoHeaders = draft.suppressedAutoHeaders != null
-                ? new LinkedHashSet<>(draft.suppressedAutoHeaders)
-                : new LinkedHashSet<>();
-        target.buildMode = draft.buildMode;
-    }
-
-    private List<ApiRequest.Header> editorHeadersPreservingMetadata(List<ApiRequest.Header> draftHeaders,
-                                                                    List<ApiRequest.Header> existingHeaders) {
-        List<ApiRequest.Header> out = new ArrayList<>();
-        if (draftHeaders == null) {
-            return out;
-        }
-        for (ApiRequest.Header header : draftHeaders) {
-            if (header == null) {
-                continue;
-            }
-            String normalized = normalizeTrackedHeaderName(header.key);
-            if (normalized != null
-                    && materializedAutoHeaders.contains(normalized)
-                    && !hasHeader(existingHeaders, normalized)) {
-                continue;
-            }
-            out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
-        }
-        return out;
-    }
-
-    private static boolean hasHeader(List<ApiRequest.Header> headers, String normalizedName) {
-        if (headers == null || normalizedName == null) {
-            return false;
-        }
-        for (ApiRequest.Header header : headers) {
-            if (header != null && normalizedName.equals(normalizeTrackedHeaderName(header.key))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     static boolean isMeaningfulAuthSource(String source) {
