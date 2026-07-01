@@ -90,10 +90,6 @@ final class RequestEditorStateMapper {
         }
     }
 
-    private static final Set<String> TRANSPORT_HEADER_NAMES = Set.of(
-            "host", "content-length", "transfer-encoding"
-    );
-
     static void loadRequest(ApiRequest req, Context ctx) {
         if (req == null) {
             ctx.methodBox.setSelectedItem("GET");
@@ -193,9 +189,6 @@ final class RequestEditorStateMapper {
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            if (!req.isExactHttpMode() && TRANSPORT_HEADER_NAMES.contains(key.trim().toLowerCase(Locale.ROOT))) {
-                continue;
-            }
             req.headers.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
         }
 
@@ -274,13 +267,7 @@ final class RequestEditorStateMapper {
                 if (header == null || header.key == null) {
                     continue;
                 }
-                String lowerKey = header.key.trim().toLowerCase(Locale.ROOT);
-                if (!req.isExactHttpMode() && req.isAutoHeaderSuppressed(lowerKey)) {
-                    continue;
-                }
-                if (req.isExactHttpMode() || !TRANSPORT_HEADER_NAMES.contains(lowerKey)) {
-                    ctx.headersModel.addRow(headerRow(header.key, header.value != null ? header.value : "", header.disabled, ctx.headersModel));
-                }
+                ctx.headersModel.addRow(headerRow(header.key, header.value != null ? header.value : "", header.disabled, ctx.headersModel));
             }
         }
 

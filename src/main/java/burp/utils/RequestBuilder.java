@@ -19,12 +19,9 @@ public class RequestBuilder {
      * Hop-by-hop and body-length headers that must not be emitted from imported
      * definitions. Burp normalises these too, but stale values cause 400s.
      */
-    private static final Set<String> SKIP_HEADER_NAMES = Set.of(
+    private static final Set<String> SAFE_FORBIDDEN_AUTHORED_HEADER_NAMES = Set.of(
             "host", "content-length", "transfer-encoding", "connection", "proxy-connection",
-            "accept-encoding", "postman-token"
-    );
-    private static final Set<String> TRANSPORT_HEADER_NAMES = Set.of(
-            "host", "content-length", "transfer-encoding"
+            "keep-alive", "te", "trailer", "upgrade", "http2-settings", "proxy-authorization"
     );
     private final MontoyaApi api;
     private final boolean debugMode = false;
@@ -103,13 +100,15 @@ public class RequestBuilder {
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 
         String requestTarget = parsed.pathWithQuery;
-        HeaderStore headers = new HeaderStore(policy.exactHttp());
+        HeaderStore headers = new HeaderStore();
         byte[] body;
 
         if (policy.exactHttp()) {
             applyExplicitHeaders(request, headers, resolver, true);
             body = buildBody(request.body, headers, request.name, resolver, false, false);
         } else {
+            applyExplicitHeaders(request, headers, resolver, false);
+
             if (policy.shouldApplyDefaultHeaders(request)) {
                 if (!policy.isSuppressed(request, "accept")) {
                     headers.putDefault("Accept", "application/json, text/plain, */*");
@@ -121,8 +120,6 @@ public class RequestBuilder {
                     headers.putDefault("Cache-Control", "no-cache");
                 }
             }
-
-            applyExplicitHeaders(request, headers, resolver, false);
 
             if (policy.shouldApplyAuthentication(request)) {
                 requestTarget = applyAuthentication(request, headers, requestTarget, resolver, policy);
@@ -191,18 +188,11 @@ public class RequestBuilder {
     }
 
     /**
-     * Case-insensitive header store with stable insertion order and explicit
-     * precedence levels: default (lowest) -> put (medium) -> computed (highest).
+     * Ordered header store. Authored headers append and preserve duplicates;
+     * defaults fill only absent names; computed headers replace same-name rows.
      */
     private static class HeaderStore {
-        private final boolean preserveDuplicates;
-        private final LinkedHashMap<String, String> headers = new LinkedHashMap<>();
-        private final List<Map.Entry<String, String>> exactHeaders = new ArrayList<>();
-        private final Set<String> keysLower = new HashSet<>();
-
-        HeaderStore(boolean preserveDuplicates) {
-            this.preserveDuplicates = preserveDuplicates;
-        }
+        private final List<Map.Entry<String, String>> headers = new ArrayList<>();
 
         /** Adds only if absent (lowest precedence). */
         void putDefault(String key, String value) {
@@ -210,49 +200,40 @@ public class RequestBuilder {
             if (normalizedKey == null) {
                 return;
             }
-            if (preserveDuplicates) {
-                if (!has(normalizedKey)) {
-                    append(normalizedKey, value);
-                }
-                return;
-            }
-            String lower = normalizedKey.toLowerCase();
-            if (!keysLower.contains(lower)) {
-                headers.put(normalizedKey, normalizeHeaderValue(value));
-                keysLower.add(lower);
+            if (!has(normalizedKey)) {
+                append(normalizedKey, value);
             }
         }
 
-        /** Overrides any existing value (medium precedence). */
-        void put(String key, String value) {
+        /** Appends an authored header preserving duplicates and insertion order. */
+        void addAuthored(String key, String value) {
             String normalizedKey = normalizeHeaderName(key);
             if (normalizedKey == null) {
                 return;
             }
-            if (preserveDuplicates) {
-                append(normalizedKey, value);
-                keysLower.add(normalizedKey.toLowerCase());
-                return;
-            }
-            String lower = normalizedKey.toLowerCase();
-            // Remove existing case variant to preserve latest insertion order
-            headers.entrySet().removeIf(e -> e.getKey().equalsIgnoreCase(normalizedKey));
-            headers.put(normalizedKey, normalizeHeaderValue(value));
-            keysLower.add(lower);
+            append(normalizedKey, value);
         }
 
         /** Overrides any existing value (highest precedence for computed headers). */
         void putComputed(String key, String value) {
-            put(key, value);
+            String normalizedKey = normalizeHeaderName(key);
+            if (normalizedKey == null) {
+                return;
+            }
+            removeAll(normalizedKey);
+            append(normalizedKey, value);
+        }
+
+        void appendComputed(String key, String value) {
+            String normalizedKey = normalizeHeaderName(key);
+            if (normalizedKey == null) {
+                return;
+            }
+            append(normalizedKey, value);
         }
 
         /** Merges a cookie into a single Cookie header. */
         void mergeCookie(String cookieValue) {
-            if (preserveDuplicates) {
-                append("Cookie", cookieValue);
-                keysLower.add("cookie");
-                return;
-            }
             String existing = get("Cookie");
             if (existing != null) {
                 putComputed("Cookie", existing + "; " + normalizeHeaderValue(cookieValue));
@@ -265,13 +246,7 @@ public class RequestBuilder {
             if (key == null) {
                 return null;
             }
-            if (preserveDuplicates) {
-                for (Map.Entry<String, String> e : exactHeaders) {
-                    if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
-                }
-                return null;
-            }
-            for (Map.Entry<String, String> e : headers.entrySet()) {
+            for (Map.Entry<String, String> e : headers) {
                 if (e.getKey().equalsIgnoreCase(key)) return e.getValue();
             }
             return null;
@@ -281,22 +256,23 @@ public class RequestBuilder {
             if (key == null) {
                 return false;
             }
-            if (preserveDuplicates) {
-                for (Map.Entry<String, String> e : exactHeaders) {
-                    if (e.getKey().equalsIgnoreCase(key)) {
-                        return true;
-                    }
+            for (Map.Entry<String, String> e : headers) {
+                if (e.getKey().equalsIgnoreCase(key)) {
+                    return true;
                 }
-                return false;
             }
-            return keysLower.contains(key.toLowerCase());
+            return false;
+        }
+
+        void removeAll(String key) {
+            if (key == null) {
+                return;
+            }
+            headers.removeIf(e -> e.getKey().equalsIgnoreCase(key));
         }
 
         Collection<Map.Entry<String, String>> entries() {
-            if (preserveDuplicates) {
-                return new ArrayList<>(exactHeaders);
-            }
-            return new ArrayList<>(headers.entrySet());
+            return new ArrayList<>(headers);
         }
 
         private void append(String key, String value) {
@@ -304,7 +280,7 @@ public class RequestBuilder {
             if (normalizedKey == null) {
                 return;
             }
-            exactHeaders.add(new AbstractMap.SimpleEntry<>(normalizedKey, normalizeHeaderValue(value)));
+            headers.add(new AbstractMap.SimpleEntry<>(normalizedKey, normalizeHeaderValue(value)));
         }
 
         private static String normalizeHeaderName(String value) {
@@ -327,6 +303,7 @@ public class RequestBuilder {
         if (request.headers == null) {
             return;
         }
+        Set<String> connectionNominated = exactHttp ? Collections.emptySet() : collectConnectionNominatedHeaders(request, resolver);
         for (ApiRequest.Header header : request.headers) {
             if (header == null || header.disabled || header.key == null || header.value == null) {
                 continue;
@@ -335,11 +312,41 @@ public class RequestBuilder {
             String value = resolve(resolver, header.value);
             if (key != null) {
                 String trimmedKey = key.trim();
-                if (exactHttp || !SKIP_HEADER_NAMES.contains(trimmedKey.toLowerCase())) {
-                    headers.put(trimmedKey, value);
+                String lower = trimmedKey.toLowerCase(Locale.ROOT);
+                if (exactHttp || (!SAFE_FORBIDDEN_AUTHORED_HEADER_NAMES.contains(lower)
+                        && !connectionNominated.contains(lower)
+                        && !"postman-token".equals(lower))) {
+                    headers.addAuthored(trimmedKey, value);
                 }
             }
         }
+    }
+
+    private Set<String> collectConnectionNominatedHeaders(ApiRequest request, VariableResolver resolver) {
+        Set<String> nominated = new LinkedHashSet<>();
+        if (request == null || request.headers == null) {
+            return nominated;
+        }
+        for (ApiRequest.Header header : request.headers) {
+            if (header == null || header.disabled || header.key == null || header.value == null) {
+                continue;
+            }
+            String key = resolve(resolver, header.key);
+            if (key == null || !"connection".equalsIgnoreCase(key.trim())) {
+                continue;
+            }
+            String value = resolve(resolver, header.value);
+            if (value == null) {
+                continue;
+            }
+            for (String token : value.split(",")) {
+                String name = token != null ? token.trim().toLowerCase(Locale.ROOT) : "";
+                if (!name.isEmpty() && !"connection".equals(name)) {
+                    nominated.add(name);
+                }
+            }
+        }
+        return nominated;
     }
 
     /**
@@ -494,7 +501,7 @@ public class RequestBuilder {
                                 }
                             }
                         }
-                        hs.put("Content-Type", expected);
+                        hs.putComputed("Content-Type", expected);
                     }
                     result = buildMultipartBody(body.formdata, boundary, resolver);
                 } else {
@@ -516,7 +523,7 @@ public class RequestBuilder {
                 if (api != null) {
                     api.logging().logToOutput("[WARN] Request '" + requestName + "': replacing imported Content-Type '" + existing + "' with '" + expectedType + "' to match body mode");
                 }
-                hs.put("Content-Type", expectedType);
+                hs.putComputed("Content-Type", expectedType);
             }
         } else {
             hs.putDefault("Content-Type", expectedType);
@@ -697,7 +704,7 @@ public class RequestBuilder {
             if (!headers.has("Authorization") && !policy.isSuppressed(request, "authorization")) {
                 String credentials = clientId + ":" + clientSecret;
                 String encoded = Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
-                headers.put("Authorization", "Basic " + encoded);
+                headers.putComputed("Authorization", "Basic " + encoded);
             }
         }
 
@@ -740,7 +747,7 @@ public class RequestBuilder {
 
         // Ensure correct Content-Type for the auto-built body
         if (!policy.isSuppressed(request, "content-type")) {
-            headers.put("Content-Type", "application/x-www-form-urlencoded");
+            headers.putComputed("Content-Type", "application/x-www-form-urlencoded");
         }
 
         return String.join("&", params).getBytes(StandardCharsets.UTF_8);

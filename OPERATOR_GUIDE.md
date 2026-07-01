@@ -186,6 +186,8 @@ The request editor lets you edit one request at a time.
 | Send to Repeater | Open the request in Repeater |
 | Raw request debug | Show the raw request sent by the pipeline |
 
+The Send dropdown also contains `Exact transport headers — Advanced`. Normal requests preserve ordinary authored headers, duplicate ordinary headers, and relative order where practical, while safe transport policy regenerates `Host` and `Content-Length`, removes unsafe transport/hop-by-hop headers, and removes `Connection`-nominated headers. Exact transport mode is per request, shows the amber `⚠ Exact transport headers` indicator while active, and warns once per editor session on explicit enable. Use it only for advanced malformed-request, desynchronization, or request-smuggling testing; Burp, proxies, HTTP/2 conversion, and servers can still normalize or reject requests, so it is not guaranteed byte-for-byte wire transport. Exact mode persists through workspace/native export/import, History, replay, Runner, and request duplication. Redirect follow-ups remain governed by redirect safety rules.
+
 ### Workbench Detail Tabs
 
 | Tab label | What it shows |

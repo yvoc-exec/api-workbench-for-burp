@@ -204,7 +204,7 @@ class RequestEditorPanelTest {
                 .contains("Request Build Policy")
                 .contains("mode=MANUAL_PRESERVE")
                 .contains("suppressedAutoHeaders=(none)")
-                .contains("Manual preserve mode keeps tester-deleted auto headers deleted.");
+                .contains("Ordinary authored headers are preserved. Transport framing is regenerated safely.");
     }
 
     @Test
@@ -224,7 +224,7 @@ class RequestEditorPanelTest {
                 .contains("Request Build Policy")
                 .contains("mode=MANUAL_PRESERVE")
                 .contains("suppressedAutoHeaders=authorization, content-type")
-                .contains("Manual preserve mode keeps tester-deleted auto headers deleted.");
+                .contains("Ordinary authored headers are preserved. Transport framing is regenerated safely.");
     }
 
     @Test
@@ -777,11 +777,11 @@ class RequestEditorPanelTest {
 
         panel.loadRequest(req);
 
-        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Authorization");
+        assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer stale-token");
         assertThat(headerValues(headersModel(panel))).containsEntry("X-Custom", "keep-me");
         assertThat(resolvedView(panel))
                 .contains("mode=MANUAL_PRESERVE")
-                .contains("suppressedAutoHeaders=authorization");
+                .contains("suppressedAutoHeaders=(none)");
     }
 
     @Test
@@ -857,7 +857,7 @@ class RequestEditorPanelTest {
         panel.loadRequest(minimalRequest());
         panel.markClean();
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(panel.isDirty()).isTrue();
         ApiRequest built = panel.buildRequestFromUI();
@@ -915,7 +915,7 @@ class RequestEditorPanelTest {
         });
         SwingUtilities.invokeAndWait(() -> headers.addRow(new Object[]{"X-Draft", "yes"}));
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(panel.getCurrentRequest()).isSameAs(before);
         assertThat(collection.requests.get(0)).isSameAs(before);
@@ -939,10 +939,10 @@ class RequestEditorPanelTest {
         assertThat(restored.url).isEqualTo("https://api.example.test/users?active=true");
 
         panel.loadRequest(request);
-        assertThat(panel.getExactHttpToggleForTests()).isNotNull();
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(panel.getExactTransportIndicatorForTests()).isNotNull();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(panel.getCurrentRequest()).isSameAs(before);
         assertThat(collection.requests.get(0)).isSameAs(before);
@@ -954,13 +954,13 @@ class RequestEditorPanelTest {
         assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
         assertThat(postScripts.getText()).isEqualTo("console.log('post');");
         assertThat(headerValues(headers))
-                .doesNotContainKey("Host")
-                .doesNotContainKey("Content-Length")
-                .doesNotContainKey("Transfer-Encoding")
+                .containsEntry("Host", "authored.example.test")
+                .containsEntry("Content-Length", "77")
+                .containsEntry("Transfer-Encoding", "chunked")
                 .containsEntry("X-Draft", "yes");
 
         panel.loadRequest(request);
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isFalse();
         assertThat(panel.getCurrentRequest()).isSameAs(before);
     }
 
@@ -978,11 +978,11 @@ class RequestEditorPanelTest {
         );
 
         panel.loadRequest(req);
-        assertThat(headerValues(headersModel(panel))).doesNotContainKey("Host");
+        assertThat(headerValues(headersModel(panel))).containsEntry("Host", "alt.example.test");
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
         assertThat(headerValues(headersModel(panel)))
                 .containsEntry("Host", "alt.example.test")
                 .containsEntry("Content-Length", "9999")
@@ -1014,10 +1014,12 @@ class RequestEditorPanelTest {
                 .containsEntry("User-Agent", "BurpExtensionRuntime")
                 .containsEntry("Cache-Control", "no-cache");
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(headerValues(headersModel(panel)))
-                .doesNotContainKeys("Accept", "User-Agent", "Cache-Control");
+                .containsEntry("Accept", "application/json, text/plain, */*")
+                .containsEntry("User-Agent", "BurpExtensionRuntime")
+                .containsEntry("Cache-Control", "no-cache");
     }
 
     @Test
@@ -1043,7 +1045,7 @@ class RequestEditorPanelTest {
         panel.loadRequest(req);
         assertThat(headerValues(headersModel(panel))).containsEntry("Authorization", "Bearer authored");
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(headerValues(headersModel(panel)))
                 .containsEntry("Accept", "application/xml")
@@ -1072,9 +1074,11 @@ class RequestEditorPanelTest {
                 .containsEntry("Authorization", "Bearer derived-secret")
                 .containsEntry("Content-Type", "application/json");
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
-        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Authorization", "Content-Type");
+        assertThat(headerValues(headersModel(panel)))
+                .containsEntry("Authorization", "Bearer derived-secret")
+                .containsEntry("Content-Type", "application/json");
     }
 
     @Test
@@ -1092,9 +1096,9 @@ class RequestEditorPanelTest {
         );
 
         panel.loadRequest(req);
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
-        assertThat(headerNames(headersModel(panel))).containsExactly("X-Dupe", "X-Dupe", "x-dupe", "Host");
+        assertThat(headerNames(headersModel(panel))).containsExactly("X-Dupe", "X-Dupe", "x-dupe", "Host", "Accept", "User-Agent", "Cache-Control");
     }
 
     @Test
@@ -1105,10 +1109,10 @@ class RequestEditorPanelTest {
         ApiRequest req = minimalRequest();
         req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
         panel.loadRequest(req);
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isFalse();
         assertThat(headerValues(headersModel(panel)))
                 .containsEntry("Accept", "application/json, text/plain, */*")
                 .containsEntry("User-Agent", "BurpExtensionRuntime")
@@ -1136,7 +1140,7 @@ class RequestEditorPanelTest {
         panel.setCurrentCollection(collection);
         panel.loadRequest(request);
 
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
         DefaultTableModel headers = headersModel(panel);
 
         SwingUtilities.invokeAndWait(() -> {
@@ -1147,12 +1151,14 @@ class RequestEditorPanelTest {
             headers.addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.FALSE});
         });
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(panel.getCurrentRequest()).isSameAs(request);
         assertThat(collection.requests.get(0)).isSameAs(request);
         assertThat(headerValues(headersModel(panel)))
-                .doesNotContainKeys("Host", "Content-Length", "Transfer-Encoding")
+                .containsEntry("Host", "changed.example.test")
+                .containsEntry("Content-Length", "321")
+                .containsEntry("Transfer-Encoding", "gzip")
                 .containsEntry("Proxy-Connection", "keep-alive");
         assertThat(headerRows(panel.getCurrentRequest().headers))
                 .containsExactly(
@@ -1173,9 +1179,9 @@ class RequestEditorPanelTest {
                 );
 
         panel.loadRequest(request);
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isFalse();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isFalse();
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
 
         assertThat(headerValues(headersModel(panel)))
                 .containsEntry("Host", "changed.example.test")
@@ -1200,7 +1206,7 @@ class RequestEditorPanelTest {
         ));
 
         panel.loadRequest(request);
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
         assertThat(headerRows(headersModel(panel)))
                 .containsExactly(
                         "Host=FirstHost.example.test|false",
@@ -1210,10 +1216,17 @@ class RequestEditorPanelTest {
                         "Transfer-Encoding=chunked|false"
                 );
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
-        assertThat(headerValues(headersModel(panel))).doesNotContainKeys("Host", "Transfer-Encoding");
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
+        assertThat(headerRows(headersModel(panel)))
+                .containsExactly(
+                        "Host=FirstHost.example.test|false",
+                        "host=SecondHost.example.test|true",
+                        "Connection=close|false",
+                        "connection=keep-alive|true",
+                        "Transfer-Encoding=chunked|false"
+                );
 
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
         assertThat(headerRows(headersModel(panel)))
                 .containsExactly(
                         "Host=FirstHost.example.test|false",
@@ -1231,7 +1244,7 @@ class RequestEditorPanelTest {
         panel.loadRequest(minimalRequest());
 
         assertThat(resolvedView(panel)).contains("mode=MANUAL_PRESERVE");
-        SwingUtilities.invokeAndWait(() -> panel.getExactHttpToggleForTests().doClick());
+        SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
         assertThat(resolvedView(panel)).contains("mode=EXACT_HTTP");
     }
 
@@ -1250,7 +1263,7 @@ class RequestEditorPanelTest {
 
         panel.loadRequest(req);
 
-        assertThat(panel.getExactHttpToggleForTests().isSelected()).isTrue();
+        assertThat(panel.isExactTransportHeadersSelectedForTests()).isTrue();
         assertThat(headerValues(headersModel(panel)))
                 .containsEntry("Host", "alt.example.test")
                 .containsEntry("Content-Length", "9999")
@@ -1700,5 +1713,18 @@ class RequestEditorPanelTest {
         Method method = RequestEditorPanel.class.getDeclaredMethod(methodName, parameterTypes);
         method.setAccessible(true);
         return method.invoke(panel, args);
+    }
+
+    private static void toggleExactTransport(RequestEditorPanel panel) {
+        panel.setExactTransportWarningProviderForTests((parent, title, message) -> true);
+        JPopupMenu menu = panel.createSendDropdownMenuForTests();
+        for (Component component : menu.getComponents()) {
+            if (component instanceof JCheckBoxMenuItem item
+                    && "Exact transport headers \u2014 Advanced".equals(item.getText())) {
+                item.doClick();
+                return;
+            }
+        }
+        throw new AssertionError("Exact transport menu item not found");
     }
 }

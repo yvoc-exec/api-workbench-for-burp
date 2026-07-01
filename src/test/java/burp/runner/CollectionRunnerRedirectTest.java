@@ -79,7 +79,7 @@ class CollectionRunnerRedirectTest {
             assertThat(runner.getResults().get(0).redirectHops).hasSize(1);
             RedirectHop hop = runner.getResults().get(0).redirectHops.get(0);
             assertThat(hop.forwardedSensitiveHeaderNames).contains("Authorization", "Cookie");
-            assertThat(hop.strippedSensitiveHeaderNames).contains("Proxy-Authorization");
+            assertThat(hop.strippedSensitiveHeaderNames).doesNotContain("Proxy-Authorization");
             assertThat(rawRequest(captured.get(1))).contains("Authorization: Bearer secret").contains("Cookie: session=abc");
             assertThat(rawRequest(captured.get(1))).doesNotContain("Proxy-Authorization:");
             return null;

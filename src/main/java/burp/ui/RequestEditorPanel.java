@@ -28,7 +28,9 @@ public class RequestEditorPanel extends JPanel {
     private JComboBox<String> methodBox;
     private JTextComponent urlField;
     private JTabbedPane tabs;
-    private JCheckBox exactHttpCheckBox;
+    private boolean exactTransportHeadersSelected;
+    private JLabel exactTransportIndicator;
+    private JPanel exactTransportIndicatorWrapper;
 
     // Params
     private DefaultTableModel paramsModel;
@@ -66,6 +68,9 @@ public class RequestEditorPanel extends JPanel {
     private boolean authorizationHeaderMaterialized = false;
     private boolean contentTypeHeaderMaterialized = false;
     private ApiRequest.BuildMode lastNonExactBuildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+    private boolean exactTransportWarningAcknowledged = false;
+    private ExactTransportWarningProvider exactTransportWarningProvider = new SwingExactTransportWarningProvider();
+    private Runnable requestBuildModeChangeListener;
     private Runnable trackedHeaderStateChangeListener;
     private boolean dirty = false;
     private VariableActionBridge variableActionBridge;
@@ -89,6 +94,18 @@ public class RequestEditorPanel extends JPanel {
     private boolean followRedirectsSelected = true;
     private Consumer<Boolean> followRedirectsChangeListener;
     private Runnable redirectPolicyAction;
+
+    interface ExactTransportWarningProvider {
+        boolean confirmEnable(Component parent, String title, String message);
+    }
+
+    private static final class SwingExactTransportWarningProvider implements ExactTransportWarningProvider {
+        @Override
+        public boolean confirmEnable(Component parent, String title, String message) {
+            return JOptionPane.showConfirmDialog(parent, message, title,
+                    JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE) == JOptionPane.OK_OPTION;
+        }
+    }
 
     public interface VariableActionBridge {
         VariableHoverInfo inspect(String key);
@@ -139,9 +156,6 @@ public class RequestEditorPanel extends JPanel {
     private JPanel createTopBar() {
         JPanel panel = new JPanel(new BorderLayout(5, 0));
         methodBox = new JComboBox<>(new String[]{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"});
-        exactHttpCheckBox = new JCheckBox("Exact HTTP / Preserve authored headers");
-        exactHttpCheckBox.setToolTipText("<html><b>Exact HTTP</b> preserves duplicate and conflicting headers, including Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.<br/>Malformed requests may fail.<br/>Burp, proxies, HTTP/2 conversion, and servers may still normalize or reject the request.</html>");
-        exactHttpCheckBox.addActionListener(e -> handleExactHttpModeSelectionChanged());
         urlField = new JTextPane();
         urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         SwingShortcutSupport.installTextComponentShortcuts(urlField);
@@ -174,24 +188,7 @@ public class RequestEditorPanel extends JPanel {
         sendDropdownBtn.setToolTipText("Select send mode");
         sendDropdownBtn.setPreferredSize(new Dimension(22, sendBtn.getPreferredSize().height));
         sendDropdownBtn.addActionListener(e -> {
-            JPopupMenu menu = new JPopupMenu();
-            JMenuItem sendOnlyItem = new JMenuItem("Send");
-            JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
-            JCheckBoxMenuItem followRedirectsItem = new JCheckBoxMenuItem("Follow redirects", followRedirectsSelected);
-            JMenuItem redirectPolicyItem = new JMenuItem("Redirect security policy...");
-            sendOnlyItem.addActionListener(ev -> setSendModeLabel("Send"));
-            sendRepeaterItem.addActionListener(ev -> setSendModeLabel("Send + Repeater"));
-            followRedirectsItem.addActionListener(ev -> setFollowRedirectsSelected(followRedirectsItem.isSelected()));
-            redirectPolicyItem.addActionListener(ev -> {
-                if (redirectPolicyAction != null) {
-                    redirectPolicyAction.run();
-                }
-            });
-            menu.add(sendOnlyItem);
-            menu.add(sendRepeaterItem);
-            menu.addSeparator();
-            menu.add(followRedirectsItem);
-            menu.add(redirectPolicyItem);
+            JPopupMenu menu = createSendDropdownMenu();
             menu.show(sendDropdownBtn, 0, sendDropdownBtn.getHeight());
         });
 
@@ -199,14 +196,61 @@ public class RequestEditorPanel extends JPanel {
         sendPanel.add(sendBtn, BorderLayout.CENTER);
         sendPanel.add(sendDropdownBtn, BorderLayout.EAST);
 
+        exactTransportIndicator = new JLabel(Character.toString((char) 0x26A0) + " Exact transport headers");
+        exactTransportIndicator.setFont(exactTransportIndicator.getFont().deriveFont(Font.BOLD));
+        exactTransportIndicator.setOpaque(false);
+        exactTransportIndicator.setForeground(resolveWarningForeground());
+        exactTransportIndicator.setToolTipText("<html>Exact transport headers may emit authored Host, Content-Length, Transfer-Encoding, Connection, and related transport headers.<br/>Burp, proxies, HTTP/2 conversion, or servers can still normalize or reject them.</html>");
+        exactTransportIndicatorWrapper = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        exactTransportIndicatorWrapper.setOpaque(false);
+        exactTransportIndicatorWrapper.add(exactTransportIndicator);
+        updateExactTransportIndicator();
+
         JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         modePanel.add(methodBox);
-        modePanel.add(exactHttpCheckBox);
+
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        rightPanel.add(exactTransportIndicatorWrapper);
+        rightPanel.add(sendPanel);
 
         panel.add(modePanel, BorderLayout.WEST);
         panel.add(urlScroll, BorderLayout.CENTER);
-        panel.add(sendPanel, BorderLayout.EAST);
+        panel.add(rightPanel, BorderLayout.EAST);
         return panel;
+    }
+
+    private JPopupMenu createSendDropdownMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem sendOnlyItem = new JMenuItem("Send");
+        JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
+        JCheckBoxMenuItem followRedirectsItem = new JCheckBoxMenuItem("Follow redirects", followRedirectsSelected);
+        JMenuItem redirectPolicyItem = new JMenuItem("Redirect security policy...");
+        JCheckBoxMenuItem exactTransportItem = new JCheckBoxMenuItem("Exact transport headers \u2014 Advanced", exactTransportHeadersSelected);
+        exactTransportItem.setEnabled(currentRequest != null);
+        sendOnlyItem.addActionListener(ev -> setSendModeLabel("Send"));
+        sendRepeaterItem.addActionListener(ev -> setSendModeLabel("Send + Repeater"));
+        followRedirectsItem.addActionListener(ev -> setFollowRedirectsSelected(followRedirectsItem.isSelected()));
+        redirectPolicyItem.addActionListener(ev -> {
+            if (redirectPolicyAction != null) {
+                redirectPolicyAction.run();
+            }
+        });
+        exactTransportItem.addActionListener(ev -> requestExactTransportModeChange(exactTransportItem.isSelected(), true));
+        menu.add(sendOnlyItem);
+        menu.add(sendRepeaterItem);
+        menu.addSeparator();
+        menu.add(followRedirectsItem);
+        menu.add(redirectPolicyItem);
+        menu.addSeparator();
+        menu.add(exactTransportItem);
+        return menu;
+    }
+
+    private Color resolveWarningForeground() {
+        Color color = UIManager.getColor("Actions.Yellow");
+        if (color == null) color = UIManager.getColor("Component.warning.focusedBorderColor");
+        if (color == null) color = UIManager.getColor("OptionPane.warningDialog.titlePane.foreground");
+        return color != null ? color : new Color(176, 112, 0);
     }
 
     public void setSendActionListener(SendActionListener listener) {
@@ -669,57 +713,62 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void handleExactHttpModeSelectionChanged() {
+        requestExactTransportModeChange(!exactTransportHeadersSelected, true);
+    }
+
+    private boolean requestExactTransportModeChange(boolean enable, boolean userInitiated) {
         if (loadingRequest || updatingVariableStyles || currentRequest == null) {
-            return;
+            return false;
+        }
+        if (enable == exactTransportHeadersSelected && currentRequest.isExactHttpMode() == enable) {
+            return true;
         }
         commitAllEdits();
-        boolean exactSelected = isExactHttpModeSelected();
-        if (exactSelected && !currentRequest.isExactHttpMode()) {
-            lastNonExactBuildMode = currentRequest.resolveBuildMode();
+        if (enable && userInitiated && !exactTransportWarningAcknowledged) {
+            boolean accepted = exactTransportWarningProvider.confirmEnable(
+                    this,
+                    "Exact transport headers",
+                    "Exact transport mode can send conflicting or malformed transport headers such as Host, Content-Length, Transfer-Encoding, and Connection. Use it only for advanced protocol testing. Burp, proxies, HTTP/2 conversion, and servers may still normalize or reject the request.");
+            if (!accepted) {
+                return false;
+            }
+            exactTransportWarningAcknowledged = true;
         }
+        applyExactTransportMode(enable);
+        return true;
+    }
 
-        List<ApiRequest.Header> headerSnapshot = snapshotHeaderRows();
-        List<ApiRequest.Header> authoredHeaders = copyHeaders(currentRequest.headers);
+    private void applyExactTransportMode(boolean enabled) {
         ApiRequest draft = buildRequestFromUI();
-        if (draft == null) {
+        if (draft == null || currentRequest == null) {
             return;
         }
-
-        ApiRequest.BuildMode targetMode = exactSelected
-                ? ApiRequest.BuildMode.EXACT_HTTP
-                : (lastNonExactBuildMode != null ? lastNonExactBuildMode : ApiRequest.BuildMode.MANUAL_PRESERVE);
+        ApiRequest.BuildMode targetMode;
+        if (enabled) {
+            ApiRequest.BuildMode currentMode = currentRequest.resolveBuildMode();
+            if (currentMode != null && currentMode != ApiRequest.BuildMode.EXACT_HTTP) {
+                lastNonExactBuildMode = currentMode;
+            }
+            targetMode = ApiRequest.BuildMode.EXACT_HTTP;
+        } else {
+            targetMode = lastNonExactBuildMode != null && lastNonExactBuildMode != ApiRequest.BuildMode.EXACT_HTTP
+                    ? lastNonExactBuildMode
+                    : ApiRequest.BuildMode.MANUAL_PRESERVE;
+        }
         draft.buildMode = targetMode;
         draft.applyTo(currentRequest);
         currentRequest.buildMode = targetMode;
-        currentRequest.editorMaterialized = exactSelected ? true : false;
-        if (exactSelected) {
-            currentRequest.headers = buildHeadersForModeSwitch(draft, authoredHeaders, true);
-        } else {
-            currentRequest.headers = headerSnapshot;
-            currentRequest.suppressedAutoHeaders = new LinkedHashSet<>();
-        }
-
-        ApiRequest headerRefresh = currentRequest.applyTo(new ApiRequest());
-
-        resetDerivedHeaderMaterializationState();
-        loadingRequest = true;
-        try {
-            headersModel.setRowCount(0);
-            RequestEditorStateMapper.loadEditorHeaders(headerRefresh, createStateMapperContext());
-            RequestEditorStateMapper.ensureStarterRow(headersModel);
-            if (!exactSelected) {
-                captureMaterializedDefaultHeaders(headerRefresh);
-                syncAuthorizationHeaderFromCurrentAuth();
-                syncContentTypeHeaderFromCurrentBody();
-            }
-        } finally {
-            loadingRequest = false;
-        }
+        currentRequest.editorMaterialized = true;
+        exactTransportHeadersSelected = enabled;
+        updateExactTransportIndicator();
         refreshResolvedMirror();
         if (currentCollection != null) {
             currentCollection.fireChanged();
         }
         markDirty();
+        if (requestBuildModeChangeListener != null) {
+            requestBuildModeChangeListener.run();
+        }
     }
 
     static boolean isMeaningfulAuthSource(String source) {
@@ -907,89 +956,6 @@ public class RequestEditorPanel extends JPanel {
             }
         }
         return out;
-    }
-
-    private List<ApiRequest.Header> snapshotHeaderRows() {
-        List<ApiRequest.Header> out = new ArrayList<>();
-        if (headersModel == null) {
-            return out;
-        }
-        for (int i = 0; i < headersModel.getRowCount(); i++) {
-            String key = (String) headersModel.getValueAt(i, 0);
-            if (key == null || key.isBlank()) {
-                continue;
-            }
-            String value = (String) headersModel.getValueAt(i, 1);
-            Object disabledValue = headersModel.getColumnCount() > 2 ? headersModel.getValueAt(i, 2) : Boolean.FALSE;
-            boolean disabled = disabledValue instanceof Boolean ? (Boolean) disabledValue : Boolean.parseBoolean(String.valueOf(disabledValue));
-            out.add(new ApiRequest.Header(key, value != null ? value : "", disabled));
-        }
-        return out;
-    }
-
-    private List<ApiRequest.Header> buildHeadersForModeSwitch(ApiRequest draft, List<ApiRequest.Header> authoredHeaders, boolean exactSelected) {
-        List<ApiRequest.Header> visibleHeaders = new ArrayList<>();
-        if (draft != null && draft.headers != null) {
-            for (ApiRequest.Header header : draft.headers) {
-                if (header == null || header.key == null || header.key.isBlank()) {
-                    continue;
-                }
-                String normalized = normalizeTrackedHeaderName(header.key);
-                if (normalized == null) {
-                    continue;
-                }
-                if (!exactSelected && isTransportHeaderName(normalized)) {
-                    continue;
-                }
-                if (exactSelected && isSyntheticEditorHeader(normalized)) {
-                    continue;
-                }
-                visibleHeaders.add(new ApiRequest.Header(header.key, header.value, header.disabled));
-            }
-        }
-
-        List<ApiRequest.Header> merged = new ArrayList<>();
-        List<ApiRequest.Header> sourceHeaders = authoredHeaders != null ? authoredHeaders : Collections.emptyList();
-        int visibleIndex = 0;
-        for (ApiRequest.Header authored : sourceHeaders) {
-            if (authored == null || authored.key == null || authored.key.isBlank()) {
-                continue;
-            }
-            String normalized = normalizeTrackedHeaderName(authored.key);
-            if (isTransportHeaderName(normalized)) {
-                merged.add(new ApiRequest.Header(authored.key, authored.value, authored.disabled));
-                continue;
-            }
-            if (visibleIndex < visibleHeaders.size()) {
-                ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
-                merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
-            }
-        }
-        while (visibleIndex < visibleHeaders.size()) {
-            ApiRequest.Header next = visibleHeaders.get(visibleIndex++);
-            merged.add(new ApiRequest.Header(next.key, next.value, next.disabled));
-        }
-        return merged;
-    }
-
-    private boolean isTransportHeaderName(String headerName) {
-        if (headerName == null) {
-            return false;
-        }
-        return "host".equals(headerName)
-                || "content-length".equals(headerName)
-                || "transfer-encoding".equals(headerName);
-    }
-
-    private boolean isSyntheticEditorHeader(String headerName) {
-        if (headerName == null) {
-            return false;
-        }
-        if (materializedAutoHeaders.contains(headerName)) {
-            return true;
-        }
-        return ("authorization".equals(headerName) && authorizationHeaderMaterialized)
-                || ("content-type".equals(headerName) && contentTypeHeaderMaterialized);
     }
 
     private void upsertHeaderRow(String key, String value) {
@@ -1991,11 +1957,9 @@ public class RequestEditorPanel extends JPanel {
                 .append(suppressed.isEmpty() ? "(none)" : String.join(", ", suppressed))
                 .append("\n");
         if (req.isExactHttpMode()) {
-            out.append("note=Exact HTTP mode preserves authored headers and does not synthesize defaults.\n");
-        } else if (req.isManualPreserveMode()) {
-            out.append("note=Manual preserve mode keeps tester-deleted auto headers deleted.\n");
+            out.append("note=Advanced exact transport mode preserves authored transport/framing headers and does not synthesize defaults.\n");
         } else {
-            out.append("note=Auto-compatible mode may synthesize defaults/auth/body Content-Type.\n");
+            out.append("note=Ordinary authored headers are preserved. Transport framing is regenerated safely.\n");
         }
         out.append("\n");
     }
@@ -2005,7 +1969,11 @@ public class RequestEditorPanel extends JPanel {
     public JTabbedPane getTabs() { return tabs; }
     JButton getSendButtonForTests() { return sendBtn; }
     JButton getSendDropdownButtonForTests() { return sendDropdownBtn; }
-    JCheckBox getExactHttpToggleForTests() { return exactHttpCheckBox; }
+    boolean isExactTransportHeadersSelectedForTests() { return exactTransportHeadersSelected; }
+    JLabel getExactTransportIndicatorForTests() { return exactTransportIndicator; }
+    JPopupMenu createSendDropdownMenuForTests() { return createSendDropdownMenu(); }
+    boolean isExactTransportWarningAcknowledgedForTests() { return exactTransportWarningAcknowledged; }
+    void setExactTransportWarningProviderForTests(ExactTransportWarningProvider provider) { this.exactTransportWarningProvider = provider; }
     JTable getHeadersTableForTests() { return headersTable; }
     JTextComponent getBodyRawAreaForTests() { return bodyRawArea; }
     JTextArea getResolvedViewAreaForTests() { return resolvedViewArea; }
@@ -2131,13 +2099,29 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private boolean isExactHttpModeSelected() {
-        return exactHttpCheckBox != null && exactHttpCheckBox.isSelected();
+        return exactTransportHeadersSelected;
     }
 
     private void setExactHttpModeSelected(boolean exactHttpMode) {
-        if (exactHttpCheckBox != null && exactHttpCheckBox.isSelected() != exactHttpMode) {
-            exactHttpCheckBox.setSelected(exactHttpMode);
+        exactTransportHeadersSelected = exactHttpMode;
+        updateExactTransportIndicator();
+    }
+
+    private void updateExactTransportIndicator() {
+        boolean visible = exactTransportHeadersSelected;
+        if (exactTransportIndicator != null) {
+            exactTransportIndicator.setForeground(resolveWarningForeground());
+            exactTransportIndicator.setVisible(visible);
         }
+        if (exactTransportIndicatorWrapper != null) {
+            exactTransportIndicatorWrapper.setVisible(visible);
+            exactTransportIndicatorWrapper.revalidate();
+            exactTransportIndicatorWrapper.repaint();
+        }
+    }
+
+    void setRequestBuildModeChangeListener(Runnable listener) {
+        this.requestBuildModeChangeListener = listener;
     }
 
     private void captureMaterializedDefaultHeaders(ApiRequest req) {
