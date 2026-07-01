@@ -138,7 +138,7 @@ Use the runner for ordered, repeatable API flows.
 | Capture results | Track success, failure, status, duration, skips, debug, and errors |
 | Flow-control handling | Represent skip and stop outcomes explicitly |
 
-The current presentation is a Runner Queue on the left, one consolidated Runner Execution Table, and a shared detail viewer on the right. Selecting queue or execution entries updates the detail view. Delay, retries, stop conditions, redirects, pause, resume, step, cancel, and raw-request debug behavior remain available. Workbench Send has its own Follow redirects toggle in the Send dropdown, and Runner has a separate Follow redirects setting.
+The current presentation is a Runner Queue on the left, one consolidated Runner Execution Table, and a shared detail viewer on the right. Selecting queue or execution entries updates the detail view. Delay, retries, stop conditions, redirects, pause, resume, step, cancel, and raw-request debug behavior remain available. Workbench Send has its own Follow redirects toggle in the Send dropdown, and Runner has a separate Follow redirects setting. Redirect following defaults to 10 hops and is configurable from 1 to 20. Pre-request scripts run once per logical request, post-response scripts run once against the final successful response, and stop-on-status evaluates only that final response.
 
 ### History
 
@@ -163,7 +163,7 @@ Preserved actions:
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
-Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. History replay can use recorded redirect behavior, always follow, or never follow redirects. Redirect hops are stored as nested evidence under the logical execution. Fragments are stripped before the next request is sent; body-preserving redirects keep authored entity metadata, while POST-to-GET redirects drop body and entity headers. The History store retains at most 1,000 entries and persists with the workspace.
+Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. History replay can use recorded redirect behavior, always follow, or never follow redirects. Redirect hops are stored as nested evidence under the logical execution. Fragments are stripped before the next request is sent; percent-encoded path and query octets stay encoded exactly; 307/308 preserve method, body, and entity metadata; 301/302 preserve body for non-POST methods; and POST-to-GET or non-HEAD 303 redirects drop body and entity headers. The History store retains at most 1,000 entries and persists with the workspace.
 
 ### Diagnostics
 

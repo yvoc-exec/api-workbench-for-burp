@@ -308,14 +308,31 @@ public class RedirectExecutor {
             if (port < -1 || port == 0 || port > 65535) {
                 throw new IllegalArgumentException("Invalid redirect target");
             }
-            String path = resolved.getRawPath();
-            if (path != null && !path.isEmpty() && !path.startsWith("/")) {
-                throw new IllegalArgumentException("Invalid redirect target");
-            }
-            String query = resolved.getRawQuery();
-            return new URI(resolved.getScheme(), null, resolved.getHost(), port,
-                    path == null || path.isBlank() ? "/" : path, query, null);
+            return stripFragmentPreservingRawEncoding(resolved);
         } catch (URISyntaxException e) {
+            throw new IllegalArgumentException("Invalid redirect target", e);
+        }
+    }
+
+    private static URI stripFragmentPreservingRawEncoding(URI resolved) {
+        try {
+            String raw = resolved.toASCIIString();
+            int fragmentIndex = raw.indexOf('#');
+            String withoutFragment = fragmentIndex >= 0 ? raw.substring(0, fragmentIndex) : raw;
+            URI stripped = URI.create(withoutFragment);
+            if (stripped.getRawPath() == null || stripped.getRawPath().isEmpty()) {
+                StringBuilder normalized = new StringBuilder();
+                normalized.append(stripped.getScheme())
+                        .append("://")
+                        .append(stripped.getRawAuthority())
+                        .append('/');
+                if (stripped.getRawQuery() != null) {
+                    normalized.append('?').append(stripped.getRawQuery());
+                }
+                stripped = URI.create(normalized.toString());
+            }
+            return stripped;
+        } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Invalid redirect target", e);
         }
     }
@@ -478,12 +495,11 @@ public class RedirectExecutor {
                                                   String sourceOrigin,
                                                   String targetOrigin) {
         RawMessage message = RawMessage.parse(currentRaw, currentRequest);
-        String nextMethod = nextMethod(message.method, statusCode);
-        boolean methodChangedToBodyless = "GET".equalsIgnoreCase(nextMethod) || "HEAD".equalsIgnoreCase(nextMethod);
+        String currentMethod = message.method != null ? message.method.toUpperCase(Locale.ROOT) : "GET";
+        String nextMethod = nextMethod(currentMethod, statusCode);
         boolean bodyMustBeDropped =
-                methodChangedToBodyless
-                        || ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(message.method))
-                        || (statusCode == 303 && !"HEAD".equalsIgnoreCase(message.method));
+                (statusCode == 303 && !"HEAD".equalsIgnoreCase(currentMethod))
+                        || ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(currentMethod));
         boolean preserveBody = !bodyMustBeDropped;
         byte[] body = preserveBody && message.body != null ? message.body : new byte[0];
         boolean outgoingHasBody = body != null && body.length > 0;

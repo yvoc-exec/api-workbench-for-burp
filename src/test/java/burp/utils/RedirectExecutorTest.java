@@ -235,6 +235,170 @@ class RedirectExecutorTest {
     }
 
     @Test
+    void relativeEncodedPathAndQueryKeepRawEncodingWithoutDoubleEscaping() {
+        Harness harness = execute(
+                request("GET", "/base/start", "api.example.test", 443, true),
+                "https://api.example.test/base/start",
+                true,
+                RedirectPolicy.defaults(),
+                List.of(
+                        response(302, "Found", "/files/a%2Fb?q=x%2Fy#section", null, null),
+                        response(200, "OK", null, "done", "text/plain")
+                )
+        );
+
+        assertThat(harness.result.success).isTrue();
+        assertThat(harness.sentRequests).hasSize(2);
+        HttpRequest redirected = harness.sentRequests.get(1);
+        String raw = rawRequestText(redirected);
+        assertThat(requestLine(raw)).isEqualTo("GET /files/a%2Fb?q=x%2Fy HTTP/1.1");
+        assertThat(raw).doesNotContain("%252F");
+        assertThat(harness.result.redirectHops).hasSize(1);
+        assertThat(harness.result.redirectHops.get(0).location).isEqualTo("/files/a%2Fb?q=x%2Fy#section");
+        assertThat(harness.result.redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/files/a%2Fb?q=x%2Fy");
+        assertThat(harness.result.finalUrl).isEqualTo("https://api.example.test/files/a%2Fb?q=x%2Fy");
+    }
+
+    @Test
+    void encodedSpaceAndPercentTargetsStayEncodedWithoutReencoding() {
+        Harness space = execute(
+                request("GET", "/base/start", "api.example.test", 443, true),
+                "https://api.example.test/base/start",
+                true,
+                RedirectPolicy.defaults(),
+                List.of(
+                        response(302, "Found", "/files/report%20final.json#preview", null, null),
+                        response(200, "OK", null, "done", "text/plain")
+                )
+        );
+
+        String spaceRaw = rawRequestText(space.sentRequests.get(1));
+        assertThat(requestLine(spaceRaw)).isEqualTo("GET /files/report%20final.json HTTP/1.1");
+        assertThat(spaceRaw).contains("%20");
+        assertThat(spaceRaw).doesNotContain("%2520");
+        assertThat(spaceRaw).doesNotContain("report final");
+
+        Harness percent = execute(
+                request("GET", "/base/start", "api.example.test", 443, true),
+                "https://api.example.test/base/start",
+                true,
+                RedirectPolicy.defaults(),
+                List.of(
+                        response(302, "Found", "/values/discount%25?q=rate%25#details", null, null),
+                        response(200, "OK", null, "done", "text/plain")
+                )
+        );
+
+        String percentRaw = rawRequestText(percent.sentRequests.get(1));
+        assertThat(requestLine(percentRaw)).isEqualTo("GET /values/discount%25?q=rate%25 HTTP/1.1");
+        assertThat(percentRaw).contains("%25");
+        assertThat(percentRaw).doesNotContain("%2525");
+    }
+
+    @Test
+    void absoluteEncodedCrossOriginTargetsKeepEncodingAndApplySensitiveHeaderPolicy() {
+        Harness harness = execute(
+                request(
+                        "GET",
+                        "/start",
+                        "api.example.test",
+                        443,
+                        true,
+                        headerLine("Authorization", "Bearer secret"),
+                        headerLine("Cookie", "session=abc"),
+                        headerLine("X-Custom", "keep")
+                ),
+                "https://api.example.test/start",
+                true,
+                RedirectPolicy.defaults(),
+                List.of(
+                        response(302, "Found", "https://other.example.test:443/a%2Fb?q=c%2Fd#fragment", null, null),
+                        response(200, "OK", null, "done", "text/plain")
+                )
+        );
+
+        String raw = rawRequestText(harness.sentRequests.get(1));
+        assertThat(requestLine(raw)).isEqualTo("GET /a%2Fb?q=c%2Fd HTTP/1.1");
+        assertThat(raw).doesNotContain("#fragment");
+        assertThat(harness.result.redirectHops).hasSize(1);
+        assertThat(harness.result.redirectHops.get(0).targetUrl).isEqualTo("https://other.example.test:443/a%2Fb?q=c%2Fd");
+        assertThat(harness.result.finalUrl).isEqualTo("https://other.example.test:443/a%2Fb?q=c%2Fd");
+        assertThat(raw).doesNotContain("Authorization:");
+        assertThat(raw).doesNotContain("Cookie:");
+        assertThat(raw).contains("X-Custom: keep");
+    }
+
+    @Test
+    void getBodiesArePreservedThrough307308And301302() {
+        byte[] body = "get-body".getBytes(StandardCharsets.UTF_8);
+        for (int statusCode : List.of(307, 308, 301, 302)) {
+            Harness harness = execute(
+                    request(
+                            "GET",
+                            "/start",
+                            "api.example.test",
+                            443,
+                            true,
+                            body,
+                            headerLine("Content-Type", "text/plain"),
+                            headerLine("Content-Length", "1")
+                    ),
+                    "https://api.example.test/start",
+                    true,
+                    RedirectPolicy.defaults(),
+                    List.of(
+                            response(statusCode, "Redirect", "/next", null, null),
+                            response(200, "OK", null, "done", "text/plain")
+                    )
+            );
+
+            HttpRequest redirected = harness.sentRequests.get(1);
+            String raw = rawRequestText(redirected);
+            assertThat(redirected.method()).isEqualTo("GET");
+            assertThat(bodyBytes(redirected)).isEqualTo(body);
+            assertThat(raw).contains("Content-Type: text/plain");
+            assertThat(raw).doesNotContain("Transfer-Encoding:");
+            assertThat(headerCount(raw, "Content-Length")).isEqualTo(1);
+            assertThat(headerValue(raw, "Content-Length")).isEqualTo(String.valueOf(body.length));
+        }
+    }
+
+    @Test
+    void headBodiesArePreservedThrough307308And303() {
+        byte[] body = "head-body".getBytes(StandardCharsets.UTF_8);
+        for (int statusCode : List.of(307, 308, 303)) {
+            Harness harness = execute(
+                    request(
+                            "HEAD",
+                            "/start",
+                            "api.example.test",
+                            443,
+                            true,
+                            body,
+                            headerLine("Content-Type", "text/plain"),
+                            headerLine("Content-Length", "1")
+                    ),
+                    "https://api.example.test/start",
+                    true,
+                    RedirectPolicy.defaults(),
+                    List.of(
+                            response(statusCode, "Redirect", "/next", null, null),
+                            response(200, "OK", null, "done", "text/plain")
+                    )
+            );
+
+            HttpRequest redirected = harness.sentRequests.get(1);
+            String raw = rawRequestText(redirected);
+            assertThat(redirected.method()).isEqualTo("HEAD");
+            assertThat(bodyBytes(redirected)).isEqualTo(body);
+            assertThat(raw).contains("Content-Type: text/plain");
+            assertThat(raw).doesNotContain("Transfer-Encoding:");
+            assertThat(headerCount(raw, "Content-Length")).isEqualTo(1);
+            assertThat(headerValue(raw, "Content-Length")).isEqualTo(String.valueOf(body.length));
+        }
+    }
+
+    @Test
     void nonPostBodyPreservingRedirectRetainsBodyAndContentType() {
         for (int statusCode : List.of(301, 302)) {
             byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
@@ -323,6 +487,53 @@ class RedirectExecutorTest {
     }
 
     @Test
+    void postAndNonHead303StillDropBodyAndEntityMetadata() {
+        byte[] body = "alpha".getBytes(StandardCharsets.UTF_8);
+        for (int statusCode : List.of(301, 302, 303)) {
+            Harness harness = execute(
+                    request(
+                            "POST",
+                            "/start",
+                            "api.example.test",
+                            443,
+                            true,
+                            body,
+                            headerLine("Content-Type", "application/json"),
+                            headerLine("Content-Encoding", "gzip"),
+                            headerLine("Content-Language", "en"),
+                            headerLine("Content-Location", "/payload"),
+                            headerLine("Content-Disposition", "attachment; filename=\"payload.bin\""),
+                            headerLine("Digest", "sha-256=abc"),
+                            headerLine("Content-Length", "13"),
+                            headerLine("Transfer-Encoding", "chunked"),
+                            headerLine("X-Custom", "keep")
+                    ),
+                    "https://api.example.test/start",
+                    true,
+                    RedirectPolicy.defaults(),
+                    List.of(
+                            response(statusCode, "Redirect", "/next", null, null),
+                            response(200, "OK", null, "done", "text/plain")
+                    )
+            );
+
+            HttpRequest redirected = harness.sentRequests.get(1);
+            String raw = rawRequestText(redirected);
+            assertThat(redirected.method()).isEqualTo("GET");
+            assertThat(bodyBytes(redirected)).isEmpty();
+            assertThat(raw).doesNotContain("Content-Type:");
+            assertThat(raw).doesNotContain("Content-Encoding:");
+            assertThat(raw).doesNotContain("Content-Language:");
+            assertThat(raw).doesNotContain("Content-Location:");
+            assertThat(raw).doesNotContain("Content-Disposition:");
+            assertThat(raw).doesNotContain("Digest:");
+            assertThat(raw).doesNotContain("Content-Length:");
+            assertThat(raw).doesNotContain("Transfer-Encoding:");
+            assertThat(raw).contains("X-Custom: keep");
+        }
+    }
+
+    @Test
     void invalidLocationUnsupportedSchemeLoopAndHopLimitFailPredictably() {
         Harness invalid = execute(
                 request("GET", "/start", "api.example.test", 443, true),
@@ -389,6 +600,22 @@ class RedirectExecutorTest {
         assertThat(loop.sentRequests).hasSize(2);
         assertThat(loop.result.redirectHops).hasSize(2);
         assertThat(loop.result.redirectHops.get(1).followed).isFalse();
+
+        Harness encodedLoop = execute(
+                request("GET", "/a%2Fb", "api.example.test", 443, true),
+                "https://api.example.test/a%2Fb",
+                true,
+                RedirectPolicy.defaults(),
+                List.of(
+                        response(302, "Found", "/a%2Fb#different", null, null)
+                )
+        );
+        assertThat(encodedLoop.result.success).isFalse();
+        assertThat(encodedLoop.result.terminationReason).isEqualTo(RedirectTerminationReason.LOOP_DETECTED);
+        assertThat(encodedLoop.sentRequests).hasSize(1);
+        assertThat(encodedLoop.result.redirectHops).hasSize(1);
+        assertThat(encodedLoop.result.redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/a%2Fb");
+        assertThat(requestLine(rawRequestText(encodedLoop.sentRequests.get(0)))).isEqualTo("GET /a%2Fb HTTP/1.1");
 
         RedirectPolicy limitPolicy = RedirectPolicy.defaults();
         limitPolicy.maxHops = 2;
