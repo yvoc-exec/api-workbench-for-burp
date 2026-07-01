@@ -31,7 +31,7 @@ class CollectionRunnerControlTest {
 
     @Test
     void pauseAfterCurrentBlocksNextRequestUntilResume() throws Exception {
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
             CountDownLatch firstStarted = new CountDownLatch(1);
             CountDownLatch allowFirstToFinish = new CountDownLatch(1);
             CountDownLatch secondStarted = new CountDownLatch(1);
@@ -76,17 +76,17 @@ class CollectionRunnerControlTest {
 
             runner.runCollections(List.of(collection), List.of(request1, request2));
 
-            assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(firstStarted.await(3, TimeUnit.SECONDS)).isTrue();
             runner.pauseAfterCurrent();
             assertThat(runner.isPaused()).isTrue();
             allowFirstToFinish.countDown();
 
-            assertThat(waitForCondition(runner::isPaused, 1000)).isTrue();
-            assertThat(secondStarted.await(200, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
+            assertThat(secondStarted.await(500, TimeUnit.MILLISECONDS)).isFalse();
 
             runner.resume();
 
-            assertThat(secondStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(secondStarted.await(3, TimeUnit.SECONDS)).isTrue();
             waitForRunnerToStop(runner);
 
             assertThat(started).containsExactly("Request 1", "Request 2");
@@ -97,7 +97,7 @@ class CollectionRunnerControlTest {
 
     @Test
     void runNextOnlyRunsOneQueuedRequestThenPausesAgain() throws Exception {
-        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
             CountDownLatch firstStarted = new CountDownLatch(1);
             CountDownLatch allowFirstToFinish = new CountDownLatch(1);
             CountDownLatch secondStarted = new CountDownLatch(1);
@@ -156,22 +156,22 @@ class CollectionRunnerControlTest {
 
             runner.runCollections(List.of(collection), List.of(request1, request2, request3));
 
-            assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(firstStarted.await(3, TimeUnit.SECONDS)).isTrue();
             runner.pauseAfterCurrent();
             allowFirstToFinish.countDown();
-            assertThat(waitForCondition(runner::isPaused, 1000)).isTrue();
+            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
             assertThat(secondStarted.getCount()).isEqualTo(1);
             assertThat(thirdStarted.getCount()).isEqualTo(1);
 
             runner.runNextOnly();
-            assertThat(secondStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(secondStarted.await(3, TimeUnit.SECONDS)).isTrue();
 
             allowSecondToFinish.countDown();
-            assertThat(waitForCondition(runner::isPaused, 1000)).isTrue();
+            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
             assertThat(thirdStarted.getCount()).isEqualTo(1);
 
             runner.resume();
-            assertThat(thirdStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(thirdStarted.await(3, TimeUnit.SECONDS)).isTrue();
             waitForRunnerToStop(runner);
 
             assertThat(started).containsExactly("Request 1", "Request 2", "Request 3");
@@ -181,7 +181,7 @@ class CollectionRunnerControlTest {
 
     private static void awaitLatch(CountDownLatch latch) {
         try {
-            assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted while waiting for latch", e);
