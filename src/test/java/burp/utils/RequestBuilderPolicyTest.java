@@ -277,6 +277,168 @@ class RequestBuilderPolicyTest {
         assertThat(parsed.contentLength()).isEqualTo(parsed.body.length);
     }
 
+
+    @Test
+    void manualPreservePreservesInterleavedDuplicateOrdinaryHeaders() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer first", false));
+        req.headers.add(new ApiRequest.Header("Cookie", "a=1", false));
+        req.headers.add(new ApiRequest.Header("X-Test", "one", false));
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer second", false));
+        req.headers.add(new ApiRequest.Header("Cookie", "b=2", false));
+        req.headers.add(new ApiRequest.Header("X-Test", "two", false));
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Authorization: Bearer first");
+        assertThat(raw).contains("Authorization: Bearer second");
+        assertThat(raw).contains("Cookie: a=1");
+        assertThat(raw).contains("Cookie: b=2");
+        assertThat(raw).contains("X-Test: one");
+        assertThat(raw).contains("X-Test: two");
+        assertThat(raw.indexOf("Authorization: Bearer first")).isLessThan(raw.indexOf("Cookie: a=1"));
+        assertThat(raw.indexOf("Cookie: a=1")).isLessThan(raw.indexOf("X-Test: one"));
+        assertThat(raw.indexOf("X-Test: one")).isLessThan(raw.indexOf("Authorization: Bearer second"));
+    }
+
+    @Test
+    void autoCompatiblePreservesOrdinaryDuplicatesAndAuthoredAcceptEncoding() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.headers.add(new ApiRequest.Header("Accept", "application/xml", false));
+        req.headers.add(new ApiRequest.Header("X-Test", "one", false));
+        req.headers.add(new ApiRequest.Header("X-Test", "two", false));
+        req.headers.add(new ApiRequest.Header("Accept-Encoding", "gzip, br", false));
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Accept: application/xml");
+        assertThat(raw).doesNotContain("Accept: application/json, text/plain, */*");
+        assertThat(raw).contains("X-Test: one");
+        assertThat(raw).contains("X-Test: two");
+        assertThat(raw).contains("Accept-Encoding: gzip, br");
+    }
+
+    @Test
+    void safeModeFiltersFramingHopByHopAndConnectionNominatedHeaders() throws Exception {
+        ApiRequest req = baseRequest();
+        req.method = "POST";
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.headers.add(new ApiRequest.Header("Host", "attacker.example", false));
+        req.headers.add(new ApiRequest.Header("Host", "second.example", false));
+        req.headers.add(new ApiRequest.Header("Content-Length", "999", false));
+        req.headers.add(new ApiRequest.Header("Content-Length", "1", false));
+        req.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        req.headers.add(new ApiRequest.Header("Connection", "keep-alive, X-Hop", false));
+        req.headers.add(new ApiRequest.Header("Proxy-Connection", "keep-alive", false));
+        req.headers.add(new ApiRequest.Header("Keep-Alive", "timeout=5", false));
+        req.headers.add(new ApiRequest.Header("TE", "trailers", false));
+        req.headers.add(new ApiRequest.Header("Trailer", "X-Trailer", false));
+        req.headers.add(new ApiRequest.Header("Upgrade", "h2c", false));
+        req.headers.add(new ApiRequest.Header("HTTP2-Settings", "value", false));
+        req.headers.add(new ApiRequest.Header("Proxy-Authorization", "Basic secret", false));
+        req.headers.add(new ApiRequest.Header("X-Hop", "remove", false));
+        req.headers.add(new ApiRequest.Header("X-Keep", "keep", false));
+        req.headers.add(new ApiRequest.Header("Accept-Encoding", "gzip", false));
+        req.headers.add(new ApiRequest.Header("Postman-Token", "metadata", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Host: example.com");
+        assertThat(raw).doesNotContain("Host: attacker.example");
+        assertThat(raw).contains("Content-Length: 5");
+        assertThat(raw).doesNotContain("Content-Length: 999");
+        assertThat(raw).doesNotContain("Transfer-Encoding:");
+        assertThat(raw).doesNotContain("Connection:");
+        assertThat(raw).doesNotContain("Proxy-Connection:");
+        assertThat(raw).doesNotContain("Keep-Alive:");
+        assertThat(raw).doesNotContain("TE:");
+        assertThat(raw).doesNotContain("Trailer:");
+        assertThat(raw).doesNotContain("Upgrade:");
+        assertThat(raw).doesNotContain("HTTP2-Settings:");
+        assertThat(raw).doesNotContain("Proxy-Authorization:");
+        assertThat(raw).doesNotContain("X-Hop: remove");
+        assertThat(raw).doesNotContain("Postman-Token:");
+        assertThat(raw).contains("X-Keep: keep");
+        assertThat(raw).contains("Accept-Encoding: gzip");
+    }
+
+    @Test
+    void exactModePreservesFramingAndAuthoredOrderWithoutComputedHostOrLength() throws Exception {
+        ApiRequest req = baseRequest();
+        req.method = "POST";
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.headers.add(new ApiRequest.Header("Host", "attacker.example", false));
+        req.headers.add(new ApiRequest.Header("Host", "second.example", false));
+        req.headers.add(new ApiRequest.Header("Content-Length", "999", false));
+        req.headers.add(new ApiRequest.Header("Content-Length", "1", false));
+        req.headers.add(new ApiRequest.Header("Transfer-Encoding", "chunked", false));
+        req.headers.add(new ApiRequest.Header("Connection", "keep-alive, X-Hop", false));
+        req.headers.add(new ApiRequest.Header("Proxy-Authorization", "Basic secret", false));
+        req.headers.add(new ApiRequest.Header("X-Hop", "keep", false));
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Host: attacker.example");
+        assertThat(raw).contains("Host: second.example");
+        assertThat(raw).contains("Content-Length: 999");
+        assertThat(raw).contains("Content-Length: 1");
+        assertThat(raw).contains("Transfer-Encoding: chunked");
+        assertThat(raw).contains("Connection: keep-alive, X-Hop");
+        assertThat(raw).contains("Proxy-Authorization: Basic secret");
+        assertThat(raw).contains("X-Hop: keep");
+        assertThat(raw).doesNotContain("Host: example.com");
+        assertThat(raw).doesNotContain("Content-Length: 5");
+        assertThat(raw.indexOf("Host: attacker.example")).isLessThan(raw.indexOf("Host: second.example"));
+    }
+
+    @Test
+    void duplicateAuthoredAuthorizationPreventsGeneratedBearerAuth() throws Exception {
+        ApiRequest req = baseRequest();
+        req.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer first", false));
+        req.headers.add(new ApiRequest.Header("Authorization", "Bearer second", false));
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "generated");
+
+        String raw = requestText(req);
+
+        assertThat(raw).contains("Authorization: Bearer first");
+        assertThat(raw).contains("Authorization: Bearer second");
+        assertThat(raw).doesNotContain("Authorization: Bearer generated");
+    }
+
+    @Test
+    void manualPreserveRetainsDuplicateContentTypeAndAutoCompatibleDoesNotAppendExtra() throws Exception {
+        ApiRequest manual = baseRequest();
+        manual.method = "POST";
+        manual.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        manual.headers.add(new ApiRequest.Header("Content-Type", "text/plain", false));
+        manual.headers.add(new ApiRequest.Header("Content-Type", "application/custom", false));
+        manual.body = new ApiRequest.Body();
+        manual.body.mode = "raw";
+        manual.body.raw = "hello";
+        assertThat(requestText(manual)).contains("Content-Type: text/plain").contains("Content-Type: application/custom");
+
+        ApiRequest auto = baseRequest();
+        auto.method = "POST";
+        auto.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        auto.headers.add(new ApiRequest.Header("Content-Type", "application/json", false));
+        auto.body = new ApiRequest.Body();
+        auto.body.mode = "raw";
+        auto.body.raw = "{}";
+        String raw = requestText(auto);
+        assertThat(raw.indexOf("Content-Type:")).isEqualTo(raw.lastIndexOf("Content-Type:"));
+    }
+
     private ApiRequest baseRequest() {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

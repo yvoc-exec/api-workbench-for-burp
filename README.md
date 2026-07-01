@@ -59,14 +59,18 @@ Workbench is where you inspect and modify a single API request without leaving B
 
 Per-request state stays attached to the request you are working on, which makes it easier to refine a request, test it, and then hand it off to Repeater when you need more control.
 
-#### Exact HTTP / Preserve authored headers
+#### Exact transport headers
 
-Exact HTTP is an opt-in, per-request mode for advanced testing. Normalized mode remains the default.
+Ordinary authored headers are preserved by default, including duplicate ordinary headers and their relative order where practical. Safe mode still regenerates transport framing such as `Host` and `Content-Length`, removes unsafe transport and hop-by-hop headers, and removes headers named by `Connection`.
 
-- Exact mode preserves authored structured headers, including order, duplicates, casing, Host, Content-Length, Transfer-Encoding, Connection, Proxy-Connection, and Accept-Encoding.
-- Exact mode does not automatically synthesize framing, defaults, auth, or body-driven headers.
+- `Exact transport headers — Advanced` is a per-request option in the Workbench Send dropdown.
+- The amber `⚠ Exact transport headers` indicator appears only while it is active.
+- The first explicit enable in an editor session shows a warning.
+- Exact mode persists through workspace save/restore, native API Workbench export/import, History, replay, Runner, and request copying.
+- Exact mode is for malformed-request, desynchronization, and request-smuggling testing. It preserves authored transport/framing headers and does not synthesize defaults.
 - Arbitrary malformed raw lines and exact whitespace are not supported by the structured editor.
-- Burp, Montoya, proxies, HTTP/2 conversion, and targets may still normalize or reject the traffic.
+- Burp, Montoya, proxies, HTTP/2 conversion, and targets may still normalize or reject exact requests; it is not guaranteed byte-for-byte wire transport.
+- Redirect follow-up requests remain governed by redirect safety rules.
 
 ### Environment and OAuth2
 

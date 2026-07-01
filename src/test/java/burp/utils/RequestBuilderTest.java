@@ -49,15 +49,10 @@ class RequestBuilderTest {
         req.headers.add(new ApiRequest.Header("content-type", "text/html", false));
         req.headers.add(new ApiRequest.Header("Content-Type", "application/json", false));
 
-        byte[] raw = builder.buildRequest(req, resolver);
-        RawRequestParser parsed = RawRequestParser.parse(raw);
+        String raw = new String(builder.buildRequest(req, resolver), java.nio.charset.StandardCharsets.UTF_8);
 
-        // Only one Content-Type should exist; last one wins (medium precedence put)
-        long count = parsed.headers.keySet().stream()
-                .filter(k -> k.equalsIgnoreCase("Content-Type"))
-                .count();
-        assertThat(count).isEqualTo(1);
-        assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/json");
+        assertThat(raw).contains("content-type: text/html");
+        assertThat(raw).contains("Content-Type: application/json");
     }
 
     @Test
@@ -144,7 +139,7 @@ class RequestBuilderTest {
 
         assertThat(parsed.hasHeader("Connection")).isFalse();
         assertThat(parsed.hasHeader("Proxy-Connection")).isFalse();
-        assertThat(parsed.hasHeader("Accept-Encoding")).isFalse();
+        assertThat(parsed.hasHeader("Accept-Encoding")).isTrue();
         assertThat(parsed.hasHeader("Postman-Token")).isFalse();
     }
 

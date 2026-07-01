@@ -385,7 +385,9 @@ HAR files import as captured request collections and can export as evidence.
 
 ### 5.6 Native API Workbench
 
-Native API Workbench collections preserve authored collection structure, auth, variables, folder metadata, requests, and native script blocks most faithfully. They do not automatically serialize `runtimeVars` or `runtimeOAuth2`; optional active-environment resolution can materialize values when selected. External export formats are lossy where their schemas cannot represent all metadata.
+Native API Workbench collections preserve authored collection structure, auth, variables, folder metadata, requests, build mode, editor materialization, duplicate headers, header order, disabled header state, and native script blocks most faithfully. They do not automatically serialize `runtimeVars` or `runtimeOAuth2`; optional active-environment resolution can materialize values when selected. External export formats are lossy where their schemas cannot represent all metadata.
+
+Workbench safe mode preserves ordinary authored headers, including duplicate ordinary headers and relative order where practical, but regenerates `Host` and `Content-Length`, removes unsafe transport and hop-by-hop headers, removes `Connection`-nominated headers, and keeps redirect follow-ups under redirect safety rules. Advanced per-request `Exact transport headers — Advanced` is available from the Workbench Send dropdown; it shows `⚠ Exact transport headers`, warns once per editor session on explicit enable, persists through workspace/native export/import, History, replay, Runner, and request duplication, and is intended for malformed-request, desynchronization, or request-smuggling testing. Burp, proxies, HTTP/2 conversion, and servers may normalize or reject exact requests, so exact mode is not guaranteed byte-for-byte wire transport.
 
 ## 6. Variable Resolution Engine
 

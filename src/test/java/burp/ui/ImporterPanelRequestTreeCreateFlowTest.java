@@ -1210,7 +1210,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         removeHeaderRow(requestEditor(panel), "Accept");
         removeHeaderRow(requestEditor(panel), "User-Agent");
         removeHeaderRow(requestEditor(panel), "Cache-Control");
-        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        edt(() -> toggleExactTransport(requestEditor(panel)));
         edt(() -> {
             headersModel(requestEditor(panel)).addRow(new Object[]{"Host", "alt.example.test"});
             headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer first"});
@@ -1257,7 +1257,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(rawRequestText.get()).isEqualTo(previewRaw);
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
 
-        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        edt(() -> toggleExactTransport(requestEditor(panel)));
         rawRequestText.set(null);
         invokeOnEdt(panel, "executeWorkbenchSend");
         awaitCondition("normalized workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
@@ -1274,7 +1274,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         assertThat(rawRequestText.get()).doesNotContain("Proxy-Connection: keep-alive");
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
 
-        edt(() -> requestEditor(panel).getExactHttpToggleForTests().doClick());
+        edt(() -> toggleExactTransport(requestEditor(panel)));
         rawRequestText.set(null);
         invokeOnEdt(panel, "executeWorkbenchSend");
         awaitCondition("exact workbench resend started", () -> !requestEditorUnchecked(panel).isSendEnabled());
@@ -1928,5 +1928,18 @@ class ImporterPanelRequestTreeCreateFlowTest {
     private static void drainEdt() throws Exception {
         SwingUtilities.invokeAndWait(() -> {});
         SwingUtilities.invokeAndWait(() -> {});
+    }
+
+    private static void toggleExactTransport(RequestEditorPanel editor) {
+        editor.setExactTransportWarningProviderForTests((parent, title, message) -> true);
+        JPopupMenu menu = editor.createSendDropdownMenuForTests();
+        for (java.awt.Component component : menu.getComponents()) {
+            if (component instanceof JCheckBoxMenuItem item
+                    && "Exact transport headers \u2014 Advanced".equals(item.getText())) {
+                item.doClick();
+                return;
+            }
+        }
+        throw new AssertionError("Exact transport menu item not found");
     }
 }

@@ -594,6 +594,10 @@ public class ImporterPanel {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
         });
+        requestEditor.setRequestBuildModeChangeListener(() -> {
+            runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
+            notifyWorkspaceChangedImmediately();
+        });
         requestEditor.setFollowRedirectsChangeListener(selected -> notifyWorkspaceChanged());
         requestEditor.setRedirectPolicyAction(this::showRedirectPolicyDialog);
 
@@ -680,11 +684,7 @@ public class ImporterPanel {
             appendImportLog("Send failed: no collection context is bound to the current request.");
             return;
         }
-        List<ApiRequest.Header> hiddenTransportSnapshot = copyHeaders(liveRequest.headers);
         applyEditedRequestToLiveRequest(col, liveRequest, edited);
-        if (!edited.isExactHttpMode()) {
-            liveRequest.headers = mergeHiddenTransportHeaders(hiddenTransportSnapshot, liveRequest.headers);
-        }
         syncRequestEditorRuntimeContext(liveRequest, col);
         if (requestEditor != null) {
             requestEditor.markClean();
@@ -1788,53 +1788,6 @@ public class ImporterPanel {
             out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
         }
         return out;
-    }
-
-    private static List<ApiRequest.Header> mergeHiddenTransportHeaders(List<ApiRequest.Header> templateHeaders, List<ApiRequest.Header> editedHeaders) {
-        if (templateHeaders == null || templateHeaders.isEmpty()) {
-            return copyHeaders(editedHeaders);
-        }
-        List<ApiRequest.Header> visibleHeaders = new ArrayList<>();
-        if (editedHeaders != null) {
-            for (ApiRequest.Header header : editedHeaders) {
-                if (header == null || header.key == null || header.key.isBlank()) {
-                    continue;
-                }
-                if (isHiddenTransportHeader(header.key)) {
-                    continue;
-                }
-                visibleHeaders.add(header);
-            }
-        }
-
-        List<ApiRequest.Header> merged = new ArrayList<>();
-        int visibleIndex = 0;
-        for (ApiRequest.Header header : templateHeaders) {
-            if (header == null || header.key == null || header.key.isBlank()) {
-                continue;
-            }
-            if (isHiddenTransportHeader(header.key)) {
-                merged.add(new ApiRequest.Header(header.key, header.value, header.disabled));
-            } else if (visibleIndex < visibleHeaders.size()) {
-                ApiRequest.Header visible = visibleHeaders.get(visibleIndex++);
-                merged.add(new ApiRequest.Header(visible.key, visible.value, visible.disabled));
-            }
-        }
-        while (visibleIndex < visibleHeaders.size()) {
-            ApiRequest.Header visible = visibleHeaders.get(visibleIndex++);
-            merged.add(new ApiRequest.Header(visible.key, visible.value, visible.disabled));
-        }
-        return merged;
-    }
-
-    private static boolean isHiddenTransportHeader(String headerName) {
-        if (headerName == null) {
-            return false;
-        }
-        String normalized = headerName.trim().toLowerCase(Locale.ROOT);
-        return "host".equals(normalized)
-                || "content-length".equals(normalized)
-                || "transfer-encoding".equals(normalized);
     }
 
     private static ApiRequest.Body copyBody(ApiRequest.Body body) {
@@ -11770,11 +11723,7 @@ public class ImporterPanel {
         if (edited == null) {
             return;
         }
-        List<ApiRequest.Header> hiddenTransportSnapshot = copyHeaders(liveRequest.headers);
         applyEditedRequestToLiveRequest(collection, liveRequest, edited);
-        if (!edited.isExactHttpMode()) {
-            liveRequest.headers = mergeHiddenTransportHeaders(hiddenTransportSnapshot, liveRequest.headers);
-        }
         syncRequestEditorRuntimeContext(liveRequest, collection);
     }
 
