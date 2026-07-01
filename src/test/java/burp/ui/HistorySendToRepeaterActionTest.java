@@ -21,9 +21,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class HistorySendToRepeaterActionTest {
 
@@ -57,8 +57,9 @@ class HistorySendToRepeaterActionTest {
         ApiCollection liveCollection = loadedCollections.get(0);
         liveCollection.requests.remove(0);
 
-        when(bundle.importer.generateRepeaterTabName(ArgumentMatchers.anyString(), ArgumentMatchers.anyString()))
-                .thenReturn("History Replay");
+        doReturn("History Replay")
+                .when(bundle.importer)
+                .generateRepeaterTabName(ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
 
         ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
