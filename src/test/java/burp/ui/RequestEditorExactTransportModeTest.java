@@ -6,6 +6,7 @@ import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
+import burp.testsupport.ImporterPanelTestSupport;
 import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -171,44 +172,224 @@ class RequestEditorExactTransportModeTest {
     }
 
     @Test
-    void modeTogglePreservesUnrelatedRequestStateAndBodyMetadata() {
+    void exactRawUrlIsPreservedAcrossModeToggle() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        req.url = "https://api.example.test/search?q=hello%20world&path=a%2Fb&plus=%2B&pct=%25&empty=&flag&repeat=1&repeat=2#fragment";
+        panel.loadRequest(req);
+        String requestUrlBefore = req.url;
+        String urlFieldBefore = panel.getUrlField().getText();
+        List<String> paramsBefore = parameterRows(paramsModel(panel));
+
+        exactItem(panel).doClick();
+
+        assertThat(req.url).isEqualTo(requestUrlBefore);
+        assertThat(panel.getUrlField().getText()).isEqualTo(urlFieldBefore);
+        assertThat(parameterRows(paramsModel(panel))).containsExactlyElementsOf(paramsBefore);
+        assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+
+        exactItem(panel).doClick();
+
+        assertThat(req.url).isEqualTo(requestUrlBefore);
+        assertThat(panel.getUrlField().getText()).isEqualTo(urlFieldBefore);
+        assertThat(parameterRows(paramsModel(panel))).containsExactlyElementsOf(paramsBefore);
+        assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+    }
+
+    @Test
+    void autoCompatibleRoundTripsWithoutForcingEditorMaterialization() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = richRequest();
+        req.buildMode = ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        req.editorMaterialized = false;
+        panel.loadRequest(req);
+        String before = deepSnapshot(req);
+
+        exactItem(panel).doClick();
+        exactItem(panel).doClick();
+
+        assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(req.editorMaterialized).isFalse();
+        assertThat(deepSnapshot(req)).isEqualTo(before);
+    }
+
+    @Test
+    void activeFormDataOrderStaysExactAcrossModeToggle() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "formdata";
+        req.body.formdata = new ArrayList<>(List.of(
+                formField("text-1", "one", "text", false, null, false),
+                formField("disabled-1", "skip", "text", false, null, true),
+                formField("file-1", "", "file", true, "upload-a.bin", false),
+                formField("text-2", "two", "text", false, null, false),
+                formField("disabled-2", "skip2", "file", true, "upload-b.bin", true)
+        ));
+        panel.loadRequest(req);
+        String before = fields(req.body.formdata);
+
+        exactItem(panel).doClick();
+        assertThat(fields(req.body.formdata)).isEqualTo(before);
+        exactItem(panel).doClick();
+        assertThat(fields(req.body.formdata)).isEqualTo(before);
+    }
+
+    @Test
+    void activeUrlEncodedOrderStaysExactAcrossModeToggle() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "urlencoded";
+        req.body.urlencoded = new ArrayList<>(List.of(
+                formField("u-1", "one", "text", false, null, false),
+                formField("u-disabled", "skip", "text", false, null, true),
+                formField("u-2", "two", "text", false, null, false),
+                formField("u-disabled-2", "skip2", "text", false, null, true)
+        ));
+        panel.loadRequest(req);
+        String before = fields(req.body.urlencoded);
+
+        exactItem(panel).doClick();
+        assertThat(fields(req.body.urlencoded)).isEqualTo(before);
+        exactItem(panel).doClick();
+        assertThat(fields(req.body.urlencoded)).isEqualTo(before);
+    }
+
+    @Test
+    void multipleScriptObjectsStaySeparateAcrossModeToggle() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = richRequest();
+        req.preRequestScripts = new ArrayList<>(List.of(
+                new ApiRequest.Script("js", "  pre-one();  "),
+                new ApiRequest.Script("python", "\npre_two()\n"),
+                new ApiRequest.Script("js", "\tpre_three();\t")
+        ));
+        req.postResponseScripts = new ArrayList<>(List.of(
+                new ApiRequest.Script("js", "post-one();"),
+                new ApiRequest.Script("python", "post_two()")
+        ));
+        req.scriptBlocks = new ArrayList<>(List.of(
+                scriptBlock("block-pre-1", ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/a", 3, Map.of("dialect", "js"), "source-a"),
+                scriptBlock("block-post-1", ScriptDialect.LEGACY_NASHORN, ScriptPhase.POST_RESPONSE, ScriptScope.COLLECTION, false, "folder/b", 4, Map.of("scope", "collection"), "source-b"),
+                scriptBlock("block-pre-2", ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/c", 5, Map.of("phase", "pre"), "source-c"),
+                scriptBlock("block-post-2", ScriptDialect.LEGACY_NASHORN, ScriptPhase.POST_RESPONSE, ScriptScope.REQUEST, true, "folder/d", 6, Map.of("phase", "post"), "source-d")
+        ));
+        panel.loadRequest(req);
+        String preBefore = scripts(req.preRequestScripts);
+        String postBefore = scripts(req.postResponseScripts);
+        String blocksBefore = blocks(req.scriptBlocks);
+
+        exactItem(panel).doClick();
+        assertThat(scripts(req.preRequestScripts)).isEqualTo(preBefore);
+        assertThat(scripts(req.postResponseScripts)).isEqualTo(postBefore);
+        assertThat(blocks(req.scriptBlocks)).isEqualTo(blocksBefore);
+
+        exactItem(panel).doClick();
+        assertThat(scripts(req.preRequestScripts)).isEqualTo(preBefore);
+        assertThat(scripts(req.postResponseScripts)).isEqualTo(postBefore);
+        assertThat(blocks(req.scriptBlocks)).isEqualTo(blocksBefore);
+    }
+
+    @Test
+    void pendingMaterializedAcceptEditSurvivesModeToggleAndExplicitBuild() throws Exception {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        req.editorMaterialized = false;
+        req.url = "https://example.com/original";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"original\":true}";
+        req.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "pre();")));
+        panel.loadRequest(req);
+
+        DefaultTableModel headers = model(panel);
+        int acceptRow = findRow(headers, "Accept");
+        assertThat(acceptRow).isGreaterThanOrEqualTo(0);
+        String urlBefore = panel.getUrlField().getText();
+
+        SwingUtilities.invokeAndWait(() -> {
+            panel.getUrlField().setText("https://example.com/edited");
+            headers.setValueAt("application/xml", acceptRow, 1);
+            panel.getBodyRawAreaForTests().setText("{\"edited\":true}");
+            preScriptArea(panel).setText("console.log('pre');");
+        });
+        String headerRowsAfterEdit = headerRows(headers);
+
+        exactItem(panel).doClick();
+
+        assertThat(panel.getUrlField().getText()).isEqualTo("https://example.com/edited");
+        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
+        assertThat(headerRows(headers)).isEqualTo(headerRowsAfterEdit);
+        assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScriptArea(panel).getText()).isEqualTo("console.log('pre');");
+        assertThat(req.url).isEqualTo(urlBefore);
+        assertThat(req.body.raw).isEqualTo("{\"original\":true}");
+        assertThat(scripts(req.preRequestScripts)).isEqualTo("[js:pre();]");
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(built.url).isEqualTo("https://example.com/edited");
+        assertThat(rows(built.headers)).contains("Accept: application/xml|false");
+        assertThat(built.body.raw).isEqualTo("{\"edited\":true}");
+        assertThat(scripts(built.preRequestScripts)).isEqualTo("[js:console.log('pre');]");
+    }
+
+    @Test
+    void modeToggleChangesOnlyBuildModeOnRichRequest() {
         RequestEditorPanel panel = panel();
         ApiRequest req = richRequest();
         panel.loadRequest(req);
-        String before = nonModeSnapshot(req);
+        String before = deepSnapshot(req);
 
         exactItem(panel).doClick();
 
         assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
-        assertThat(nonModeSnapshot(req)).isEqualTo(before);
+        assertThat(deepSnapshot(req)).isEqualTo(before);
 
         exactItem(panel).doClick();
 
         assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
-        assertThat(nonModeSnapshot(req)).isEqualTo(before);
+        assertThat(deepSnapshot(req)).isEqualTo(before);
     }
 
     @Test
-    void modeToggleAppliesIntentionalEditorEditsWithoutDroppingMetadata() {
+    void modeTogglePreservesPendingEditsUntilExplicitBuild() throws Exception {
         RequestEditorPanel panel = panel();
-        ApiRequest req = richRequest();
+        ApiRequest req = request(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        req.editorMaterialized = false;
+        req.url = "https://example.com/original";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "{\"original\":true}";
+        req.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "pre();")));
         panel.loadRequest(req);
-        String metadataBefore = metadataSnapshot(req);
+        DefaultTableModel headers = model(panel);
+        int acceptRow = findRow(headers, "Accept");
+        assertThat(acceptRow).isGreaterThanOrEqualTo(0);
+        String requestBefore = deepSnapshot(req);
 
-        panel.getMethodBox().setSelectedItem("POST");
-        panel.getUrlField().setText("http://example.com/changed");
-        model(panel).setValueAt("changed.example", 0, 1);
-        panel.getBodyRawAreaForTests().setText("{\"edited\":true}");
+        SwingUtilities.invokeAndWait(() -> {
+            panel.getUrlField().setText("https://example.com/edited");
+            headers.setValueAt("application/xml", acceptRow, 1);
+            panel.getBodyRawAreaForTests().setText("{\"edited\":true}");
+            preScriptArea(panel).setText("console.log('pre');");
+        });
 
         exactItem(panel).doClick();
 
         assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
-        assertThat(req.method).isEqualTo("POST");
-        assertThat(req.url).isEqualTo("http://example.com/changed");
-        assertThat(req.headers.get(0).value).isEqualTo("changed.example");
-        assertThat(req.body.raw).isEqualTo("{\"edited\":true}");
-        assertThat(metadataSnapshot(req)).isEqualTo(metadataBefore);
-        assertThat(bodyMetadataSnapshot(req)).contains("application/vnd.awb+json", "upload.bin", "disabled-form");
+        assertThat(deepSnapshot(req)).isEqualTo(requestBefore);
+        assertThat(panel.getUrlField().getText()).isEqualTo("https://example.com/edited");
+        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
+        assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo("{\"edited\":true}");
+        assertThat(preScriptArea(panel).getText()).isEqualTo("console.log('pre');");
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.url).isEqualTo("https://example.com/edited");
+        assertThat(rows(built.headers)).contains("Accept: application/xml|false");
+        assertThat(built.body.raw).isEqualTo("{\"edited\":true}");
+        assertThat(scripts(built.preRequestScripts)).isEqualTo("[js:console.log('pre');]");
     }
 
     private static RequestEditorPanel panel() {
@@ -330,8 +511,40 @@ class RequestEditorExactTransportModeTest {
         return field;
     }
 
+    private static ScriptBlock scriptBlock(String id,
+                                           ScriptDialect dialect,
+                                           ScriptPhase phase,
+                                           ScriptScope scope,
+                                           boolean enabled,
+                                           String sourcePath,
+                                           int order,
+                                           Map<String, String> metadata,
+                                           String source) {
+        ScriptBlock block = ScriptBlock.of(source, dialect, phase, scope);
+        block.id = id;
+        block.enabled = enabled;
+        block.sourcePath = sourcePath;
+        block.order = order;
+        block.metadata.putAll(metadata);
+        return block;
+    }
+
     private static String nonModeSnapshot(ApiRequest req) {
         return metadataSnapshot(req)
+                + "|headers=" + rows(req.headers)
+                + "|body=" + bodySnapshot(req)
+                + "|auth=" + authSnapshot(req.auth)
+                + "|explicitAuth=" + authSnapshot(req.explicitAuth)
+                + "|pre=" + scripts(req.preRequestScripts)
+                + "|post=" + scripts(req.postResponseScripts)
+                + "|blocks=" + blocks(req.scriptBlocks)
+                + "|suppressed=" + req.suppressedAutoHeaders;
+    }
+
+    private static String deepSnapshot(ApiRequest req) {
+        return metadataSnapshot(req)
+                + "|method=" + req.method
+                + "|url=" + req.url
                 + "|headers=" + rows(req.headers)
                 + "|body=" + bodySnapshot(req)
                 + "|auth=" + authSnapshot(req.auth)
@@ -393,6 +606,42 @@ class RequestEditorExactTransportModeTest {
             out.add(script.type + ":" + script.exec);
         }
         return out.toString();
+    }
+
+    private static List<String> parameterRows(DefaultTableModel model) {
+        List<String> rows = new ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object key = model.getValueAt(i, 0);
+            if (key == null || key.toString().isBlank()) continue;
+            rows.add(key + ": " + model.getValueAt(i, 1));
+        }
+        return rows;
+    }
+
+    private static String headerRows(DefaultTableModel model) {
+        return rows(model).toString();
+    }
+
+    private static int findRow(DefaultTableModel model, String key) {
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object value = model.getValueAt(i, 0);
+            if (value != null && key.equals(value.toString())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static DefaultTableModel paramsModel(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "paramsModel");
+    }
+
+    private static JTextArea preScriptArea(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "preScriptArea");
+    }
+
+    private static JTextArea postScriptArea(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "postScriptArea");
     }
 
     private static String blocks(List<ScriptBlock> blocks) {

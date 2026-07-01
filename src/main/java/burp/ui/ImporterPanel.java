@@ -301,6 +301,7 @@ public class ImporterPanel {
     // Workspace persistence callback
     private Runnable workspaceChangeListener;
     private boolean suppressWorkspaceChangeNotifications = false;
+    private boolean suppressRequestTreeSelectionPersistence = false;
     private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
     // Send mode is tracked by the RequestEditorPanel send button label
     private final burp.utils.ScriptMode scriptMode;
@@ -961,7 +962,12 @@ public class ImporterPanel {
             if (requestEditor != null) {
                 requestEditor.markClean();
             }
-            selectRequestInTree(existingContext.request);
+            suppressRequestTreeSelectionPersistence = true;
+            try {
+                selectRequestInTree(existingContext.request);
+            } finally {
+                suppressRequestTreeSelectionPersistence = false;
+            }
             HistoryEntry loadedEntry = HistoryEntry.copyOf(entry);
             if (loadedEntry != null) {
                 loadedEntry.collectionId = existingContext.collection.id != null && !existingContext.collection.id.isBlank()
@@ -993,7 +999,12 @@ public class ImporterPanel {
             if (requestEditor != null) {
                 requestEditor.markClean();
             }
-            selectRequestInTree(fallbackContext.request);
+            suppressRequestTreeSelectionPersistence = true;
+            try {
+                selectRequestInTree(fallbackContext.request);
+            } finally {
+                suppressRequestTreeSelectionPersistence = false;
+            }
         });
         historyLoadResultNotifier.showLoadedUnderHistoryReplays(mainPanel, fallbackContext.request.name);
         notifyWorkspaceChangedImmediately();
@@ -1756,6 +1767,9 @@ public class ImporterPanel {
 
         liveRequest.method = edited.method;
         liveRequest.url = edited.url;
+        if (edited.description != null) {
+            liveRequest.description = edited.description;
+        }
         liveRequest.editorMaterialized = edited.editorMaterialized;
         liveRequest.buildMode = edited.buildMode;
         liveRequest.suppressedAutoHeaders = edited.suppressedAutoHeaders != null
@@ -1763,6 +1777,9 @@ public class ImporterPanel {
                 : new LinkedHashSet<>();
         liveRequest.headers = copyHeaders(edited.headers);
         liveRequest.body = copyBody(edited.body);
+        if (edited.variables != null && !edited.variables.isEmpty()) {
+            liveRequest.variables = copyVariables(edited.variables);
+        }
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
         liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
         liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
@@ -1786,6 +1803,26 @@ public class ImporterPanel {
                 continue;
             }
             out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+        }
+        return out;
+    }
+
+    private static List<ApiRequest.Variable> copyVariables(List<ApiRequest.Variable> variables) {
+        List<ApiRequest.Variable> out = new ArrayList<>();
+        if (variables == null) {
+            return out;
+        }
+        for (ApiRequest.Variable variable : variables) {
+            if (variable == null) {
+                out.add(null);
+                continue;
+            }
+            ApiRequest.Variable copy = new ApiRequest.Variable();
+            copy.key = variable.key;
+            copy.value = variable.value;
+            copy.type = variable.type;
+            copy.enabled = variable.enabled;
+            out.add(copy);
         }
         return out;
     }
@@ -4828,6 +4865,10 @@ public class ImporterPanel {
     }
 
     private void handleRequestTreeSelectionChanged() {
+        if (suppressRequestTreeSelectionPersistence) {
+            suppressRequestTreeSelectionPersistence = false;
+            return;
+        }
         persistCurrentRequestEditorState();
         CollectionTreeNode node = getSelectedRequestTreeNode();
         if (node != null && node.getNodeType() == CollectionTreeNode.Type.REQUEST && node.request != null) {

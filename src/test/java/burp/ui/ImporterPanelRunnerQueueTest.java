@@ -807,6 +807,51 @@ class ImporterPanelRunnerQueueTest {
     }
 
     @Test
+    void exactRunnerRetriesKeepEncodedUrlAndBuildModeUntouched() throws Exception {
+        MontoyaApi api = mockApi(true);
+        AtomicInteger attempts = new AtomicInteger();
+        List<String> seenUrls = Collections.synchronizedList(new ArrayList<>());
+        CollectionRunner runner = new CollectionRunner(api, new burp.utils.SharedRequestPipeline(
+                api,
+                new burp.utils.RequestBuilder(null),
+                new burp.utils.ScriptEngine(null, ScriptMode.DISABLED),
+                null) {
+            @Override
+            public burp.utils.ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                seenUrls.add(req.url);
+                burp.utils.ExecutionResult exec = new burp.utils.ExecutionResult();
+                exec.requestHeaders = "GET " + req.url + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                if (attempts.getAndIncrement() == 0) {
+                    exec.success = false;
+                    exec.errorMessage = "retry";
+                } else {
+                    exec.success = true;
+                    exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+                }
+                return exec;
+            }
+        }, null);
+        runner.setMaxRetries(1);
+        runner.setDelayMs(0);
+
+        ApiRequest request = request("Exact");
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.url = "https://example.test/search?q=hello%20world&path=a%2Fb&plus=%2B&pct=%25&empty=&flag&repeat=1&repeat=2#fragment";
+        ApiCollection collection = collection("Retry", request);
+
+        List<ApiRequest> queued = new ArrayList<>(List.of(request));
+        runner.runCollections(List.of(collection), queued);
+
+        waitUntil(() -> seenUrls.size() == 2, 5000);
+
+        assertThat(seenUrls).containsExactly(request.url, request.url);
+        assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(request.url).isEqualTo("https://example.test/search?q=hello%20world&path=a%2Fb&plus=%2B&pct=%25&empty=&flag&repeat=1&repeat=2#fragment");
+        assertThat(queued).containsExactly(request);
+    }
+
+    @Test
     void blankUrlRunnerFailsSafelyWithoutCorruptingState() throws Exception {
         MontoyaApi api = mockApi(true);
         ImporterPanel panel = newRealPanel(api);
