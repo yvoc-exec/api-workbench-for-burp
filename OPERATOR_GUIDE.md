@@ -182,6 +182,7 @@ The request editor lets you edit one request at a time.
 | Body | Edit request body content |
 | Auth | Override or inherit request auth |
 | Send | Send the current request |
+| Follow redirects | Follow HTTP redirects for this Workbench send from the Send dropdown |
 | Send to Repeater | Open the request in Repeater |
 | Raw request debug | Show the raw request sent by the pipeline |
 
@@ -282,7 +283,7 @@ The current presentation is a Runner Queue on the left, one consolidated Runner 
 | Stop on status >= 400 | Stop when the response status is 400 or higher |
 | Stop when variable missing | Stop when required variables are unresolved |
 | Stop after failures | Stop after the configured failure threshold |
-| Follow redirects | Follow HTTP redirects |
+| Follow redirects | Follow HTTP redirects for runner execution only |
 | Debug final raw request | Emit the final built request for debugging |
 
 ### Runner controls
@@ -306,6 +307,10 @@ The current presentation is a Runner Queue on the left, one consolidated Runner 
 ## History Tab
 
 History records Workbench and Runner execution information, including script details and variable changes.
+
+History replay supports three redirect behaviors: use recorded behavior, always follow, or never follow. Redirect hops are stored as nested evidence rows under the logical execution, not as queue items.
+Fragments are stripped before the next request is built; redirect loops, invalid targets, and limit exhaustion are treated as execution errors. Same-origin credentials can be preserved except `Proxy-Authorization`, and cross-origin sensitive headers are stripped by default.
+Trusted origins require exact scheme + host + effective-port matches, and dangerous preserve mode is HTTPS-only. `Proxy-Authorization` is never forwarded.
 
 The detail tabs are **Request**, **Response**, **Metadata**, **Variables / Environment**, **Script Output**, and **Assertions / Extractions**.
 

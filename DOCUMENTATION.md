@@ -54,7 +54,7 @@ The same checked requests can be sent to Repeater, Sitemap, or Intruder. Workben
 
 ### 2.4 Collection Runner
 
-The runner executes checked requests in order with retries, redirect handling, stop conditions, pause/resume, step, and cancellation.
+The runner executes checked requests in order with retries, redirect handling, stop conditions, pause/resume, step, and cancellation. Runner redirect following is controlled separately from Workbench Send, and redirect hops are recorded as evidence under the logical execution rather than as queue items. Fragments are stripped before the next request is built; body-preserving redirects keep authored entity metadata, while POST-to-GET redirects drop body and entity headers.
 
 ### 2.5 OAuth2 Token Management
 
@@ -320,7 +320,7 @@ BurpExtender
 3. Apply request and variable mutations.
 4. Resolve variables, inherited auth, auth/runtime mappings, and required OAuth2 material.
 5. Build the final HTTP request.
-6. Send the request.
+6. Send the request. Workbench Send's Follow redirects control lives in the Send dropdown and applies only to that send.
 7. Run post-response and test scripts.
 8. Merge supported persisted mutations.
 9. Update Workbench details, History, and Diagnostics.
@@ -330,7 +330,7 @@ BurpExtender
 1. Runner queue is created from checked requests.
 2. Each request passes through the same shared pipeline as Workbench Send.
 3. Runner-specific flow control can skip, stop, step, or advance to the next request.
-4. Execution entries are recorded into the Runner execution table and History.
+4. Execution entries are recorded into the Runner execution table and History. Final stop-on-status evaluation uses the final response after redirect handling.
 
 ### 4.4 OAuth2 Flow
 

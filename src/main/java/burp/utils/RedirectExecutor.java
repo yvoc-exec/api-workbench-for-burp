@@ -301,15 +301,20 @@ public class RedirectExecutor {
             if (resolved.getHost() == null || resolved.getHost().isBlank()) {
                 throw new IllegalArgumentException("Invalid redirect target");
             }
-            if (resolved.getUserInfo() != null || resolved.getFragment() != null) {
+            if (resolved.getUserInfo() != null) {
+                throw new IllegalArgumentException("Invalid redirect target");
+            }
+            int port = resolved.getPort();
+            if (port < -1 || port == 0 || port > 65535) {
                 throw new IllegalArgumentException("Invalid redirect target");
             }
             String path = resolved.getRawPath();
             if (path != null && !path.isEmpty() && !path.startsWith("/")) {
                 throw new IllegalArgumentException("Invalid redirect target");
             }
-            return new URI(resolved.getScheme(), resolved.getUserInfo(), resolved.getHost(), resolved.getPort(),
-                    path == null || path.isBlank() ? "/" : path, resolved.getRawQuery(), null);
+            String query = resolved.getRawQuery();
+            return new URI(resolved.getScheme(), null, resolved.getHost(), port,
+                    path == null || path.isBlank() ? "/" : path, query, null);
         } catch (URISyntaxException e) {
             throw new IllegalArgumentException("Invalid redirect target", e);
         }
@@ -474,14 +479,19 @@ public class RedirectExecutor {
                                                   String targetOrigin) {
         RawMessage message = RawMessage.parse(currentRaw, currentRequest);
         String nextMethod = nextMethod(message.method, statusCode);
-        boolean preserveBody = shouldPreserveBody(statusCode, nextMethod);
-        byte[] body = preserveBody ? message.body : new byte[0];
+        boolean methodChangedToBodyless = "GET".equalsIgnoreCase(nextMethod) || "HEAD".equalsIgnoreCase(nextMethod);
+        boolean bodyMustBeDropped =
+                methodChangedToBodyless
+                        || ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(message.method))
+                        || (statusCode == 303 && !"HEAD".equalsIgnoreCase(message.method));
+        boolean preserveBody = !bodyMustBeDropped;
+        byte[] body = preserveBody && message.body != null ? message.body : new byte[0];
+        boolean outgoingHasBody = body != null && body.length > 0;
         HeaderPolicyResult headerPolicy = applyHeaderPolicy(message.headers, sourceOrigin, targetOrigin, targetUri, policy);
         List<HeaderLine> headers = new ArrayList<>(headerPolicy.headers);
         removeHeaderIgnoreCase(headers, "Host");
         removeHeaderIgnoreCase(headers, "Content-Length");
         removeHeaderIgnoreCase(headers, "Transfer-Encoding");
-        removeHeaderIgnoreCase(headers, "Content-Type");
         removeHeaderIgnoreCase(headers, "Connection");
         removeHeaderIgnoreCase(headers, "Proxy-Connection");
         removeHeaderIgnoreCase(headers, "Keep-Alive");
@@ -493,15 +503,18 @@ public class RedirectExecutor {
             removeHeaderIgnoreCase(headers, nominated);
         }
 
+        if (bodyMustBeDropped) {
+            removeDroppedBodyHeaders(headers);
+        }
+
         String requestTarget = requestTarget(targetUri);
         String hostHeader = hostHeaderValue(targetUri);
         headers.add(0, new HeaderLine("Host", hostHeader));
-        if (body.length > 0) {
+        if (outgoingHasBody) {
             headers.add(new HeaderLine("Content-Length", String.valueOf(body.length)));
         } else {
             removeHeaderIgnoreCase(headers, "Content-Length");
             removeHeaderIgnoreCase(headers, "Transfer-Encoding");
-            removeHeaderIgnoreCase(headers, "Content-Type");
         }
 
         StringBuilder raw = new StringBuilder();
@@ -521,6 +534,15 @@ public class RedirectExecutor {
         HttpService service = HttpService.httpService(targetUri.getHost(), targetUri.getPort() == -1 ? defaultPort(targetUri.getScheme()) : targetUri.getPort(), "https".equalsIgnoreCase(targetUri.getScheme()));
         HttpRequest nextRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawBytes));
         return new RedirectBuild(nextRequest, rawBytes, headerPolicy.forwardedSensitiveHeaderNames, headerPolicy.strippedSensitiveHeaderNames);
+    }
+
+    private static void removeDroppedBodyHeaders(List<HeaderLine> headers) {
+        removeHeaderIgnoreCase(headers, "Content-Type");
+        removeHeaderIgnoreCase(headers, "Content-Encoding");
+        removeHeaderIgnoreCase(headers, "Content-Language");
+        removeHeaderIgnoreCase(headers, "Content-Location");
+        removeHeaderIgnoreCase(headers, "Content-Disposition");
+        removeHeaderIgnoreCase(headers, "Digest");
     }
 
     private static HeaderPolicyResult applyHeaderPolicy(List<HeaderLine> headers,
@@ -595,13 +617,6 @@ public class RedirectExecutor {
                 || "te".equals(lower)
                 || "trailer".equals(lower)
                 || "upgrade".equals(lower);
-    }
-
-    private static boolean shouldPreserveBody(int statusCode, String nextMethod) {
-        if (statusCode == 307 || statusCode == 308) {
-            return true;
-        }
-        return !"GET".equalsIgnoreCase(nextMethod) && !"HEAD".equalsIgnoreCase(nextMethod);
     }
 
     private static String nextMethod(String currentMethod, int statusCode) {

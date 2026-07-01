@@ -3,12 +3,16 @@ package burp.history;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectHop;
+import burp.models.RedirectTerminationReason;
+import burp.models.WorkspaceState;
 import burp.models.RunnerResult;
 import burp.scripts.ExecutionSource;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
 import burp.testsupport.HistoryTestFixtures;
+import burp.utils.WorkspaceStateJson;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -217,6 +221,71 @@ class HistoryEntryCompatibilityTest {
         assertThat(copy.requestSnapshot.preferredRawRequestText()).isEqualTo("raw");
         copy.requestSnapshot.rawRequestSentText = "changed";
         assertThat(entry.requestSnapshot.rawRequestSentText).isEqualTo("raw");
+    }
+
+    @Test
+    void legacyHistoryJsonLoadsWithoutRedirectFieldsAndDefaultsRedirectMetadataSafely() {
+        String json = """
+                {
+                  "version": 1,
+                  "historyEntries": [{
+                    "id": "hist-legacy",
+                    "timestamp": "2026-06-15T01:30:00Z",
+                    "source": "WORKBENCH",
+                    "requestName": "Legacy",
+                    "requestSnapshot": {
+                      "method": "POST",
+                      "urlTemplate": "https://api.example.test/legacy"
+                    },
+                    "responseSnapshot": {
+                      "statusCode": 200,
+                      "reasonPhrase": "OK"
+                    }
+                  }]
+                }
+                """;
+
+        WorkspaceState state = WorkspaceStateJson.fromJson(json);
+        HistoryEntry entry = state.historyEntries.get(0);
+
+        assertThat(entry.redirectsEnabled).isNull();
+        assertThat(entry.redirectTerminationReason).isEqualTo(RedirectTerminationReason.NONE);
+        assertThat(entry.redirectHops).isNotNull().isEmpty();
+    }
+
+    @Test
+    void copyOfDeepCopiesRedirectHopEvidenceAndBinaryPayloads() {
+        HistoryEntry entry = new HistoryEntry();
+        entry.redirectTerminationReason = RedirectTerminationReason.LOOP_DETECTED;
+        entry.redirectHops = new java.util.ArrayList<>();
+        RedirectHop hop = new RedirectHop();
+        hop.hopNumber = 1;
+        hop.sourceUrl = "https://api.example.test/start";
+        hop.targetUrl = "https://api.example.test/next";
+        hop.rawRequestBytes = new byte[]{1, 2, 3};
+        hop.responseBody = new byte[]{4, 5, 6};
+        hop.forwardedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Authorization"));
+        hop.strippedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Proxy-Authorization"));
+        entry.redirectHops.add(hop);
+
+        HistoryEntry copy = HistoryEntry.copyOf(entry);
+        assertThat(copy).isNotSameAs(entry);
+        assertThat(copy.redirectHops).hasSize(1);
+        assertThat(copy.redirectHops.get(0)).isNotSameAs(hop);
+        assertThat(copy.redirectHops.get(0).rawRequestBytes).isEqualTo(new byte[]{1, 2, 3});
+        assertThat(copy.redirectHops.get(0).responseBody).isEqualTo(new byte[]{4, 5, 6});
+        assertThat(copy.redirectHops.get(0).forwardedSensitiveHeaderNames).containsExactly("Authorization");
+        assertThat(copy.redirectHops.get(0).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
+
+        hop.rawRequestBytes[0] = 9;
+        hop.responseBody[0] = 8;
+        hop.forwardedSensitiveHeaderNames.add("Cookie");
+        hop.strippedSensitiveHeaderNames.add("X-Secret");
+
+        assertThat(copy.redirectHops.get(0).rawRequestBytes).isEqualTo(new byte[]{1, 2, 3});
+        assertThat(copy.redirectHops.get(0).responseBody).isEqualTo(new byte[]{4, 5, 6});
+        assertThat(copy.redirectHops.get(0).forwardedSensitiveHeaderNames).containsExactly("Authorization");
+        assertThat(copy.redirectHops.get(0).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
     }
 
     @Test

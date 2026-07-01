@@ -1,14 +1,20 @@
 package burp.utils;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryReplayRedirectMode;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.RedirectCrossOriginMode;
+import burp.models.RedirectPolicy;
+import burp.models.TrustedRedirectRule;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
+import burp.testsupport.ImporterPanelTestSupport;
+import burp.ui.RequestEditorPanel;
 import burp.ui.tree.RequestTreeMutationService;
 import burp.testsupport.HistoryTestFixtures;
 import com.google.gson.JsonParser;
@@ -91,6 +97,78 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void redirectSettingsRoundTripAndRestoreDefaultsSafely() throws Exception {
+        WorkspaceState state = new WorkspaceState();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        state.collections = new java.util.ArrayList<>(List.of(collection));
+        state.workbenchFollowRedirects = false;
+        state.runnerFollowRedirects = true;
+        state.historyReplayRedirectMode = HistoryReplayRedirectMode.ALWAYS_FOLLOW.name();
+        RedirectPolicy policy = new RedirectPolicy();
+        policy.maxHops = 25;
+        policy.crossOriginMode = RedirectCrossOriginMode.TRUSTED_ORIGINS_ONLY;
+        policy.additionalSensitiveHeaderNames = new java.util.ArrayList<>(List.of(" X-Api-Secret ", "x-api-secret", ""));
+        TrustedRedirectRule rule = new TrustedRedirectRule();
+        rule.sourceOrigin = "https://api.example.test:443";
+        rule.targetOrigin = "https://auth.example.test:443";
+        rule.allowedHeaderNames = new java.util.ArrayList<>(List.of(" Authorization ", "Authorization", "Proxy-Authorization"));
+        policy.trustedRules = new java.util.ArrayList<>(List.of(rule));
+        state.redirectPolicy = policy;
+
+        WorkspaceState copy = WorkspaceState.copyOf(state);
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(copy.workbenchFollowRedirects).isFalse();
+        assertThat(copy.runnerFollowRedirects).isTrue();
+        assertThat(copy.historyReplayRedirectMode).isEqualTo(HistoryReplayRedirectMode.ALWAYS_FOLLOW.name());
+        assertThat(copy.redirectPolicy).isNotSameAs(state.redirectPolicy);
+        assertThat(copy.redirectPolicy.maxHops).isEqualTo(25);
+        assertThat(copy.redirectPolicy.crossOriginMode).isEqualTo(RedirectCrossOriginMode.TRUSTED_ORIGINS_ONLY);
+        assertThat(copy.redirectPolicy.additionalSensitiveHeaderNames).containsExactly(" X-Api-Secret ", "x-api-secret", "");
+        assertThat(copy.redirectPolicy.trustedRules).hasSize(1);
+        assertThat(copy.redirectPolicy.trustedRules.get(0)).isNotSameAs(rule);
+        assertThat(copy.redirectPolicy.trustedRules.get(0).allowedHeaderNames).containsExactly(" Authorization ", "Authorization", "Proxy-Authorization");
+
+        state.redirectPolicy.maxHops = 7;
+        state.redirectPolicy.additionalSensitiveHeaderNames.add("later");
+        state.redirectPolicy.trustedRules.get(0).allowedHeaderNames.add("X-Later");
+
+        assertThat(copy.redirectPolicy.maxHops).isEqualTo(25);
+        assertThat(copy.redirectPolicy.additionalSensitiveHeaderNames).containsExactly(" X-Api-Secret ", "x-api-secret", "");
+        assertThat(copy.redirectPolicy.trustedRules.get(0).allowedHeaderNames)
+                .containsExactly(" Authorization ", "Authorization", "Proxy-Authorization");
+
+        assertThat(parsed.workbenchFollowRedirects).isFalse();
+        assertThat(parsed.runnerFollowRedirects).isTrue();
+        assertThat(parsed.historyReplayRedirectMode).isEqualTo(HistoryReplayRedirectMode.ALWAYS_FOLLOW.name());
+        assertThat(parsed.redirectPolicy.maxHops).isEqualTo(25);
+        assertThat(parsed.redirectPolicy.crossOriginMode).isEqualTo(RedirectCrossOriginMode.TRUSTED_ORIGINS_ONLY);
+        assertThat(parsed.redirectPolicy.additionalSensitiveHeaderNames).containsExactly(" X-Api-Secret ", "x-api-secret", "");
+        assertThat(parsed.redirectPolicy.trustedRules).hasSize(1);
+        assertThat(parsed.redirectPolicy.trustedRules.get(0).allowedHeaderNames)
+                .containsExactly(" Authorization ", "Authorization", "Proxy-Authorization");
+
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(parsed);
+
+        RequestEditorPanel requestEditor = (RequestEditorPanel) ImporterPanelTestSupport.requestEditor(bundle.panel).raw();
+        javax.swing.JCheckBox runnerFollowRedirectsBox = ImporterPanelTestSupport.getField(bundle.panel, "followRedirectsBox");
+        RedirectPolicy restoredPolicy = ImporterPanelTestSupport.getField(bundle.panel, "sharedRedirectPolicy");
+        HistoryReplayRedirectMode replayMode = ImporterPanelTestSupport.getField(bundle.panel, "historyReplayRedirectMode");
+
+        assertThat(requestEditor.isFollowRedirectsSelected()).isFalse();
+        assertThat(runnerFollowRedirectsBox.isSelected()).isTrue();
+        assertThat(replayMode).isEqualTo(HistoryReplayRedirectMode.ALWAYS_FOLLOW);
+        assertThat(restoredPolicy.maxHops).isEqualTo(20);
+        assertThat(restoredPolicy.crossOriginMode).isEqualTo(RedirectCrossOriginMode.TRUSTED_ORIGINS_ONLY);
+        assertThat(restoredPolicy.additionalSensitiveHeaderNames).containsExactly("X-Api-Secret");
+        assertThat(restoredPolicy.trustedRules).hasSize(1);
+        assertThat(restoredPolicy.trustedRules.get(0).allowedHeaderNames).containsExactly("Authorization");
+    }
+
+    @Test
     void legacyWorkspaceWithoutEnvironmentsStillLoads() {
         String json = """
                 {
@@ -107,6 +185,34 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.collections).hasSize(1);
         assertThat(parsed.environments).isEmpty();
         assertThat(parsed.activeEnvironmentId).isNull();
+    }
+
+    @Test
+    void legacyWorkspaceDefaultsRedirectSettingsWhenRestored() throws Exception {
+        String json = """
+                {
+                  "version": 1,
+                  "collections": [{
+                    "name": "Legacy",
+                    "requests": []
+                  }]
+                }
+                """;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        bundle.panel.restoreWorkspaceState(parsed);
+
+        RequestEditorPanel requestEditor = (RequestEditorPanel) ImporterPanelTestSupport.requestEditor(bundle.panel).raw();
+        javax.swing.JCheckBox runnerFollowRedirectsBox = ImporterPanelTestSupport.getField(bundle.panel, "followRedirectsBox");
+        RedirectPolicy restoredPolicy = ImporterPanelTestSupport.getField(bundle.panel, "sharedRedirectPolicy");
+        HistoryReplayRedirectMode replayMode = ImporterPanelTestSupport.getField(bundle.panel, "historyReplayRedirectMode");
+
+        assertThat(requestEditor.isFollowRedirectsSelected()).isTrue();
+        assertThat(runnerFollowRedirectsBox.isSelected()).isTrue();
+        assertThat(replayMode).isEqualTo(HistoryReplayRedirectMode.RECORDED);
+        assertThat(restoredPolicy.maxHops).isEqualTo(10);
+        assertThat(restoredPolicy.crossOriginMode).isEqualTo(RedirectCrossOriginMode.STRIP_SENSITIVE);
     }
 
     @Test
