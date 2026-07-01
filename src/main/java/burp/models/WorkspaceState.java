@@ -32,6 +32,7 @@ public class WorkspaceState {
     public Integer workbenchDelayMs;
     public Boolean workbenchDebugRawRequest;
     public Integer workbenchDetailTabIndex;
+    public Boolean workbenchFollowRedirects;
     public Integer runnerDelayMs;
     public Integer runnerRetries;
     public Boolean runnerStopOnError;
@@ -42,6 +43,8 @@ public class WorkspaceState {
     public Boolean runnerFollowRedirects;
     public Boolean runnerDebugRawRequest;
     public Integer runnerDetailTabIndex;
+    public String historyReplayRedirectMode;
+    public RedirectPolicy redirectPolicy;
     public List<String> runnerQueuedRequestIdentityKeys = new ArrayList<>();
 
     public static WorkspaceState fromCollections(List<ApiCollection> source) {
@@ -78,6 +81,7 @@ public class WorkspaceState {
         copy.workbenchDelayMs = source.workbenchDelayMs;
         copy.workbenchDebugRawRequest = source.workbenchDebugRawRequest;
         copy.workbenchDetailTabIndex = source.workbenchDetailTabIndex;
+        copy.workbenchFollowRedirects = source.workbenchFollowRedirects;
         copy.runnerDelayMs = source.runnerDelayMs;
         copy.runnerRetries = source.runnerRetries;
         copy.runnerStopOnError = source.runnerStopOnError;
@@ -88,6 +92,8 @@ public class WorkspaceState {
         copy.runnerFollowRedirects = source.runnerFollowRedirects;
         copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
+        copy.historyReplayRedirectMode = source.historyReplayRedirectMode;
+        copy.redirectPolicy = RedirectPolicy.copyOf(source.redirectPolicy);
         copy.runnerQueuedRequestIdentityKeys = source.runnerQueuedRequestIdentityKeys != null
                 ? new ArrayList<>(source.runnerQueuedRequestIdentityKeys)
                 : new ArrayList<>();
@@ -191,146 +197,22 @@ public class WorkspaceState {
         copy.description = src.description;
         copy.editorMaterialized = src.editorMaterialized;
         copy.buildMode = src.buildMode;
-        copy.suppressedAutoHeaders = src.suppressedAutoHeaders != null
-                ? new java.util.LinkedHashSet<>(src.suppressedAutoHeaders)
-                : new java.util.LinkedHashSet<>();
-        copy.disabled = src.disabled;
-        copy.sequenceOrder = src.sequenceOrder;
+        copy.authOverrideMode = src.authOverrideMode;
         copy.authInherited = src.authInherited;
         copy.authExplicitlyDisabled = src.authExplicitlyDisabled;
         copy.authSource = src.authSource;
-        copy.authOverrideMode = src.authOverrideMode;
-        copy.explicitAuth = copyAuth(src.explicitAuth);
         copy.auth = copyAuth(src.auth);
+        copy.explicitAuth = copyAuth(src.explicitAuth);
         copy.headers = copyHeaders(src.headers);
         copy.body = copyBody(src.body);
         copy.variables = copyVariables(src.variables);
-        copy.preRequestScripts = copyScripts(src.preRequestScripts);
-        copy.postResponseScripts = copyScripts(src.postResponseScripts);
         copy.scriptBlocks = copyScriptBlocks(src.scriptBlocks);
+        copy.preRequestScripts = copyRequestScripts(src.preRequestScripts);
+        copy.postResponseScripts = copyRequestScripts(src.postResponseScripts);
+        copy.suppressedAutoHeaders = src.suppressedAutoHeaders != null ? new java.util.LinkedHashSet<>(src.suppressedAutoHeaders) : new java.util.LinkedHashSet<>();
+        copy.sequenceOrder = src.sequenceOrder;
+        copy.disabled = src.disabled;
         return copy;
-    }
-
-    private static Map<String, ApiRequest.Auth> copyAuthMap(Map<String, ApiRequest.Auth> src) {
-        Map<String, ApiRequest.Auth> out = new LinkedHashMap<>();
-        if (src == null) {
-            return out;
-        }
-        for (Map.Entry<String, ApiRequest.Auth> entry : src.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(entry.getKey(), copyAuth(entry.getValue()));
-            }
-        }
-        return out;
-    }
-
-    private static Map<String, Map<String, String>> copyNestedStringMap(Map<String, Map<String, String>> src) {
-        Map<String, Map<String, String>> out = new LinkedHashMap<>();
-        if (src == null) {
-            return out;
-        }
-        for (Map.Entry<String, Map<String, String>> entry : src.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(entry.getKey(), entry.getValue() != null
-                        ? new LinkedHashMap<>(entry.getValue())
-                        : new LinkedHashMap<>());
-            }
-        }
-        return out;
-    }
-
-    private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> src) {
-        List<ApiRequest.Header> out = new ArrayList<>();
-        if (src == null) {
-            return out;
-        }
-        for (ApiRequest.Header header : src) {
-            if (header == null) {
-                out.add(null);
-                continue;
-            }
-            out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
-        }
-        return out;
-    }
-
-    private static ApiRequest.Body copyBody(ApiRequest.Body src) {
-        if (src == null) {
-            return null;
-        }
-        ApiRequest.Body copy = new ApiRequest.Body();
-        copy.mode = src.mode;
-        copy.raw = src.raw;
-        copy.contentType = src.contentType;
-        copy.formdata = copyFormFields(src.formdata);
-        copy.urlencoded = copyFormFields(src.urlencoded);
-        copy.graphql = copyGraphQL(src.graphql);
-        return copy;
-    }
-
-    private static List<ApiRequest.Body.FormField> copyFormFields(List<ApiRequest.Body.FormField> src) {
-        List<ApiRequest.Body.FormField> out = new ArrayList<>();
-        if (src == null) {
-            return out;
-        }
-        for (ApiRequest.Body.FormField field : src) {
-            if (field == null) {
-                out.add(null);
-                continue;
-            }
-            ApiRequest.Body.FormField copy = new ApiRequest.Body.FormField(field.key, field.value);
-            copy.type = field.type;
-            copy.fileUpload = field.fileUpload;
-            copy.filePath = field.filePath;
-            copy.disabled = field.disabled;
-            out.add(copy);
-        }
-        return out;
-    }
-
-    private static ApiRequest.Body.GraphQL copyGraphQL(ApiRequest.Body.GraphQL src) {
-        if (src == null) {
-            return null;
-        }
-        ApiRequest.Body.GraphQL copy = new ApiRequest.Body.GraphQL();
-        copy.query = src.query;
-        copy.variables = src.variables;
-        return copy;
-    }
-
-    private static List<ApiRequest.Variable> copyVariables(List<ApiRequest.Variable> src) {
-        List<ApiRequest.Variable> out = new ArrayList<>();
-        if (src == null) {
-            return out;
-        }
-        for (ApiRequest.Variable variable : src) {
-            if (variable == null) {
-                out.add(null);
-                continue;
-            }
-            ApiRequest.Variable copy = new ApiRequest.Variable();
-            copy.key = variable.key;
-            copy.value = variable.value;
-            copy.type = variable.type;
-            copy.enabled = variable.enabled;
-            out.add(copy);
-        }
-        return out;
-    }
-
-    private static List<ApiRequest.Script> copyScripts(List<ApiRequest.Script> src) {
-        List<ApiRequest.Script> out = new ArrayList<>();
-        if (src == null) {
-            return out;
-        }
-        for (ApiRequest.Script script : src) {
-            if (script == null) {
-                out.add(null);
-                continue;
-            }
-            out.add(new ApiRequest.Script(script.type, script.exec));
-        }
-        return out;
     }
 
     private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> src) {
@@ -347,16 +229,124 @@ public class WorkspaceState {
         return out;
     }
 
+    private static List<ApiRequest.Script> copyRequestScripts(List<ApiRequest.Script> src) {
+        List<ApiRequest.Script> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (ApiRequest.Script script : src) {
+            if (script == null) {
+                continue;
+            }
+            ApiRequest.Script copy = new ApiRequest.Script(script.type, script.exec);
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private static List<ApiRequest.Header> copyHeaders(List<ApiRequest.Header> src) {
+        List<ApiRequest.Header> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (ApiRequest.Header header : src) {
+            if (header == null) {
+                continue;
+            }
+            out.add(new ApiRequest.Header(header.key, header.value, header.disabled));
+        }
+        return out;
+    }
+
+    private static Map<String, ApiRequest.Auth> copyAuthMap(Map<String, ApiRequest.Auth> src) {
+        Map<String, ApiRequest.Auth> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, ApiRequest.Auth> entry : src.entrySet()) {
+            out.put(entry.getKey(), copyAuth(entry.getValue()));
+        }
+        return out;
+    }
+
     private static Map<String, List<ScriptBlock>> copyFolderScriptBlocks(Map<String, List<ScriptBlock>> src) {
         Map<String, List<ScriptBlock>> out = new LinkedHashMap<>();
         if (src == null) {
             return out;
         }
         for (Map.Entry<String, List<ScriptBlock>> entry : src.entrySet()) {
-            if (entry.getKey() == null) {
-                continue;
-            }
             out.put(entry.getKey(), copyScriptBlocks(entry.getValue()));
+        }
+        return out;
+    }
+
+    private static List<ApiRequest.Variable> copyVariables(List<ApiRequest.Variable> src) {
+        List<ApiRequest.Variable> out = new ArrayList<>();
+        if (src == null) {
+            return out;
+        }
+        for (ApiRequest.Variable variable : src) {
+            if (variable != null) {
+                ApiRequest.Variable copy = new ApiRequest.Variable();
+                copy.key = variable.key;
+                copy.value = variable.value;
+                copy.type = variable.type;
+                copy.enabled = variable.enabled;
+                out.add(copy);
+            }
+        }
+        return out;
+    }
+
+    private static ApiRequest.Body copyBody(ApiRequest.Body source) {
+        if (source == null) {
+            return null;
+        }
+        ApiRequest.Body copy = new ApiRequest.Body();
+        copy.mode = source.mode;
+        copy.raw = source.raw;
+        copy.contentType = source.contentType;
+        if (source.formdata != null) {
+            for (ApiRequest.Body.FormField field : source.formdata) {
+                if (field == null) {
+                    continue;
+                }
+                ApiRequest.Body.FormField fieldCopy = new ApiRequest.Body.FormField(field.key, field.value);
+                fieldCopy.type = field.type;
+                fieldCopy.fileUpload = field.fileUpload;
+                fieldCopy.filePath = field.filePath;
+                fieldCopy.disabled = field.disabled;
+                copy.formdata.add(fieldCopy);
+            }
+        }
+        if (source.urlencoded != null) {
+            for (ApiRequest.Body.FormField field : source.urlencoded) {
+                if (field == null) {
+                    continue;
+                }
+                ApiRequest.Body.FormField fieldCopy = new ApiRequest.Body.FormField(field.key, field.value);
+                fieldCopy.type = field.type;
+                fieldCopy.fileUpload = field.fileUpload;
+                fieldCopy.filePath = field.filePath;
+                fieldCopy.disabled = field.disabled;
+                copy.urlencoded.add(fieldCopy);
+            }
+        }
+        if (source.graphql != null) {
+            copy.graphql = new ApiRequest.Body.GraphQL();
+            copy.graphql.query = source.graphql.query;
+            copy.graphql.variables = source.graphql.variables;
+        }
+        return copy;
+    }
+
+    private static Map<String, Map<String, String>> copyNestedStringMap(Map<String, Map<String, String>> src) {
+        Map<String, Map<String, String>> out = new LinkedHashMap<>();
+        if (src == null) {
+            return out;
+        }
+        for (Map.Entry<String, Map<String, String>> entry : src.entrySet()) {
+            out.put(entry.getKey(), entry.getValue() != null ? new LinkedHashMap<>(entry.getValue()) : new LinkedHashMap<>());
         }
         return out;
     }

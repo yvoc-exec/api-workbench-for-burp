@@ -17,6 +17,7 @@ import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
 import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
+import burp.models.RedirectPolicy;
 import burp.utils.SharedRequestPipeline;
 import burp.diagnostics.DiagnosticEvent;
 import burp.diagnostics.DiagnosticOperation;
@@ -50,6 +51,7 @@ public class CollectionRunner {
     private int delayMs = 200;
     private int maxRetries = 1;
     private boolean followRedirects = true;
+    private RedirectPolicy redirectPolicy = RedirectPolicy.defaults();
     private boolean debugRawRequest = false;
     private volatile RunnerStopConditions stopConditions = new RunnerStopConditions();
     private final Object pauseLock = new Object();
@@ -63,6 +65,7 @@ public class CollectionRunner {
     private volatile Future<?> activeFuture;
     private volatile RunnerTerminationResult lastTerminationResult;
     private volatile RunLifecycle currentRunLifecycle;
+    private java.util.function.Supplier<ExecutorService> executorServiceFactory = Executors::newSingleThreadExecutor;
     private Function<ApiCollection, Map<String, String>> runtimeOverlayProvider = null;
     private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
@@ -101,6 +104,17 @@ public class CollectionRunner {
         return copyStopConditions(ensureStopConditions());
     }
     public void setFollowRedirects(boolean followRedirects) { this.followRedirects = followRedirects; }
+    public void setRedirectPolicy(RedirectPolicy policy) {
+        this.redirectPolicy = RedirectPolicy.copyOf(policy);
+        if (this.redirectPolicy == null) {
+            this.redirectPolicy = RedirectPolicy.defaults();
+        }
+        this.redirectPolicy.normalize();
+    }
+    public RedirectPolicy getRedirectPolicy() { return RedirectPolicy.copyOf(redirectPolicy); }
+    void setExecutorServiceFactory(java.util.function.Supplier<ExecutorService> factory) {
+        this.executorServiceFactory = factory != null ? factory : Executors::newSingleThreadExecutor;
+    }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
     public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
         this.runtimeOverlayProvider = provider;
@@ -201,7 +215,11 @@ public class CollectionRunner {
         List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
         RunnerDependentRequestExecutor dependentRequestExecutor = new RunnerDependentRequestExecutor(sourceCollections, reqToColMap, colMap);
 
-        ExecutorService executor = Executors.newSingleThreadExecutor();
+        ExecutorService chosenExecutor = executorServiceFactory != null ? executorServiceFactory.get() : null;
+        if (chosenExecutor == null) {
+            chosenExecutor = Executors.newSingleThreadExecutor();
+        }
+        final ExecutorService executor = chosenExecutor;
         activeExecutor = executor;
         AtomicInteger failedResultCount = new AtomicInteger();
         AtomicInteger completedQueuedCount = new AtomicInteger();
@@ -559,13 +577,13 @@ public class CollectionRunner {
                         }
                     }
                 } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
                 } else if (activeEnvironment == null) {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
                 } else if (overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
+                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
                 }
                 if (exec == null) {
                     result.success = false;
@@ -602,6 +620,11 @@ public class CollectionRunner {
                     result.errorMessage = hasScriptErrors ? String.join("; ", result.scriptErrors) : null;
                     result.statusCode = 0;
                     result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
+                    result.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : result.requestUrl;
+                    result.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : result.requestUrl;
+                    result.redirectsEnabled = exec.redirectsEnabled;
+                    result.redirectTerminationReason = exec.redirectTerminationReason;
+                    result.redirectHops = copyRedirectHops(exec.redirectHops);
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
                     result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
@@ -615,9 +638,10 @@ public class CollectionRunner {
                     return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
 
-                if (exec.response != null && exec.response.response() != null) {
+                if (exec.response != null && exec.response.response() != null && exec.success) {
                     var response = exec.response.response();
                     result.success = exec.success;
+                    result.errorMessage = exec.errorMessage;
                     result.statusCode = response.statusCode();
                     result.responseSize = response.body().length();
                     result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
@@ -643,6 +667,11 @@ public class CollectionRunner {
 
                     // Store request details for result pane
                     result.requestUrl = exec.resolvedUrl != null ? exec.resolvedUrl : req.url;
+                    result.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : result.requestUrl;
+                    result.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : result.requestUrl;
+                    result.redirectsEnabled = exec.redirectsEnabled;
+                    result.redirectTerminationReason = exec.redirectTerminationReason;
+                    result.redirectHops = copyRedirectHops(exec.redirectHops);
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
                     result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
@@ -679,6 +708,11 @@ public class CollectionRunner {
                 } else {
                     result.success = false;
                     result.errorMessage = exec.errorMessage != null ? exec.errorMessage : "No response received";
+                    result.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : exec.resolvedUrl;
+                    result.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : exec.resolvedUrl;
+                    result.redirectsEnabled = exec.redirectsEnabled;
+                    result.redirectTerminationReason = exec.redirectTerminationReason;
+                    result.redirectHops = copyRedirectHops(exec.redirectHops);
                     if (!cancelled && !Thread.currentThread().isInterrupted()) {
                         fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
                     }
@@ -751,6 +785,11 @@ public class CollectionRunner {
             snapshot.host = source.host;
             snapshot.path = source.path;
             snapshot.requestUrl = source.requestUrl;
+            snapshot.initialResolvedUrl = source.initialResolvedUrl;
+            snapshot.finalResolvedUrl = source.finalResolvedUrl;
+            snapshot.redirectsEnabled = source.redirectsEnabled;
+            snapshot.redirectTerminationReason = source.redirectTerminationReason;
+            snapshot.redirectHops = copyRedirectHops(source.redirectHops);
             snapshot.dependentExecution = source.dependentExecution;
             snapshot.adHocExecution = source.adHocExecution;
             snapshot.parentRequestName = source.parentRequestName;
@@ -764,6 +803,8 @@ public class CollectionRunner {
             snapshot.requestId = req.id;
             snapshot.method = req.method != null ? req.method.toUpperCase() : "GET";
             snapshot.requestUrl = req.url;
+            snapshot.initialResolvedUrl = req.url;
+            snapshot.finalResolvedUrl = req.url;
             snapshot.path = req.path;
         }
         if (col != null && snapshot.collectionName == null) {
@@ -828,6 +869,20 @@ public class CollectionRunner {
         if (exec.extractedVars != null && !exec.extractedVars.isEmpty()) {
             result.extractedVariables.putAll(exec.extractedVars);
         }
+    }
+
+    static List<RedirectHop> copyRedirectHops(List<RedirectHop> hops) {
+        List<RedirectHop> copy = new ArrayList<>();
+        if (hops == null) {
+            return copy;
+        }
+        for (RedirectHop hop : hops) {
+            RedirectHop hopCopy = RedirectHop.copyOf(hop);
+            if (hopCopy != null) {
+                copy.add(hopCopy);
+            }
+        }
+        return copy;
     }
 
     static void copyScriptOutput(RunnerResult result, ExecutionResult exec) {
@@ -1498,6 +1553,11 @@ public class CollectionRunner {
             snapshot.path = source.path;
             snapshot.method = source.method;
             snapshot.requestUrl = source.requestUrl;
+            snapshot.initialResolvedUrl = source.initialResolvedUrl;
+            snapshot.finalResolvedUrl = source.finalResolvedUrl;
+            snapshot.redirectsEnabled = source.redirectsEnabled;
+            snapshot.redirectTerminationReason = source.redirectTerminationReason;
+            snapshot.redirectHops = copyRedirectHops(source.redirectHops);
             snapshot.requestHeaders = source.requestHeaders;
             snapshot.requestBody = source.requestBody;
             snapshot.success = source.success;
@@ -1541,6 +1601,11 @@ public class CollectionRunner {
             if (exec.resolvedUrl != null) {
                 snapshot.requestUrl = exec.resolvedUrl;
             }
+            snapshot.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : snapshot.initialResolvedUrl;
+            snapshot.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : snapshot.finalResolvedUrl;
+            snapshot.redirectsEnabled = exec.redirectsEnabled;
+            snapshot.redirectTerminationReason = exec.redirectTerminationReason;
+            snapshot.redirectHops = copyRedirectHops(exec.redirectHops);
             if (exec.assertions != null && !exec.assertions.isEmpty()) {
                 snapshot.assertions = new ArrayList<>(exec.assertions);
             }

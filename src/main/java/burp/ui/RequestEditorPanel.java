@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.*;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Postman-like request editor panel for the Workbench.
@@ -85,6 +86,9 @@ public class RequestEditorPanel extends JPanel {
     private SendActionListener sendActionListener;
     private JButton sendBtn;
     private JButton sendDropdownBtn;
+    private boolean followRedirectsSelected = true;
+    private Consumer<Boolean> followRedirectsChangeListener;
+    private Runnable redirectPolicyAction;
 
     public interface VariableActionBridge {
         VariableHoverInfo inspect(String key);
@@ -173,10 +177,21 @@ public class RequestEditorPanel extends JPanel {
             JPopupMenu menu = new JPopupMenu();
             JMenuItem sendOnlyItem = new JMenuItem("Send");
             JMenuItem sendRepeaterItem = new JMenuItem("Send + Repeater");
+            JCheckBoxMenuItem followRedirectsItem = new JCheckBoxMenuItem("Follow redirects", followRedirectsSelected);
+            JMenuItem redirectPolicyItem = new JMenuItem("Redirect security policy...");
             sendOnlyItem.addActionListener(ev -> setSendModeLabel("Send"));
             sendRepeaterItem.addActionListener(ev -> setSendModeLabel("Send + Repeater"));
+            followRedirectsItem.addActionListener(ev -> setFollowRedirectsSelected(followRedirectsItem.isSelected()));
+            redirectPolicyItem.addActionListener(ev -> {
+                if (redirectPolicyAction != null) {
+                    redirectPolicyAction.run();
+                }
+            });
             menu.add(sendOnlyItem);
             menu.add(sendRepeaterItem);
+            menu.addSeparator();
+            menu.add(followRedirectsItem);
+            menu.add(redirectPolicyItem);
             menu.show(sendDropdownBtn, 0, sendDropdownBtn.getHeight());
         });
 
@@ -196,6 +211,25 @@ public class RequestEditorPanel extends JPanel {
 
     public void setSendActionListener(SendActionListener listener) {
         this.sendActionListener = listener;
+    }
+
+    public boolean isFollowRedirectsSelected() {
+        return followRedirectsSelected;
+    }
+
+    public void setFollowRedirectsSelected(boolean selected) {
+        this.followRedirectsSelected = selected;
+        if (followRedirectsChangeListener != null) {
+            followRedirectsChangeListener.accept(selected);
+        }
+    }
+
+    public void setFollowRedirectsChangeListener(Consumer<Boolean> listener) {
+        this.followRedirectsChangeListener = listener;
+    }
+
+    public void setRedirectPolicyAction(Runnable action) {
+        this.redirectPolicyAction = action;
     }
 
     public void setRequestBuilder(burp.utils.RequestBuilder requestBuilder) {

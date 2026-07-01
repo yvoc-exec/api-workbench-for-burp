@@ -247,7 +247,8 @@ public class UniversalImporter {
                 oauth2TokenSink,
                 runtimeVariableSink,
                 activeEnvironment,
-                burp.scripts.ExecutionSource.WORKBENCH_SEND);
+                burp.scripts.ExecutionSource.WORKBENCH_SEND,
+                RedirectPolicy.defaults());
     }
 
     public SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -258,12 +259,10 @@ public class UniversalImporter {
             SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
             EnvironmentProfile activeEnvironment,
-            burp.scripts.ExecutionSource executionSource) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource);
-        if (!exec.success) {
-            throw new Exception(exec.errorMessage != null ? exec.errorMessage : "Request failed");
-        }
-        return new SingleSendResult(
+            burp.scripts.ExecutionSource executionSource,
+            RedirectPolicy redirectPolicy) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, redirectPolicy);
+        SingleSendResult result = new SingleSendResult(
             exec.response,
             exec.builtRequest,
             exec.rawRequestText != null
@@ -276,6 +275,22 @@ public class UniversalImporter {
             exec.errorMessage,
             exec
         );
+        if (!exec.success) {
+            throw new RequestExecutionException(exec.errorMessage != null ? exec.errorMessage : "Request failed", exec, result);
+        }
+        return result;
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment,
+            burp.scripts.ExecutionSource executionSource) throws Exception {
+        return sendSingleRequestWithBuiltRequest(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, RedirectPolicy.defaults());
     }
 
     public static class SingleSendResult {

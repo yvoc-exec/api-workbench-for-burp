@@ -40,6 +40,8 @@ import javax.swing.SwingUtilities;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.HeadlessException;
 import java.awt.Window;
 import java.io.IOException;
@@ -449,7 +451,19 @@ class ImporterPanelRunnerQueueTest {
         edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
         drainEdt();
         invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
-        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
+        SwingUtilities.invokeLater(() -> {
+            try {
+                invokePrivateArgs(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        waitUntil(() -> findRunnerPreviewDialog() != null, 5000);
+        JDialog preview = findRunnerPreviewDialog();
+        assertThat(preview).isNotNull();
+        JButton startButton = findButtonInDialog(preview, "Start Runner");
+        assertThat(startButton).isNotNull();
+        edt(startButton::doClick);
         assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(firstResultDelivered.await(5, TimeUnit.SECONDS)).isTrue();
         waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn")
@@ -509,7 +523,19 @@ class ImporterPanelRunnerQueueTest {
             ((JSpinner) privateField(panel, "runnerRetriesSpinner")).setValue(0);
         });
 
-        invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, false);
+        SwingUtilities.invokeLater(() -> {
+            try {
+                invokePrivateArgs(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, false);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        waitUntil(() -> findRunnerPreviewDialog() != null, 5000);
+        JDialog preview = findRunnerPreviewDialog();
+        assertThat(preview).isNotNull();
+        JButton startButton = findButtonInDialog(preview, "Start Runner");
+        assertThat(startButton).isNotNull();
+        edt(startButton::doClick);
         assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(firstResultDelivered.await(5, TimeUnit.SECONDS)).isTrue();
         drainEdt();
@@ -1458,6 +1484,37 @@ class ImporterPanelRunnerQueueTest {
         for (Window window : Window.getWindows()) {
             if (window instanceof JDialog dialog && dialog.isShowing() && "Runner Running".equals(dialog.getTitle())) {
                 return dialog;
+            }
+        }
+        return null;
+    }
+
+    private static JDialog findRunnerPreviewDialog() {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof JDialog dialog && dialog.isShowing() && "Runner Preview".equals(dialog.getTitle())) {
+                return dialog;
+            }
+        }
+        return null;
+    }
+
+    private static JButton findButtonInDialog(JDialog dialog, String text) {
+        return dialog != null ? findButtonInContainer(dialog.getContentPane(), text) : null;
+    }
+
+    private static JButton findButtonInContainer(Container container, String text) {
+        if (container == null) {
+            return null;
+        }
+        for (Component component : container.getComponents()) {
+            if (component instanceof JButton button && text.equals(button.getText())) {
+                return button;
+            }
+            if (component instanceof Container child) {
+                JButton nested = findButtonInContainer(child, text);
+                if (nested != null) {
+                    return nested;
+                }
             }
         }
         return null;

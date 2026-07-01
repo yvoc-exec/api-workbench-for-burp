@@ -15,6 +15,9 @@ import burp.ui.history.HistoryNativeHttpMessageFactory;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectHop;
+import burp.models.RedirectPolicy;
+import burp.models.RedirectTerminationReason;
 import burp.parser.VariableResolver;
 import burp.scripts.ScriptAssertionResult;
 import burp.scripts.ExecutionSource;
@@ -56,6 +59,7 @@ public class SharedRequestPipeline {
     private final ScriptEngine scriptEngine;
     private final UnifiedScriptRuntime unifiedScriptRuntime;
     private final OAuth2Manager oauth2Manager;
+    private final RequestOptions noRedirectRequestOptions = new NoRedirectRequestOptions();
 
     public SharedRequestPipeline(MontoyaApi api, RequestBuilder requestBuilder,
                                  ScriptEngine scriptEngine, OAuth2Manager oauth2Manager) {
@@ -70,7 +74,7 @@ public class SharedRequestPipeline {
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND, null);
+        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
@@ -80,14 +84,14 @@ public class SharedRequestPipeline {
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND, null);
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink,
                                    RuntimeVariableSink runtimeVariableSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND, null);
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -96,7 +100,7 @@ public class SharedRequestPipeline {
                                    RuntimeVariableSink runtimeVariableSink,
                                    EnvironmentProfile activeEnvironment) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND, null);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -106,7 +110,7 @@ public class SharedRequestPipeline {
                                    EnvironmentProfile activeEnvironment,
                                    ExecutionSource executionSource) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -117,7 +121,19 @@ public class SharedRequestPipeline {
                                    ExecutionSource executionSource,
                                    burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults());
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink,
+                                   EnvironmentProfile activeEnvironment,
+                                   ExecutionSource executionSource,
+                                   burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
+                                   RedirectPolicy redirectPolicy) {
+        ExecutionResult result = new ExecutionResult();
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -138,7 +154,7 @@ public class SharedRequestPipeline {
                                  OAuth2TokenSink oauth2TokenSink,
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW, null);
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -147,7 +163,7 @@ public class SharedRequestPipeline {
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment,
                                  ExecutionSource executionSource) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null);
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults());
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -157,7 +173,7 @@ public class SharedRequestPipeline {
                                  EnvironmentProfile activeEnvironment,
                                  ExecutionSource executionSource,
                                  burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor);
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults());
     }
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -167,12 +183,14 @@ public class SharedRequestPipeline {
                                             RuntimeVariableSink runtimeVariableSink,
                                             EnvironmentProfile activeEnvironment,
                                             ExecutionSource executionSource,
-                                            burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
+                                            burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
+                                            RedirectPolicy redirectPolicy) {
         ExecutionSource effectiveSource = executionSource != null ? executionSource : (sendRequest ? ExecutionSource.WORKBENCH_SEND : ExecutionSource.BUILD_PREVIEW);
         if (result != null) {
             result.executionSource = effectiveSource;
             result.scriptEngineName = unifiedScriptRuntime != null ? unifiedScriptRuntime.getEngineName() : "Unavailable";
             result.success = true;
+            result.redirectsEnabled = followRedirects;
         }
         recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                 col, req, activeEnvironment, "Request build started", null);
@@ -267,7 +285,7 @@ public class SharedRequestPipeline {
             // 3. Build request
             byte[] rawRequest = requestBuilder.buildRequest(effectiveRequest, resolver);
             result.rawRequestBytes = rawRequest;
-            result.rawRequestText = rawRequest != null ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8) : null;
+            result.rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
             result.resolvedVariables = new HashMap<>(resolver.getVariables());
             warnIfUnresolved(rawRequest, effectiveRequest != null ? effectiveRequest.name : null);
             recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
@@ -275,6 +293,7 @@ public class SharedRequestPipeline {
 
             String resolvedUrl = resolver.resolve(effectiveRequest != null ? effectiveRequest.url : null);
             result.resolvedUrl = resolvedUrl;
+            result.initialResolvedUrl = resolvedUrl;
             String[] requestParts = splitRawRequest(rawRequest);
             result.requestHeaders = requestParts[0];
             result.requestBody = requestParts[1];
@@ -299,26 +318,46 @@ public class SharedRequestPipeline {
             }
             result.builtRequest = httpRequest;
 
-            // 4. Send HTTP
+            // 4. Send HTTP with manual redirect handling
             long startTime = System.currentTimeMillis();
-            var response = usedFallbackRequest
-                    ? api.http().sendRequest(httpRequest)
-                    : api.http().sendRequest(httpRequest, RequestOptions.requestOptions()
-                    .withRedirectionMode(followRedirects ? RedirectionMode.ALWAYS : RedirectionMode.NEVER));
+            RedirectExecutor redirectExecutor = new RedirectExecutor();
+            RedirectExecutor.RedirectRequest redirectRequest = new RedirectExecutor.RedirectRequest();
+            redirectRequest.initialRequest = httpRequest;
+            redirectRequest.initialUrl = resolvedUrl;
+            redirectRequest.initialRawRequestBytes = rawRequest.clone();
+            redirectRequest.followRedirects = followRedirects;
+            redirectRequest.redirectPolicy = redirectPolicy != null ? redirectPolicy : RedirectPolicy.defaults();
+            redirectRequest.hopSender = request -> api != null
+                    ? api.http().sendRequest(request, noRedirectRequestOptions)
+                    : null;
+            RedirectExecutor.RedirectResult redirectResult = redirectExecutor.execute(redirectRequest);
             long endTime = System.currentTimeMillis();
-            result.elapsedMs = endTime - startTime;
-            result.response = response;
+            result.elapsedMs = Math.max(0L, endTime - startTime);
+            result.response = redirectResult.finalResponse;
+            result.finalRequest = redirectResult.finalRequest;
+            result.finalResolvedUrl = redirectResult.finalUrl;
+            result.redirectTerminationReason = redirectResult.terminationReason;
+            result.redirectHops.clear();
+            if (redirectResult.redirectHops != null) {
+                for (RedirectHop hop : redirectResult.redirectHops) {
+                    result.redirectHops.add(RedirectHop.copyOf(hop));
+                }
+            }
+            result.success = redirectResult.success;
+            result.errorMessage = redirectResult.errorMessage;
+            result.resolvedUrl = resolvedUrl;
+            recordRedirectDiagnostics(effectiveSource, col, effectiveRequest, activeEnvironment, result.redirectHops, result.redirectTerminationReason);
             recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                     col, effectiveRequest, activeEnvironment, "HTTP response received",
-                    response != null && response.response() != null ? "status=" + response.response().statusCode() : "no response");
+                    result.response != null && result.response.response() != null ? "status=" + result.response.response().statusCode() : "no response");
 
-            if (response != null && response.response() != null) {
+            if (result.response != null && result.response.response() != null && result.success) {
                 // 5. Post-response scripts
                 if ((shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
-                    String body = response.response().bodyToString();
-                    int statusCode = response.response().statusCode();
+                    String body = result.response.response().bodyToString();
+                    int statusCode = result.response.response().statusCode();
                     Map<String, List<String>> headersMap = new HashMap<>();
-                    for (var header : response.response().headers()) {
+                    for (var header : result.response.response().headers()) {
                         headersMap.computeIfAbsent(header.name().toLowerCase(), k -> new ArrayList<>()).add(header.value());
                     }
                     // Create a temporary RunnerResult-like holder for script extraction
@@ -360,7 +399,7 @@ public class SharedRequestPipeline {
                         }
                     }
                 }
-            } else {
+            } else if (result.success) {
                 result.success = false;
                 result.errorMessage = "No response received";
             }
@@ -604,6 +643,38 @@ public class SharedRequestPipeline {
         return msg;
     }
 
+    private static final class NoRedirectRequestOptions implements RequestOptions {
+        @Override
+        public RequestOptions withHttpMode(burp.api.montoya.http.HttpMode httpMode) {
+            return this;
+        }
+
+        @Override
+        public RequestOptions withConnectionId(String connectionId) {
+            return this;
+        }
+
+        @Override
+        public RequestOptions withUpstreamTLSVerification() {
+            return this;
+        }
+
+        @Override
+        public RequestOptions withRedirectionMode(RedirectionMode redirectionMode) {
+            return this;
+        }
+
+        @Override
+        public RequestOptions withServerNameIndicator(String serverNameIndicator) {
+            return this;
+        }
+
+        @Override
+        public RequestOptions withResponseTimeout(long responseTimeout) {
+            return this;
+        }
+    }
+
     private String[] splitRawRequest(byte[] rawRequest) {
         if (rawRequest == null || rawRequest.length == 0) {
             return new String[]{"", ""};
@@ -707,5 +778,32 @@ public class SharedRequestPipeline {
         }
         event.withDetails(details.toString().trim());
         DiagnosticStore.getInstance().record(event);
+    }
+
+    private void recordRedirectDiagnostics(ExecutionSource source,
+                                           ApiCollection collection,
+                                           ApiRequest request,
+                                           EnvironmentProfile environment,
+                                           List<RedirectHop> redirectHops,
+                                           RedirectTerminationReason terminationReason) {
+        if (redirectHops != null) {
+            for (RedirectHop hop : redirectHops) {
+                if (hop == null) {
+                    continue;
+                }
+                recordDiagnostic(DiagnosticOperation.REDIRECT, hop.followed ? DiagnosticSeverity.INFO : DiagnosticSeverity.WARNING,
+                        source, collection, request, environment,
+                        hop.followed ? "Redirect followed" : "Redirect blocked",
+                        hop.safeSummary());
+            }
+        }
+        if (terminationReason != null && terminationReason != RedirectTerminationReason.NONE) {
+            recordDiagnostic(DiagnosticOperation.REDIRECT, terminationReason == RedirectTerminationReason.FINAL_RESPONSE
+                            ? DiagnosticSeverity.INFO
+                            : DiagnosticSeverity.WARNING,
+                    source, collection, request, environment,
+                    "Redirect processing complete",
+                    terminationReason.displayLabel());
+        }
     }
 }

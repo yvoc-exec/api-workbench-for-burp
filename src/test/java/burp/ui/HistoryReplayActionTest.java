@@ -9,6 +9,7 @@ import burp.history.HistoryEntry;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectPolicy;
 import burp.models.WorkspaceState;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
@@ -70,7 +71,8 @@ class HistoryReplayActionTest {
                 any(),
                 any(),
                 any(EnvironmentProfile.class),
-                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY)))
+                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY),
+                any(RedirectPolicy.class)))
                 .thenAnswer(invocation -> {
                     capturedEnvironment.set(invocation.getArgument(6));
                     capturedExecutionSource.set(invocation.getArgument(7));
@@ -94,7 +96,8 @@ class HistoryReplayActionTest {
                 any(),
                 any(),
                 eq(activeEnvironment),
-                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY));
+                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY),
+                any(RedirectPolicy.class));
         assertThat(requestCaptor.getValue().url).isEqualTo("{{base_url}}/login");
         assertThat(requestCaptor.getValue().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
         assertThat(capturedEnvironment.get()).isSameAs(activeEnvironment);
@@ -131,7 +134,8 @@ class HistoryReplayActionTest {
                 any(),
                 any(),
                 any(EnvironmentProfile.class),
-                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY)))
+                eq(burp.scripts.ExecutionSource.HISTORY_REPLAY),
+                any(RedirectPolicy.class)))
                 .thenThrow(new Exception("Replay failed: missing token"));
 
         clickReplayHistoryButton(bundle, entry);

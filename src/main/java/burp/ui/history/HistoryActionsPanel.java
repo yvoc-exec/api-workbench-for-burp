@@ -1,11 +1,15 @@
 package burp.ui.history;
 
+import burp.history.HistoryReplayRedirectMode;
+
 import javax.swing.*;
 import java.awt.*;
+import java.util.function.Consumer;
 
 public class HistoryActionsPanel extends JPanel {
     private final JButton loadButton = new JButton("Load in Workbench");
     private final JButton replayButton = new JButton("Replay from History");
+    private final JButton replayMenuButton = new JButton("\u25BC");
     private final JButton repeaterButton = new JButton("Send to Repeater");
     private final JButton copyUrlButton = new JButton("Copy URL");
     private final JButton copyCurlButton = new JButton("Copy as cURL");
@@ -25,12 +29,19 @@ public class HistoryActionsPanel extends JPanel {
     private Runnable exportHarAction;
     private Runnable deleteAction;
     private Runnable clearAction;
+    private HistoryReplayRedirectMode replayRedirectMode = HistoryReplayRedirectMode.RECORDED;
+    private Consumer<HistoryReplayRedirectMode> replayRedirectModeChangeListener;
+    private Runnable redirectPolicyAction;
 
     public HistoryActionsPanel() {
         setLayout(new FlowLayout(FlowLayout.LEFT, 5, 0));
         setBorder(BorderFactory.createTitledBorder("Actions"));
         add(loadButton);
         add(replayButton);
+        replayMenuButton.setToolTipText("History replay redirect behavior");
+        replayMenuButton.setMargin(new Insets(0, 4, 0, 4));
+        replayMenuButton.setFocusable(false);
+        add(replayMenuButton);
         add(repeaterButton);
         add(copyUrlButton);
         add(copyCurlButton);
@@ -86,6 +97,25 @@ public class HistoryActionsPanel extends JPanel {
         this.clearAction = clearAction;
     }
 
+    public HistoryReplayRedirectMode getReplayRedirectMode() {
+        return replayRedirectMode;
+    }
+
+    public void setReplayRedirectMode(HistoryReplayRedirectMode mode) {
+        replayRedirectMode = mode != null ? mode : HistoryReplayRedirectMode.RECORDED;
+        if (replayRedirectModeChangeListener != null) {
+            replayRedirectModeChangeListener.accept(replayRedirectMode);
+        }
+    }
+
+    public void setReplayRedirectModeChangeListener(Consumer<HistoryReplayRedirectMode> listener) {
+        this.replayRedirectModeChangeListener = listener;
+    }
+
+    public void setRedirectPolicyAction(Runnable action) {
+        this.redirectPolicyAction = action;
+    }
+
     public void updateSelectionState(int selectedCount, boolean hasEntries) {
         boolean oneOrMore = selectedCount > 0;
         loadButton.setEnabled(oneOrMore);
@@ -97,6 +127,7 @@ public class HistoryActionsPanel extends JPanel {
         deleteButton.setEnabled(oneOrMore);
         clearButton.setEnabled(hasEntries);
         exportButton.setEnabled(hasEntries);
+        replayMenuButton.setEnabled(oneOrMore);
     }
 
     public JButton getLoadButton() {
@@ -105,6 +136,10 @@ public class HistoryActionsPanel extends JPanel {
 
     public JButton getReplayButton() {
         return replayButton;
+    }
+
+    public JButton getReplayMenuButton() {
+        return replayMenuButton;
     }
 
     public JButton getRepeaterButton() {
@@ -138,6 +173,7 @@ public class HistoryActionsPanel extends JPanel {
     private void installActions() {
         loadButton.addActionListener(e -> trigger(loadAction));
         replayButton.addActionListener(e -> trigger(replayAction));
+        replayMenuButton.addActionListener(e -> showReplayMenu());
         repeaterButton.addActionListener(e -> trigger(repeaterAction));
         copyUrlButton.addActionListener(e -> trigger(copyUrlAction));
         copyCurlButton.addActionListener(e -> trigger(copyCurlAction));
@@ -159,6 +195,26 @@ public class HistoryActionsPanel extends JPanel {
         menu.add(csv);
         menu.add(har);
         menu.show(exportButton, 0, exportButton.getHeight());
+    }
+
+    private void showReplayMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        ButtonGroup group = new ButtonGroup();
+        addReplayModeItem(menu, group, HistoryReplayRedirectMode.RECORDED);
+        addReplayModeItem(menu, group, HistoryReplayRedirectMode.ALWAYS_FOLLOW);
+        addReplayModeItem(menu, group, HistoryReplayRedirectMode.NEVER_FOLLOW);
+        menu.addSeparator();
+        JMenuItem policyItem = new JMenuItem("Redirect security policy...");
+        policyItem.addActionListener(e -> trigger(redirectPolicyAction));
+        menu.add(policyItem);
+        menu.show(replayMenuButton, 0, replayMenuButton.getHeight());
+    }
+
+    private void addReplayModeItem(JPopupMenu menu, ButtonGroup group, HistoryReplayRedirectMode mode) {
+        JRadioButtonMenuItem item = new JRadioButtonMenuItem(mode.displayLabel(), mode == replayRedirectMode);
+        item.addActionListener(e -> setReplayRedirectMode(mode));
+        group.add(item);
+        menu.add(item);
     }
 
     private static void trigger(Runnable action) {

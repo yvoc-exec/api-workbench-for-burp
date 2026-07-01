@@ -3,6 +3,7 @@ package burp.testsupport;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.Http;
 import burp.api.montoya.http.RequestOptions;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -50,7 +51,9 @@ public final class RunnerScriptTestFixtures {
                                            CopyOnWriteArrayList<HttpRequest> capturedRequests,
                                            Supplier<HttpRequestResponse> responseSupplier) {
         MontoyaApi api = Mockito.mock(MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS);
-        when(api.http().sendRequest(any(HttpRequest.class))).thenAnswer(invocation -> {
+        Http http = Mockito.mock(Http.class, Mockito.RETURNS_DEEP_STUBS);
+        when(api.http()).thenReturn(http);
+        when(http.sendRequest(any(HttpRequest.class))).thenAnswer(invocation -> {
             sendCount.incrementAndGet();
             HttpRequest request = invocation.getArgument(0);
             if (capturedRequests != null) {
@@ -58,7 +61,7 @@ public final class RunnerScriptTestFixtures {
             }
             return responseSupplier != null ? responseSupplier.get() : mockResponse(200, "OK", "text/plain");
         });
-        when(api.http().sendRequest(any(HttpRequest.class), any(RequestOptions.class))).thenAnswer(invocation -> {
+        when(http.sendRequest(any(HttpRequest.class), any(RequestOptions.class))).thenAnswer(invocation -> {
             sendCount.incrementAndGet();
             HttpRequest request = invocation.getArgument(0);
             if (capturedRequests != null) {

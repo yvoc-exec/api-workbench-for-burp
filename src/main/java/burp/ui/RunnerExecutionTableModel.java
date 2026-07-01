@@ -1,6 +1,7 @@
 package burp.ui;
 
 import burp.history.HistoryEntry;
+import burp.models.RedirectHop;
 import burp.models.RunnerResult;
 import burp.models.RunnerTimelineRow;
 
@@ -136,7 +137,11 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
             detailEntry.collectionName = result.collectionName;
             detailEntry.collectionId = result.collectionName;
             detailEntry.folderPath = result.folderPath;
-            detailEntry.finalResolvedUrl = result.requestUrl;
+            detailEntry.initialResolvedUrl = result.initialResolvedUrl != null ? result.initialResolvedUrl : result.requestUrl;
+            detailEntry.finalResolvedUrl = result.finalResolvedUrl != null ? result.finalResolvedUrl : result.requestUrl;
+            detailEntry.redirectsEnabled = result.redirectsEnabled;
+            detailEntry.redirectTerminationReason = result.redirectTerminationReason;
+            detailEntry.redirectHops = copyRedirectHops(result.redirectHops);
             detailEntry.host = result.host;
             detailEntry.scriptMode = result.scriptEngineName;
             detailEntry.scriptDialect = result.scriptEngineName;
@@ -160,6 +165,80 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
                 null,
                 result.requestId,
                 result.collectionName
+        );
+    }
+
+    private static List<RedirectHop> copyRedirectHops(List<RedirectHop> hops) {
+        List<RedirectHop> copy = new ArrayList<>();
+        if (hops == null) {
+            return copy;
+        }
+        for (RedirectHop hop : hops) {
+            RedirectHop hopCopy = RedirectHop.copyOf(hop);
+            if (hopCopy != null) {
+                copy.add(hopCopy);
+            }
+        }
+        return copy;
+    }
+
+    public static Entry fromRedirectHop(RunnerResult parent, RedirectHop hop) {
+        if (hop == null) {
+            return null;
+        }
+        HistoryEntry detailEntry = HistoryEntry.fromRedirectHop(parent, hop);
+        String source = parent != null && parent.collectionName != null ? parent.collectionName : "";
+        String method = hop.sourceMethod != null ? hop.sourceMethod : "";
+        String status = hop.statusCode > 0 ? String.valueOf(hop.statusCode) : "";
+        String duration = hop.elapsedMs > 0 ? hop.elapsedMs + " ms" : "";
+        String resultLabel = hop.followed ? "FOLLOWED" : "BLOCKED";
+        String state = hop.followed ? "FOLLOWED" : "BLOCKED";
+        StringBuilder message = new StringBuilder();
+        if (hop.sourceUrl != null && !hop.sourceUrl.isBlank()) {
+            message.append(hop.sourceUrl);
+        }
+        if (hop.targetUrl != null && !hop.targetUrl.isBlank()) {
+            if (message.length() > 0) {
+                message.append(" -> ");
+            }
+            message.append(hop.targetUrl);
+        }
+        if (hop.failureReason != null && !hop.failureReason.isBlank()) {
+            if (message.length() > 0) {
+                message.append(" | ");
+            }
+            message.append(hop.failureReason);
+        }
+        if (!hop.forwardedSensitiveHeaderNames.isEmpty()) {
+            if (message.length() > 0) {
+                message.append(" | ");
+            }
+            message.append("forwarded=").append(hop.forwardedSensitiveHeaderNames);
+        }
+        if (!hop.strippedSensitiveHeaderNames.isEmpty()) {
+            if (message.length() > 0) {
+                message.append(" | ");
+            }
+            message.append("stripped=").append(hop.strippedSensitiveHeaderNames);
+        }
+        return new Entry(
+                0,
+                Instant.now(),
+                hop.followed ? "REDIRECT_HOP" : "REDIRECT_BLOCKED",
+                state,
+                "↳ Redirect hop " + (hop.hopNumber > 0 ? hop.hopNumber : "?"),
+                source,
+                method,
+                status,
+                resultLabel,
+                duration,
+                "",
+                message.toString(),
+                detailEntry,
+                null,
+                null,
+                parent != null ? parent.requestId : null,
+                source
         );
     }
 

@@ -13,6 +13,7 @@ import burp.history.HistoryExportService;
 import burp.history.HistoryPersistenceService;
 import burp.history.HistoryStore;
 import burp.history.HistoryDiffService;
+import burp.history.HistoryReplayRedirectMode;
 import burp.history.HistoryResult;
 import burp.history.HistorySource;
 import burp.history.HistoryRequestSnapshot;
@@ -142,6 +143,8 @@ public class ImporterPanel {
     private JList<DiagnosticEvent> diagnosticsEventList;
     private JTextArea diagnosticsEventDetailArea;
     private HistoryPanel historyPanel;
+    private RedirectPolicy sharedRedirectPolicy = RedirectPolicy.defaults();
+    private HistoryReplayRedirectMode historyReplayRedirectMode = HistoryReplayRedirectMode.RECORDED;
 
     // Runner tab
     private JTextArea runnerLog;
@@ -591,6 +594,8 @@ public class ImporterPanel {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
         });
+        requestEditor.setFollowRedirectsChangeListener(selected -> notifyWorkspaceChanged());
+        requestEditor.setRedirectPolicyAction(this::showRedirectPolicyDialog);
 
         requestEditor.setSendActionListener(() -> executeWorkbenchSend());
 
@@ -717,7 +722,7 @@ public class ImporterPanel {
                 String failureReason = null;
                 try {
                     publish("Sending: " + requestToSend.method + " " + requestToSend.url);
-                    boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
+                    boolean follow = requestEditor != null && requestEditor.isFollowRedirectsSelected();
                     result = sendSingleRequestWithBuiltRequest(
                             requestToSend,
                             resolvedCol,
@@ -726,7 +731,8 @@ public class ImporterPanel {
                             ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
                             ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
                             activeEnvironment,
-                            null);
+                            null,
+                            sharedRedirectPolicy);
                     var rr = result.response;
 
                     final UniversalImporter.SingleSendResult sendResult = result;
@@ -746,10 +752,17 @@ public class ImporterPanel {
                         importer.sendToRepeater(result.builtRequest, tabName);
                         publish("Sent to Repeater: " + tabName);
                     }
+                } catch (burp.utils.RequestExecutionException e) {
+                    result = e.getSingleSendResult();
+                    failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    final String failure = failureReason;
+                    final UniversalImporter.SingleSendResult failedResult = result;
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failedResult, failure, sendModeLabel));
+                    publish("Send failed: " + failureReason);
                 } catch (Exception e) {
                     failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                     final String failure = failureReason;
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failure, sendModeLabel));
+                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, null, failure, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 }
                 recordWorkbenchHistoryEntry(
@@ -1033,7 +1046,7 @@ public class ImporterPanel {
             protected Void doInBackground() throws Exception {
                 try {
                     publish("Replaying: " + replayRequest.method + " " + replayRequest.url);
-                    boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
+                    boolean follow = resolveReplayFollowRedirects(entry, historyReplayRedirectMode, requestEditor != null && requestEditor.isFollowRedirectsSelected());
                     UniversalImporter.SingleSendResult result = sendSingleRequestWithBuiltRequest(
                             replayRequest,
                             resolvedCollection,
@@ -1042,7 +1055,8 @@ public class ImporterPanel {
                             ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
                             ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
                             activeEnvironment,
-                            burp.scripts.ExecutionSource.HISTORY_REPLAY);
+                            burp.scripts.ExecutionSource.HISTORY_REPLAY,
+                            sharedRedirectPolicy);
                     publish("Replay complete: " + replayRequest.name);
                     recordWorkbenchHistoryEntry(
                             replayRequest,
@@ -1060,6 +1074,26 @@ public class ImporterPanel {
                             replayRequest,
                             activeEnvironment,
                             "completed");
+                } catch (burp.utils.RequestExecutionException e) {
+                    UniversalImporter.SingleSendResult result = e.getSingleSendResult();
+                    String failureReason = cleanReplayFailureReason(e);
+                    publish("Replay failed: " + failureReason);
+                    recordReplayDiagnostic(
+                            DiagnosticSeverity.ERROR,
+                            "Replay failed",
+                            entry,
+                            resolvedCollection,
+                            replayRequest,
+                            activeEnvironment,
+                            failureReason);
+                    recordWorkbenchHistoryEntry(
+                            replayRequest,
+                            resolvedCollection,
+                            result,
+                            failureReason,
+                            issues.stream().map(issue -> issue != null ? issue.variableName : null).filter(name -> name != null && !name.isBlank()).distinct().toList(),
+                            runtimeOverlayForReplay,
+                            "Replay from History");
                 } catch (Exception e) {
                     String failureReason = cleanReplayFailureReason(e);
                     publish("Replay failed: " + failureReason);
@@ -1114,7 +1148,6 @@ public class ImporterPanel {
             runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
         try {
-            boolean follow = followRedirectsBox != null && followRedirectsBox.isSelected();
             burp.parser.VariableResolver resolver = burp.utils.RuntimeResolverFactory.build(
                     context != null ? context.collection : null,
                     replayRequest,
@@ -1149,6 +1182,17 @@ public class ImporterPanel {
         }
     }
 
+    static boolean resolveReplayFollowRedirects(HistoryEntry entry,
+                                                HistoryReplayRedirectMode mode,
+                                                boolean workbenchFollowRedirects) {
+        HistoryReplayRedirectMode resolvedMode = mode != null ? mode : HistoryReplayRedirectMode.RECORDED;
+        return switch (resolvedMode) {
+            case ALWAYS_FOLLOW -> true;
+            case NEVER_FOLLOW -> false;
+            case RECORDED -> entry != null && entry.redirectsEnabled != null ? entry.redirectsEnabled : workbenchFollowRedirects;
+        };
+    }
+
     private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
             ApiRequest request,
             ApiCollection collection,
@@ -1158,18 +1202,21 @@ public class ImporterPanel {
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
             EnvironmentProfile activeEnvironment,
             burp.scripts.ExecutionSource executionSource) throws Exception {
-        if (runtimeOverlay == null && activeEnvironment == null && executionSource == null) {
-            return importer.sendSingleRequestWithBuiltRequest(request, collection, followRedirects);
-        }
-        if (executionSource == null) {
-            return importer.sendSingleRequestWithBuiltRequest(
-                    request,
-                    collection,
-                    followRedirects,
-                    runtimeOverlay,
-                    oauth2TokenSink,
-                    runtimeVariableSink);
-        }
+        return sendSingleRequestWithBuiltRequest(request, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, sharedRedirectPolicy);
+    }
+
+    private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest request,
+            ApiCollection collection,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment,
+            burp.scripts.ExecutionSource executionSource,
+            RedirectPolicy redirectPolicy) throws Exception {
+        burp.scripts.ExecutionSource effectiveSource = executionSource != null ? executionSource : burp.scripts.ExecutionSource.WORKBENCH_SEND;
+        RedirectPolicy effectivePolicy = redirectPolicy != null ? redirectPolicy : sharedRedirectPolicy;
         return importer.sendSingleRequestWithBuiltRequest(
                 request,
                 collection,
@@ -1178,7 +1225,8 @@ public class ImporterPanel {
                 oauth2TokenSink,
                 runtimeVariableSink,
                 activeEnvironment,
-                executionSource);
+                effectiveSource,
+                effectivePolicy);
     }
 
     private HistoryRequestContext resolveExistingHistoryRequestContext(HistoryEntry entry) {
@@ -1877,16 +1925,17 @@ public class ImporterPanel {
 
     private void updateWorkbenchDetailPaneFailure(ApiRequest sentRequest,
                                                   ApiCollection sentCollection,
+                                                  UniversalImporter.SingleSendResult result,
                                                   String reason,
                                                   String sendModeLabel) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment);
+        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
-                null,
-                null,
-                buildWorkbenchMetaText(sentCollection, sentRequest, null, sendModeLabel, reason, activeEnvironment),
-                "No script output for this request.",
-                "No assertions or extractions for this request.",
+                result != null ? result.builtRequest : null,
+                result != null && result.response != null ? result.response.response() : null,
+                buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment),
+                buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
+                buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
                 reason,
                 sendModeLabel,
                 System.currentTimeMillis());
@@ -2015,7 +2064,12 @@ public class ImporterPanel {
         String requestName = edited != null && edited.name != null ? edited.name : "(unnamed)";
         String method = edited != null && edited.method != null ? edited.method : "GET";
         String urlTemplate = edited != null && edited.url != null ? edited.url : "";
-        String finalResolvedUrl = result != null && result.resolvedUrl != null ? result.resolvedUrl : "";
+        String initialResolvedUrl = result != null && result.executionResult != null && result.executionResult.initialResolvedUrl != null
+                ? result.executionResult.initialResolvedUrl
+                : (result != null && result.resolvedUrl != null ? result.resolvedUrl : "");
+        String finalResolvedUrl = result != null && result.executionResult != null && result.executionResult.finalResolvedUrl != null
+                ? result.executionResult.finalResolvedUrl
+                : initialResolvedUrl;
         String authLine = buildAuthMetaLine(edited);
         String executionSource = result != null && result.executionResult != null && result.executionResult.executionSource != null
                 ? result.executionResult.executionSource.name()
@@ -2034,7 +2088,12 @@ public class ImporterPanel {
         meta.append("Build Mode: ").append(edited != null && edited.resolveBuildMode() != null ? edited.resolveBuildMode() : "Not yet sent").append("\n");
         meta.append("Active Environment Name: ").append(activeEnvironment != null ? activeEnvironment.displayName() : "No Environment").append("\n");
         meta.append("URL Template: ").append(urlTemplate).append("\n");
+        meta.append("Initial Resolved URL: ").append(initialResolvedUrl.isBlank() ? "Not yet sent" : initialResolvedUrl).append("\n");
         meta.append("Final Resolved URL: ").append(finalResolvedUrl.isBlank() ? "Not yet sent" : finalResolvedUrl).append("\n");
+        meta.append("Redirects Enabled: ").append(result != null && result.executionResult != null ? String.valueOf(result.executionResult.redirectsEnabled) : "Not yet sent").append("\n");
+        meta.append("Redirect Termination Reason: ").append(result != null && result.executionResult != null && result.executionResult.redirectTerminationReason != null
+                ? result.executionResult.redirectTerminationReason.displayLabel()
+                : "Not yet sent").append("\n");
         meta.append("Execution Source: ").append(executionSource).append("\n");
         meta.append("Attempt: ").append(result != null && result.executionResult != null ? "1/1" : "Not yet sent").append("\n");
         int statusCode = 0;
@@ -2177,17 +2236,23 @@ public class ImporterPanel {
             return null;
         }
         VariableResolver resolver = RuntimeResolverFactory.build(sentCollection, sentRequest, activeEnvironment, null);
-        String resolvedUrl = result != null && result.resolvedUrl != null && !result.resolvedUrl.isBlank()
+        String resolvedUrl = result != null && result.executionResult != null && result.executionResult.initialResolvedUrl != null && !result.executionResult.initialResolvedUrl.isBlank()
+                ? result.executionResult.initialResolvedUrl
+                : result != null && result.resolvedUrl != null && !result.resolvedUrl.isBlank()
                 ? result.resolvedUrl
                 : resolver.resolve(sentRequest != null ? sentRequest.url : null);
+        String finalResolvedUrl = result != null && result.executionResult != null && result.executionResult.finalResolvedUrl != null && !result.executionResult.finalResolvedUrl.isBlank()
+                ? result.executionResult.finalResolvedUrl
+                : resolvedUrl;
         if (entry.requestSnapshot != null) {
             entry.requestSnapshot.resolvedUrl = resolvedUrl;
             entry.requestSnapshot.resolvedVariables = result != null && result.executionResult != null && result.executionResult.resolvedVariables != null
                     ? new LinkedHashMap<>(result.executionResult.resolvedVariables)
                     : resolver.getVariables();
         }
-        entry.finalResolvedUrl = resolvedUrl;
-        entry.host = parseHost(resolvedUrl);
+        entry.initialResolvedUrl = resolvedUrl;
+        entry.finalResolvedUrl = finalResolvedUrl;
+        entry.host = parseHost(finalResolvedUrl);
         entry.scriptMode = scriptMode != null ? scriptMode.label : null;
         entry.scriptDialect = result != null && result.executionResult != null ? result.executionResult.scriptEngineName : null;
         entry.variablesSummaryText = buildRuntimeVariableSummaryText(
@@ -2246,17 +2311,23 @@ public class ImporterPanel {
             return null;
         }
         VariableResolver resolver = RuntimeResolverFactory.build(collection, request, activeEnvironment, null);
-        String resolvedUrl = result != null && result.requestUrl != null && !result.requestUrl.isBlank()
+        String resolvedUrl = result != null && result.initialResolvedUrl != null && !result.initialResolvedUrl.isBlank()
+                ? result.initialResolvedUrl
+                : result != null && result.requestUrl != null && !result.requestUrl.isBlank()
                 ? result.requestUrl
                 : resolver.resolve(request != null ? request.url : null);
+        String finalResolvedUrl = result != null && result.finalResolvedUrl != null && !result.finalResolvedUrl.isBlank()
+                ? result.finalResolvedUrl
+                : resolvedUrl;
         if (entry.requestSnapshot != null) {
             entry.requestSnapshot.resolvedUrl = resolvedUrl;
             entry.requestSnapshot.resolvedVariables = result != null && result.resolvedVariables != null
                     ? new LinkedHashMap<>(result.resolvedVariables)
                     : resolver.getVariables();
         }
-        entry.finalResolvedUrl = resolvedUrl;
-        entry.host = result != null && result.host != null && !result.host.isBlank() ? result.host : parseHost(resolvedUrl);
+        entry.initialResolvedUrl = resolvedUrl;
+        entry.finalResolvedUrl = finalResolvedUrl;
+        entry.host = result != null && result.host != null && !result.host.isBlank() ? result.host : parseHost(finalResolvedUrl);
         entry.scriptMode = scriptMode != null ? scriptMode.label : null;
         entry.scriptDialect = result != null ? result.scriptEngineName : null;
         entry.variablesSummaryText = buildRuntimeVariableSummaryText(
@@ -2825,6 +2896,18 @@ public class ImporterPanel {
         );
     }
 
+    private void appendRedirectHopRows(RunnerResult result) {
+        if (resultModel == null || result == null || result.redirectHops == null || result.redirectHops.isEmpty()) {
+            return;
+        }
+        for (RedirectHop hop : result.redirectHops) {
+            RunnerExecutionTableModel.Entry redirectEntry = RunnerExecutionTableModel.fromRedirectHop(result, hop);
+            if (redirectEntry != null) {
+                resultModel.addEntry(redirectEntry);
+            }
+        }
+    }
+
     private RunnerExecutionTableModel.Entry buildExecutionRowFromTimeline(RunnerTimelineRow row, RunnerResult associated) {
         ApiRequest request = associated != null ? findRequestById(associated.requestId) : null;
         ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(row != null ? row.collectionName : null);
@@ -3252,6 +3335,11 @@ public class ImporterPanel {
         configPanel.add(followRedirectsBox, gbc);
 
         gbc.gridx = 5;
+        JButton runnerRedirectPolicyBtn = new JButton("Redirect Policy...");
+        runnerRedirectPolicyBtn.addActionListener(e -> showRedirectPolicyDialog());
+        configPanel.add(runnerRedirectPolicyBtn, gbc);
+
+        gbc.gridx = 6;
         runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
         configPanel.add(runnerDebugRawRequestBox, gbc);
 
@@ -7020,6 +7108,7 @@ public class ImporterPanel {
         state.checkedRequestKeys = collectCheckedRequestKeys();
         captureWorkbenchSettings(state);
         captureRunnerSettings(state);
+        captureHistorySettings(state);
         captureRunnerQueueState(state);
         captureRunnerDetailState(state);
         return state;
@@ -7051,6 +7140,7 @@ public class ImporterPanel {
                 selectCollectionByName(oauth2CollectionCombo, state.selectedOAuth2CollectionName);
                 restoreWorkbenchSettings(state);
                 restoreRunnerSettings(state);
+                restoreHistorySettings(state);
                 restoreRunnerQueueState(state);
                 restoreRunnerDetailState(state);
                 syncOAuth2UiState();
@@ -7972,6 +8062,7 @@ public class ImporterPanel {
         if (delaySpinner != null) state.workbenchDelayMs = spinnerIntValue(delaySpinner);
         if (debugRawRequestBox != null) state.workbenchDebugRawRequest = debugRawRequestBox.isSelected();
         if (workbenchDetailTabs != null) state.workbenchDetailTabIndex = workbenchDetailTabs.getSelectedIndex();
+        state.workbenchFollowRedirects = requestEditor != null ? requestEditor.isFollowRedirectsSelected() : Boolean.TRUE;
     }
 
     private void captureRunnerSettings(WorkspaceState state) {
@@ -7988,6 +8079,14 @@ public class ImporterPanel {
         if (followRedirectsBox != null) state.runnerFollowRedirects = followRedirectsBox.isSelected();
         if (runnerDebugRawRequestBox != null) state.runnerDebugRawRequest = runnerDebugRawRequestBox.isSelected();
         if (runnerDetailTabs != null) state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
+    }
+
+    private void captureHistorySettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        state.historyReplayRedirectMode = historyReplayRedirectMode != null ? historyReplayRedirectMode.name() : null;
+        state.redirectPolicy = RedirectPolicy.copyOf(sharedRedirectPolicy);
     }
 
     private void captureRunnerDetailState(WorkspaceState state) {
@@ -8020,6 +8119,9 @@ public class ImporterPanel {
         applySpinnerState(delaySpinner, state.workbenchDelayMs, 0);
         applyCheckboxState(debugRawRequestBox, state.workbenchDebugRawRequest, false);
         applyTabIndex(workbenchDetailTabs, state.workbenchDetailTabIndex);
+        if (requestEditor != null) {
+            requestEditor.setFollowRedirectsSelected(state.workbenchFollowRedirects != null ? state.workbenchFollowRedirects : true);
+        }
     }
 
     private void restoreRunnerSettings(WorkspaceState state) {
@@ -8035,6 +8137,21 @@ public class ImporterPanel {
         applySpinnerState(stopAfterFailuresSpinner, state.runnerStopAfterFailures, 0);
         applyCheckboxState(followRedirectsBox, state.runnerFollowRedirects, true);
         applyCheckboxState(runnerDebugRawRequestBox, state.runnerDebugRawRequest, false);
+    }
+
+    private void restoreHistorySettings(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        historyReplayRedirectMode = HistoryReplayRedirectMode.fromPersisted(state.historyReplayRedirectMode);
+        if (historyPanel != null && historyPanel.getActionsPanel() != null) {
+            historyPanel.getActionsPanel().setReplayRedirectMode(historyReplayRedirectMode);
+        }
+        sharedRedirectPolicy = RedirectPolicy.copyOf(state.redirectPolicy);
+        if (sharedRedirectPolicy == null) {
+            sharedRedirectPolicy = RedirectPolicy.defaults();
+        }
+        sharedRedirectPolicy.normalize();
     }
 
     private void restoreRunnerDetailState(WorkspaceState state) {
@@ -9994,6 +10111,12 @@ public class ImporterPanel {
         historyPanel.setLoadInWorkbenchAction(this::loadHistoryEntryIntoWorkbench);
         historyPanel.setReplayFromHistoryAction(this::replayHistoryEntry);
         historyPanel.setSendToRepeaterAction(this::sendHistoryEntryToRepeater);
+        historyPanel.getActionsPanel().setReplayRedirectMode(historyReplayRedirectMode);
+        historyPanel.getActionsPanel().setReplayRedirectModeChangeListener(mode -> {
+            historyReplayRedirectMode = mode != null ? mode : HistoryReplayRedirectMode.RECORDED;
+            notifyWorkspaceChanged();
+        });
+        historyPanel.getActionsPanel().setRedirectPolicyAction(this::showRedirectPolicyDialog);
         historyPanel.setWorkspaceChangeListener(this::notifyWorkspaceChanged);
         return historyPanel;
     }
@@ -10589,6 +10712,22 @@ public class ImporterPanel {
         dialog.setVisible(true);
     }
 
+    private void showRedirectPolicyDialog() {
+        RedirectPolicy selected = RedirectPolicyDialog.showDialog(mainPanel, sharedRedirectPolicy);
+        if (selected == null) {
+            return;
+        }
+        sharedRedirectPolicy = RedirectPolicy.copyOf(selected);
+        if (sharedRedirectPolicy == null) {
+            sharedRedirectPolicy = RedirectPolicy.defaults();
+        }
+        sharedRedirectPolicy.normalize();
+        if (runner != null) {
+            runner.setRedirectPolicy(sharedRedirectPolicy);
+        }
+        notifyWorkspaceChangedImmediately();
+    }
+
     private void startImport(List<ApiRequest> selected, List<String> destinations, int delay) {
         if (requestEditor != null) {
             requestEditor.commitAllEdits();
@@ -10910,6 +11049,7 @@ public class ImporterPanel {
         runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
         runner.setStopConditions(buildRunnerStopConditionsFromUi());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
+        runner.setRedirectPolicy(sharedRedirectPolicy);
         runner.setDebugRawRequest(runnerDebugRawRequestBox.isSelected());
 
         resultModel.clear();
@@ -10969,6 +11109,7 @@ public class ImporterPanel {
                     }
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
                     resultModel.addEntry(entry);
+                    appendRedirectHopRows(result);
                     if (timelineModel != null) {
                         timelineModel.addRow(buildTimelineRow(result));
                     }

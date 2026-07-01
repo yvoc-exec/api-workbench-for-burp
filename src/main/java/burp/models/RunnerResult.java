@@ -6,7 +6,10 @@ import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Result of a single request in the Collection Runner.
@@ -20,6 +23,11 @@ public class RunnerResult {
     public String path;
     public String method;
     public String requestUrl;
+    public String initialResolvedUrl;
+    public String finalResolvedUrl;
+    public boolean redirectsEnabled;
+    public RedirectTerminationReason redirectTerminationReason = RedirectTerminationReason.NONE;
+    public List<RedirectHop> redirectHops = new ArrayList<>();
     public String requestHeaders;
     public String requestBody;
     public byte[] rawRequestBytes;
