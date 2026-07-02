@@ -9,16 +9,44 @@ import org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
 
-public class GraalJsSandboxEngine {
+public class GraalJsSandboxEngine implements AutoCloseable {
+    public static final long DEFAULT_TIMEOUT_MILLIS = 5_000L;
+    public static final long MIN_TIMEOUT_MILLIS = 100L;
+    public static final long MAX_TIMEOUT_MILLIS = 60_000L;
+
+    private static final Logger LOGGER = Logger.getLogger(GraalJsSandboxEngine.class.getName());
+    private static final AtomicInteger THREAD_ID = new AtomicInteger();
+
     private final boolean graalAvailable;
     private final boolean nashornFallbackAvailable;
     private final String engineName;
     private final String initializationFailure;
     private final String graalFailure;
     private final String nashornFailure;
+    private final ExecutorService executor;
+    private final Set<ActiveExecution> activeExecutions = ConcurrentHashMap.newKeySet();
+    private volatile long timeoutMillis;
 
     public GraalJsSandboxEngine() {
+        this(DEFAULT_TIMEOUT_MILLIS);
+    }
+
+    GraalJsSandboxEngine(long timeoutMillis) {
+        this.timeoutMillis = normalizeTimeout(timeoutMillis);
+        this.executor = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), daemonThreadFactory());
         ProbeOutcome graalProbe = probeGraalJs();
         this.graalAvailable = graalProbe.available;
         this.graalFailure = graalProbe.failure;
@@ -35,6 +63,10 @@ public class GraalJsSandboxEngine {
         this.initializationFailure = graalAvailable
                 ? null
                 : buildInitializationFailure(graalFailure, nashornFailure);
+    }
+
+    void setTimeoutMillisForTests(long timeoutMillis) {
+        this.timeoutMillis = normalizeTimeout(timeoutMillis);
     }
 
     public boolean isAvailable() {
@@ -66,20 +98,68 @@ public class GraalJsSandboxEngine {
     }
 
     public Object execute(String source, Map<String, Object> bindings) throws Exception {
+        return execute(source, bindings, timeoutMillis);
+    }
+
+    public Object execute(String source, Map<String, Object> bindings, long timeoutMillis) throws Exception {
         if (source == null || source.isBlank()) {
             return null;
         }
-        if (graalAvailable) {
-            return executeWithGraal(source, bindings);
+        long effectiveTimeout = normalizeTimeout(timeoutMillis);
+        ActiveExecution active = new ActiveExecution(effectiveTimeout);
+        Future<Object> future = executor.submit(() -> {
+            active.worker = Thread.currentThread();
+            try {
+                if (graalAvailable) {
+                    return executeWithGraal(source, bindings, active);
+                }
+                if (nashornFallbackAvailable) {
+                    return executeWithNashorn(source, bindings);
+                }
+                throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
+            } finally {
+                active.worker = null;
+            }
+        });
+        active.future = future;
+        activeExecutions.add(active);
+        try {
+            return future.get(effectiveTimeout, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            active.timedOut = true;
+            closeActiveContext(active);
+            future.cancel(true);
+            throw new ScriptTimedOutException(effectiveTimeout);
+        } catch (CancellationException e) {
+            throw new ScriptCancelledException();
+        } catch (InterruptedException e) {
+            active.cancelled = true;
+            closeActiveContext(active);
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new ScriptCancelledException();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (active.cancelled) {
+                throw new ScriptCancelledException();
+            }
+            if (active.timedOut) {
+                throw new ScriptTimedOutException(effectiveTimeout);
+            }
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            throw new Exception(cause);
+        } finally {
+            activeExecutions.remove(active);
+            closeActiveContext(active);
         }
-        if (nashornFallbackAvailable) {
-            return executeWithNashorn(source, bindings);
-        }
-        throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
     }
 
-    private Object executeWithGraal(String source, Map<String, Object> bindings) throws Exception {
-        try (Context context = createGraalContext()) {
+    private Object executeWithGraal(String source, Map<String, Object> bindings, ActiveExecution active) throws Exception {
+        Context context = createGraalContext();
+        active.context = context;
+        try {
             if (bindings != null) {
                 Value jsBindings = context.getBindings("js");
                 for (Map.Entry<String, Object> entry : bindings.entrySet()) {
@@ -92,12 +172,25 @@ public class GraalJsSandboxEngine {
             Value result = context.eval("js", source);
             return result == null || result.isNull() ? null : result.as(Object.class);
         } catch (PolyglotException e) {
+            if (active.cancelled) {
+                throw new ScriptCancelledException();
+            }
+            if (active.timedOut) {
+                throw new ScriptTimedOutException(active.timeoutMillis);
+            }
             throw new Exception(extractMessage(e), e);
+        } finally {
+            try {
+                context.close(false);
+            } catch (Throwable ignored) {
+            } finally {
+                active.context = null;
+            }
         }
     }
 
     private Object executeWithNashorn(String source, Map<String, Object> bindings) throws Exception {
-        javax.script.ScriptEngine engine = createNashornEngine();
+        javax.script.ScriptEngine engine = createFilteredNashornFallback();
         if (engine == null) {
             throw new IllegalStateException("No JavaScript engine available");
         }
@@ -120,6 +213,7 @@ public class GraalJsSandboxEngine {
                 .allowHostClassLookup(className -> false)
                 .allowIO(false)
                 .allowCreateThread(false)
+                .option("engine.WarnInterpreterOnly", "false")
                 .option("js.ecmascript-version", "2023")
                 .build();
     }
@@ -141,7 +235,7 @@ public class GraalJsSandboxEngine {
 
     private ProbeOutcome probeNashornFallback() {
         try {
-            javax.script.ScriptEngine engine = createNashornEngine();
+            javax.script.ScriptEngine engine = createFilteredNashornFallback();
             if (engine == null) {
                 return ProbeOutcome.unavailable("No Nashorn or JavaScript engine found");
             }
@@ -155,19 +249,12 @@ public class GraalJsSandboxEngine {
         }
     }
 
-    private javax.script.ScriptEngine createNashornEngine() {
+    private javax.script.ScriptEngine createFilteredNashornFallback() {
         try {
-            javax.script.ScriptEngineManager manager = new javax.script.ScriptEngineManager();
-            javax.script.ScriptEngine engine = manager.getEngineByName("nashorn");
-            if (engine == null) {
-                engine = manager.getEngineByName("javascript");
-            }
-            if (engine != null) {
-                return engine;
-            }
             NashornScriptEngineFactory factory = new NashornScriptEngineFactory();
+            LOGGER.warning("Using filtered Nashorn fallback with deny-all host class access.");
             return factory.getScriptEngine(new DenyAllClassFilter());
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
             return null;
         }
     }
@@ -258,6 +345,80 @@ public class GraalJsSandboxEngine {
         @Override
         public boolean exposeToScripts(String s) {
             return false;
+        }
+    }
+
+    public void cancelActiveExecutions() {
+        for (ActiveExecution active : activeExecutions) {
+            active.cancelled = true;
+            closeActiveContext(active);
+            Future<Object> future = active.future;
+            if (future != null) {
+                future.cancel(true);
+            }
+            Thread worker = active.worker;
+            if (worker != null) {
+                worker.interrupt();
+            }
+        }
+    }
+
+    @Override
+    public void close() {
+        cancelActiveExecutions();
+        executor.shutdownNow();
+    }
+
+    private static long normalizeTimeout(long configuredTimeout) {
+        if (configuredTimeout <= 0) {
+            return DEFAULT_TIMEOUT_MILLIS;
+        }
+        return Math.max(MIN_TIMEOUT_MILLIS, Math.min(MAX_TIMEOUT_MILLIS, configuredTimeout));
+    }
+
+    private static ThreadFactory daemonThreadFactory() {
+        return runnable -> {
+            Thread thread = new Thread(runnable, "api-workbench-script-" + THREAD_ID.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private static void closeActiveContext(ActiveExecution active) {
+        if (active == null || active.context == null) {
+            return;
+        }
+        try {
+            active.context.close(true);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static final class ActiveExecution {
+        final long timeoutMillis;
+        volatile Context context;
+        volatile Future<Object> future;
+        volatile Thread worker;
+        volatile boolean timedOut;
+        volatile boolean cancelled;
+
+        ActiveExecution(long timeoutMillis) {
+            this.timeoutMillis = timeoutMillis;
+        }
+    }
+
+    public static class ScriptTimedOutException extends Exception {
+        public final long timeoutMillis;
+
+        ScriptTimedOutException(long timeoutMillis) {
+            super("Script timed out after " + timeoutMillis + " ms");
+            this.timeoutMillis = timeoutMillis;
+        }
+    }
+
+    public static class ScriptCancelledException extends Exception {
+        ScriptCancelledException() {
+            super("Script execution cancelled");
         }
     }
 }

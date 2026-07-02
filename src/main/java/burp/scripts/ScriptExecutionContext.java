@@ -257,7 +257,7 @@ public class ScriptExecutionContext {
         return request != null ? request.url : "";
     }
 
-    private static ApiRequest copyRequest(ApiRequest source) {
+    public static ApiRequest copyRequest(ApiRequest source) {
         if (source == null) {
             return new ApiRequest();
         }

@@ -1697,6 +1697,9 @@ public class CollectionRunner {
 
     public void cancel() {
         cancelled = true;
+        if (pipeline != null) {
+            pipeline.cancelActiveScriptExecutions();
+        }
         synchronized (pauseLock) {
             pauseRequested = false;
             singleStepRequested = false;

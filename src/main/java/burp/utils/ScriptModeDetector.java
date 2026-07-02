@@ -1,7 +1,5 @@
 package burp.utils;
 
-import javax.script.ScriptEngineManager;
-
 /**
  * Detects script execution capability based on Java version and JavaScript runtime availability.
  */
@@ -77,35 +75,6 @@ public class ScriptModeDetector {
     }
 
     static String probeJavaScriptRuntimeLegacy() {
-        try {
-            ScriptEngineManager manager = new ScriptEngineManager();
-            javax.script.ScriptEngine engine = manager.getEngineByName("nashorn");
-            if (engine == null) {
-                engine = manager.getEngineByName("javascript");
-            }
-            if (engine == null) {
-                try {
-                    Class<?> factoryClass = Class.forName("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
-                    Object factory = factoryClass.getDeclaredConstructor().newInstance();
-                    engine = (javax.script.ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
-                } catch (Throwable ex) {
-                    return "Nashorn factory not available: " + ex.getMessage();
-                }
-            }
-            if (engine == null) {
-                return "No Nashorn or JavaScript engine found";
-            }
-            try {
-                Object result = engine.eval("1+1");
-                if (result == null || !"2".equals(result.toString())) {
-                    return "Nashorn eval returned unexpected result: " + result;
-                }
-            } catch (Exception e) {
-                return "Nashorn eval failed: " + e.getMessage();
-            }
-            return null; // success
-        } catch (Throwable t) {
-            return "JavaScript probe failed: " + t.getClass().getSimpleName() + ": " + t.getMessage();
-        }
+        return probeJavaScriptRuntime();
     }
 }

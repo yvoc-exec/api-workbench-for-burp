@@ -46,6 +46,11 @@ import java.util.*;
  * Default placeholder values are applied only when a key remains unresolved.
  */
 public class SharedRequestPipeline {
+    enum ExecutionIntent {
+        PREVIEW,
+        LIVE
+    }
+
     public interface OAuth2TokenSink {
         Map<String, String> store(ApiCollection collection, TokenStore.TokenEntry entry);
     }
@@ -185,7 +190,10 @@ public class SharedRequestPipeline {
                                             ExecutionSource executionSource,
                                             burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
                                             RedirectPolicy redirectPolicy) {
-        ExecutionSource effectiveSource = executionSource != null ? executionSource : (sendRequest ? ExecutionSource.WORKBENCH_SEND : ExecutionSource.BUILD_PREVIEW);
+        ExecutionIntent intent = sendRequest ? ExecutionIntent.LIVE : ExecutionIntent.PREVIEW;
+        ExecutionSource effectiveSource = intent == ExecutionIntent.PREVIEW
+                ? ExecutionSource.BUILD_PREVIEW
+                : (executionSource != null ? executionSource : ExecutionSource.WORKBENCH_SEND);
         if (result != null) {
             result.executionSource = effectiveSource;
             result.scriptEngineName = unifiedScriptRuntime != null ? unifiedScriptRuntime.getEngineName() : "Unavailable";
@@ -194,26 +202,30 @@ public class SharedRequestPipeline {
         }
         recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                 col, req, activeEnvironment, "Request build started", null);
-        Map<String, String> scriptContext = buildInitialRuntimeOverlay(col, runtimeOverlay, activeEnvironment);
+        ApiCollection executionCollection = intent == ExecutionIntent.PREVIEW ? copyCollectionForPreview(col) : col;
+        EnvironmentProfile executionEnvironment = intent == ExecutionIntent.PREVIEW && activeEnvironment != null ? activeEnvironment.copy() : activeEnvironment;
+        ApiRequest effectiveRequest = intent == ExecutionIntent.PREVIEW ? burp.scripts.ScriptExecutionContext.copyRequest(req) : req;
+        burp.scripts.ScriptDependentRequestExecutor scriptDependentExecutor = intent == ExecutionIntent.PREVIEW ? null : dependentRequestExecutor;
+        Map<String, String> scriptContext = buildInitialRuntimeOverlay(executionCollection, runtimeOverlay, executionEnvironment);
         Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
-        ApiRequest effectiveRequest = req;
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
             if (shouldUseUnifiedRuntime()) {
                 ScriptExecutionResult scriptResult = unifiedScriptRuntime.executePreRequest(
-                        col,
-                        req,
-                        activeEnvironment,
+                        executionCollection,
+                        effectiveRequest,
+                        executionEnvironment,
                         effectiveSource,
                         1,
-                        dependentRequestExecutor
+                        scriptDependentExecutor
                 );
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
                 applyRuntimeMutations(scriptContext, scriptResult);
-                commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
-                        runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                if (intent == ExecutionIntent.LIVE) {
+                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                }
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
                 if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
@@ -229,21 +241,21 @@ public class SharedRequestPipeline {
                 }
             } else if (scriptEngine != null && col != null) {
                 VariableResolver legacyResolver = RuntimeResolverFactory.build(
-                        col,
-                        req,
+                        executionCollection,
+                        effectiveRequest,
                         RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
                 );
-                scriptEngine.executePreRequest(req, legacyResolver, scriptContext);
+                scriptEngine.executePreRequest(effectiveRequest, legacyResolver, scriptContext);
             }
 
             VariableResolver resolver = RuntimeResolverFactory.build(
-                    col,
+                    executionCollection,
                     effectiveRequest,
                     RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
             );
 
             // 2. OAuth2 token refresh if needed
-            if (oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
+            if (intent == ExecutionIntent.LIVE && oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
                 try {
                         OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
                         if (config.isValid()) {
@@ -368,9 +380,9 @@ public class SharedRequestPipeline {
 
                     if (shouldUseUnifiedRuntime()) {
                         ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
-                                col,
+                                executionCollection,
                         effectiveRequest,
-                        activeEnvironment,
+                        executionEnvironment,
                         effectiveSource,
                         1,
                         body,
@@ -378,11 +390,10 @@ public class SharedRequestPipeline {
                         headersMap,
                         result.elapsedMs,
                         scriptResult,
-                        dependentRequestExecutor
+                        scriptDependentExecutor
                         );
                         applyRuntimeMutations(scriptContext, postResult);
-                        commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
-                                runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                        commitScriptVariableMutations(postResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                         mergeScriptResult(result, postResult);
                         mergeScriptResult(scriptResult, postResult);
                         recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
@@ -418,10 +429,18 @@ public class SharedRequestPipeline {
                 }
             }
 
-            commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
-                    runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+            if (intent == ExecutionIntent.LIVE && !shouldUseUnifiedRuntime()) {
+                commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
+                        runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+            }
         }
         return result;
+    }
+
+    public void cancelActiveScriptExecutions() {
+        if (unifiedScriptRuntime != null) {
+            unifiedScriptRuntime.cancelActiveExecutions();
+        }
     }
 
     private boolean shouldUseUnifiedRuntime() {
@@ -465,7 +484,10 @@ public class SharedRequestPipeline {
                 continue;
             }
             if (mutation.newValue == null) {
-                scriptContext.remove(mutation.key);
+                String scope = normalizeScope(mutation.scope);
+                if (!"local".equals(scope) && !"request".equals(scope)) {
+                    scriptContext.remove(mutation.key);
+                }
             } else {
                 scriptContext.put(mutation.key, mutation.newValue);
             }
@@ -507,6 +529,203 @@ public class SharedRequestPipeline {
         baselineContext.putAll(scriptContext);
         baselineKeys.clear();
         baselineKeys.addAll(scriptContext.keySet());
+    }
+
+    private void commitScriptVariableMutations(ScriptExecutionResult scriptResult,
+                                               Map<String, String> runtimeOverlay,
+                                               RuntimeVariableSink runtimeVariableSink,
+                                               ApiCollection col,
+                                               ApiRequest req,
+                                               EnvironmentProfile activeEnvironment,
+                                               ExecutionSource effectiveSource) {
+        if (scriptResult == null || scriptResult.variableMutations == null || scriptResult.variableMutations.isEmpty()) {
+            return;
+        }
+        Map<String, String> collectionChanged = new LinkedHashMap<>();
+        Set<String> collectionRemoved = new LinkedHashSet<>();
+        Map<String, String> environmentChanged = new LinkedHashMap<>();
+        Set<String> environmentRemoved = new LinkedHashSet<>();
+        Set<String> warnedGlobalKeys = new LinkedHashSet<>();
+
+        for (burp.scripts.ScriptVariableMutation mutation : scriptResult.variableMutations) {
+            if (mutation == null || mutation.key == null || mutation.key.isBlank()) {
+                continue;
+            }
+            String scope = normalizeScope(mutation.scope);
+            switch (scope) {
+                case "local", "request" -> {
+                    // Execution-only; resolver already saw these mutations for this request.
+                }
+                case "environment" -> {
+                    if (mutation.newValue == null) {
+                        environmentChanged.remove(mutation.key);
+                        environmentRemoved.add(mutation.key);
+                    } else {
+                        environmentRemoved.remove(mutation.key);
+                        environmentChanged.put(mutation.key, mutation.newValue);
+                    }
+                }
+                case "collection" -> {
+                    if (mutation.newValue == null) {
+                        collectionChanged.remove(mutation.key);
+                        collectionRemoved.add(mutation.key);
+                    } else {
+                        collectionRemoved.remove(mutation.key);
+                        collectionChanged.put(mutation.key, mutation.newValue);
+                    }
+                }
+                case "folder" -> applyFolderMutation(col, req, mutation);
+                case "global" -> {
+                    if (warnedGlobalKeys.add(mutation.key)) {
+                        scriptResult.warnings.add("Global variable persistence is unsupported; value kept for this execution only.");
+                    }
+                }
+                default -> {
+                    // Unknown scope is treated as execution-only to avoid leaking into collection runtime state.
+                }
+            }
+        }
+
+        if (!environmentChanged.isEmpty() || !environmentRemoved.isEmpty()) {
+            if (activeEnvironment != null) {
+                activeEnvironment.ensureDefaults();
+                for (String key : environmentRemoved) {
+                    activeEnvironment.variables.remove(key);
+                }
+                for (Map.Entry<String, String> entry : environmentChanged.entrySet()) {
+                    activeEnvironment.variables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+                }
+            } else if (runtimeVariableSink != null && runtimeOverlay != null) {
+                runtimeVariableSink.apply(col, environmentChanged, environmentRemoved);
+            }
+        }
+
+        if (col != null && (!collectionChanged.isEmpty() || !collectionRemoved.isEmpty())) {
+            col.applyRuntimeVarDelta(collectionChanged, collectionRemoved);
+        }
+
+        recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
+                col, req, activeEnvironment, "Script variable mutations committed",
+                "collectionChanged=" + collectionChanged.keySet()
+                        + " collectionRemoved=" + collectionRemoved
+                        + " environmentChanged=" + environmentChanged.keySet()
+                        + " environmentRemoved=" + environmentRemoved);
+    }
+
+    private String normalizeScope(String scope) {
+        if (scope == null || scope.isBlank()) {
+            return "local";
+        }
+        String normalized = scope.trim().toLowerCase(Locale.ROOT);
+        if ("globals".equals(normalized)) {
+            return "global";
+        }
+        return normalized;
+    }
+
+    private void applyFolderMutation(ApiCollection col, ApiRequest req, burp.scripts.ScriptVariableMutation mutation) {
+        if (col == null || req == null || mutation == null || mutation.key == null || mutation.key.isBlank()) {
+            return;
+        }
+        String folderPath = RequestPathResolver.getRequestFolderPath(col, req);
+        if (folderPath == null || folderPath.isBlank()) {
+            return;
+        }
+        if (col.folderVars == null) {
+            col.folderVars = new LinkedHashMap<>();
+        }
+        Map<String, String> folderVars = col.folderVars.computeIfAbsent(folderPath, k -> new LinkedHashMap<>());
+        if (mutation.newValue == null) {
+            folderVars.remove(mutation.key);
+        } else {
+            folderVars.put(mutation.key, mutation.newValue);
+        }
+    }
+
+    private ApiCollection copyCollectionForPreview(ApiCollection source) {
+        if (source == null) {
+            return null;
+        }
+        ApiCollection copy = new ApiCollection();
+        copy.id = source.id;
+        copy.name = source.name;
+        copy.description = source.description;
+        copy.format = source.format;
+        copy.version = source.version;
+        copy.requests = new ArrayList<>();
+        if (source.requests != null) {
+            for (ApiRequest request : source.requests) {
+                copy.requests.add(burp.scripts.ScriptExecutionContext.copyRequest(request));
+            }
+        }
+        copy.folderPaths = source.folderPaths != null ? new ArrayList<>(source.folderPaths) : new ArrayList<>();
+        copy.variables = new ArrayList<>();
+        if (source.variables != null) {
+            for (ApiRequest.Variable variable : source.variables) {
+                if (variable == null) {
+                    continue;
+                }
+                ApiRequest.Variable v = new ApiRequest.Variable();
+                v.key = variable.key;
+                v.value = variable.value;
+                v.type = variable.type;
+                v.enabled = variable.enabled;
+                copy.variables.add(v);
+            }
+        }
+        copy.folderVars = copyNestedStringMap(source.folderVars);
+        copy.environment = source.environment != null ? new LinkedHashMap<>(source.environment) : new LinkedHashMap<>();
+        copy.runtimeVars = source.runtimeVars != null ? new LinkedHashMap<>(source.runtimeVars) : new LinkedHashMap<>();
+        copy.runtimeOAuth2 = source.runtimeOAuth2 != null ? new LinkedHashMap<>(source.runtimeOAuth2) : new LinkedHashMap<>();
+        copy.auth = copyAuth(source.auth);
+        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
+        copy.folderScriptBlocks = new LinkedHashMap<>();
+        if (source.folderScriptBlocks != null) {
+            for (Map.Entry<String, List<burp.scripts.ScriptBlock>> entry : source.folderScriptBlocks.entrySet()) {
+                copy.folderScriptBlocks.put(entry.getKey(), copyScriptBlocks(entry.getValue()));
+            }
+        }
+        copy.folderAuthModes = source.folderAuthModes != null ? new LinkedHashMap<>(source.folderAuthModes) : new LinkedHashMap<>();
+        copy.folderAuth = new LinkedHashMap<>();
+        if (source.folderAuth != null) {
+            for (Map.Entry<String, ApiRequest.Auth> entry : source.folderAuth.entrySet()) {
+                copy.folderAuth.put(entry.getKey(), copyAuth(entry.getValue()));
+            }
+        }
+        return copy;
+    }
+
+    private Map<String, Map<String, String>> copyNestedStringMap(Map<String, Map<String, String>> source) {
+        Map<String, Map<String, String>> out = new LinkedHashMap<>();
+        if (source != null) {
+            for (Map.Entry<String, Map<String, String>> entry : source.entrySet()) {
+                out.put(entry.getKey(), entry.getValue() != null ? new LinkedHashMap<>(entry.getValue()) : new LinkedHashMap<>());
+            }
+        }
+        return out;
+    }
+
+    private List<burp.scripts.ScriptBlock> copyScriptBlocks(List<burp.scripts.ScriptBlock> source) {
+        List<burp.scripts.ScriptBlock> out = new ArrayList<>();
+        if (source != null) {
+            for (burp.scripts.ScriptBlock block : source) {
+                burp.scripts.ScriptBlock copy = burp.scripts.ScriptBlock.copyOf(block);
+                if (copy != null) {
+                    out.add(copy);
+                }
+            }
+        }
+        return out;
+    }
+
+    private ApiRequest.Auth copyAuth(ApiRequest.Auth source) {
+        if (source == null) {
+            return null;
+        }
+        ApiRequest.Auth copy = new ApiRequest.Auth();
+        copy.type = source.type;
+        copy.properties = source.properties != null ? new LinkedHashMap<>(source.properties) : new LinkedHashMap<>();
+        return copy;
     }
 
     private void mergeScriptResult(ExecutionResult executionResult, ScriptExecutionResult scriptResult) {

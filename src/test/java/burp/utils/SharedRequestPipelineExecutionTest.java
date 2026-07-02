@@ -68,8 +68,9 @@ class SharedRequestPipelineExecutionTest {
         assertThat(result.assertions.get(0).passed).isTrue();
         assertThat(result.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("post-response"));
         assertThat(collection.runtimeVars)
-                .containsEntry("token", "pre-token")
-                .containsEntry("response_token", "resp-123");
+                .doesNotContainKey("token")
+                .doesNotContainKey("response_token");
+        assertThat(result.scriptVariableMutations).extracting(m -> m.scope).contains("environment");
     }
 
     @Test
