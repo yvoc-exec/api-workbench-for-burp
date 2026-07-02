@@ -541,7 +541,6 @@ public class SharedRequestPipeline implements AutoCloseable {
                                                EnvironmentProfile activeEnvironment,
                                                ExecutionSource effectiveSource) {
         if (scriptResult == null
-                || !scriptResult.success
                 || scriptResult.timedOut
                 || scriptResult.cancelled
                 || scriptResult.variableMutations == null
@@ -554,8 +553,10 @@ public class SharedRequestPipeline implements AutoCloseable {
         Set<String> warnedGlobalKeys = new LinkedHashSet<>();
         Set<String> warnedEnvironmentKeys = new LinkedHashSet<>();
         Set<String> warnedFolderKeys = new LinkedHashSet<>();
-        Map<String, String> runtimeEnvironmentChanges = new LinkedHashMap<>();
-        Set<String> runtimeEnvironmentRemoved = new LinkedHashSet<>();
+        Map<String, String> persistedEnvironmentBefore = null;
+        Map<String, String> persistedEnvironmentAfter = null;
+        Map<String, String> runtimeEnvironmentBefore = null;
+        Map<String, String> runtimeEnvironmentAfter = null;
 
         for (burp.scripts.ScriptVariableMutation mutation : scriptResult.variableMutations) {
             if (mutation == null || mutation.key == null || mutation.key.isBlank()) {
@@ -575,27 +576,24 @@ public class SharedRequestPipeline implements AutoCloseable {
                     }
                     activeEnvironment.ensureDefaults();
                     if (mutation.persistent) {
-                        if (mutation.newValue == null) {
-                            if (activeEnvironment.variables.containsKey(mutation.key)) {
-                                activeEnvironment.variables.remove(mutation.key);
-                                persistedEnvironmentChanged = true;
-                            }
-                        } else {
-                            String value = mutation.newValue;
-                            String current = activeEnvironment.variables.put(mutation.key, value);
-                            if (!Objects.equals(current, value)) {
-                                persistedEnvironmentChanged = true;
-                            }
+                        if (persistedEnvironmentBefore == null) {
+                            persistedEnvironmentBefore = new LinkedHashMap<>(activeEnvironment.variables);
+                            persistedEnvironmentAfter = new LinkedHashMap<>(persistedEnvironmentBefore);
                         }
+                    } else if (runtimeEnvironmentBefore == null) {
+                        runtimeEnvironmentBefore = new LinkedHashMap<>(activeEnvironment.runtimeVariables);
+                        runtimeEnvironmentAfter = new LinkedHashMap<>(runtimeEnvironmentBefore);
+                    }
+                    if (mutation.persistent) {
+                        if (mutation.newValue == null) {
+                            persistedEnvironmentAfter.remove(mutation.key);
+                        } else {
+                            persistedEnvironmentAfter.put(mutation.key, mutation.newValue);
+                        }
+                    } else if (mutation.newValue == null) {
+                        runtimeEnvironmentAfter.remove(mutation.key);
                     } else {
-                        if (mutation.newValue == null) {
-                            runtimeEnvironmentChanges.remove(mutation.key);
-                            runtimeEnvironmentRemoved.add(mutation.key);
-                        } else {
-                            runtimeEnvironmentRemoved.remove(mutation.key);
-                            runtimeEnvironmentChanges.put(mutation.key, mutation.newValue);
-                        }
-                        runtimeEnvironmentChanged = true;
+                        runtimeEnvironmentAfter.put(mutation.key, mutation.newValue);
                     }
                 }
                 case "collection" -> {
@@ -678,16 +676,47 @@ public class SharedRequestPipeline implements AutoCloseable {
             col.fireChanged();
         }
 
-        if (activeEnvironment != null && (!runtimeEnvironmentChanges.isEmpty() || !runtimeEnvironmentRemoved.isEmpty())) {
-            activeEnvironment.ensureDefaults();
-            if (runtimeVariableSink != null) {
-                runtimeVariableSink.apply(col, runtimeEnvironmentChanges, runtimeEnvironmentRemoved);
-            } else {
-                for (String key : runtimeEnvironmentRemoved) {
-                    activeEnvironment.runtimeVariables.remove(key);
+        if (activeEnvironment != null && persistedEnvironmentBefore != null && persistedEnvironmentAfter != null
+                && !Objects.equals(persistedEnvironmentBefore, persistedEnvironmentAfter)) {
+            persistedEnvironmentChanged = true;
+            for (String key : persistedEnvironmentBefore.keySet()) {
+                if (!persistedEnvironmentAfter.containsKey(key)) {
+                    activeEnvironment.variables.remove(key);
                 }
-                for (Map.Entry<String, String> entry : runtimeEnvironmentChanges.entrySet()) {
-                    activeEnvironment.runtimeVariables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+            }
+            for (Map.Entry<String, String> entry : persistedEnvironmentAfter.entrySet()) {
+                if (!Objects.equals(persistedEnvironmentBefore.get(entry.getKey()), entry.getValue())) {
+                    activeEnvironment.variables.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+
+        Map<String, String> runtimeEnvironmentChanges = new LinkedHashMap<>();
+        Set<String> runtimeEnvironmentRemoved = new LinkedHashSet<>();
+        if (activeEnvironment != null && runtimeEnvironmentBefore != null && runtimeEnvironmentAfter != null
+                && !Objects.equals(runtimeEnvironmentBefore, runtimeEnvironmentAfter)) {
+            for (String key : runtimeEnvironmentBefore.keySet()) {
+                if (!runtimeEnvironmentAfter.containsKey(key)) {
+                    runtimeEnvironmentRemoved.add(key);
+                }
+            }
+            for (Map.Entry<String, String> entry : runtimeEnvironmentAfter.entrySet()) {
+                if (!Objects.equals(runtimeEnvironmentBefore.get(entry.getKey()), entry.getValue())) {
+                    runtimeEnvironmentChanges.put(entry.getKey(), entry.getValue());
+                }
+            }
+            runtimeEnvironmentChanged = !runtimeEnvironmentChanges.isEmpty() || !runtimeEnvironmentRemoved.isEmpty();
+            if (runtimeEnvironmentChanged) {
+                activeEnvironment.ensureDefaults();
+                if (runtimeVariableSink != null) {
+                    runtimeVariableSink.apply(col, runtimeEnvironmentChanges, runtimeEnvironmentRemoved);
+                } else {
+                    for (String key : runtimeEnvironmentRemoved) {
+                        activeEnvironment.runtimeVariables.remove(key);
+                    }
+                    for (Map.Entry<String, String> entry : runtimeEnvironmentChanges.entrySet()) {
+                        activeEnvironment.runtimeVariables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+                    }
                 }
             }
         }
