@@ -28,8 +28,8 @@ class ImporterPanelExactTransportModeIntegrationTest {
     @Test
     void buildModeToggleDoesNotPersistPendingEditorState() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
-        AtomicInteger workspaceNotifications = new AtomicInteger();
-        bundle.panel.setWorkspaceChangeListener(workspaceNotifications::incrementAndGet);
+        AtomicInteger genericWorkspaceNotifications = new AtomicInteger();
+        bundle.panel.setWorkspaceChangeListener(genericWorkspaceNotifications::incrementAndGet);
 
         ApiCollection collection = new ApiCollection();
         collection.id = "col-pending-toggle";
@@ -72,12 +72,18 @@ class ImporterPanelExactTransportModeIntegrationTest {
                 Duration.ofSeconds(3));
         ImporterPanelTestSupport.awaitEdt();
 
-        int notificationsBeforeToggle = workspaceNotifications.get();
+        int notificationsBeforeToggle = genericWorkspaceNotifications.get();
 
         SwingUtilities.invokeAndWait(() -> {
-            headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
-            headersModel(editor).addRow(new Object[]{"X-Duplicate", "one"});
-            headersModel(editor).addRow(new Object[]{"X-Duplicate", "two"});
+            try {
+                ImporterPanelTestSupport.setField(editor, "loadingRequest", true);
+                headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
+                headersModel(editor).addRow(new Object[]{"X-Duplicate", "one"});
+                headersModel(editor).addRow(new Object[]{"X-Duplicate", "two"});
+                ImporterPanelTestSupport.setField(editor, "loadingRequest", false);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
             editor.getUrlField().setText("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
             paramsModel(editor).setRowCount(0);
             paramsModel(editor).addRow(new Object[]{"q", "pending value"});
@@ -97,7 +103,9 @@ class ImporterPanelExactTransportModeIntegrationTest {
         assertThat(liveRequest).usingRecursiveComparison()
                 .ignoringFields("buildMode")
                 .isEqualTo(snapshotBeforeToggle);
-        assertThat(workspaceNotifications.get()).isGreaterThan(notificationsBeforeToggle);
+        assertThat(genericWorkspaceNotifications.get()).isEqualTo(notificationsBeforeToggle);
+        assertThat(editor.isExactTransportHeadersSelectedForTests()).isTrue();
+        assertThat(editor.getExactTransportIndicatorForTests().isVisible()).isTrue();
         assertThat(editor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
         assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), 1)).isEqualTo("application/xml");
         assertThat(editor.getBodyRawAreaForTests().getText()).isEqualTo("pending-body");
@@ -115,6 +123,9 @@ class ImporterPanelExactTransportModeIntegrationTest {
         assertThat(liveRequest).usingRecursiveComparison()
                 .ignoringFields("buildMode")
                 .isEqualTo(snapshotBeforeToggle);
+        assertThat(genericWorkspaceNotifications.get()).isEqualTo(notificationsBeforeToggle);
+        assertThat(editor.isExactTransportHeadersSelectedForTests()).isFalse();
+        assertThat(editor.getExactTransportIndicatorForTests().isVisible()).isFalse();
         assertThat(editor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
         assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), 1)).isEqualTo("application/xml");
         assertThat(editor.getBodyRawAreaForTests().getText()).isEqualTo("pending-body");

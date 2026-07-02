@@ -301,8 +301,6 @@ public class ImporterPanel {
     // Workspace persistence callback
     private Runnable workspaceChangeListener;
     private boolean suppressWorkspaceChangeNotifications = false;
-    private boolean suppressNextWorkspaceChangeNotification = false;
-    private boolean suppressNextCollectionRuntimeRefresh = false;
     private boolean suppressRequestTreeSelectionPersistence = false;
     private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
     // Send mode is tracked by the RequestEditorPanel send button label
@@ -341,10 +339,6 @@ public class ImporterPanel {
     }
 
     private void notifyWorkspaceChanged() {
-        if (suppressNextWorkspaceChangeNotification) {
-            suppressNextWorkspaceChangeNotification = false;
-            return;
-        }
         if (shuttingDown || suppressWorkspaceChangeNotifications) {
             return;
         }
@@ -363,13 +357,15 @@ public class ImporterPanel {
         }
     }
 
-    private void notifyWorkspaceModelChangedImmediately() {
+    private void handleRequestBuildModeChanged() {
         if (shuttingDown || suppressWorkspaceChangeNotifications) {
             return;
         }
+        ApiCollection collection = requestEditor != null ? requestEditor.getCurrentCollection() : null;
+        if (collection != null) {
+            refreshRuntimeViewsForCollection(collection);
+        }
         if (importer != null) {
-            suppressNextCollectionRuntimeRefresh = true;
-            suppressNextWorkspaceChangeNotification = true;
             importer.requestWorkspaceStateSaveNowFromModel();
         }
     }
@@ -612,9 +608,7 @@ public class ImporterPanel {
             runWithWorkspaceChangeNotificationsSuppressed(this::persistCurrentRequestEditorState);
             notifyWorkspaceChangedImmediately();
         });
-        requestEditor.setRequestBuildModeChangeListener(() -> {
-            notifyWorkspaceModelChangedImmediately();
-        });
+        requestEditor.setRequestBuildModeChangeListener(this::handleRequestBuildModeChanged);
         requestEditor.setFollowRedirectsChangeListener(selected -> notifyWorkspaceChanged());
         requestEditor.setRedirectPolicyAction(this::showRedirectPolicyDialog);
 
@@ -7086,10 +7080,6 @@ public class ImporterPanel {
             if (shuttingDown) {
                 return;
             }
-            if (suppressNextCollectionRuntimeRefresh) {
-                suppressNextCollectionRuntimeRefresh = false;
-                return;
-            }
             refreshRuntimeViewsForCollection(col);
             notifyWorkspaceChanged();
         }));
@@ -7100,21 +7090,18 @@ public class ImporterPanel {
     }
 
     public WorkspaceState getWorkspaceStateSnapshot() {
-        return buildWorkspaceStateSnapshot(true);
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            commitOAuth2ConfigUiToActiveEnvironment();
+            persistCurrentRequestEditorState();
+        });
+        return copyWorkspaceStateFromModel();
     }
 
     public WorkspaceState getWorkspaceStateSnapshotFromModel() {
-        return buildWorkspaceStateSnapshot(false);
+        return copyWorkspaceStateFromModel();
     }
 
-    private WorkspaceState buildWorkspaceStateSnapshot(boolean persistRequestEditorState) {
-        runWithWorkspaceChangeNotificationsSuppressed(() -> {
-            commitOAuth2ConfigUiToActiveEnvironment();
-            if (persistRequestEditorState) {
-                persistCurrentRequestEditorState();
-            }
-        });
-
+    private WorkspaceState copyWorkspaceStateFromModel() {
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
         state.environments = getEnvironmentProfilesSnapshot();
         state.activeEnvironmentId = activeEnvironmentId;

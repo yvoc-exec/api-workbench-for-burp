@@ -13,6 +13,7 @@ import burp.utils.DebouncedSwingAction;
 import burp.utils.WorkspaceStateJson;
 import burp.utils.WorkspaceStateService;
 import burp.ui.ImporterPanel;
+import burp.ui.OAuth2Panel;
 import burp.ui.RequestEditorPanel;
 import burp.ui.tree.CollectionTreeNode;
 import burp.testsupport.ImporterPanelTestSupport;
@@ -307,6 +308,221 @@ class UniversalImporterWorkspaceSaveTest {
         assertThat(restoredRequest).usingRecursiveComparison()
                 .ignoringFields("buildMode")
                 .isEqualTo(snapshotBeforeToggle);
+    }
+
+    @Test
+    void modelOnlySnapshotDoesNotCommitAnyEditorDraft() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-model-only";
+        collection.name = "Model Only";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-model-only";
+        request.name = "Model Only Request";
+        request.method = "POST";
+        request.url = "https://model.example.test/original";
+        request.description = "Original description";
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = true;
+        request.headers = new ArrayList<>();
+        request.headers.add(new ApiRequest.Header("Accept", "application/json"));
+        request.headers.add(new ApiRequest.Header("X-Original", "one"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "original-body";
+        request.body.contentType = "text/plain";
+        request.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "console.log(\"original\");")));
+        collection.requests.add(request);
+
+        EnvironmentProfile active = new EnvironmentProfile();
+        active.id = "env-model-only";
+        active.name = "Model Only Env";
+        active.variables.put("baseUrl", "https://model.example.test");
+        active.oauth2.config.put("oauth2_client_id", "model-client");
+
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+        state.environments = new ArrayList<>(List.of(active));
+        state.activeEnvironmentId = active.id;
+        bundle.panel.restoreWorkspaceState(state);
+        ImporterPanelTestSupport.awaitEdt();
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+        JTree tree = ImporterPanelTestSupport.getField(bundle.panel, "requestTree");
+        CollectionTreeNode requestNode = findRequestNode((DefaultMutableTreeNode) tree.getModel().getRoot(), liveRequest.id);
+        assertThat(requestNode).isNotNull();
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(requestNode.getPath())));
+        RequestEditorPanel editor = requestEditor(bundle.panel);
+        ImporterPanelTestSupport.awaitCondition(
+                () -> editor.getCurrentRequest() == liveRequest,
+                Duration.ofSeconds(3));
+        ImporterPanelTestSupport.awaitEdt();
+
+        WorkspaceState baselineSnapshot = bundle.panel.getWorkspaceStateSnapshotFromModel();
+
+        JTextArea environmentRawArea = (JTextArea) privateField(bundle.panel, "environmentRawArea");
+        OAuth2Panel oauth2Panel = (OAuth2Panel) privateField(bundle.panel, "oauth2Panel");
+        JTextField oauth2ClientIdField = (JTextField) privateField(oauth2Panel, "clientIdField");
+
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                setField(editor, "loadingRequest", true);
+                headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
+                headersModel(editor).addRow(new Object[]{"X-Pending", "draft"});
+                setField(editor, "loadingRequest", false);
+                editor.getUrlField().setText("https://model.example.test/pending?x=1");
+                bodyRawArea(editor).setText("pending-body");
+                preScriptArea(editor).setText("console.log(\"pending\");");
+                environmentRawArea.setText("baseUrl=https://draft.example.test\nother=draft");
+                oauth2ClientIdField.setText("draft-client");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+        ImporterPanelTestSupport.awaitEdt();
+
+        assertThat((Boolean) privateField(bundle.panel, "environmentDirty")).isTrue();
+        assertThat((Boolean) privateField(bundle.panel, "oauth2ConfigDirty")).isTrue();
+
+        WorkspaceState snapshot = bundle.panel.getWorkspaceStateSnapshotFromModel();
+        assertThat(snapshot).usingRecursiveComparison().isEqualTo(baselineSnapshot);
+        assertThat(snapshot.collections.get(0).requests.get(0).url).isEqualTo("https://model.example.test/original");
+        assertThat(snapshot.collections.get(0).requests.get(0).body.raw).isEqualTo("original-body");
+        assertThat(snapshot.collections.get(0).requests.get(0).preRequestScripts)
+                .extracting(script -> script.exec)
+                .containsExactly("console.log(\"original\");");
+        assertThat(snapshot.environments.get(0).variables).containsEntry("baseUrl", "https://model.example.test");
+        assertThat(snapshot.environments.get(0).oauth2.config).containsEntry("oauth2_client_id", "model-client");
+        assertThat(editor.getUrlField().getText()).isEqualTo("https://model.example.test/pending?x=1");
+        assertThat(headerRows(headersModel(editor))).contains("X-Pending=draft");
+        assertThat(bodyRawArea(editor).getText()).isEqualTo("pending-body");
+        assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
+        assertThat(environmentRawArea.getText()).contains("baseUrl=https://draft.example.test");
+        assertThat(oauth2ClientIdField.getText()).isEqualTo("draft-client");
+    }
+
+    @Test
+    void ordinaryWorkspaceChangePersistsAfterExactModeSave() throws Exception {
+        WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
+        fixture.writeCount.set(0);
+        fixture.lastJson.set(null);
+
+        clickExactTransport(fixture.requestEditor);
+        awaitWriteCount(fixture.writeCount, 1);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        int writesAfterToggle = fixture.writeCount.get();
+        ApiCollection liveCollection = liveCollection(fixture.ui);
+        liveCollection.description = "Changed after exact toggle";
+        liveCollection.fireChanged();
+        awaitCondition(() -> fixture.writeCount.get() > writesAfterToggle, "workspace write after ordinary collection change");
+
+        WorkspaceState saved = WorkspaceStateJson.fromJson(fixture.lastJson.get());
+        assertThat(saved.collections).hasSize(1);
+        assertThat(saved.collections.get(0).description).isEqualTo("Changed after exact toggle");
+        assertThat(saved.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+    }
+
+    @Test
+    void otherCollectionChangeIsNotSuppressedAfterExactModeSave() throws Exception {
+        WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
+
+        ApiCollection collectionA = liveCollection(fixture.ui);
+        ApiCollection collectionB = new ApiCollection();
+        collectionB.id = "col-b";
+        collectionB.name = "Collection B";
+        collectionB.description = "Before";
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collectionA, collectionB));
+        fixture.ui.restoreWorkspaceState(state);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        List<ApiCollection> liveCollections = (List<ApiCollection>) privateField(fixture.ui, "loadedCollections");
+        ApiCollection liveCollectionA = liveCollections.get(0);
+        ApiRequest liveRequestA = liveCollectionA.requests.get(0);
+        JTree tree = requestTree(fixture.ui);
+        CollectionTreeNode requestNode = findRequestNode((DefaultMutableTreeNode) tree.getModel().getRoot(), liveRequestA.id);
+        assertThat(requestNode).isNotNull();
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(requestNode.getPath())));
+        ImporterPanelTestSupport.awaitCondition(() -> fixture.requestEditor.getCurrentRequest() == liveRequestA, Duration.ofSeconds(3));
+        ImporterPanelTestSupport.awaitEdt();
+
+        fixture.writeCount.set(0);
+        fixture.lastJson.set(null);
+        clickExactTransport(fixture.requestEditor);
+        awaitWriteCount(fixture.writeCount, 1);
+        SwingUtilities.invokeAndWait(() -> { });
+
+        int writesAfterToggle = fixture.writeCount.get();
+        ApiCollection liveCollectionB = liveCollections.get(1);
+        SwingUtilities.invokeAndWait(() -> {
+            liveCollectionB.description = "After";
+            liveCollectionB.fireChanged();
+        });
+        awaitCondition(() -> fixture.writeCount.get() > writesAfterToggle, "workspace write after second collection change");
+
+        WorkspaceState saved = WorkspaceStateJson.fromJson(fixture.lastJson.get());
+        assertThat(saved.collections).hasSize(2);
+        assertThat(saved.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(saved.collections.get(1).description).isEqualTo("After");
+    }
+
+    @Test
+    void rapidExactModeTogglesPersistFinalModeWithoutApplyingDraft() throws Exception {
+        WorkspaceSaveFixture fixture = newFixtureWithBearerRequest();
+        ApiCollection liveCollection = liveCollection(fixture.ui);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+        liveRequest.description = "Original description";
+        liveRequest.url = "https://api.example.test/original?q=hello%20world&path=a%2Fb&plus=%2B";
+        liveRequest.headers = new ArrayList<>();
+        liveRequest.headers.add(new ApiRequest.Header("Accept", "application/json"));
+        liveRequest.headers.add(new ApiRequest.Header("X-Original", "one"));
+        liveRequest.body = new ApiRequest.Body();
+        liveRequest.body.mode = "raw";
+        liveRequest.body.raw = "original-body";
+        liveRequest.body.contentType = "text/plain";
+        liveRequest.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "console.log(\"original\");")));
+        SwingUtilities.invokeAndWait(() -> fixture.requestEditor.loadRequest(liveRequest));
+        SwingUtilities.invokeAndWait(() -> {
+            headersModel(fixture.requestEditor).setValueAt("application/xml", findRow(headersModel(fixture.requestEditor), "Accept"), 1);
+            headersModel(fixture.requestEditor).addRow(new Object[]{"X-Duplicate", "one"});
+            headersModel(fixture.requestEditor).addRow(new Object[]{"X-Duplicate", "two"});
+            fixture.requestEditor.getUrlField().setText("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
+            bodyRawArea(fixture.requestEditor).setText("pending-body");
+            preScriptArea(fixture.requestEditor).setText("console.log(\"pending\");");
+        });
+        SwingUtilities.invokeAndWait(() -> { });
+
+        ApiRequest baselineRequest = GSON.fromJson(GSON.toJson(liveRequest), ApiRequest.class);
+        fixture.writeCount.set(0);
+        fixture.lastJson.set(null);
+
+        clickExactTransport(fixture.requestEditor);
+        clickExactTransport(fixture.requestEditor);
+        clickExactTransport(fixture.requestEditor);
+        awaitCondition(() -> fixture.writeCount.get() >= 1, "workspace write after rapid exact toggles");
+        SwingUtilities.invokeAndWait(() -> { });
+
+        assertThat(liveRequest.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(liveRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(baselineRequest);
+        assertThat(fixture.requestEditor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
+        assertThat(headerRows(headersModel(fixture.requestEditor))).contains("X-Duplicate=one", "X-Duplicate=two");
+        assertThat(bodyRawArea(fixture.requestEditor).getText()).isEqualTo("pending-body");
+        assertThat(preScriptArea(fixture.requestEditor).getText()).isEqualTo("console.log(\"pending\");");
+
+        WorkspaceState saved = WorkspaceStateJson.fromJson(fixture.lastJson.get());
+        ApiRequest savedRequest = saved.collections.get(0).requests.get(0);
+        assertThat(savedRequest.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(savedRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(baselineRequest);
+
+        int writesAfterToggle = fixture.writeCount.get();
+        liveCollection.fireChanged();
+        awaitCondition(() -> fixture.writeCount.get() > writesAfterToggle, "workspace write after post-toggle collection change");
     }
 
     @Test
