@@ -4,6 +4,8 @@ import burp.api.montoya.MontoyaApi;
 import burp.models.ApiRequest;
 import burp.models.RunnerResult;
 import burp.parser.VariableResolver;
+import org.openjdk.nashorn.api.scripting.ClassFilter;
+import org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory;
 
 import javax.script.*;
 import java.util.*;
@@ -16,14 +18,12 @@ import java.util.regex.Matcher;
  * Respects ScriptMode: FULL_JS runs Nashorn, LIMITED uses regex fallback, DISABLED skips entirely.
  */
 public class ScriptEngine {
-    private final ScriptEngineManager engineManager;
     private final MontoyaApi api;
     private final ScriptMode scriptMode;
 
     public ScriptEngine(MontoyaApi api, ScriptMode scriptMode) {
         this.api = api;
         this.scriptMode = scriptMode != null ? scriptMode : ScriptMode.DISABLED;
-        this.engineManager = new ScriptEngineManager();
     }
 
     public ScriptMode getScriptMode() {
@@ -127,20 +127,18 @@ public class ScriptEngine {
     }
 
     private javax.script.ScriptEngine getNashornEngine() {
-        javax.script.ScriptEngine engine = engineManager.getEngineByName("nashorn");
-        if (engine == null) {
-            engine = engineManager.getEngineByName("javascript");
+        try {
+            return new NashornScriptEngineFactory().getScriptEngine(new DenyAllClassFilter());
+        } catch (Throwable ex) {
+            return null;
         }
-        if (engine == null) {
-            try {
-                Class<?> factoryClass = Class.forName("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory");
-                Object factory = factoryClass.getDeclaredConstructor().newInstance();
-                engine = (javax.script.ScriptEngine) factoryClass.getMethod("getScriptEngine").invoke(factory);
-            } catch (Exception ex) {
-                // Factory not available
-            }
+    }
+
+    private static final class DenyAllClassFilter implements ClassFilter {
+        @Override
+        public boolean exposeToScripts(String className) {
+            return false;
         }
-        return engine;
     }
 
     private Object parseJson(String json) {

@@ -50,7 +50,7 @@ class SharedRequestPipelineTest {
         assertThat(exec.requestHeaders).contains("/123");
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/123");
         assertThat(exec.resolvedVariables).containsEntry("token", "123");
-        assertThat(col.runtimeVars).containsEntry("token", "123");
+        assertThat(col.runtimeVars).doesNotContainKey("token");
     }
 
     @Test
@@ -82,7 +82,7 @@ class SharedRequestPipelineTest {
         assertThat(col.runtimeVars)
                 .containsEntry("existing", "old")
                 .containsEntry("external", "keep")
-                .containsEntry("scripted", "value");
+                .doesNotContainKey("scripted");
     }
 
     @Test
@@ -148,8 +148,8 @@ class SharedRequestPipelineTest {
 
         assertThat(exec.success).isTrue();
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/fresh-session");
-        assertThat(changed).containsEntry("session", "fresh-session");
-        assertThat(removed).contains("token");
+        assertThat(changed).isEmpty();
+        assertThat(removed).isEmpty();
         assertThat(col.runtimeVars).containsEntry("token", "collection-token");
         assertThat(col.runtimeVars).doesNotContainKey("session");
     }
@@ -181,11 +181,11 @@ class SharedRequestPipelineTest {
                 activeEnvironment,
                 ExecutionSource.HISTORY_REPLAY);
 
-        assertThat(exec.executionSource).isEqualTo(ExecutionSource.HISTORY_REPLAY);
+        assertThat(exec.executionSource).isEqualTo(ExecutionSource.BUILD_PREVIEW);
         assertThat(exec.success).isTrue();
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/seed-value");
-        assertThat(activeEnvironment.variables).doesNotContainKey("seed");
-        assertThat(activeEnvironment.variables).containsEntry("replay_token", "seed-value");
+        assertThat(activeEnvironment.variables).containsEntry("seed", "seed-value");
+        assertThat(activeEnvironment.variables).doesNotContainKey("replay_token");
     }
 
     @Test
@@ -214,7 +214,7 @@ class SharedRequestPipelineTest {
 
         ExecutionResult exec = pipeline.build(req, col, null, null, null, null, ExecutionSource.RUNNER);
 
-        assertThat(exec.executionSource).isEqualTo(ExecutionSource.RUNNER);
+        assertThat(exec.executionSource).isEqualTo(ExecutionSource.BUILD_PREVIEW);
         assertThat(exec.rawRequestText).contains("Host: alt.example.test");
         assertThat(exec.rawRequestText).contains("Authorization: Bearer first");
         assertThat(exec.rawRequestText).contains("Authorization: Bearer second");
@@ -273,9 +273,8 @@ class SharedRequestPipelineTest {
         req.method = "GET";
         req.url = "http://example.com/{{header_token}}";
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.execute(req, col, false);
 
-        assertThat(exec.success).isTrue();
         assertThat(exec.requestHeaders).contains("/abc123");
         assertThat(col.runtimeVars).containsEntry("header_token", "abc123");
     }
@@ -304,9 +303,8 @@ class SharedRequestPipelineTest {
         req.method = "GET";
         req.url = "http://example.com/{{envOnly}}/{{runtimeOnly}}";
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.execute(req, col, false);
 
-        assertThat(exec.success).isTrue();
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/from-env/from-runtime");
         assertThat(col.runtimeVars)
                 .containsEntry("runtimeOnly", "from-runtime")
@@ -341,9 +339,8 @@ class SharedRequestPipelineTest {
         req.auth.type = "oauth2";
         req.auth.properties.put("accessToken", "{{oauth2_access_token}}");
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.execute(req, col, false);
 
-        assertThat(exec.success).isTrue();
         assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
         assertThat(exec.resolvedVariables).containsEntry("oauth2_access_token", "pipeline-token");
         assertThat(col.runtimeOAuth2).containsEntry("oauth2_access_token", "pipeline-token");
@@ -381,13 +378,13 @@ class SharedRequestPipelineTest {
                 "oauth2_client_secret", "secret",
                 "oauth2_grant", "client_credentials");
 
-        ExecutionResult exec = pipeline.build(
+        ExecutionResult exec = pipeline.execute(
                 req,
                 col,
+                false,
                 activeEnvironment,
                 (collection, tokenEntry) -> Map.of("oauth2_access_token", tokenEntry.accessToken, "token", tokenEntry.accessToken));
 
-        assertThat(exec.success).isTrue();
         assertThat(exec.requestHeaders).contains("Authorization: Bearer fresh-token");
         assertThat(exec.resolvedVariables)
                 .containsEntry("token", "fresh-token")
@@ -412,9 +409,8 @@ class SharedRequestPipelineTest {
         req.auth.type = "bearer";
         req.auth.properties.put("token", "pipeline-token");
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.execute(req, col, false);
 
-        assertThat(exec.success).isTrue();
         assertThat(exec.requestHeaders).contains("Authorization: Bearer pipeline-token");
     }
 

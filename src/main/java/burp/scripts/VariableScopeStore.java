@@ -76,7 +76,7 @@ public class VariableScopeStore {
     }
 
     public synchronized ScriptVariableMutation setCollection(String key, String value, boolean persist, String scriptId, String scriptName) {
-        if (persist && collection != null) {
+        if (collection != null) {
             if (collection.runtimeVars == null) {
                 collection.runtimeVars = new LinkedHashMap<>();
             }
@@ -86,14 +86,14 @@ public class VariableScopeStore {
     }
 
     public synchronized ScriptVariableMutation unsetCollection(String key, boolean persist, String scriptId, String scriptName) {
-        if (persist && collection != null && collection.runtimeVars != null) {
+        if (collection != null && collection.runtimeVars != null) {
             collection.runtimeVars.remove(key);
         }
         return remove(collectionRuntime, "collection", persist, key, scriptId, scriptName);
     }
 
     public synchronized ScriptVariableMutation setFolder(String key, String value, boolean persist, String scriptId, String scriptName) {
-        if (persist && collection != null && request != null) {
+        if (collection != null && request != null) {
             String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
             if (folderPath != null && !folderPath.isBlank()) {
                 if (collection.folderVars == null) {
@@ -107,7 +107,7 @@ public class VariableScopeStore {
     }
 
     public synchronized ScriptVariableMutation unsetFolder(String key, boolean persist, String scriptId, String scriptName) {
-        if (persist && collection != null && request != null && collection.folderVars != null) {
+        if (collection != null && request != null && collection.folderVars != null) {
             String folderPath = RequestPathResolver.getRequestFolderPath(collection, request);
             if (folderPath != null && !folderPath.isBlank()) {
                 Map<String, String> folder = collection.folderVars.get(folderPath);
@@ -120,7 +120,7 @@ public class VariableScopeStore {
     }
 
     public synchronized ScriptVariableMutation setEnvironment(String key, String value, boolean persist, String scriptId, String scriptName) {
-        if (persist && activeEnvironment != null) {
+        if (activeEnvironment != null) {
             activeEnvironment.ensureDefaults();
             activeEnvironment.variables.put(key, value != null ? value : "");
         }
@@ -128,18 +128,18 @@ public class VariableScopeStore {
     }
 
     public synchronized ScriptVariableMutation unsetEnvironment(String key, boolean persist, String scriptId, String scriptName) {
-        if (persist && activeEnvironment != null && activeEnvironment.variables != null) {
+        if (activeEnvironment != null && activeEnvironment.variables != null) {
             activeEnvironment.variables.remove(key);
         }
         return remove(environmentRuntime, "environment", persist, key, scriptId, scriptName);
     }
 
     public synchronized ScriptVariableMutation setGlobal(String key, String value, String scriptId, String scriptName) {
-        return mutate(globalRuntime, "globals", false, key, value, scriptId, scriptName);
+        return mutate(globalRuntime, "global", false, key, value, scriptId, scriptName);
     }
 
     public synchronized ScriptVariableMutation unsetGlobal(String key, String scriptId, String scriptName) {
-        return remove(globalRuntime, "globals", false, key, scriptId, scriptName);
+        return remove(globalRuntime, "global", false, key, scriptId, scriptName);
     }
 
     public synchronized Map<String, String> getEnvironmentLayer() {

@@ -20,6 +20,9 @@ public class ScriptExecutionResult {
     public final List<String> errors = new ArrayList<>();
     public ApiRequest mutatedRequest;
     public int dependentRequestCount;
+    public boolean timedOut;
+    public boolean cancelled;
+    public long timeoutMillis;
 
     public boolean hasScriptErrors() {
         return !errors.isEmpty();

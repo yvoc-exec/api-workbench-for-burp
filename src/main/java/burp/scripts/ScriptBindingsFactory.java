@@ -340,6 +340,10 @@ public final class ScriptBindingsFactory {
         public String contentType;
         @HostAccess.Export
         public GraphQLApi graphql;
+        @HostAccess.Export
+        public List<FormFieldApi> formdata = new ArrayList<>();
+        @HostAccess.Export
+        public List<FormFieldApi> urlencoded = new ArrayList<>();
 
         BodyApi(ApiRequest.Body source) {
             if (source != null) {
@@ -349,11 +353,25 @@ public final class ScriptBindingsFactory {
                 if (source.graphql != null) {
                     this.graphql = new GraphQLApi(source.graphql);
                 }
+                if (source.formdata != null) {
+                    for (ApiRequest.Body.FormField field : source.formdata) {
+                        this.formdata.add(new FormFieldApi(field));
+                    }
+                }
+                if (source.urlencoded != null) {
+                    for (ApiRequest.Body.FormField field : source.urlencoded) {
+                        this.urlencoded.add(new FormFieldApi(field));
+                    }
+                }
             }
         }
 
         ApiRequest.Body toBody() {
-            if (mode == null && raw == null && contentType == null && graphql == null) {
+            List<ApiRequest.Body.FormField> copiedFormData = copyFields(formdata);
+            List<ApiRequest.Body.FormField> copiedUrlEncoded = copyFields(urlencoded);
+            boolean hasFormData = !copiedFormData.isEmpty();
+            boolean hasUrlEncoded = !copiedUrlEncoded.isEmpty();
+            if (mode == null && raw == null && contentType == null && graphql == null && !hasFormData && !hasUrlEncoded) {
                 return null;
             }
             ApiRequest.Body body = new ApiRequest.Body();
@@ -363,7 +381,66 @@ public final class ScriptBindingsFactory {
             if (graphql != null) {
                 body.graphql = graphql.toGraphQL();
             }
+            body.formdata = copiedFormData;
+            body.urlencoded = copiedUrlEncoded;
             return body;
+        }
+
+        private List<ApiRequest.Body.FormField> copyFields(List<FormFieldApi> fields) {
+            List<ApiRequest.Body.FormField> out = new ArrayList<>();
+            if (fields == null) {
+                return out;
+            }
+            try {
+                for (FormFieldApi field : fields) {
+                    if (field != null) {
+                        out.add(field.toFormField());
+                    }
+                }
+            } catch (IllegalStateException closedPolyglotList) {
+                // A script may replace the Java list with a guest-language empty array. If the
+                // context has already closed, preserve the deliberate replacement as an empty list.
+                return new ArrayList<>();
+            }
+            return out;
+        }
+    }
+
+    public static final class FormFieldApi {
+        @HostAccess.Export
+        public String key;
+        @HostAccess.Export
+        public String value;
+        @HostAccess.Export
+        public String type;
+        @HostAccess.Export
+        public boolean fileUpload;
+        @HostAccess.Export
+        public String filePath;
+        @HostAccess.Export
+        public boolean disabled;
+
+        public FormFieldApi() {
+        }
+
+        FormFieldApi(ApiRequest.Body.FormField source) {
+            if (source != null) {
+                this.key = source.key;
+                this.value = source.value;
+                this.type = source.type;
+                this.fileUpload = source.fileUpload;
+                this.filePath = source.filePath;
+                this.disabled = source.disabled;
+            }
+        }
+
+        ApiRequest.Body.FormField toFormField() {
+            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
+            field.type = type;
+            field.fileUpload = fileUpload;
+            field.filePath = filePath;
+            field.disabled = disabled;
+            return field;
         }
     }
 

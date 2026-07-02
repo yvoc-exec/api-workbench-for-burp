@@ -19,10 +19,26 @@ public class UnifiedScriptRuntime {
     private final burp.utils.ScriptMode scriptMode;
 
     public UnifiedScriptRuntime(MontoyaApi api, burp.utils.ScriptMode scriptMode) {
+        this(api, scriptMode, GraalJsSandboxEngine.DEFAULT_TIMEOUT_MILLIS);
+    }
+
+    UnifiedScriptRuntime(MontoyaApi api, burp.utils.ScriptMode scriptMode, long timeoutMillis) {
         this.api = api;
         this.scriptMode = scriptMode != null ? scriptMode : burp.utils.ScriptMode.DISABLED;
-        this.sandboxEngine = new GraalJsSandboxEngine();
+        this.sandboxEngine = new GraalJsSandboxEngine(timeoutMillis);
         this.lifecycleExecutor = new ScriptLifecycleExecutor(sandboxEngine);
+    }
+
+    public void cancelActiveExecutions() {
+        if (sandboxEngine != null) {
+            sandboxEngine.cancelActiveExecutions();
+        }
+    }
+
+    public void close() {
+        if (sandboxEngine != null) {
+            sandboxEngine.close();
+        }
     }
 
     public boolean isEnabled() {
@@ -145,7 +161,9 @@ public class UnifiedScriptRuntime {
         }
 
         lifecycleExecutor.execute(context, resolveBlocks(collection, request, ScriptPhase.POST_RESPONSE));
-        lifecycleExecutor.execute(context, resolveBlocks(collection, request, ScriptPhase.TEST));
+        if (!context.result.timedOut && !context.result.cancelled) {
+            lifecycleExecutor.execute(context, resolveBlocks(collection, request, ScriptPhase.TEST));
+        }
         context.result.mutatedRequest = context.request;
         return context.result;
     }
