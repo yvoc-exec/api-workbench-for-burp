@@ -4,8 +4,6 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
-import org.openjdk.nashorn.api.scripting.ClassFilter;
-import org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -20,14 +18,12 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Logger;
 
 public class GraalJsSandboxEngine implements AutoCloseable {
     public static final long DEFAULT_TIMEOUT_MILLIS = 5_000L;
     public static final long MIN_TIMEOUT_MILLIS = 100L;
     public static final long MAX_TIMEOUT_MILLIS = 60_000L;
 
-    private static final Logger LOGGER = Logger.getLogger(GraalJsSandboxEngine.class.getName());
     private static final AtomicInteger THREAD_ID = new AtomicInteger();
 
     private final boolean graalAvailable;
@@ -50,19 +46,10 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         ProbeOutcome graalProbe = probeGraalJs();
         this.graalAvailable = graalProbe.available;
         this.graalFailure = graalProbe.failure;
-        ProbeOutcome nashornProbe = graalAvailable ? ProbeOutcome.unavailable(null) : probeNashornFallback();
-        this.nashornFallbackAvailable = !graalAvailable && nashornProbe.available;
-        this.nashornFailure = nashornProbe.failure;
-        if (graalAvailable) {
-            this.engineName = "GraalJS";
-        } else if (nashornFallbackAvailable) {
-            this.engineName = "Nashorn fallback";
-        } else {
-            this.engineName = "Unavailable";
-        }
-        this.initializationFailure = graalAvailable
-                ? null
-                : buildInitializationFailure(graalFailure, nashornFailure);
+        this.nashornFallbackAvailable = false;
+        this.nashornFailure = "Nashorn fallback disabled because bounded termination cannot be guaranteed.";
+        this.engineName = graalAvailable ? "GraalJS" : "Unavailable";
+        this.initializationFailure = graalAvailable ? null : buildInitializationFailure(graalFailure, nashornFailure);
     }
 
     void setTimeoutMillisForTests(long timeoutMillis) {
@@ -70,7 +57,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     }
 
     public boolean isAvailable() {
-        return graalAvailable || nashornFallbackAvailable;
+        return graalAvailable;
     }
 
     public boolean isGraalAvailable() {
@@ -78,7 +65,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     }
 
     public boolean isNashornFallbackAvailable() {
-        return nashornFallbackAvailable;
+        return false;
     }
 
     public String getEngineName() {
@@ -98,10 +85,18 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     }
 
     public Object execute(String source, Map<String, Object> bindings) throws Exception {
-        return execute(source, bindings, timeoutMillis);
+        return execute(source, bindings, null, timeoutMillis);
     }
 
     public Object execute(String source, Map<String, Object> bindings, long timeoutMillis) throws Exception {
+        return execute(source, bindings, null, timeoutMillis);
+    }
+
+    public Object execute(String source, Map<String, Object> bindings, Runnable beforeContextClose) throws Exception {
+        return execute(source, bindings, beforeContextClose, timeoutMillis);
+    }
+
+    public Object execute(String source, Map<String, Object> bindings, Runnable beforeContextClose, long timeoutMillis) throws Exception {
         if (source == null || source.isBlank()) {
             return null;
         }
@@ -111,10 +106,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
             active.worker = Thread.currentThread();
             try {
                 if (graalAvailable) {
-                    return executeWithGraal(source, bindings, active);
-                }
-                if (nashornFallbackAvailable) {
-                    return executeWithNashorn(source, bindings);
+                    return executeWithGraal(source, bindings, active, beforeContextClose);
                 }
                 throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
             } finally {
@@ -156,7 +148,10 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         }
     }
 
-    private Object executeWithGraal(String source, Map<String, Object> bindings, ActiveExecution active) throws Exception {
+    private Object executeWithGraal(String source,
+                                    Map<String, Object> bindings,
+                                    ActiveExecution active,
+                                    Runnable beforeContextClose) throws Exception {
         Context context = createGraalContext();
         active.context = context;
         try {
@@ -170,6 +165,9 @@ public class GraalJsSandboxEngine implements AutoCloseable {
                 }
             }
             Value result = context.eval("js", source);
+            if (beforeContextClose != null) {
+                beforeContextClose.run();
+            }
             return result == null || result.isNull() ? null : result.as(Object.class);
         } catch (PolyglotException e) {
             if (active.cancelled) {
@@ -187,22 +185,6 @@ public class GraalJsSandboxEngine implements AutoCloseable {
                 active.context = null;
             }
         }
-    }
-
-    private Object executeWithNashorn(String source, Map<String, Object> bindings) throws Exception {
-        javax.script.ScriptEngine engine = createFilteredNashornFallback();
-        if (engine == null) {
-            throw new IllegalStateException("No JavaScript engine available");
-        }
-        if (bindings != null) {
-            for (Map.Entry<String, Object> entry : bindings.entrySet()) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    continue;
-                }
-                engine.put(entry.getKey(), entry.getValue());
-            }
-        }
-        return engine.eval(source);
     }
 
     private Context createGraalContext() {
@@ -230,32 +212,6 @@ public class GraalJsSandboxEngine implements AutoCloseable {
             return ProbeOutcome.available();
         } catch (Throwable t) {
             return ProbeOutcome.unavailable("GraalJS initialization failed: " + describeThrowable(t));
-        }
-    }
-
-    private ProbeOutcome probeNashornFallback() {
-        try {
-            javax.script.ScriptEngine engine = createFilteredNashornFallback();
-            if (engine == null) {
-                return ProbeOutcome.unavailable("No Nashorn or JavaScript engine found");
-            }
-            Object result = engine.eval("1 + 1");
-            if (!"2".equals(String.valueOf(result))) {
-                return ProbeOutcome.unavailable("Nashorn eval returned unexpected result: " + result);
-            }
-            return ProbeOutcome.available();
-        } catch (Throwable t) {
-            return ProbeOutcome.unavailable("Nashorn fallback initialization failed: " + describeThrowable(t));
-        }
-    }
-
-    private javax.script.ScriptEngine createFilteredNashornFallback() {
-        try {
-            NashornScriptEngineFactory factory = new NashornScriptEngineFactory();
-            LOGGER.warning("Using filtered Nashorn fallback with deny-all host class access.");
-            return factory.getScriptEngine(new DenyAllClassFilter());
-        } catch (Throwable t) {
-            return null;
         }
     }
 
@@ -339,13 +295,6 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return message != null && !message.isBlank()
                 ? message
                 : exception.getClass().getSimpleName();
-    }
-
-    private static final class DenyAllClassFilter implements ClassFilter {
-        @Override
-        public boolean exposeToScripts(String s) {
-            return false;
-        }
     }
 
     public void cancelActiveExecutions() {

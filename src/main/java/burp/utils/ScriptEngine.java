@@ -4,10 +4,6 @@ import burp.api.montoya.MontoyaApi;
 import burp.models.ApiRequest;
 import burp.models.RunnerResult;
 import burp.parser.VariableResolver;
-import org.openjdk.nashorn.api.scripting.ClassFilter;
-import org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory;
-
-import javax.script.*;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
@@ -44,22 +40,8 @@ public class ScriptEngine {
         }
         for (ApiRequest.Script script : request.preRequestScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
-            try {
-                javax.script.ScriptEngine engine = getNashornEngine();
-                if (engine == null) {
-                    if (api != null) api.logging().logToOutput("Nashorn engine not available. Using regex fallback for scripts.");
-                    return;
-                }
-
-                // Bind APIs
-                engine.put("pm", new PostmanApi(resolver, context, api));
-                engine.put("bru", new BrunoApi(resolver, context, api));
-                engine.put("console", new ConsoleApi(api));
-
-                engine.eval(script.exec);
-            } catch (Exception e) {
-                if (api != null) api.logging().logToOutput("Pre-request script error in '" + request.name + "': " + e.getMessage());
-            }
+            if (api != null) api.logging().logToOutput("Pre-request script execution is unavailable without the unified GraalJS runtime.");
+            return;
         }
     }
 
@@ -82,41 +64,8 @@ public class ScriptEngine {
         }
         for (ApiRequest.Script script : request.postResponseScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
-            try {
-                javax.script.ScriptEngine engine = getNashornEngine();
-                if (engine == null) {
-                    if (api != null) api.logging().logToOutput("Nashorn engine not available. Using regex fallback for post-response script.");
-                    regexFallbackExtract(script.exec, result, context);
-                    return;
-                }
-
-                // Parse JSON response for jsonData
-                Object jsonData = parseJson(responseBody);
-
-                // Bind APIs
-                engine.put("pm", new PostmanApi(resolver, context, api, result, statusCode, responseHeaders, jsonData));
-                engine.put("bru", new BrunoApi(resolver, context, api, result, statusCode, responseHeaders, jsonData));
-                engine.put("console", new ConsoleApi(api));
-                engine.put("jsonData", jsonData);
-                engine.put("responseBody", responseBody);
-                engine.put("responseCode", new ResponseCodeWrapper(statusCode));
-                engine.put("responseHeaders", responseHeaders);
-
-                engine.eval(script.exec);
-
-                // Sync extracted variables back
-                if (engine.get("pm") instanceof PostmanApi) {
-                    context.putAll(((PostmanApi) engine.get("pm")).getExtractedVars());
-                }
-                if (engine.get("bru") instanceof BrunoApi) {
-                    context.putAll(((BrunoApi) engine.get("bru")).getExtractedVars());
-                }
-
-            } catch (Exception e) {
-                if (api != null) api.logging().logToOutput("Post-response script error in '" + request.name + "': " + e.getMessage());
-                // Fallback to regex extraction
-                regexFallbackExtract(script.exec, result, context);
-            }
+            if (api != null) api.logging().logToOutput("Post-response script execution is unavailable without the unified GraalJS runtime.");
+            return;
         }
     }
 
@@ -124,21 +73,6 @@ public class ScriptEngine {
         // In DISABLED mode, avoid flooding logs. A simple hash-set per session could be added,
         // but for now we log every call since send frequency is human-paced.
         if (api != null) api.logging().logToOutput("[ScriptMode] " + message);
-    }
-
-    private javax.script.ScriptEngine getNashornEngine() {
-        try {
-            return new NashornScriptEngineFactory().getScriptEngine(new DenyAllClassFilter());
-        } catch (Throwable ex) {
-            return null;
-        }
-    }
-
-    private static final class DenyAllClassFilter implements ClassFilter {
-        @Override
-        public boolean exposeToScripts(String className) {
-            return false;
-        }
     }
 
     private Object parseJson(String json) {

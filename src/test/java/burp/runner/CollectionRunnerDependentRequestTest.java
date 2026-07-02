@@ -293,7 +293,8 @@ class CollectionRunnerDependentRequestTest {
         assertThat(childResult.displayStatusLabel()).isEqualTo("201 (dependent)");
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
-        assertThat(environment.variables).containsEntry("bruno_token", "bruno-runner");
+        assertThat(childResult.resolvedVariables).containsEntry("bruno_token", "bruno-runner");
+        assertThat(environment.variables).doesNotContainKey("bruno_token");
         assertThat(listener.timelineRows).extracting(row -> row.status).contains("201 (dependent)", "201");
     }
 

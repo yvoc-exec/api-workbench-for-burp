@@ -2,11 +2,15 @@ package burp.runner;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.scripts.*;
 import burp.utils.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +42,52 @@ class CollectionRunnerScriptCancellationTest {
         assertThat(runner.isRunning()).isFalse();
     }
 
+    @Test
+    void cancelStopsInfinitePreRequestScriptUsingRealPipeline() throws Exception {
+        ApiCollection collection = collection();
+        ApiRequest request = request();
+        collection.requests = new java.util.ArrayList<>(List.of(request));
+        collection.scriptBlocks.add(block("""
+                awb.collection.set('token', 'partial', { persist: false });
+                awb.environment.set('env_token', 'partial', { persist: false });
+                while (true) {}
+                """));
+
+        EnvironmentProfile environment = new EnvironmentProfile();
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(null, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        CollectionRunner runner = new CollectionRunner(null, pipeline);
+        runner.setDelayMs(0);
+        runner.setActiveEnvironmentProvider(col -> environment);
+
+        ExecutorService watcher = Executors.newSingleThreadExecutor();
+        try {
+            watcher.submit(() -> runner.runCollections(List.of(collection), List.of(request)));
+            waitUntilRunning(runner);
+            runner.cancel();
+            waitUntilStopped(runner);
+
+            assertThat(runner.isRunning()).isFalse();
+            assertThat(collection.runtimeVars).doesNotContainKey("token");
+            assertThat(environment.runtimeVariables).isEmpty();
+
+            ApiCollection laterCollection = collection();
+            ApiRequest laterRequest = request();
+            laterCollection.scriptBlocks.add(block("awb.collection.set('later', 'ok', { persist: false });"));
+            ExecutionResult laterResult = pipeline.execute(laterRequest, laterCollection, false);
+            assertThat(laterResult.scriptVariableMutations).isNotEmpty();
+            assertThat(laterResult.scriptVariableMutations).anySatisfy(mutation -> {
+                assertThat(mutation.key).isEqualTo("later");
+                assertThat(mutation.newValue).isEqualTo("ok");
+            });
+
+            pipeline.close();
+            assertThat(pipelineIsClosed(pipeline)).isTrue();
+        } finally {
+            watcher.shutdownNow();
+            pipeline.close();
+        }
+    }
+
     private void waitUntilStopped(CollectionRunner runner) throws Exception {
         long deadline = System.currentTimeMillis() + 3_000;
         while (runner.isRunning() && System.currentTimeMillis() < deadline) {
@@ -45,9 +95,19 @@ class CollectionRunnerScriptCancellationTest {
         }
     }
 
+    private void waitUntilRunning(CollectionRunner runner) throws Exception {
+        long deadline = System.currentTimeMillis() + 3_000;
+        while (!runner.isRunning() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(25);
+        }
+        assertThat(runner.isRunning()).isTrue();
+    }
+
     private ApiCollection collection() {
         ApiCollection collection = new ApiCollection();
         collection.name = "c";
+        collection.requests = new java.util.ArrayList<>();
+        collection.scriptBlocks = new java.util.ArrayList<>();
         return collection;
     }
 
@@ -58,6 +118,18 @@ class CollectionRunnerScriptCancellationTest {
         request.method = "GET";
         request.url = "https://example.test";
         return request;
+    }
+
+    private ScriptBlock block(String source) {
+        ScriptBlock block = ScriptBlock.of(source, ScriptDialect.API_WORKBENCH, ScriptPhase.PRE_REQUEST, ScriptScope.COLLECTION);
+        block.enabled = true;
+        return block;
+    }
+
+    private boolean pipelineIsClosed(SharedRequestPipeline pipeline) throws Exception {
+        java.lang.reflect.Method method = SharedRequestPipeline.class.getDeclaredMethod("isClosedForTests");
+        method.setAccessible(true);
+        return (Boolean) method.invoke(pipeline);
     }
 
     static class CancellablePipeline extends SharedRequestPipeline {

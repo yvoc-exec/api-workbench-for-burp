@@ -38,6 +38,7 @@ class SharedRequestPipelinePreviewIsolationTest {
         EnvironmentProfile environment = new EnvironmentProfile();
         pipeline(null).build(request(), collection, null, null, null, environment);
         assertThat(environment.variables).doesNotContainKey("token");
+        assertThat(environment.runtimeVariables).doesNotContainKey("token");
     }
 
     @Test

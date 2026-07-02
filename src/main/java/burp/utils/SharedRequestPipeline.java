@@ -45,7 +45,7 @@ import java.util.*;
  *
  * Default placeholder values are applied only when a key remains unresolved.
  */
-public class SharedRequestPipeline {
+public class SharedRequestPipeline implements AutoCloseable {
     enum ExecutionIntent {
         PREVIEW,
         LIVE
@@ -65,17 +65,28 @@ public class SharedRequestPipeline {
     private final UnifiedScriptRuntime unifiedScriptRuntime;
     private final OAuth2Manager oauth2Manager;
     private final RequestOptions noRedirectRequestOptions = new NoRedirectRequestOptions();
+    private volatile boolean closed;
 
     public SharedRequestPipeline(MontoyaApi api, RequestBuilder requestBuilder,
                                  ScriptEngine scriptEngine, OAuth2Manager oauth2Manager) {
+        this(api, requestBuilder, scriptEngine, oauth2Manager, null);
+    }
+
+    SharedRequestPipeline(MontoyaApi api,
+                          RequestBuilder requestBuilder,
+                          ScriptEngine scriptEngine,
+                          OAuth2Manager oauth2Manager,
+                          UnifiedScriptRuntime unifiedScriptRuntime) {
         this.api = api;
         this.requestBuilder = requestBuilder;
         this.scriptEngine = scriptEngine;
         this.oauth2Manager = oauth2Manager;
-        this.unifiedScriptRuntime = new UnifiedScriptRuntime(
-                api,
-                scriptEngine != null ? scriptEngine.getScriptMode() : ScriptMode.DISABLED
-        );
+        this.unifiedScriptRuntime = unifiedScriptRuntime != null
+                ? unifiedScriptRuntime
+                : new UnifiedScriptRuntime(
+                        api,
+                        scriptEngine != null ? scriptEngine.getScriptMode() : ScriptMode.DISABLED
+                );
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
@@ -207,8 +218,8 @@ public class SharedRequestPipeline {
         ApiRequest effectiveRequest = intent == ExecutionIntent.PREVIEW ? burp.scripts.ScriptExecutionContext.copyRequest(req) : req;
         burp.scripts.ScriptDependentRequestExecutor scriptDependentExecutor = intent == ExecutionIntent.PREVIEW ? null : dependentRequestExecutor;
         Map<String, String> scriptContext = buildInitialRuntimeOverlay(executionCollection, runtimeOverlay, executionEnvironment);
-        Map<String, String> beforeScriptContext = new HashMap<>(scriptContext);
         Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
+        Map<String, String> finalRuntimeOverlay = new LinkedHashMap<>(scriptContext);
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
@@ -219,15 +230,24 @@ public class SharedRequestPipeline {
                         executionEnvironment,
                         effectiveSource,
                         1,
-                        scriptDependentExecutor
+                        scriptDependentExecutor,
+                        runtimeOverlay
                 );
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
-                applyRuntimeMutations(scriptContext, scriptResult);
-                if (intent == ExecutionIntent.LIVE) {
-                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
-                }
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
+                finalRuntimeOverlay = new LinkedHashMap<>(scriptResult.effectiveVariables);
+                result.resolvedVariables = new LinkedHashMap<>(finalRuntimeOverlay);
+                if (intent == ExecutionIntent.LIVE && !scriptResult.timedOut && !scriptResult.cancelled) {
+                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                }
+                if (scriptResult.timedOut || scriptResult.cancelled) {
+                    result.builtRequest = null;
+                    result.rawRequestBytes = null;
+                    result.rawRequestText = null;
+                    result.resolvedUrl = effectiveRequest != null ? effectiveRequest.url : null;
+                    return result;
+                }
                 if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
                     recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                             col, req, activeEnvironment, "Request skipped by script", "Flow control: SKIP_REQUEST");
@@ -235,11 +255,10 @@ public class SharedRequestPipeline {
                     result.builtRequest = null;
                     result.rawRequestBytes = null;
                     result.rawRequestText = null;
-                    result.resolvedVariables = new HashMap<>(scriptContext);
                     result.resolvedUrl = effectiveRequest != null ? effectiveRequest.url : null;
                     return result;
                 }
-            } else if (scriptEngine != null && col != null) {
+            } else if (scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {
                 VariableResolver legacyResolver = RuntimeResolverFactory.build(
                         executionCollection,
                         effectiveRequest,
@@ -248,57 +267,54 @@ public class SharedRequestPipeline {
                 scriptEngine.executePreRequest(effectiveRequest, legacyResolver, scriptContext);
             }
 
-            VariableResolver resolver = RuntimeResolverFactory.build(
-                    executionCollection,
-                    effectiveRequest,
-                    RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
-            );
+            VariableResolver resolver = new VariableResolver();
+            resolver.addAll(finalRuntimeOverlay);
 
             // 2. OAuth2 token refresh if needed
             if (intent == ExecutionIntent.LIVE && oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
                 try {
-                        OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
-                        if (config.isValid()) {
-                            TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
-                            if (entry != null && entry.accessToken != null) {
-                                recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.INFO, effectiveSource,
-                                        col, req, activeEnvironment, "OAuth2 token acquired", "Token resolved and injected");
-                                Map<String, String> storedVars;
-                                if (oauth2TokenSink != null) {
-                                    storedVars = oauth2TokenSink.store(col, entry);
+                    OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                    if (config.isValid()) {
+                        TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
+                        if (entry != null && entry.accessToken != null) {
+                            recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.INFO, effectiveSource,
+                                    col, req, activeEnvironment, "OAuth2 token acquired", "Token resolved and injected");
+                            Map<String, String> storedVars;
+                            if (oauth2TokenSink != null) {
+                                storedVars = oauth2TokenSink.store(col, entry);
+                            } else {
+                                storedVars = new LinkedHashMap<>();
+                                if (col != null) {
+                                    col.putRuntimeOAuth2("oauth2_access_token", entry.accessToken);
+                                    storedVars.put("oauth2_access_token", entry.accessToken);
+                                    if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                                        col.putRuntimeOAuth2("oauth2_refresh_token", entry.refreshToken);
+                                        storedVars.put("oauth2_refresh_token", entry.refreshToken);
+                                    }
                                 } else {
-                                    storedVars = new LinkedHashMap<>();
-                                    if (col != null) {
-                                        col.putRuntimeOAuth2("oauth2_access_token", entry.accessToken);
-                                        storedVars.put("oauth2_access_token", entry.accessToken);
-                                        if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                                            col.putRuntimeOAuth2("oauth2_refresh_token", entry.refreshToken);
-                                            storedVars.put("oauth2_refresh_token", entry.refreshToken);
-                                        }
-                                    } else {
-                                        storedVars.put("oauth2_access_token", entry.accessToken);
-                                        if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                                            storedVars.put("oauth2_refresh_token", entry.refreshToken);
-                                        }
+                                    storedVars.put("oauth2_access_token", entry.accessToken);
+                                    if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
+                                        storedVars.put("oauth2_refresh_token", entry.refreshToken);
                                     }
                                 }
-                                if (storedVars != null && !storedVars.isEmpty()) {
-                                    resolver.addAll(storedVars);
-                                }
                             }
+                            if (storedVars != null && !storedVars.isEmpty()) {
+                                resolver.addAll(storedVars);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
+                    recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.ERROR, effectiveSource,
+                            col, req, activeEnvironment, "OAuth2 refresh failed", e.getMessage());
                 }
-            } catch (Exception e) {
-                if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
-                recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.ERROR, effectiveSource,
-                        col, req, activeEnvironment, "OAuth2 refresh failed", e.getMessage());
-            }
             }
 
             // 3. Build request
             byte[] rawRequest = requestBuilder.buildRequest(effectiveRequest, resolver);
             result.rawRequestBytes = rawRequest;
             result.rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
-            result.resolvedVariables = new HashMap<>(resolver.getVariables());
+            result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
             warnIfUnresolved(rawRequest, effectiveRequest != null ? effectiveRequest.name : null);
             recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                     col, effectiveRequest, activeEnvironment, "Raw request built", result.rawRequestText);
@@ -366,6 +382,7 @@ public class SharedRequestPipeline {
             if (result.response != null && result.response.response() != null && result.success) {
                 // 5. Post-response scripts
                 if ((shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
+                    Map<String, String> postExecutionOverlay = new LinkedHashMap<>(result.resolvedVariables);
                     String body = result.response.response().bodyToString();
                     int statusCode = result.response.response().statusCode();
                     Map<String, List<String>> headersMap = new HashMap<>();
@@ -381,23 +398,25 @@ public class SharedRequestPipeline {
                     if (shouldUseUnifiedRuntime()) {
                         ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
                                 executionCollection,
-                        effectiveRequest,
-                        executionEnvironment,
-                        effectiveSource,
-                        1,
-                        body,
-                        statusCode,
-                        headersMap,
-                        result.elapsedMs,
-                        scriptResult,
-                        scriptDependentExecutor
+                                effectiveRequest,
+                                executionEnvironment,
+                                effectiveSource,
+                                1,
+                                body,
+                                statusCode,
+                                headersMap,
+                                result.elapsedMs,
+                                scriptResult,
+                                scriptDependentExecutor,
+                                postExecutionOverlay
                         );
-                        applyRuntimeMutations(scriptContext, postResult);
-                        commitScriptVariableMutations(postResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                         mergeScriptResult(result, postResult);
                         mergeScriptResult(scriptResult, postResult);
                         recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
-                    } else if (scriptEngine != null && col != null) {
+                        if (intent == ExecutionIntent.LIVE && !postResult.timedOut && !postResult.cancelled) {
+                            commitScriptVariableMutations(postResult, result.resolvedVariables, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                        }
+                    } else if (scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {
                         scriptEngine.executePostResponse(effectiveRequest, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
                     }
 
@@ -421,17 +440,10 @@ public class SharedRequestPipeline {
                     col, req, activeEnvironment, "Request execution failed", result.errorMessage);
         } finally {
             result.removedVars.clear();
-            Set<String> removedKeys = new LinkedHashSet<>();
             for (String key : beforeScriptKeys) {
                 if (!scriptContext.containsKey(key)) {
                     result.removedVars.add(key);
-                    removedKeys.add(key);
                 }
-            }
-
-            if (intent == ExecutionIntent.LIVE && !shouldUseUnifiedRuntime()) {
-                commitRuntimeMutations(scriptContext, beforeScriptContext, beforeScriptKeys,
-                        runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
             }
         }
         return result;
@@ -441,6 +453,22 @@ public class SharedRequestPipeline {
         if (unifiedScriptRuntime != null) {
             unifiedScriptRuntime.cancelActiveExecutions();
         }
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        cancelActiveScriptExecutions();
+        if (unifiedScriptRuntime != null) {
+            unifiedScriptRuntime.close();
+        }
+    }
+
+    boolean isClosedForTests() {
+        return closed;
     }
 
     private boolean shouldUseUnifiedRuntime() {
@@ -473,25 +501,6 @@ public class SharedRequestPipeline {
             return currentRequest;
         }
         return scriptResult.mutatedRequest;
-    }
-
-    private void applyRuntimeMutations(Map<String, String> scriptContext, ScriptExecutionResult scriptResult) {
-        if (scriptContext == null || scriptResult == null || scriptResult.variableMutations == null) {
-            return;
-        }
-        for (var mutation : scriptResult.variableMutations) {
-            if (mutation == null || mutation.key == null || mutation.key.isBlank()) {
-                continue;
-            }
-            if (mutation.newValue == null) {
-                String scope = normalizeScope(mutation.scope);
-                if (!"local".equals(scope) && !"request".equals(scope)) {
-                    scriptContext.remove(mutation.key);
-                }
-            } else {
-                scriptContext.put(mutation.key, mutation.newValue);
-            }
-        }
     }
 
     private void commitRuntimeMutations(Map<String, String> scriptContext,
@@ -538,14 +547,20 @@ public class SharedRequestPipeline {
                                                ApiRequest req,
                                                EnvironmentProfile activeEnvironment,
                                                ExecutionSource effectiveSource) {
-        if (scriptResult == null || scriptResult.variableMutations == null || scriptResult.variableMutations.isEmpty()) {
+        if (scriptResult == null
+                || scriptResult.timedOut
+                || scriptResult.cancelled
+                || scriptResult.variableMutations == null
+                || scriptResult.variableMutations.isEmpty()) {
             return;
         }
-        Map<String, String> collectionChanged = new LinkedHashMap<>();
-        Set<String> collectionRemoved = new LinkedHashSet<>();
-        Map<String, String> environmentChanged = new LinkedHashMap<>();
-        Set<String> environmentRemoved = new LinkedHashSet<>();
+        boolean collectionChanged = false;
+        boolean environmentChanged = false;
         Set<String> warnedGlobalKeys = new LinkedHashSet<>();
+        Set<String> warnedEnvironmentKeys = new LinkedHashSet<>();
+        Set<String> warnedFolderKeys = new LinkedHashSet<>();
+        Map<String, String> runtimeEnvironmentChanged = new LinkedHashMap<>();
+        Set<String> runtimeEnvironmentRemoved = new LinkedHashSet<>();
 
         for (burp.scripts.ScriptVariableMutation mutation : scriptResult.variableMutations) {
             if (mutation == null || mutation.key == null || mutation.key.isBlank()) {
@@ -557,24 +572,95 @@ public class SharedRequestPipeline {
                     // Execution-only; resolver already saw these mutations for this request.
                 }
                 case "environment" -> {
-                    if (mutation.newValue == null) {
-                        environmentChanged.remove(mutation.key);
-                        environmentRemoved.add(mutation.key);
+                    if (activeEnvironment == null) {
+                        if (warnedEnvironmentKeys.add(mutation.key)) {
+                            scriptResult.warnings.add("Environment variable persistence is unsupported without an active environment; value kept for this execution only.");
+                        }
+                        break;
+                    }
+                    activeEnvironment.ensureDefaults();
+                    if (mutation.persistent) {
+                        if (mutation.newValue == null) {
+                            if (activeEnvironment.variables.remove(mutation.key) != null) {
+                                environmentChanged = true;
+                            }
+                        } else {
+                            String value = mutation.newValue;
+                            String current = activeEnvironment.variables.put(mutation.key, value);
+                            if (!Objects.equals(current, value)) {
+                                environmentChanged = true;
+                            }
+                        }
                     } else {
-                        environmentRemoved.remove(mutation.key);
-                        environmentChanged.put(mutation.key, mutation.newValue);
+                        if (mutation.newValue == null) {
+                            runtimeEnvironmentChanged.remove(mutation.key);
+                            runtimeEnvironmentRemoved.add(mutation.key);
+                        } else {
+                            runtimeEnvironmentRemoved.remove(mutation.key);
+                            runtimeEnvironmentChanged.put(mutation.key, mutation.newValue);
+                        }
+                        environmentChanged = true;
                     }
                 }
                 case "collection" -> {
-                    if (mutation.newValue == null) {
-                        collectionChanged.remove(mutation.key);
-                        collectionRemoved.add(mutation.key);
+                    if (col == null) {
+                        break;
+                    }
+                    col.ensureDefaults();
+                    if (mutation.persistent) {
+                        if (mutation.newValue == null) {
+                            if (removeAuthoredCollectionVariable(col, mutation.key)) {
+                                collectionChanged = true;
+                            }
+                        } else if (upsertAuthoredCollectionVariable(col, mutation.key, mutation.newValue)) {
+                            collectionChanged = true;
+                        }
                     } else {
-                        collectionRemoved.remove(mutation.key);
-                        collectionChanged.put(mutation.key, mutation.newValue);
+                        String value = mutation.newValue;
+                        String current = col.runtimeVars.put(mutation.key, value);
+                        if (!Objects.equals(current, value)) {
+                            collectionChanged = true;
+                        }
                     }
                 }
-                case "folder" -> applyFolderMutation(col, req, mutation);
+                case "folder" -> {
+                    if (col == null || mutation.scopePath == null || mutation.scopePath.isBlank()) {
+                        if (warnedFolderKeys.add(mutation.key)) {
+                            scriptResult.warnings.add("Folder variable persistence is unsupported without a request folder; value kept for this execution only.");
+                        }
+                        break;
+                    }
+                    col.ensureDefaults();
+                    String folderPath = RequestPathResolver.normalizeFolderPath(mutation.scopePath);
+                    if (folderPath.isBlank()) {
+                        break;
+                    }
+                    Map<String, Map<String, String>> target = mutation.persistent ? col.folderVars : col.runtimeFolderVars;
+                    if (target == null) {
+                        target = new LinkedHashMap<>();
+                        if (mutation.persistent) {
+                            col.folderVars = target;
+                        } else {
+                            col.runtimeFolderVars = target;
+                        }
+                    }
+                    if (mutation.newValue == null) {
+                        Map<String, String> folder = target.get(folderPath);
+                        if (folder != null && folder.remove(mutation.key) != null) {
+                            collectionChanged = true;
+                            if (folder.isEmpty()) {
+                                target.remove(folderPath);
+                            }
+                        }
+                    } else {
+                        Map<String, String> folder = target.computeIfAbsent(folderPath, k -> new LinkedHashMap<>());
+                        String value = mutation.newValue;
+                        String current = folder.put(mutation.key, value);
+                        if (!Objects.equals(current, value)) {
+                            collectionChanged = true;
+                        }
+                    }
+                }
                 case "global" -> {
                     if (warnedGlobalKeys.add(mutation.key)) {
                         scriptResult.warnings.add("Global variable persistence is unsupported; value kept for this execution only.");
@@ -586,30 +672,31 @@ public class SharedRequestPipeline {
             }
         }
 
-        if (!environmentChanged.isEmpty() || !environmentRemoved.isEmpty()) {
-            if (activeEnvironment != null) {
-                activeEnvironment.ensureDefaults();
-                for (String key : environmentRemoved) {
-                    activeEnvironment.variables.remove(key);
+        if (collectionChanged && col != null) {
+            col.fireChanged();
+        }
+
+        if (activeEnvironment != null && (!runtimeEnvironmentChanged.isEmpty() || !runtimeEnvironmentRemoved.isEmpty())) {
+            activeEnvironment.ensureDefaults();
+            if (runtimeVariableSink != null) {
+                runtimeVariableSink.apply(col, runtimeEnvironmentChanged, runtimeEnvironmentRemoved);
+            } else {
+                for (String key : runtimeEnvironmentRemoved) {
+                    activeEnvironment.runtimeVariables.remove(key);
                 }
-                for (Map.Entry<String, String> entry : environmentChanged.entrySet()) {
-                    activeEnvironment.variables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
+                for (Map.Entry<String, String> entry : runtimeEnvironmentChanged.entrySet()) {
+                    activeEnvironment.runtimeVariables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
                 }
-            } else if (runtimeVariableSink != null && runtimeOverlay != null) {
-                runtimeVariableSink.apply(col, environmentChanged, environmentRemoved);
             }
         }
 
-        if (col != null && (!collectionChanged.isEmpty() || !collectionRemoved.isEmpty())) {
-            col.applyRuntimeVarDelta(collectionChanged, collectionRemoved);
+        if (collectionChanged || environmentChanged || !warnedGlobalKeys.isEmpty() || !warnedEnvironmentKeys.isEmpty() || !warnedFolderKeys.isEmpty()) {
+            recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
+                    col, req, activeEnvironment, "Script variable mutations committed",
+                    "collectionChanged=" + collectionChanged
+                            + " environmentChanged=" + environmentChanged
+                            + " globalWarnings=" + warnedGlobalKeys.size());
         }
-
-        recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
-                col, req, activeEnvironment, "Script variable mutations committed",
-                "collectionChanged=" + collectionChanged.keySet()
-                        + " collectionRemoved=" + collectionRemoved
-                        + " environmentChanged=" + environmentChanged.keySet()
-                        + " environmentRemoved=" + environmentRemoved);
     }
 
     private String normalizeScope(String scope) {
@@ -623,29 +710,43 @@ public class SharedRequestPipeline {
         return normalized;
     }
 
-    private void applyFolderMutation(ApiCollection col, ApiRequest req, burp.scripts.ScriptVariableMutation mutation) {
-        if (col == null || req == null || mutation == null || mutation.key == null || mutation.key.isBlank()) {
-            return;
+    private boolean upsertAuthoredCollectionVariable(ApiCollection collection, String key, String value) {
+        if (collection == null || key == null || key.isBlank()) {
+            return false;
         }
-        String folderPath = RequestPathResolver.getRequestFolderPath(col, req);
-        if (folderPath == null || folderPath.isBlank()) {
-            return;
+        collection.ensureDefaults();
+        String normalizedValue = value != null ? value : "";
+        for (ApiRequest.Variable variable : collection.variables) {
+            if (variable != null && key.equals(variable.key)) {
+                if (!Objects.equals(variable.value, normalizedValue)) {
+                    variable.value = normalizedValue;
+                    return true;
+                }
+                return false;
+            }
         }
-        if (col.folderVars == null) {
-            col.folderVars = new LinkedHashMap<>();
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = normalizedValue;
+        variable.type = "string";
+        variable.enabled = true;
+        collection.variables.add(variable);
+        return true;
+    }
+
+    private boolean removeAuthoredCollectionVariable(ApiCollection collection, String key) {
+        if (collection == null || key == null || key.isBlank() || collection.variables == null || collection.variables.isEmpty()) {
+            return false;
         }
-        Map<String, String> folderVars = col.folderVars.computeIfAbsent(folderPath, k -> new LinkedHashMap<>());
-        if (mutation.newValue == null) {
-            folderVars.remove(mutation.key);
-        } else {
-            folderVars.put(mutation.key, mutation.newValue);
-        }
+        boolean removed = collection.variables.removeIf(variable -> variable != null && key.equals(variable.key));
+        return removed;
     }
 
     private ApiCollection copyCollectionForPreview(ApiCollection source) {
         if (source == null) {
             return null;
         }
+        source.ensureDefaults();
         ApiCollection copy = new ApiCollection();
         copy.id = source.id;
         copy.name = source.name;
@@ -674,6 +775,7 @@ public class SharedRequestPipeline {
             }
         }
         copy.folderVars = copyNestedStringMap(source.folderVars);
+        copy.runtimeFolderVars = copyNestedStringMap(source.runtimeFolderVars);
         copy.environment = source.environment != null ? new LinkedHashMap<>(source.environment) : new LinkedHashMap<>();
         copy.runtimeVars = source.runtimeVars != null ? new LinkedHashMap<>(source.runtimeVars) : new LinkedHashMap<>();
         copy.runtimeOAuth2 = source.runtimeOAuth2 != null ? new LinkedHashMap<>(source.runtimeOAuth2) : new LinkedHashMap<>();

@@ -563,13 +563,19 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
-        if (ui != null) {
-            ui.cleanup();
+        try {
+            if (ui != null) {
+                ui.cleanup();
+            }
+        } finally {
+            if (pipeline != null) {
+                pipeline.close();
+            }
+            flushWorkspaceStateSave();
+            workspaceSaveClosed = true;
+            shutdownWorkspaceSaveExecutor();
+            clearVariables();
         }
-        flushWorkspaceStateSave();
-        workspaceSaveClosed = true;
-        shutdownWorkspaceSaveExecutor();
-        clearVariables();
     }
 
     private void restoreWorkspaceState() {

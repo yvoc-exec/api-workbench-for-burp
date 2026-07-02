@@ -47,7 +47,7 @@ class ScriptDialectContractTest {
             assertThat(header.key).isEqualToIgnoringCase("X-Dialect");
             assertThat(header.value).isEqualTo(label);
         });
-        assertThat(activeEnvironment.variables).containsEntry("token", "pre-token");
+        assertThat(preResult.effectiveVariables).containsEntry("token", "pre-token");
         assertThat(preResult.logs).anySatisfy(log -> assertThat(log.message).contains("pre-" + label));
 
         ScriptExecutionResult postResult = runtime.executePostResponse(
@@ -66,7 +66,7 @@ class ScriptDialectContractTest {
         assertThat(postResult.success).as(label).isTrue();
         assertThat(postResult.assertions).hasSize(1);
         assertThat(postResult.assertions.get(0).passed).isTrue();
-        assertThat(activeEnvironment.variables).containsEntry("response_token", "resp-123");
+        assertThat(postResult.effectiveVariables).containsEntry("response_token", "resp-123");
         assertThat(postResult.logs).anySatisfy(log -> assertThat(log.message).contains("post-" + label));
     }
 

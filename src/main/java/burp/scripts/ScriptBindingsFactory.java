@@ -208,6 +208,7 @@ public final class ScriptBindingsFactory {
         public String path;
         @HostAccess.Export
         public String sourceCollection;
+        boolean originalHasBody;
         public RequestApi() {
         }
 
@@ -218,6 +219,7 @@ public final class ScriptBindingsFactory {
             this.name = request != null ? request.name : null;
             this.path = request != null ? request.path : null;
             this.sourceCollection = request != null ? request.sourceCollection : null;
+            this.originalHasBody = request != null && request.body != null;
             this.headers = new HeaderApi(request != null ? request.headers : null);
             this.body = new BodyApi(request != null ? request.body : null);
             this.auth = new AuthApi(request != null ? request.auth : null);
@@ -236,7 +238,14 @@ public final class ScriptBindingsFactory {
                 request.headers = headers.toHeaders();
             }
             if (body != null) {
-                request.body = body.toBody();
+                ApiRequest.Body convertedBody = body.toBody();
+                if (convertedBody != null) {
+                    request.body = convertedBody;
+                } else if (originalHasBody) {
+                    request.body = null;
+                }
+            } else if (originalHasBody) {
+                request.body = null;
             }
             if (auth != null) {
                 request.auth = auth.toAuth();
@@ -391,16 +400,10 @@ public final class ScriptBindingsFactory {
             if (fields == null) {
                 return out;
             }
-            try {
-                for (FormFieldApi field : fields) {
-                    if (field != null) {
-                        out.add(field.toFormField());
-                    }
+            for (FormFieldApi field : fields) {
+                if (field != null) {
+                    out.add(field.toFormField());
                 }
-            } catch (IllegalStateException closedPolyglotList) {
-                // A script may replace the Java list with a guest-language empty array. If the
-                // context has already closed, preserve the deliberate replacement as an empty list.
-                return new ArrayList<>();
             }
             return out;
         }

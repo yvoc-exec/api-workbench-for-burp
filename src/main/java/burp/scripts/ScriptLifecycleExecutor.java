@@ -1,5 +1,7 @@
 package burp.scripts;
 
+import burp.models.ApiRequest;
+
 import java.util.List;
 
 public class ScriptLifecycleExecutor {
@@ -12,39 +14,62 @@ public class ScriptLifecycleExecutor {
     public ScriptExecutionResult execute(ScriptExecutionContext context, List<ScriptBlock> blocks) {
         ScriptExecutionResult result = context != null ? context.result : new ScriptExecutionResult();
         if (context == null || blocks == null || blocks.isEmpty()) {
+            if (context != null) {
+                result.effectiveVariables.clear();
+                result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
+                result.mutatedRequest = context.request;
+            }
             return result;
         }
-        result.engineName = sandboxEngine != null ? sandboxEngine.getEngineName() : "Unavailable";
+        if (sandboxEngine == null) {
+            context.error("Script sandbox is unavailable.", null, null);
+            result.effectiveVariables.clear();
+            result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
+            result.mutatedRequest = context.request;
+            return result;
+        }
+        result.engineName = sandboxEngine.getEngineName();
+        VariableScopeStore.Snapshot phaseCheckpoint = context.variableStore.checkpoint();
+        ApiRequest phaseRequestSnapshot = ScriptExecutionContext.copyRequest(context.request);
+        int phaseMutationCount = result.variableMutations.size();
         for (ScriptBlock block : blocks) {
             if (block == null || !block.enabled || block.source == null || block.source.isBlank()) {
                 continue;
             }
-            boolean completed = false;
+            VariableScopeStore.Snapshot blockCheckpoint = context.variableStore.checkpoint();
+            ApiRequest blockRequestSnapshot = ScriptExecutionContext.copyRequest(context.request);
             int mutationCountBeforeBlock = result.variableMutations.size();
             try {
                 java.util.Map<String, Object> bindings = UnifiedScriptRuntime.buildBindings(context, block);
-                sandboxEngine.execute(block.source, bindings);
-                completed = true;
+                sandboxEngine.execute(block.source, bindings, () -> {
+                    ScriptBindingsFactory.applyRequestMutation(context);
+                    context.variableStore.refreshRequestState();
+                });
             } catch (GraalJsSandboxEngine.ScriptTimedOutException t) {
-                trimMutations(result, mutationCountBeforeBlock);
+                context.restoreRequest(phaseRequestSnapshot);
+                context.variableStore.restore(phaseCheckpoint);
+                trimMutations(result, phaseMutationCount);
                 result.timedOut = true;
+                result.success = false;
                 result.timeoutMillis = t.timeoutMillis;
                 context.error(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (GraalJsSandboxEngine.ScriptCancelledException t) {
-                trimMutations(result, mutationCountBeforeBlock);
+                context.restoreRequest(phaseRequestSnapshot);
+                context.variableStore.restore(phaseCheckpoint);
+                trimMutations(result, phaseMutationCount);
                 result.cancelled = true;
+                result.success = false;
                 context.warn(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (Throwable t) {
+                context.restoreRequest(blockRequestSnapshot);
+                context.variableStore.restore(blockCheckpoint);
+                trimMutations(result, mutationCountBeforeBlock);
                 String message = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
                 context.error("Script error in " + (block.id != null ? block.id : "block") + ": " + message, block.id, block.sourceFormat);
                 if (context.scriptErrorsStopExecution) {
                     break;
-                }
-            } finally {
-                if (completed) {
-                    ScriptBindingsFactory.applyRequestMutation(context);
                 }
             }
             if (result.flowControl == ScriptFlowControl.STOP_RUN) {
@@ -54,6 +79,9 @@ public class ScriptLifecycleExecutor {
                 break;
             }
         }
+        result.mutatedRequest = context.request;
+        result.effectiveVariables.clear();
+        result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
         return result;
     }
 

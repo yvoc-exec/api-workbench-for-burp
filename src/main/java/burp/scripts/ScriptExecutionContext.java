@@ -43,7 +43,7 @@ public class ScriptExecutionContext {
                                   EnvironmentProfile activeEnvironment,
                                   ExecutionSource executionSource,
                                   int attemptNumber) {
-        this(null, collection, originalRequest, activeEnvironment, executionSource, attemptNumber);
+        this(null, collection, originalRequest, activeEnvironment, executionSource, attemptNumber, null);
     }
 
     public ScriptExecutionContext(ApiCollection collection,
@@ -60,12 +60,22 @@ public class ScriptExecutionContext {
                                   EnvironmentProfile activeEnvironment,
                                   ExecutionSource executionSource,
                                   int attemptNumber) {
+        this(api, collection, originalRequest, activeEnvironment, executionSource, attemptNumber, null);
+    }
+
+    public ScriptExecutionContext(MontoyaApi api,
+                                  ApiCollection collection,
+                                  ApiRequest originalRequest,
+                                  EnvironmentProfile activeEnvironment,
+                                  ExecutionSource executionSource,
+                                  int attemptNumber,
+                                  Map<String, String> runtimeOverlay) {
         this.api = api;
         this.collection = collection;
         this.originalRequest = originalRequest;
         this.request = copyRequest(originalRequest);
         this.activeEnvironment = activeEnvironment;
-        this.variableStore = new VariableScopeStore(collection, this.request, activeEnvironment);
+        this.variableStore = new VariableScopeStore(collection, this.request, activeEnvironment, runtimeOverlay);
         this.executionSource = executionSource != null ? executionSource : ExecutionSource.WORKBENCH_SEND;
         this.source = this.executionSource.name();
         this.attemptNumber = Math.max(1, attemptNumber);
@@ -251,6 +261,40 @@ public class ScriptExecutionContext {
         ScriptVariableMutation mutation = variableStore.unsetGlobal(key, scriptId, scriptName);
         addMutation(mutation);
         return mutation;
+    }
+
+    void restoreRequest(ApiRequest snapshot) {
+        if (request == null) {
+            return;
+        }
+        ApiRequest restored = copyRequest(snapshot);
+        request.id = restored.id;
+        request.name = restored.name;
+        request.path = restored.path;
+        request.sourceCollection = restored.sourceCollection;
+        request.method = restored.method;
+        request.url = restored.url;
+        request.description = restored.description;
+        request.headers = restored.headers;
+        request.body = restored.body;
+        request.auth = restored.auth;
+        request.editorMaterialized = restored.editorMaterialized;
+        request.buildMode = restored.buildMode;
+        request.suppressedAutoHeaders = restored.suppressedAutoHeaders;
+        request.variables = restored.variables;
+        request.preRequestScripts = restored.preRequestScripts;
+        request.postResponseScripts = restored.postResponseScripts;
+        request.scriptBlocks = restored.scriptBlocks;
+        request.disabled = restored.disabled;
+        request.sequenceOrder = restored.sequenceOrder;
+        request.authInherited = restored.authInherited;
+        request.authExplicitlyDisabled = restored.authExplicitlyDisabled;
+        request.authSource = restored.authSource;
+        request.authOverrideMode = restored.authOverrideMode;
+        request.explicitAuth = restored.explicitAuth;
+        if (variableStore != null) {
+            variableStore.refreshRequestState();
+        }
     }
 
     public String resolvedRequestText() {
