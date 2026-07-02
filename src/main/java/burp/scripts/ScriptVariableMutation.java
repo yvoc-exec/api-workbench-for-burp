@@ -5,6 +5,7 @@ public class ScriptVariableMutation {
     public String oldValue;
     public String newValue;
     public String scope;
+    public String scopePath;
     public boolean persistent;
     public String sourceScriptId;
     public String sourceScriptName;

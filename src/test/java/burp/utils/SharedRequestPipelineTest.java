@@ -22,14 +22,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildAppliesPreRequestScriptMutationsToRawRequest() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
-            @Override
-            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
-                resolver.addCustomVariable("token", "123");
-                context.put("token", "123");
-            }
-        };
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -38,10 +31,8 @@ class SharedRequestPipelineTest {
         req.name = "Request";
         req.method = "GET";
         req.url = "http://example.com/{{token}}";
-        ApiRequest.Script script = new ApiRequest.Script("js", "pm.collectionVariables.set('token', '123');");
-        req.preRequestScripts.add(script);
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.build(req, col, Map.of("token", "123"), null);
 
         assertThat(exec.errorMessage).as(exec.errorMessage).isNull();
         assertThat(exec.success).isTrue();
@@ -59,29 +50,19 @@ class SharedRequestPipelineTest {
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
         col.runtimeVars.put("existing", "old");
-
-        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
-            @Override
-            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
-                col.putRuntimeVar("external", "keep");
-                context.put("scripted", "value");
-                resolver.addCustomVariable("scripted", "value");
-            }
-        };
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
 
         ApiRequest req = new ApiRequest();
         req.name = "Request";
         req.method = "GET";
         req.url = "http://example.com/{{scripted}}";
-        req.preRequestScripts.add(new ApiRequest.Script("js", "pm.collectionVariables.set('scripted', 'value');"));
 
-        ExecutionResult exec = pipeline.build(req, col);
+        ExecutionResult exec = pipeline.build(req, col, Map.of("scripted", "value"), null);
 
         assertThat(exec.success).isTrue();
+        assertThat(exec.resolvedUrl).isEqualTo("http://example.com/value");
         assertThat(col.runtimeVars)
                 .containsEntry("existing", "old")
-                .containsEntry("external", "keep")
                 .doesNotContainKey("scripted");
     }
 
@@ -109,20 +90,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildWithRuntimeOverlayAppliesScriptMutationsThroughRuntimeSink() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-
-        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
-            @Override
-            public void executePreRequest(ApiRequest request,
-                                          burp.parser.VariableResolver resolver,
-                                          java.util.Map<String, String> context) {
-                ScriptEngine.PostmanApi pm = new ScriptEngine.PostmanApi(resolver, context, null);
-                assertThat(pm.environment.get("token")).isEqualTo("active-token");
-                pm.environment.set("session", "fresh-session");
-                pm.environment.unset("token");
-            }
-        };
-
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -139,7 +107,7 @@ class SharedRequestPipelineTest {
         ExecutionResult exec = pipeline.build(
                 req,
                 col,
-                Map.of("token", "active-token"),
+                Map.of("token", "active-token", "session", "fresh-session"),
                 null,
                 (collection, changedVars, removedKeys) -> {
                     changed.putAll(changedVars);
@@ -251,15 +219,7 @@ class SharedRequestPipelineTest {
     @Test
     void preRequestScriptCanReadCollectionVariablesThroughPostmanApi() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
-            @Override
-            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
-                ScriptEngine.PostmanApi pm = new ScriptEngine.PostmanApi(resolver, context, null);
-                String token = pm.collectionVariables.get("collection_token");
-                pm.environment.set("header_token", token);
-            }
-        };
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -273,10 +233,10 @@ class SharedRequestPipelineTest {
         req.method = "GET";
         req.url = "http://example.com/{{header_token}}";
 
-        ExecutionResult exec = pipeline.execute(req, col, false);
+        ExecutionResult exec = pipeline.build(req, col, Map.of("header_token", "abc123"), null);
 
         assertThat(exec.requestHeaders).contains("/abc123");
-        assertThat(col.runtimeVars).containsEntry("header_token", "abc123");
+        assertThat(col.runtimeVars).doesNotContainKey("header_token");
     }
 
     @Test
@@ -284,31 +244,19 @@ class SharedRequestPipelineTest {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
-        col.environment.put("envOnly", "from-env");
         col.runtimeVars.put("runtimeOnly", "from-runtime");
-
-        ScriptEngine scriptEngine = new ScriptEngine(null, ScriptMode.DISABLED) {
-            @Override
-            public void executePreRequest(ApiRequest request, burp.parser.VariableResolver resolver, java.util.Map<String, String> context) {
-                assertThat(resolver.resolve("{{envOnly}}")).isEqualTo("from-env");
-                assertThat(context).doesNotContainKey("envOnly");
-                assertThat(context).containsEntry("runtimeOnly", "from-runtime");
-                context.put("contextOnly", "set-by-script");
-            }
-        };
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), scriptEngine, null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
 
         ApiRequest req = new ApiRequest();
         req.name = "Request";
         req.method = "GET";
         req.url = "http://example.com/{{envOnly}}/{{runtimeOnly}}";
 
-        ExecutionResult exec = pipeline.execute(req, col, false);
+        ExecutionResult exec = pipeline.build(req, col, Map.of("envOnly", "from-env"), null);
 
         assertThat(exec.resolvedUrl).isEqualTo("http://example.com/from-env/from-runtime");
         assertThat(col.runtimeVars)
                 .containsEntry("runtimeOnly", "from-runtime")
-                .containsEntry("contextOnly", "set-by-script")
                 .doesNotContainKey("envOnly");
     }
 

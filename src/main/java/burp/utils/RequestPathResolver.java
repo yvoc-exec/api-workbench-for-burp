@@ -132,6 +132,30 @@ public final class RequestPathResolver {
         return candidate;
     }
 
+    public static List<String> getAncestorFolderPaths(ApiCollection collection, ApiRequest request) {
+        return getAncestorFolderPaths(getRequestFolderPath(collection, request));
+    }
+
+    public static List<String> getAncestorFolderPaths(String folderPath) {
+        String normalized = normalizeFolderPath(folderPath);
+        List<String> ancestors = new ArrayList<>();
+        if (normalized.isEmpty()) {
+            return ancestors;
+        }
+        StringBuilder current = new StringBuilder();
+        for (String part : normalized.split("/")) {
+            if (part == null || part.isBlank()) {
+                continue;
+            }
+            if (current.length() > 0) {
+                current.append("/");
+            }
+            current.append(part.trim());
+            ancestors.add(current.toString());
+        }
+        return ancestors;
+    }
+
     private static boolean hasFolderEvidence(ApiCollection collection, ApiRequest currentRequest, String rawPathToken) {
         if (collection == null || rawPathToken == null || rawPathToken.isBlank()) {
             return false;

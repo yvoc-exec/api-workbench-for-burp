@@ -128,6 +128,9 @@ public class WorkspaceState {
 
     private static ApiCollection copyCollection(ApiCollection src) {
         ApiCollection copy = new ApiCollection();
+        if (src != null) {
+            src.ensureDefaults();
+        }
         copy.id = src.id;
         copy.name = src.name;
         copy.description = src.description;
@@ -145,6 +148,7 @@ public class WorkspaceState {
         copy.environment = src.environment != null ? new LinkedHashMap<>(src.environment) : new LinkedHashMap<>();
         copy.runtimeVars = src.runtimeVars != null ? new LinkedHashMap<>(src.runtimeVars) : new LinkedHashMap<>();
         copy.runtimeOAuth2 = src.runtimeOAuth2 != null ? new LinkedHashMap<>(src.runtimeOAuth2) : new LinkedHashMap<>();
+        copy.runtimeFolderVars = copyNestedStringMap(src.runtimeFolderVars);
         return copy;
     }
 

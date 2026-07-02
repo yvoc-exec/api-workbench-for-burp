@@ -33,9 +33,10 @@ class EnvironmentRuntimeMutationIntegrationTest {
                 Set.of());
         ImporterPanelTestSupport.awaitEdt();
 
-        assertThat(active.variables).containsEntry("runtime_only", "updated");
+        assertThat(active.runtimeVariables).containsEntry("runtime_only", "updated");
+        assertThat(active.variables).doesNotContainEntry("runtime_only", "updated");
         assertThat(collection.runtimeVars).doesNotContainEntry("runtime_only", "updated");
-        assertThat(bundle.panel.getWorkspaceStateSnapshot().environments.get(0).variables)
+        assertThat(bundle.panel.getWorkspaceStateSnapshot().environments.get(0).runtimeVariables)
                 .containsEntry("runtime_only", "updated");
     }
 

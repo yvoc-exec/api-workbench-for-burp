@@ -45,9 +45,12 @@ class UnifiedScriptRuntimeTest {
         assertThat(result.success).isTrue();
         assertThat(result.logs).hasSize(1);
         assertThat(result.logs.get(0).message).contains("collection pre");
-        assertThat(activeEnvironment.variables).containsEntry("token", "collection-token");
-        assertThat(activeEnvironment.variables).containsEntry("bruno_scope", "folder-value");
-        assertThat(collection.runtimeVars).containsEntry("collection_value", "collection-value");
+        assertThat(result.effectiveVariables).containsEntry("token", "collection-token");
+        assertThat(result.effectiveVariables).containsEntry("bruno_scope", "folder-value");
+        assertThat(result.effectiveVariables).containsEntry("collection_value", "collection-value");
+        assertThat(activeEnvironment.variables).containsEntry("base_url", "https://api.example.test");
+        assertThat(activeEnvironment.variables).doesNotContainKey("token");
+        assertThat(collection.runtimeVars).isEmpty();
     }
 
     @Test
@@ -68,9 +71,12 @@ class UnifiedScriptRuntimeTest {
             assertThat(header.key).isEqualToIgnoringCase("Authorization");
             assertThat(header.value).isEqualTo("Bearer collection-token");
         });
-        assertThat(activeEnvironment.variables).containsEntry("token", "collection-token");
-        assertThat(activeEnvironment.variables).containsEntry("bruno_scope", "folder-value");
-        assertThat(collection.runtimeVars).containsEntry("collection_value", "collection-value");
+        assertThat(result.effectiveVariables).containsEntry("token", "collection-token");
+        assertThat(result.effectiveVariables).containsEntry("bruno_scope", "folder-value");
+        assertThat(result.effectiveVariables).containsEntry("collection_value", "collection-value");
+        assertThat(activeEnvironment.variables).containsEntry("base_url", "https://api.example.test");
+        assertThat(activeEnvironment.variables).doesNotContainKey("token");
+        assertThat(collection.runtimeVars).isEmpty();
         assertThat(result.logs).hasSize(1);
         assertThat(result.logs.get(0).message).contains("collection pre");
     }
@@ -102,8 +108,10 @@ class UnifiedScriptRuntimeTest {
         assertThat(result.assertions.get(0).passed).isTrue();
         assertThat(result.logs).hasSize(1);
         assertThat(result.logs.get(0).message).contains("post-response");
-        assertThat(activeEnvironment.variables).containsEntry("response_token", "resp-123");
-        assertThat(activeEnvironment.variables).containsEntry("native_token", "resp-123");
+        assertThat(result.effectiveVariables).containsEntry("response_token", "resp-123");
+        assertThat(result.effectiveVariables).containsEntry("native_token", "resp-123");
+        assertThat(activeEnvironment.variables).containsEntry("base_url", "https://api.example.test");
+        assertThat(activeEnvironment.variables).doesNotContainKey("response_token");
     }
 
     @Test
@@ -136,7 +144,8 @@ class UnifiedScriptRuntimeTest {
         assertThat(result.success).isFalse();
         assertThat(result.errors).isNotEmpty();
         assertThat(result.errors.get(0)).contains("bru");
-        assertThat(activeEnvironment.variables).containsEntry("ok", "yes");
+        assertThat(result.effectiveVariables).doesNotContainKey("ok");
+        assertThat(activeEnvironment.variables).doesNotContainKey("ok");
         assertThat(activeEnvironment.variables).doesNotContainKey("cross");
     }
 
@@ -164,7 +173,8 @@ class UnifiedScriptRuntimeTest {
         assertThat(result.success).isTrue();
         assertThat(result.logs).hasSize(1);
         assertThat(result.logs.get(0).message).contains("legacy only");
-        assertThat(activeEnvironment.variables).containsEntry("legacy_count", "1");
+        assertThat(result.effectiveVariables).containsEntry("legacy_count", "1");
+        assertThat(activeEnvironment.variables).doesNotContainKey("legacy_count");
     }
 
     @Test

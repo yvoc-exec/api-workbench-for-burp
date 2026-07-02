@@ -4354,7 +4354,7 @@ public class ImporterPanel {
         synchronized (active) {
             if (removedKeys != null) {
                 for (String key : removedKeys) {
-                    if (key != null && active.variables.remove(key) != null) {
+                    if (key != null && active.runtimeVariables.remove(key) != null) {
                         changed = true;
                     }
                 }
@@ -4366,8 +4366,8 @@ public class ImporterPanel {
                         continue;
                     }
                     String value = entry.getValue() != null ? entry.getValue() : "";
-                    if (!Objects.equals(active.variables.get(key), value)) {
-                        active.variables.put(key, value);
+                    if (!Objects.equals(active.runtimeVariables.get(key), value)) {
+                        active.runtimeVariables.put(key, value);
                         changed = true;
                     }
                 }

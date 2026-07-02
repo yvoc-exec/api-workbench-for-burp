@@ -513,6 +513,18 @@ public class CollectionRunner {
                                                    String parentRequestName,
                                                    String parentRequestId,
                                                    int dependentDepth) throws InterruptedException {
+        return executeRequest(req, col, dependentRequestExecutor, dependentExecution, adHocExecution, parentRequestName, parentRequestId, dependentDepth, null);
+    }
+
+    private RequestExecutionOutcome executeRequest(ApiRequest req,
+                                                   ApiCollection col,
+                                                   ScriptDependentRequestExecutor dependentRequestExecutor,
+                                                   boolean dependentExecution,
+                                                   boolean adHocExecution,
+                                                   String parentRequestName,
+                                                   String parentRequestId,
+                                                   int dependentDepth,
+                                                   Map<String, String> runtimeOverlayOverride) throws InterruptedException {
         RunnerResult result = new RunnerResult();
         result.requestName = req.name;
         result.requestId = req.id;
@@ -534,7 +546,7 @@ public class CollectionRunner {
             return new RequestExecutionOutcome(result, 0, RequestOutcomeState.COMPLETED);
         }
 
-        Map<String, String> initialOverlay = runtimeOverlayFor(col);
+        Map<String, String> initialOverlay = mergeRuntimeOverlays(runtimeOverlayFor(col), runtimeOverlayOverride);
         boolean activeEnvironmentMode = initialOverlay != null;
         Map<String, String> scopedExtractedVars = extractedVars;
         if (col != null && !activeEnvironmentMode) {
@@ -550,7 +562,7 @@ public class CollectionRunner {
         while (attempts < maxAttempts && !cancelled) {
             attempts++;
             try {
-                Map<String, String> overlay = runtimeOverlayFor(col);
+                Map<String, String> overlay = mergeRuntimeOverlays(runtimeOverlayFor(col), runtimeOverlayOverride);
                 EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
                 ExecutionResult exec;
                 if (pipeline.getClass() != SharedRequestPipeline.class) {
@@ -1257,7 +1269,8 @@ public class CollectionRunner {
                             false,
                             context.request != null ? context.request.name : null,
                             context.request != null ? context.request.id : null,
-                            currentDepth);
+                            currentDepth,
+                            context.variableStore != null ? context.variableStore.effectiveVariablesSnapshot() : null);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return ScriptDependentRequestResult.failure("Dependent request interrupted.");
@@ -1338,7 +1351,8 @@ public class CollectionRunner {
                             true,
                             context.request != null ? context.request.name : null,
                             context.request != null ? context.request.id : null,
-                            currentDepth);
+                            currentDepth,
+                            context.variableStore != null ? context.variableStore.effectiveVariablesSnapshot() : null);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return ScriptDependentRequestResult.failure("Ad-hoc request interrupted.");
@@ -1461,6 +1475,20 @@ public class CollectionRunner {
             return null;
         }
         return runtimeOverlayProvider.apply(col);
+    }
+
+    private Map<String, String> mergeRuntimeOverlays(Map<String, String> baseOverlay, Map<String, String> explicitOverlay) {
+        if ((baseOverlay == null || baseOverlay.isEmpty()) && (explicitOverlay == null || explicitOverlay.isEmpty())) {
+            return null;
+        }
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (baseOverlay != null && !baseOverlay.isEmpty()) {
+            merged.putAll(baseOverlay);
+        }
+        if (explicitOverlay != null && !explicitOverlay.isEmpty()) {
+            merged.putAll(explicitOverlay);
+        }
+        return merged;
     }
 
     private EnvironmentProfile activeEnvironmentFor(ApiCollection col) {

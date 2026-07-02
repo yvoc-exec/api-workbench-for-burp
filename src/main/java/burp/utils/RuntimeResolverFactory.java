@@ -15,9 +15,7 @@ import java.util.regex.Pattern;
 /**
  * Centralized runtime resolver construction for execution and preview paths.
  *
- * Precedence mirrors SharedRequestPipeline execution resolution:
- * collection defaults -> folder vars -> collection runtime vars -> active
- * environment -> runtime/script overlay -> request vars -> auth/runtime mapping.
+ * Precedence mirrors SharedRequestPipeline execution resolution.
  */
 public final class RuntimeResolverFactory {
     private static final Pattern BARE_VARIABLE_REFERENCE = Pattern.compile("^\\s*\\{\\{[^}|]+(?:\\|[^}]+)?\\}\\}\\s*$");
@@ -47,11 +45,18 @@ public final class RuntimeResolverFactory {
                                          Options options) {
         Options effectiveOptions = options != null ? options : Options.defaultOptions();
         VariableResolver resolver = new VariableResolver();
+        if (collection != null) {
+            collection.ensureDefaults();
+        }
+        if (activeEnvironment != null) {
+            activeEnvironment.ensureDefaults();
+        }
 
         if (collection != null) {
-            resolver.addEnvironmentVariables(collection);
-            resolver.addCollectionVariables(collection);
-            resolver.addFolderVariables(collection, request);
+            addCollectionEnvironmentDefaults(resolver, collection);
+            addCollectionVariables(resolver, collection);
+            addAuthorableFolderVariables(resolver, collection.folderVars, collection, request);
+            addRuntimeFolderVariables(resolver, collection.runtimeFolderVars, collection, request);
             if (effectiveOptions.includeCollectionRuntimeLayers) {
                 addRuntimeLayers(resolver, collection.runtimeOAuth2);
                 addRuntimeLayers(resolver, collection.runtimeVars);
@@ -59,7 +64,7 @@ public final class RuntimeResolverFactory {
         }
 
         if (activeEnvironment != null) {
-            resolver.addAll(activeEnvironment.toRuntimeOverlay());
+            addEnvironmentOverlay(resolver, activeEnvironment);
         }
 
         if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
@@ -99,6 +104,12 @@ public final class RuntimeResolverFactory {
                                           String key,
                                           Options options) {
         Options effectiveOptions = options != null ? options : Options.defaultOptions();
+        if (collection != null) {
+            collection.ensureDefaults();
+        }
+        if (activeEnvironment != null) {
+            activeEnvironment.ensureDefaults();
+        }
         String normalizedKey = key != null ? key.trim() : "";
         List<ResolutionCandidate> candidates = new ArrayList<>();
         Map<String, String> cumulative = new LinkedHashMap<>();
@@ -106,7 +117,8 @@ public final class RuntimeResolverFactory {
         if (collection != null) {
             collectCandidate(candidates, cumulative, collection.environment, "collection environment", "collection default", normalizedKey);
             collectCandidate(candidates, cumulative, collection.variables, "collection variables", "collection default", normalizedKey);
-            collectCandidate(candidates, cumulative, collection.folderVars, request, "folder variables", normalizedKey);
+            collectCandidate(candidates, cumulative, collection.folderVars, collection, request, "folder variables", normalizedKey);
+            collectCandidate(candidates, cumulative, collection.runtimeFolderVars, collection, request, "runtime folder variables", normalizedKey);
             if (effectiveOptions.includeCollectionRuntimeLayers) {
                 collectCandidate(candidates, cumulative, collection.runtimeOAuth2, "collection runtime OAuth2", "runtime", normalizedKey);
                 collectCandidate(candidates, cumulative, collection.runtimeVars, "collection runtime vars", "runtime", normalizedKey);
@@ -114,7 +126,8 @@ public final class RuntimeResolverFactory {
         }
 
         if (activeEnvironment != null) {
-            collectCandidate(candidates, cumulative, activeEnvironment.toRuntimeOverlay(), "active environment", "active environment", normalizedKey);
+            collectCandidate(candidates, cumulative, activeEnvironment.toPersistedOverlay(), "active environment", "active environment", normalizedKey);
+            collectCandidate(candidates, cumulative, activeEnvironment.runtimeVariables, "active environment runtime", "active environment runtime", normalizedKey);
         }
 
         if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
@@ -174,6 +187,72 @@ public final class RuntimeResolverFactory {
         );
     }
 
+    public static List<String> normalizedFolderAncestors(ApiCollection collection, ApiRequest request) {
+        return RequestPathResolver.getAncestorFolderPaths(collection, request);
+    }
+
+    private static void addCollectionEnvironmentDefaults(VariableResolver resolver, ApiCollection collection) {
+        if (resolver == null || collection == null || collection.environment == null || collection.environment.isEmpty()) {
+            return;
+        }
+        resolver.addAll(collection.environment);
+    }
+
+    private static void addCollectionVariables(VariableResolver resolver, ApiCollection collection) {
+        if (resolver == null || collection == null || collection.variables == null || collection.variables.isEmpty()) {
+            return;
+        }
+        for (ApiRequest.Variable variable : collection.variables) {
+            if (variable == null || variable.key == null || variable.value == null) {
+                continue;
+            }
+            resolver.addCustomVariable(variable.key, variable.value);
+        }
+    }
+
+    private static void addAuthorableFolderVariables(VariableResolver resolver,
+                                                     Map<String, Map<String, String>> folderVars,
+                                                     ApiCollection collection,
+                                                     ApiRequest request) {
+        addFolderLayer(resolver, folderVars, normalizedFolderAncestors(collection, request));
+    }
+
+    private static void addRuntimeFolderVariables(VariableResolver resolver,
+                                                  Map<String, Map<String, String>> folderVars,
+                                                  ApiCollection collection,
+                                                  ApiRequest request) {
+        addFolderLayer(resolver, folderVars, normalizedFolderAncestors(collection, request));
+    }
+
+    private static void addFolderLayer(VariableResolver resolver,
+                                       Map<String, Map<String, String>> folderVars,
+                                       List<String> ancestors) {
+        if (resolver == null || folderVars == null || folderVars.isEmpty() || ancestors == null || ancestors.isEmpty()) {
+            return;
+        }
+        for (String folderPath : ancestors) {
+            Map<String, String> vars = folderVars.get(folderPath);
+            if (vars != null && !vars.isEmpty()) {
+                resolver.addAll(vars);
+            }
+        }
+    }
+
+    private static void addEnvironmentOverlay(VariableResolver resolver, EnvironmentProfile environment) {
+        if (resolver == null || environment == null) {
+            return;
+        }
+        if (environment.oauth2 != null && environment.oauth2.config != null && !environment.oauth2.config.isEmpty()) {
+            resolver.addAll(environment.oauth2.config);
+        }
+        if (environment.variables != null && !environment.variables.isEmpty()) {
+            resolver.addAll(environment.variables);
+        }
+        if (environment.runtimeVariables != null && !environment.runtimeVariables.isEmpty()) {
+            resolver.addAll(environment.runtimeVariables);
+        }
+    }
+
     private static void addRuntimeLayers(VariableResolver resolver, Map<String, String> vars) {
         if (resolver == null || vars == null || vars.isEmpty()) {
             return;
@@ -206,27 +285,15 @@ public final class RuntimeResolverFactory {
     private static void collectCandidate(List<ResolutionCandidate> candidates,
                                          Map<String, String> cumulative,
                                          Map<String, Map<String, String>> folderVars,
+                                         ApiCollection collection,
                                          ApiRequest request,
                                          String source,
                                          String normalizedKey) {
         if (folderVars == null || folderVars.isEmpty() || request == null || normalizedKey == null || normalizedKey.isBlank()) {
             return;
         }
-        String folderPath = burp.utils.RequestPathResolver.getRequestFolderPath(request);
-        if (folderPath == null || folderPath.isBlank()) {
-            return;
-        }
-        String[] parts = folderPath.split("/");
-        StringBuilder current = new StringBuilder();
-        for (String part : parts) {
-            if (part == null || part.isBlank()) {
-                continue;
-            }
-            if (current.length() > 0) {
-                current.append("/");
-            }
-            current.append(part.trim());
-            Map<String, String> values = folderVars.get(current.toString());
+        for (String folderPath : normalizedFolderAncestors(collection, request)) {
+            Map<String, String> values = folderVars.get(folderPath);
             if (values == null || values.isEmpty()) {
                 continue;
             }
@@ -238,7 +305,7 @@ public final class RuntimeResolverFactory {
                 String value = entry.getValue();
                 cumulative.put(key, value);
                 if (key.equals(normalizedKey)) {
-                    candidates.add(new ResolutionCandidate(key, value, source, "folder:" + current, source, value));
+                    candidates.add(new ResolutionCandidate(key, value, source, "folder:" + folderPath, source, value));
                 }
             }
         }

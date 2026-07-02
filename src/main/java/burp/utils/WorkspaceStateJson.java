@@ -94,6 +94,9 @@ public final class WorkspaceStateJson {
             if (collection.folderVars == null) {
                 collection.folderVars = new java.util.LinkedHashMap<>();
             }
+            if (collection.runtimeFolderVars == null) {
+                collection.runtimeFolderVars = new java.util.LinkedHashMap<>();
+            }
             if (collection.runtimeVars == null) {
                 collection.runtimeVars = new java.util.LinkedHashMap<>();
             }
@@ -165,6 +168,9 @@ public final class WorkspaceStateJson {
             }
             if (profile.variables == null) {
                 profile.variables = new java.util.LinkedHashMap<>();
+            }
+            if (profile.runtimeVariables == null) {
+                profile.runtimeVariables = new java.util.LinkedHashMap<>();
             }
             if (profile.oauth2 == null) {
                 profile.oauth2 = new burp.models.OAuth2EnvironmentState();
