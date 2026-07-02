@@ -112,13 +112,21 @@ public final class ScriptBindingsFactory {
 
         @HostAccess.Export
         public void set(String key, Object value, Object options) {
-            boolean persist = persistDefault || optionsIndicatesPersist(options);
+            Boolean persistenceOverride = extractPersistOverride(options);
+            boolean persist = persistenceOverride != null ? persistenceOverride : persistDefault;
             applySet(key, value != null ? value.toString() : "", persist);
         }
 
         @HostAccess.Export
         public void unset(String key) {
-            applyUnset(key, persistDefault);
+            unset(key, null);
+        }
+
+        @HostAccess.Export
+        public void unset(String key, Object options) {
+            Boolean persistenceOverride = extractPersistOverride(options);
+            boolean persist = persistenceOverride != null ? persistenceOverride : persistDefault;
+            applyUnset(key, persist);
         }
 
         private void applySet(String key, String value, boolean persist) {
@@ -149,45 +157,63 @@ public final class ScriptBindingsFactory {
             }
         }
 
-        private boolean optionsIndicatesPersist(Object options) {
+        private Boolean extractPersistOverride(Object options) {
             if (options == null) {
-                return false;
+                return null;
             }
             if (options instanceof Map<?, ?> map) {
-                Object persist = map.get("persist");
-                if (persist instanceof Boolean b) {
-                    return b;
+                if (!map.containsKey("persist")) {
+                    return null;
                 }
-                if (persist != null) {
-                    return Boolean.parseBoolean(persist.toString());
-                }
+                return parseBooleanOverride(map.get("persist"));
             }
             if (options instanceof org.graalvm.polyglot.Value value) {
-                if (value.hasMember("persist")) {
-                    try {
-                        return value.getMember("persist").asBoolean();
-                    } catch (Exception ignored) {
-                        Object raw = value.getMember("persist");
-                        return raw != null && Boolean.parseBoolean(raw.toString());
-                    }
+                if (!value.hasMembers() || !value.hasMember("persist")) {
+                    return null;
                 }
+                org.graalvm.polyglot.Value persist = value.getMember("persist");
+                if (persist == null || persist.isNull()) {
+                    return null;
+                }
+                if (persist.isBoolean()) {
+                    return persist.asBoolean();
+                }
+                if (persist.isString()) {
+                    return parseBooleanOverride(persist.asString());
+                }
+                return null;
             }
             try {
                 java.lang.reflect.Method hasMember = options.getClass().getMethod("hasMember", String.class);
                 java.lang.reflect.Method getMember = options.getClass().getMethod("getMember", String.class);
                 Object hasPersist = hasMember.invoke(options, "persist");
-                if (hasPersist instanceof Boolean b && b) {
-                    Object persist = getMember.invoke(options, "persist");
-                    if (persist instanceof Boolean bool) {
-                        return bool;
-                    }
-                    if (persist != null) {
-                        return Boolean.parseBoolean(persist.toString());
-                    }
+                if (!(hasPersist instanceof Boolean b) || !b) {
+                    return null;
                 }
+                Object persist = getMember.invoke(options, "persist");
+                return parseBooleanOverride(persist);
             } catch (Exception ignored) {
             }
-            return false;
+            return null;
+        }
+
+        private Boolean parseBooleanOverride(Object raw) {
+            if (raw == null) {
+                return null;
+            }
+            if (raw instanceof Boolean b) {
+                return b;
+            }
+            if (raw instanceof String s) {
+                String trimmed = s.trim();
+                if (trimmed.equalsIgnoreCase("true")) {
+                    return Boolean.TRUE;
+                }
+                if (trimmed.equalsIgnoreCase("false")) {
+                    return Boolean.FALSE;
+                }
+            }
+            return null;
         }
     }
 

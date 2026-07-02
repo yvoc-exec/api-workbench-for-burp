@@ -13,12 +13,15 @@ import burp.scripts.ScriptExecutionResult;
 import burp.scripts.ScriptLifecycleExecutor;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
+import burp.scripts.ScriptDependentRequestExecutor;
+import burp.scripts.UnifiedScriptRuntime;
 import burp.testsupport.RunnerScriptTestFixtures;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -189,6 +192,88 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
         }
     }
 
+    @Test
+    void stopOnScriptErrorRetainedMutationCommitsThroughPipeline() {
+        ApiCollection collection = collection();
+        ApiRequest request = request();
+        EnvironmentProfile environment = environment();
+
+        ScriptExecutionContext context = new ScriptExecutionContext(
+                Mockito.mock(MontoyaApi.class, RETURNS_DEEP_STUBS),
+                collection,
+                request,
+                environment,
+                ExecutionSource.WORKBENCH_SEND,
+                1
+        );
+        context.scriptErrorsStopExecution = true;
+
+        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+        ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
+        ScriptExecutionResult scriptResult;
+        try {
+            scriptResult = executor.execute(context, List.of(
+                    block("""
+                            awb.environment.set('first', 'one', { persist: true });
+                            """, ScriptPhase.PRE_REQUEST),
+                    block("""
+                            awb.environment.set('temp', 'temp', { persist: true });
+                            throw new Error('boom');
+                            """, ScriptPhase.PRE_REQUEST),
+                    block("""
+                            awb.environment.set('third', 'three', { persist: true });
+                            """, ScriptPhase.PRE_REQUEST)
+            ));
+        } finally {
+            engine.close();
+        }
+
+        assertThat(scriptResult.success).isFalse();
+        assertThat(scriptResult.errors).isNotEmpty();
+        assertThat(scriptResult.timedOut).isFalse();
+        assertThat(scriptResult.cancelled).isFalse();
+        assertThat(scriptResult.variableMutations)
+                .extracting(mutation -> mutation.key + "=" + mutation.newValue)
+                .contains("first=one")
+                .doesNotContain("temp=temp", "third=three");
+
+        AtomicInteger sendCount = new AtomicInteger();
+        CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> requests = new CopyOnWriteArrayList<>();
+        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(
+                sendCount,
+                requests,
+                () -> RunnerScriptTestFixtures.mockResponse(200, "{\"ok\":true}", "application/json")
+        );
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null,
+                new StubUnifiedScriptRuntime(scriptResult)
+        );
+        try {
+            ExecutionResult result = pipeline.execute(
+                    request,
+                    collection,
+                    false,
+                    null,
+                    null,
+                    null,
+                    environment,
+                    ExecutionSource.WORKBENCH_SEND
+            );
+
+            assertThat(sendCount.get()).isEqualTo(1);
+            assertThat(requests).hasSize(1);
+            assertThat(environment.variables).containsEntry("first", "one");
+            assertThat(environment.variables).doesNotContainKey("temp");
+            assertThat(environment.runtimeVariables).doesNotContainKey("temp");
+            assertThat(result.scriptErrors).isNotEmpty();
+        } finally {
+            pipeline.close();
+        }
+    }
+
     private static ExecutionFixture executionFixture(ScriptBlock... blocks) {
         AtomicInteger sendCount = new AtomicInteger();
         CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> requests = new CopyOnWriteArrayList<>();
@@ -270,6 +355,47 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
         @Override
         public void environmentMutationCommitted(EnvironmentProfile environment, boolean persistedChanged, boolean runtimeChanged) {
             callbackCount.incrementAndGet();
+        }
+    }
+
+    private static final class StubUnifiedScriptRuntime extends UnifiedScriptRuntime {
+        private final ScriptExecutionResult scriptResult;
+
+        private StubUnifiedScriptRuntime(ScriptExecutionResult scriptResult) {
+            super(null, ScriptMode.FULL_JS);
+            this.scriptResult = scriptResult;
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
+
+        @Override
+        public ScriptExecutionResult executePreRequest(ApiCollection collection,
+                                                       ApiRequest request,
+                                                       EnvironmentProfile activeEnvironment,
+                                                       ExecutionSource executionSource,
+                                                       int attemptNumber,
+                                                       ScriptDependentRequestExecutor dependentRequestExecutor,
+                                                       Map<String, String> runtimeOverlay) {
+            return scriptResult;
+        }
+
+        @Override
+        public ScriptExecutionResult executePostResponse(ApiCollection collection,
+                                                         ApiRequest request,
+                                                         EnvironmentProfile activeEnvironment,
+                                                         ExecutionSource executionSource,
+                                                         int attemptNumber,
+                                                         String responseText,
+                                                         int statusCode,
+                                                         Map<String, List<String>> responseHeaders,
+                                                         long responseTimeMs,
+                                                         burp.models.RunnerResult runnerResult,
+                                                         ScriptDependentRequestExecutor dependentRequestExecutor,
+                                                         Map<String, String> runtimeOverlay) {
+            return new ScriptExecutionResult();
         }
     }
 

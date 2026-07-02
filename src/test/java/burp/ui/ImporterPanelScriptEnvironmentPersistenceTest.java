@@ -27,6 +27,7 @@ import javax.swing.JTextArea;
 import javax.swing.JButton;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +35,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.never;
@@ -136,6 +136,9 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         WorkbenchHarness harness = workbenchHarness("""
                 awb.environment.set('token', 'persisted-token', { persist: true });
                 """);
+        harness.importer.resetSaveCounts();
+        harness.environment.variables.remove("token");
+        harness.environment.runtimeVariables.remove("token");
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
@@ -145,12 +148,14 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         );
         ImporterPanelTestSupport.awaitEdt();
 
+        assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("persisted-token");
         assertThat(harness.environment.variables).containsEntry("token", "persisted-token");
         assertThat(harness.environment.runtimeVariables).doesNotContainKey("token");
         assertThat(harness.requestEditor.getRuntimeVariablesSnapshot()).containsEntry("token", "persisted-token");
         assertThat(harness.environmentRawArea.getText()).contains("persisted-token");
         assertThat(harness.capturedRequests).hasSize(1);
         assertThat(harness.importer.modelOnlySaveCount.get()).isEqualTo(1);
+        assertThat(harness.importer.fullSaveCount.get()).isEqualTo(0);
 
         WorkspaceState state = workspaceState(harness.collection, harness.environment);
         String json = WorkspaceStateJson.toJson(state);
@@ -165,6 +170,9 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         WorkbenchHarness harness = workbenchHarness("""
                 awb.environment.set('token', 'runtime-token', { persist: false });
                 """);
+        harness.importer.resetSaveCounts();
+        harness.environment.variables.remove("token");
+        harness.environment.runtimeVariables.remove("token");
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
@@ -175,18 +183,33 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         ImporterPanelTestSupport.awaitEdt();
 
         assertThat(harness.capturedRequests).hasSize(1);
-        assertThat(harness.environment.variables).containsEntry("token", "runtime-token");
-        assertThat(harness.importer.modelOnlySaveCount.get()).isEqualTo(1);
+        assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("runtime-token");
+        assertThat(harness.environment.variables).doesNotContainKey("token");
+        assertThat(harness.environment.runtimeVariables).containsEntry("token", "runtime-token");
+        assertThat(harness.requestEditor.getRuntimeVariablesSnapshot()).containsEntry("token", "runtime-token");
+        assertThat(harness.importer.modelOnlySaveCount.get()).isEqualTo(0);
+        assertThat(harness.importer.fullSaveCount.get()).isEqualTo(0);
+
+        WorkspaceState state = workspaceState(harness.collection, harness.environment);
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState restored = WorkspaceStateJson.fromJson(json);
+
+        assertThat(json).doesNotContain("runtime-token");
+        assertThat(restored.environments.get(0).variables).doesNotContainKey("token");
+        assertThat(restored.environments.get(0).runtimeVariables).isEmpty();
     }
 
     @Test
-    void workbenchSendPersistentMutationDoesNotOverwriteDirtyEnvironmentDraft() throws Exception {
+    void workbenchSendCommitsDirtyActiveEnvironmentBeforeScriptExecution() throws Exception {
         WorkbenchHarness harness = workbenchHarness("""
                 awb.environment.set('token', 'draft-persisted', { persist: true });
                 """);
         harness.environmentRawArea.setText("draft=unsaved");
         ImporterPanelTestSupport.setField(harness.panel, "environmentDirty", true);
         ImporterPanelTestSupport.setField(harness.panel, "renderedEnvironmentEditorProfileId", harness.environment.id);
+        harness.importer.resetSaveCounts();
+        harness.environment.variables.remove("token");
+        harness.environment.runtimeVariables.remove("token");
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
@@ -196,16 +219,26 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         );
         ImporterPanelTestSupport.awaitEdt();
 
+        assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("draft-persisted");
+        assertThat(harness.environment.variables).containsEntry("draft", "unsaved");
         assertThat(harness.environment.variables).containsEntry("token", "draft-persisted");
+        assertThat(harness.environment.runtimeVariables).doesNotContainKey("token");
+        assertThat((Boolean) ImporterPanelTestSupport.getField(harness.panel, "environmentDirty")).isFalse();
         assertThat(harness.environmentRawArea.getText()).contains("draft=unsaved");
         assertThat(harness.environmentRawArea.getText()).contains("draft-persisted");
+        assertThat(harness.requestEditor.getRuntimeVariablesSnapshot()).containsEntry("draft", "unsaved");
         assertThat(harness.requestEditor.getRuntimeVariablesSnapshot()).containsEntry("token", "draft-persisted");
+        assertThat(harness.capturedRequests).hasSize(1);
         assertThat(harness.importer.modelOnlySaveCount.get()).isEqualTo(1);
+        assertThat(harness.importer.fullSaveCount.get()).isEqualTo(0);
 
-        ImporterPanelTestSupport.setField(harness.panel, "environmentDirty", false);
-        ImporterPanelTestSupport.invokeVoid(harness.panel, "renderSelectedEnvironmentIntoEditor", new Class<?>[]{boolean.class}, true);
-        ImporterPanelTestSupport.awaitEdt();
-        assertThat(harness.environmentRawArea.getText()).contains("draft-persisted");
+        WorkspaceState state = workspaceState(harness.collection, harness.environment);
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState restored = WorkspaceStateJson.fromJson(json);
+        assertThat(json).contains("draft");
+        assertThat(json).contains("draft-persisted");
+        assertThat(restored.environments.get(0).variables).containsEntry("draft", "unsaved");
+        assertThat(restored.environments.get(0).variables).containsEntry("token", "draft-persisted");
     }
 
     private static void invokeEnvironmentCallback(ImporterPanel panel,
@@ -268,6 +301,16 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         state.collections = new ArrayList<>(List.of(collection));
         state.environments = new ArrayList<>(List.of(environment));
         return state;
+    }
+
+    private static String rawRequestText(HttpRequest request) {
+        if (request == null) {
+            return "";
+        }
+        if (request.toByteArray() != null) {
+            return new String(request.toByteArray().getBytes(), StandardCharsets.ISO_8859_1);
+        }
+        return request.url() != null ? request.url() : "";
     }
 
     private static WorkbenchHarness workbenchHarness(String scriptSource) throws Exception {
@@ -367,6 +410,11 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         public void requestWorkspaceStateSaveNowFromModel() {
             modelOnlySaveCount.incrementAndGet();
             super.requestWorkspaceStateSaveNowFromModel();
+        }
+
+        void resetSaveCounts() {
+            modelOnlySaveCount.set(0);
+            fullSaveCount.set(0);
         }
     }
 
