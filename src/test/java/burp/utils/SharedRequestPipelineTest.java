@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.RequestOptions;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -16,13 +17,14 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class SharedRequestPipelineTest {
 
     @Test
     void buildAppliesPreRequestScriptMutationsToRawRequest() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -50,7 +52,7 @@ class SharedRequestPipelineTest {
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
         col.runtimeVars.put("existing", "old");
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiRequest req = new ApiRequest();
         req.name = "Request";
@@ -69,7 +71,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildAppliesRuntimeOverlayWithoutMutatingCollectionVariables() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -90,7 +92,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildWithRuntimeOverlayAppliesScriptMutationsThroughRuntimeSink() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -125,7 +127,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildWithActiveEnvironmentMutatesEnvironmentAndKeepsHistoryReplaySource() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.FULL_JS, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -159,7 +161,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildHonorsExactHttpModeForRunnerSourceWithoutSynthesizingHeaders() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -219,7 +221,7 @@ class SharedRequestPipelineTest {
     @Test
     void preRequestScriptCanReadCollectionVariablesThroughPostmanApi() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -245,7 +247,7 @@ class SharedRequestPipelineTest {
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
         col.runtimeVars.put("runtimeOnly", "from-runtime");
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiRequest req = new ApiRequest();
         req.name = "Request";
@@ -269,8 +271,7 @@ class SharedRequestPipelineTest {
         entry.expiresAt = System.currentTimeMillis() + 60_000;
         org.mockito.Mockito.when(manager.getValidToken(org.mockito.Mockito.any())).thenReturn(entry);
 
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(
-                api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), manager);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, manager);
 
         ApiCollection col = new ApiCollection();
         col.name = "OAuth Collection";
@@ -304,8 +305,7 @@ class SharedRequestPipelineTest {
         entry.expiresAt = System.currentTimeMillis() + 60_000;
         org.mockito.Mockito.when(manager.getValidToken(org.mockito.Mockito.any())).thenReturn(entry);
 
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(
-                api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), manager);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, manager);
 
         ApiCollection col = new ApiCollection();
         col.name = "OAuth Collection";
@@ -343,7 +343,7 @@ class SharedRequestPipelineTest {
     @Test
     void sharedPipelineHonorsAutoCompatibleBuildMode() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -365,7 +365,7 @@ class SharedRequestPipelineTest {
     @Test
     void sharedPipelineHonorsManualPreserveBuildMode() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -390,7 +390,7 @@ class SharedRequestPipelineTest {
     @Test
     void sharedPipelineDoesNotChangeTransportSemantics() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -416,7 +416,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildPreservesMultipartFileBytes() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         Path tempFile = Files.createTempFile(Path.of("target"), "pipeline-binary-", ".bin");
         byte[] fileBytes = new byte[] {0x00, (byte) 0xff, (byte) 0xfe, 0x41};
@@ -448,7 +448,7 @@ class SharedRequestPipelineTest {
     @Test
     void buildSplitsHeadersAndUrlEncodedBody() throws Exception {
         MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED, null);
 
         ApiCollection col = new ApiCollection();
         col.name = "Collection";
@@ -485,5 +485,21 @@ class SharedRequestPipelineTest {
             return true;
         }
         return false;
+    }
+
+    private static SharedRequestPipeline pipeline(MontoyaApi api, ScriptMode mode, burp.auth.OAuth2Manager oauth2Manager) {
+        return SharedRequestPipeline.withRequestOptionsFactory(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, mode),
+                oauth2Manager,
+                null,
+                timeout -> {
+                    RequestOptions options = mock(RequestOptions.class);
+                    when(options.withRedirectionMode(org.mockito.ArgumentMatchers.any())).thenReturn(options);
+                    when(options.withResponseTimeout(org.mockito.ArgumentMatchers.anyInt())).thenReturn(options);
+                    return options;
+                }
+        );
     }
 }

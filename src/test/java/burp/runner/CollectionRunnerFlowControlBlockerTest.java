@@ -13,6 +13,7 @@ import burp.models.RunnerStopConditions;
 import burp.models.RunnerTimelineRow;
 import burp.scripts.ScriptBlock;
 import burp.utils.RequestBuilder;
+import burp.utils.ExecutionPolicy;
 import burp.utils.ScriptEngine;
 import burp.utils.ScriptMode;
 import burp.utils.SharedRequestPipeline;
@@ -74,7 +75,7 @@ class CollectionRunnerFlowControlBlockerTest {
         harness.runner().runCollections(List.of(collection), collection.requests);
         waitForRunnerToStop(harness.runner());
 
-        assertThat(harness.sendCalls().get()).isEqualTo(2);
+        assertThat(harness.sendCalls().get()).isEqualTo(3);
         assertThat(harness.runner().getResults()).hasSize(3);
         assertThat(harness.runner().getResults().get(1).success).isTrue();
         assertThat(harness.runner().getResults().get(1).scriptFlowControl).isEqualTo(burp.scripts.ScriptFlowControl.SKIP_REQUEST);
@@ -118,8 +119,24 @@ class CollectionRunnerFlowControlBlockerTest {
             sendCalls.incrementAndGet();
             return mockResponse();
         });
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = SharedRequestPipeline.withRequestOptionsFactory(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = Mockito.mock(RequestOptions.class);
+                    when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+                    when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+                    return options;
+                });
         CollectionRunner runner = new CollectionRunner(api, pipeline, null);
+        ExecutionPolicy policy = ExecutionPolicy.runnerDefaults(false);
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+        runner.setExecutionPolicy(policy);
         runner.setDelayMs(0);
         runner.setMaxRetries(0);
         runner.addListener(new CollectionRunner.RunnerListener() {

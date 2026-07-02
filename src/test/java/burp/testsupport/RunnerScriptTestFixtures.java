@@ -73,7 +73,12 @@ public final class RunnerScriptTestFixtures {
     }
 
     public static CollectionRunner newRunner(MontoyaApi api) {
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = SharedRequestPipeline.withRequestOptionsFactory(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null, null, timeout -> {
+            RequestOptions options = Mockito.mock(RequestOptions.class);
+            when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+            when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+            return options;
+        });
         CollectionRunner runner = new CollectionRunner(api, pipeline, null);
         runner.setDelayMs(0);
         runner.setMaxRetries(0);

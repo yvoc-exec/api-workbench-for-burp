@@ -1,6 +1,7 @@
 package burp.models;
 
 import burp.history.HistoryEntry;
+import burp.utils.ExecutionPolicy;
 import burp.scripts.ScriptBlock;
 
 import java.util.ArrayList;
@@ -33,6 +34,11 @@ public class WorkspaceState {
     public Boolean workbenchDebugRawRequest;
     public Integer workbenchDetailTabIndex;
     public Boolean workbenchFollowRedirects;
+    public Integer defaultResponseTimeoutMillis;
+    public ExecutionPolicy.ScriptFailureMode workbenchScriptFailureMode;
+    public ExecutionPolicy.OAuth2FailureMode oauth2FailureMode;
+    public ExecutionPolicy.TargetChangeMode workbenchTargetChangeMode;
+    public ExecutionPolicy.UnresolvedVariableMode workbenchUnresolvedVariableMode;
     public Integer runnerDelayMs;
     public Integer runnerRetries;
     public Boolean runnerStopOnError;
@@ -43,6 +49,8 @@ public class WorkspaceState {
     public Boolean runnerFollowRedirects;
     public Boolean runnerDebugRawRequest;
     public Integer runnerDetailTabIndex;
+    public Integer runnerResponseTimeoutMillis;
+    public ExecutionPolicy.TargetChangeMode runnerTargetChangeMode;
     public String historyReplayRedirectMode;
     public RedirectPolicy redirectPolicy;
     public List<String> runnerQueuedRequestIdentityKeys = new ArrayList<>();
@@ -82,6 +90,11 @@ public class WorkspaceState {
         copy.workbenchDebugRawRequest = source.workbenchDebugRawRequest;
         copy.workbenchDetailTabIndex = source.workbenchDetailTabIndex;
         copy.workbenchFollowRedirects = source.workbenchFollowRedirects;
+        copy.defaultResponseTimeoutMillis = source.defaultResponseTimeoutMillis;
+        copy.workbenchScriptFailureMode = source.workbenchScriptFailureMode;
+        copy.oauth2FailureMode = source.oauth2FailureMode;
+        copy.workbenchTargetChangeMode = source.workbenchTargetChangeMode;
+        copy.workbenchUnresolvedVariableMode = source.workbenchUnresolvedVariableMode;
         copy.runnerDelayMs = source.runnerDelayMs;
         copy.runnerRetries = source.runnerRetries;
         copy.runnerStopOnError = source.runnerStopOnError;
@@ -92,6 +105,8 @@ public class WorkspaceState {
         copy.runnerFollowRedirects = source.runnerFollowRedirects;
         copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
+        copy.runnerResponseTimeoutMillis = source.runnerResponseTimeoutMillis;
+        copy.runnerTargetChangeMode = source.runnerTargetChangeMode;
         copy.historyReplayRedirectMode = source.historyReplayRedirectMode;
         copy.redirectPolicy = RedirectPolicy.copyOf(source.redirectPolicy);
         copy.runnerQueuedRequestIdentityKeys = source.runnerQueuedRequestIdentityKeys != null

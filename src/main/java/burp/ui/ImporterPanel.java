@@ -25,6 +25,9 @@ import burp.diagnostics.DiagnosticSanitizer;
 import burp.diagnostics.DiagnosticStore;
 import burp.utils.OAuth2BearerAliasDetector;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPolicy;
+import burp.utils.ExecutionPreflightResult;
+import burp.utils.PreflightDecisionHandler;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.SharedRequestPipeline;
 import burp.scripts.ScriptVariableMutation;
@@ -155,6 +158,10 @@ public class ImporterPanel {
     private JTextArea diagnosticsEventDetailArea;
     private HistoryPanel historyPanel;
     private RedirectPolicy sharedRedirectPolicy = RedirectPolicy.defaults();
+    private ExecutionPolicy workbenchExecutionPolicy = ExecutionPolicy.workbenchDefaults();
+    private ExecutionPolicy runnerExecutionPolicy = ExecutionPolicy.runnerDefaults(false);
+    private PreflightDecisionHandler preflightDecisionHandler = this::confirmWorkbenchPreflight;
+    private boolean preflightDecisionHandlerConfiguredForTests;
     private HistoryReplayRedirectMode historyReplayRedirectMode = HistoryReplayRedirectMode.RECORDED;
 
     // Runner tab
@@ -175,6 +182,13 @@ public class ImporterPanel {
     private JCheckBox stopOnAssertionFailureBox;
     private JCheckBox stopOnStatusAtLeast400Box;
     private JCheckBox stopOnMissingVariableBox;
+    private JSpinner defaultResponseTimeoutSpinner;
+    private JCheckBox continueOnPreRequestScriptErrorBox;
+    private JComboBox<ExecutionPolicy.OAuth2FailureMode> oauth2FailureModeCombo;
+    private JComboBox<ExecutionPolicy.TargetChangeMode> workbenchTargetChangeModeCombo;
+    private JComboBox<ExecutionPolicy.UnresolvedVariableMode> workbenchUnresolvedVariableModeCombo;
+    private JSpinner runnerResponseTimeoutSpinner;
+    private JComboBox<ExecutionPolicy.TargetChangeMode> runnerTargetChangeModeCombo;
     private JSpinner stopAfterFailuresSpinner;
     private JCheckBox followRedirectsBox;
     private JCheckBox runnerDebugRawRequestBox;
@@ -660,7 +674,10 @@ public class ImporterPanel {
     }
 
     private void ensureWorkbenchActionDefaultsInitialized() {
-        if (repeaterBtn != null && sitemapBtn != null && intruderBtn != null && delaySpinner != null && debugRawRequestBox != null) {
+        if (repeaterBtn != null && sitemapBtn != null && intruderBtn != null && delaySpinner != null && debugRawRequestBox != null
+                && defaultResponseTimeoutSpinner != null && continueOnPreRequestScriptErrorBox != null
+                && oauth2FailureModeCombo != null && workbenchTargetChangeModeCombo != null
+                && workbenchUnresolvedVariableModeCombo != null) {
             return;
         }
         // Persisted defaults for the Actions popup.
@@ -670,6 +687,24 @@ public class ImporterPanel {
         delaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 5000, 50));
         delaySpinner.setPreferredSize(new Dimension(70, 22));
         debugRawRequestBox = new JCheckBox("Debug final raw request");
+        defaultResponseTimeoutSpinner = new JSpinner(new SpinnerNumberModel(30_000, 1_000, 300_000, 1_000));
+        continueOnPreRequestScriptErrorBox = new JCheckBox("Continue after pre-request script error");
+        continueOnPreRequestScriptErrorBox.setSelected(false);
+        oauth2FailureModeCombo = new JComboBox<>(ExecutionPolicy.OAuth2FailureMode.values());
+        oauth2FailureModeCombo.setSelectedItem(ExecutionPolicy.OAuth2FailureMode.ABORT);
+        workbenchTargetChangeModeCombo = new JComboBox<>(new ExecutionPolicy.TargetChangeMode[] {
+                ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION,
+                ExecutionPolicy.TargetChangeMode.ABORT,
+                ExecutionPolicy.TargetChangeMode.ALLOW
+        });
+        workbenchTargetChangeModeCombo.setSelectedItem(ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION);
+        workbenchUnresolvedVariableModeCombo = new JComboBox<>(ExecutionPolicy.UnresolvedVariableMode.values());
+        workbenchUnresolvedVariableModeCombo.setSelectedItem(ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION);
+        oauth2FailureModeCombo.addActionListener(e -> notifyWorkspaceChanged());
+        workbenchTargetChangeModeCombo.addActionListener(e -> notifyWorkspaceChanged());
+        workbenchUnresolvedVariableModeCombo.addActionListener(e -> notifyWorkspaceChanged());
+        continueOnPreRequestScriptErrorBox.addActionListener(e -> notifyWorkspaceChanged());
+        defaultResponseTimeoutSpinner.addChangeListener(e -> notifyWorkspaceChanged());
     }
 
     private JPanel createWorkbenchLogRow() {
@@ -718,24 +753,11 @@ public class ImporterPanel {
         final String sendModeLabel = requestEditor.getSendModeLabel();
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(
-                List.of(resolvedCol),
-                List.of(requestToSend),
-                runtimeOverlay);
-        final List<String> unresolvedVariableNames = issues.stream()
-                .map(issue -> issue != null ? issue.variableName : null)
-                .filter(name -> name != null && !name.isBlank())
-                .distinct()
-                .toList();
-        if (!issues.isEmpty()) {
-            UnresolvedVariablesDialog.Action action = showUnresolvedVariablesDialog(issues, List.of(resolvedCol));
-            if (action == UnresolvedVariablesDialog.Action.CANCEL) {
-                appendImportLog("Send cancelled due to unresolved variables.");
-                return;
-            }
-            runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
-        }
+        ExecutionPolicy workbenchPolicy = currentWorkbenchExecutionPolicy();
+        PreflightDecisionHandler decisionHandler = preflightDecisionHandler != null ? preflightDecisionHandler : this::confirmWorkbenchPreflight;
         final Map<String, String> runtimeOverlayForSend = runtimeOverlay;
+        final ExecutionPolicy executionPolicyForSend = workbenchPolicy;
+        final PreflightDecisionHandler decisionHandlerForSend = decisionHandler;
         requestEditor.setSendEnabled(false);
         SwingWorker<Void, String> worker = new SwingWorker<>() {
             @Override
@@ -754,7 +776,9 @@ public class ImporterPanel {
                             scriptVariableMutationSink,
                             activeEnvironment,
                             null,
-                            sharedRedirectPolicy);
+                            sharedRedirectPolicy,
+                            executionPolicyForSend,
+                            decisionHandlerForSend);
                     var rr = result.response;
 
                     final UniversalImporter.SingleSendResult sendResult = result;
@@ -792,7 +816,9 @@ public class ImporterPanel {
                         resolvedCol,
                         result,
                         failureReason,
-                        unresolvedVariableNames,
+                        result != null && result.executionResult != null && result.executionResult.preflight != null
+                                ? result.executionResult.preflight.unresolvedVariables
+                                : List.of(),
                         runtimeOverlayForSend,
                         sendModeLabel);
                 return null;
@@ -1234,7 +1260,18 @@ public class ImporterPanel {
             SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
             EnvironmentProfile activeEnvironment,
             burp.scripts.ExecutionSource executionSource) throws Exception {
-        return sendSingleRequestWithBuiltRequest(request, collection, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, sharedRedirectPolicy);
+        return sendSingleRequestWithBuiltRequest(
+                request,
+                collection,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink,
+                activeEnvironment,
+                executionSource,
+                sharedRedirectPolicy,
+                currentWorkbenchExecutionPolicy(),
+                preflightDecisionHandler);
     }
 
     private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
@@ -1247,8 +1284,49 @@ public class ImporterPanel {
             EnvironmentProfile activeEnvironment,
             burp.scripts.ExecutionSource executionSource,
             RedirectPolicy redirectPolicy) throws Exception {
+        return sendSingleRequestWithBuiltRequest(
+                request,
+                collection,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink,
+                activeEnvironment,
+                executionSource,
+                redirectPolicy,
+                currentWorkbenchExecutionPolicy(),
+                preflightDecisionHandler);
+    }
+
+    private UniversalImporter.SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest request,
+            ApiCollection collection,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment,
+            burp.scripts.ExecutionSource executionSource,
+            RedirectPolicy redirectPolicy,
+            ExecutionPolicy executionPolicy,
+            PreflightDecisionHandler preflightDecisionHandler) throws Exception {
         burp.scripts.ExecutionSource effectiveSource = executionSource != null ? executionSource : burp.scripts.ExecutionSource.WORKBENCH_SEND;
         RedirectPolicy effectivePolicy = redirectPolicy != null ? redirectPolicy : sharedRedirectPolicy;
+        ExecutionPolicy effectiveExecutionPolicy = executionPolicy != null ? executionPolicy.copy() : ExecutionPolicy.workbenchDefaults();
+        effectiveExecutionPolicy.normalize();
+        boolean useStructuredPreflight = preflightDecisionHandlerConfiguredForTests;
+        if (!useStructuredPreflight) {
+            return importer.sendSingleRequestWithBuiltRequest(
+                    request,
+                    collection,
+                    followRedirects,
+                    runtimeOverlay,
+                    oauth2TokenSink,
+                    runtimeVariableSink,
+                    activeEnvironment,
+                    effectiveSource,
+                    effectivePolicy);
+        }
         return importer.sendSingleRequestWithBuiltRequest(
                 request,
                 collection,
@@ -1258,7 +1336,9 @@ public class ImporterPanel {
                 runtimeVariableSink,
                 activeEnvironment,
                 effectiveSource,
-                effectivePolicy);
+                effectivePolicy,
+                effectiveExecutionPolicy,
+                preflightDecisionHandler);
     }
 
     private HistoryRequestContext resolveExistingHistoryRequestContext(HistoryEntry entry) {
@@ -2117,6 +2197,18 @@ public class ImporterPanel {
                 ? result.executionResult.redirectTerminationReason.displayLabel()
                 : "Not yet sent").append("\n");
         meta.append("Execution Source: ").append(executionSource).append("\n");
+        if (result != null && result.executionResult != null) {
+            meta.append("Request Sent: ").append(result.executionResult.requestSent ? "Yes" : "No").append("\n");
+            meta.append("Preflight Status: ").append(result.executionResult.preflightStatus != null ? result.executionResult.preflightStatus : "READY").append("\n");
+            meta.append("Preflight Message: ").append(result.executionResult.preflightMessage != null ? result.executionResult.preflightMessage : "").append("\n");
+            meta.append("Timeout: ").append(result.executionResult.timeoutMillis > 0 ? result.executionResult.timeoutMillis + " ms" : "").append("\n");
+            meta.append("Original Origin: ").append(result.executionResult.originalResolvedUrl != null ? result.executionResult.originalResolvedUrl : "").append("\n");
+            meta.append("Effective Origin: ").append(result.executionResult.effectiveResolvedUrl != null ? result.executionResult.effectiveResolvedUrl : "").append("\n");
+            List<String> overrides = result.executionResult.preflight != null
+                    ? result.executionResult.preflight.policyOverridesApplied
+                    : result.executionResult.policyOverridesApplied;
+            meta.append("Policy Overrides: ").append(String.join(", ", overrides != null ? overrides : List.of())).append("\n");
+        }
         meta.append("Attempt: ").append(result != null && result.executionResult != null ? "1/1" : "Not yet sent").append("\n");
         int statusCode = 0;
         int responseBytes = 0;
@@ -3295,6 +3387,37 @@ public class ImporterPanel {
         oauth2AutosaveStatusLabel = oauth2StatusLabel;
         top.add(oauth2StatusLabel, topGbc);
 
+        topGbc.gridy = 2;
+        topGbc.gridwidth = 1;
+        topGbc.weightx = 0;
+        top.add(new JLabel("OAuth2 failure policy:"), topGbc);
+        topGbc.gridx = 1;
+        topGbc.weightx = 1;
+        oauth2FailureModeCombo = new JComboBox<>(ExecutionPolicy.OAuth2FailureMode.values());
+        oauth2FailureModeCombo.setSelectedItem(ExecutionPolicy.OAuth2FailureMode.ABORT);
+        top.add(oauth2FailureModeCombo, topGbc);
+        topGbc.gridx = 0;
+        topGbc.gridy = 3;
+        topGbc.gridwidth = 2;
+        JLabel oauth2WarningLabel = new JLabel(" ");
+        oauth2WarningLabel.setForeground(new Color(160, 80, 0));
+        Runnable refreshWarning = () -> {
+            ExecutionPolicy.OAuth2FailureMode mode = (ExecutionPolicy.OAuth2FailureMode) oauth2FailureModeCombo.getSelectedItem();
+            if (mode == ExecutionPolicy.OAuth2FailureMode.USE_STALE_TOKEN) {
+                oauth2WarningLabel.setText("Unsafe override active: expired/stale tokens may be sent.");
+            } else if (mode == ExecutionPolicy.OAuth2FailureMode.SEND_WITHOUT_TOKEN) {
+                oauth2WarningLabel.setText("Unsafe override active: OAuth2 requests may be sent without generated authentication.");
+            } else {
+                oauth2WarningLabel.setText(" ");
+            }
+        };
+        oauth2FailureModeCombo.addActionListener(e -> {
+            refreshWarning.run();
+            notifyWorkspaceChanged();
+        });
+        refreshWarning.run();
+        top.add(oauth2WarningLabel, topGbc);
+
         panel.add(top, BorderLayout.NORTH);
 
         panel.add(oauth2Panel, BorderLayout.CENTER);
@@ -3364,6 +3487,23 @@ public class ImporterPanel {
         gbc.gridx = 6;
         runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
         configPanel.add(runnerDebugRawRequestBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2;
+        configPanel.add(new JLabel("Response timeout (ms):"), gbc);
+        gbc.gridx = 1;
+        runnerResponseTimeoutSpinner = new JSpinner(new SpinnerNumberModel(30_000, 1_000, 300_000, 1_000));
+        configPanel.add(runnerResponseTimeoutSpinner, gbc);
+        gbc.gridx = 2;
+        configPanel.add(new JLabel("Script destination change:"), gbc);
+        gbc.gridx = 3;
+        runnerTargetChangeModeCombo = new JComboBox<>(new ExecutionPolicy.TargetChangeMode[] {
+                ExecutionPolicy.TargetChangeMode.ABORT,
+                ExecutionPolicy.TargetChangeMode.ALLOW
+        });
+        runnerTargetChangeModeCombo.setSelectedItem(ExecutionPolicy.TargetChangeMode.ABORT);
+        runnerResponseTimeoutSpinner.addChangeListener(e -> notifyWorkspaceChanged());
+        runnerTargetChangeModeCombo.addActionListener(e -> notifyWorkspaceChanged());
+        configPanel.add(runnerTargetChangeModeCombo, gbc);
 
         panel.add(configPanel, BorderLayout.NORTH);
 
@@ -8146,6 +8286,12 @@ public class ImporterPanel {
         if (debugRawRequestBox != null) state.workbenchDebugRawRequest = debugRawRequestBox.isSelected();
         if (workbenchDetailTabs != null) state.workbenchDetailTabIndex = workbenchDetailTabs.getSelectedIndex();
         state.workbenchFollowRedirects = requestEditor != null ? requestEditor.isFollowRedirectsSelected() : Boolean.TRUE;
+        ExecutionPolicy policy = currentWorkbenchExecutionPolicy();
+        state.defaultResponseTimeoutMillis = policy.responseTimeoutMillis;
+        state.workbenchScriptFailureMode = policy.scriptFailureMode;
+        state.oauth2FailureMode = policy.oauth2FailureMode;
+        state.workbenchTargetChangeMode = policy.targetChangeMode;
+        state.workbenchUnresolvedVariableMode = policy.unresolvedVariableMode;
     }
 
     private void captureRunnerSettings(WorkspaceState state) {
@@ -8162,6 +8308,9 @@ public class ImporterPanel {
         if (followRedirectsBox != null) state.runnerFollowRedirects = followRedirectsBox.isSelected();
         if (runnerDebugRawRequestBox != null) state.runnerDebugRawRequest = runnerDebugRawRequestBox.isSelected();
         if (runnerDetailTabs != null) state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
+        ExecutionPolicy policy = currentRunnerExecutionPolicy();
+        state.runnerResponseTimeoutMillis = policy.responseTimeoutMillis;
+        state.runnerTargetChangeMode = policy.targetChangeMode;
     }
 
     private void captureHistorySettings(WorkspaceState state) {
@@ -8205,6 +8354,24 @@ public class ImporterPanel {
         if (requestEditor != null) {
             requestEditor.setFollowRedirectsSelected(state.workbenchFollowRedirects != null ? state.workbenchFollowRedirects : true);
         }
+        if (defaultResponseTimeoutSpinner != null) {
+            applySpinnerState(defaultResponseTimeoutSpinner, state.defaultResponseTimeoutMillis, 30_000);
+        }
+        if (continueOnPreRequestScriptErrorBox != null) {
+            applyCheckboxState(continueOnPreRequestScriptErrorBox,
+                    state.workbenchScriptFailureMode == ExecutionPolicy.ScriptFailureMode.CONTINUE,
+                    false);
+        }
+        if (oauth2FailureModeCombo != null) {
+            oauth2FailureModeCombo.setSelectedItem(state.oauth2FailureMode != null ? state.oauth2FailureMode : ExecutionPolicy.OAuth2FailureMode.ABORT);
+        }
+        if (workbenchTargetChangeModeCombo != null) {
+            workbenchTargetChangeModeCombo.setSelectedItem(state.workbenchTargetChangeMode != null ? state.workbenchTargetChangeMode : ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION);
+        }
+        if (workbenchUnresolvedVariableModeCombo != null) {
+            workbenchUnresolvedVariableModeCombo.setSelectedItem(state.workbenchUnresolvedVariableMode != null ? state.workbenchUnresolvedVariableMode : ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION);
+        }
+        workbenchExecutionPolicy = currentWorkbenchExecutionPolicy();
     }
 
     private void restoreRunnerSettings(WorkspaceState state) {
@@ -8220,6 +8387,20 @@ public class ImporterPanel {
         applySpinnerState(stopAfterFailuresSpinner, state.runnerStopAfterFailures, 0);
         applyCheckboxState(followRedirectsBox, state.runnerFollowRedirects, true);
         applyCheckboxState(runnerDebugRawRequestBox, state.runnerDebugRawRequest, false);
+        if (runnerResponseTimeoutSpinner != null) {
+            applySpinnerState(runnerResponseTimeoutSpinner, state.runnerResponseTimeoutMillis != null ? state.runnerResponseTimeoutMillis : state.defaultResponseTimeoutMillis, 30_000);
+        }
+        if (runnerTargetChangeModeCombo != null) {
+            ExecutionPolicy.TargetChangeMode mode = state.runnerTargetChangeMode != null ? state.runnerTargetChangeMode : ExecutionPolicy.TargetChangeMode.ABORT;
+            if (mode == ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION) {
+                mode = ExecutionPolicy.TargetChangeMode.ABORT;
+            }
+            runnerTargetChangeModeCombo.setSelectedItem(mode);
+        }
+        runnerExecutionPolicy = currentRunnerExecutionPolicy();
+        if (runner != null) {
+            runner.setExecutionPolicy(runnerExecutionPolicy);
+        }
     }
 
     private void restoreHistorySettings(WorkspaceState state) {
@@ -10741,6 +10922,29 @@ public class ImporterPanel {
         topPanel.add(selectedCountLabel, BorderLayout.EAST);
         dialog.add(topPanel, BorderLayout.NORTH);
 
+        JPanel executionSafety = new JPanel(new GridBagLayout());
+        executionSafety.setBorder(BorderFactory.createTitledBorder("Execution Safety"));
+        GridBagConstraints safetyGbc = new GridBagConstraints();
+        safetyGbc.insets = new Insets(3, 6, 3, 6);
+        safetyGbc.anchor = GridBagConstraints.WEST;
+        safetyGbc.fill = GridBagConstraints.HORIZONTAL;
+        ensureWorkbenchActionDefaultsInitialized();
+        safetyGbc.gridx = 0; safetyGbc.gridy = 0;
+        executionSafety.add(new JLabel("Response timeout (ms):"), safetyGbc);
+        safetyGbc.gridx = 1;
+        executionSafety.add(defaultResponseTimeoutSpinner, safetyGbc);
+        safetyGbc.gridx = 2;
+        executionSafety.add(continueOnPreRequestScriptErrorBox, safetyGbc);
+        safetyGbc.gridx = 0; safetyGbc.gridy = 1;
+        executionSafety.add(new JLabel("Script destination change:"), safetyGbc);
+        safetyGbc.gridx = 1;
+        executionSafety.add(workbenchTargetChangeModeCombo, safetyGbc);
+        safetyGbc.gridx = 2;
+        executionSafety.add(new JLabel("Unresolved variables:"), safetyGbc);
+        safetyGbc.gridx = 3;
+        executionSafety.add(workbenchUnresolvedVariableModeCombo, safetyGbc);
+        topPanel.add(executionSafety, BorderLayout.SOUTH);
+
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancel = new JButton("Cancel");
         JButton importChecked = new JButton("Import Checked");
@@ -10809,6 +11013,98 @@ public class ImporterPanel {
             runner.setRedirectPolicy(sharedRedirectPolicy);
         }
         notifyWorkspaceChangedImmediately();
+    }
+
+    private ExecutionPolicy currentWorkbenchExecutionPolicy() {
+        ensureWorkbenchActionDefaultsInitialized();
+        ExecutionPolicy policy = workbenchExecutionPolicy != null ? workbenchExecutionPolicy.copy() : ExecutionPolicy.workbenchDefaults();
+        if (defaultResponseTimeoutSpinner != null) {
+            policy.responseTimeoutMillis = spinnerIntValue(defaultResponseTimeoutSpinner);
+        }
+        if (continueOnPreRequestScriptErrorBox != null) {
+            policy.scriptFailureMode = continueOnPreRequestScriptErrorBox.isSelected()
+                    ? ExecutionPolicy.ScriptFailureMode.CONTINUE
+                    : ExecutionPolicy.ScriptFailureMode.ABORT;
+        }
+        if (oauth2FailureModeCombo != null && oauth2FailureModeCombo.getSelectedItem() instanceof ExecutionPolicy.OAuth2FailureMode mode) {
+            policy.oauth2FailureMode = mode;
+        }
+        if (workbenchTargetChangeModeCombo != null && workbenchTargetChangeModeCombo.getSelectedItem() instanceof ExecutionPolicy.TargetChangeMode mode) {
+            policy.targetChangeMode = mode;
+        }
+        if (workbenchUnresolvedVariableModeCombo != null && workbenchUnresolvedVariableModeCombo.getSelectedItem() instanceof ExecutionPolicy.UnresolvedVariableMode mode) {
+            policy.unresolvedVariableMode = mode;
+        }
+        policy.normalize();
+        workbenchExecutionPolicy = policy.copy();
+        return policy;
+    }
+
+    private ExecutionPolicy currentRunnerExecutionPolicy() {
+        ExecutionPolicy policy = runnerExecutionPolicy != null ? runnerExecutionPolicy.copy() : ExecutionPolicy.runnerDefaults(stopOnMissingVariableBox != null && stopOnMissingVariableBox.isSelected());
+        if (runnerResponseTimeoutSpinner != null) {
+            policy.responseTimeoutMillis = spinnerIntValue(runnerResponseTimeoutSpinner);
+        }
+        if (oauth2FailureModeCombo != null && oauth2FailureModeCombo.getSelectedItem() instanceof ExecutionPolicy.OAuth2FailureMode mode) {
+            policy.oauth2FailureMode = mode;
+        }
+        if (runnerTargetChangeModeCombo != null && runnerTargetChangeModeCombo.getSelectedItem() instanceof ExecutionPolicy.TargetChangeMode mode) {
+            policy.targetChangeMode = mode;
+        }
+        policy.unresolvedVariableMode = stopOnMissingVariableBox != null && stopOnMissingVariableBox.isSelected()
+                ? ExecutionPolicy.UnresolvedVariableMode.ABORT
+                : ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.scriptFailureMode = ExecutionPolicy.ScriptFailureMode.ABORT;
+        policy.normalize();
+        runnerExecutionPolicy = policy.copy();
+        return policy;
+    }
+
+    private boolean confirmWorkbenchPreflight(ExecutionPreflightResult preflight) {
+        if (preflight == null) {
+            return false;
+        }
+        if (GraphicsEnvironment.isHeadless()) {
+            return false;
+        }
+        final boolean[] approved = {false};
+        Runnable dialog = () -> {
+            StringBuilder message = new StringBuilder();
+            message.append(preflight.safeMessage != null ? preflight.safeMessage : "Request requires confirmation.");
+            if (!preflight.originalHost.isBlank() || !preflight.effectiveHost.isBlank()) {
+                message.append("\nOriginal origin: ").append(preflight.originalHost.isBlank() ? "(unknown)" : preflight.originalHost);
+                message.append("\nEffective origin: ").append(preflight.effectiveHost.isBlank() ? "(unknown)" : preflight.effectiveHost);
+            }
+            if (!preflight.unresolvedVariables.isEmpty()) {
+                message.append("\nUnresolved variables: ").append(String.join(", ", preflight.unresolvedVariables));
+            }
+            if (preflight.targetChanged) {
+                message.append("\nDestination change detected.");
+            }
+            int choice = JOptionPane.showConfirmDialog(
+                    mainPanel,
+                    message.toString(),
+                    "Confirm Request Send",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+            );
+            approved[0] = choice == JOptionPane.OK_OPTION;
+        };
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                dialog.run();
+            } else {
+                SwingUtilities.invokeAndWait(dialog);
+            }
+        } catch (Exception e) {
+            return false;
+        }
+        return approved[0];
+    }
+
+    void setPreflightDecisionHandlerForTests(PreflightDecisionHandler handler) {
+        this.preflightDecisionHandler = handler != null ? handler : this::confirmWorkbenchPreflight;
+        this.preflightDecisionHandlerConfiguredForTests = true;
     }
 
     private void startImport(List<ApiRequest> selected, List<String> destinations, int delay) {
@@ -11133,6 +11429,7 @@ public class ImporterPanel {
         runner.setStopConditions(buildRunnerStopConditionsFromUi());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
         runner.setRedirectPolicy(sharedRedirectPolicy);
+        runner.setExecutionPolicy(currentRunnerExecutionPolicy());
         runner.setDebugRawRequest(runnerDebugRawRequestBox.isSelected());
 
         resultModel.clear();
@@ -11216,6 +11513,17 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     if (result != null) {
                         indexRunnerResult(result);
+                        if (!result.success && resultModel != null) {
+                            RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
+                            resultModel.addEntry(entry);
+                            appendRedirectHopRows(result);
+                            if (timelineModel != null) {
+                                timelineModel.addRow(buildTimelineRow(result));
+                            }
+                            if (entry.detailEntry != null) {
+                                runnerDetailPanel.showEntry(entry.detailEntry);
+                            }
+                        }
                     }
                     recordRunnerHistoryAttempt(result);
                 });

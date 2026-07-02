@@ -1,0 +1,13 @@
+package burp.utils;
+
+public enum ExecutionPreflightStatus {
+    READY,
+    PREVIEW_ONLY,
+    BLOCKED_SCRIPT_ERROR,
+    BLOCKED_SCRIPT_TIMEOUT,
+    BLOCKED_OAUTH2_FAILURE,
+    BLOCKED_UNRESOLVED_VARIABLES,
+    BLOCKED_TARGET_CHANGE,
+    BLOCKED_POLICY,
+    CANCELLED
+}

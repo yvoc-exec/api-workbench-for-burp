@@ -56,14 +56,27 @@ public class UniversalImporter {
         OAuth2Manager oauth2Manager = new OAuth2Manager(api);
         this.requestBuilder = new RequestBuilder(api, oauth2Manager);
         ScriptEngine scriptEngine = new ScriptEngine(api, scriptMode);
-        this.pipeline = new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
-        burp.runner.CollectionRunner runner = new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
+        this.pipeline = createSharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
+        burp.runner.CollectionRunner runner = createCollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
         this.workspaceSaveExecutor = workspaceStateService != null
                 ? Executors.newSingleThreadExecutor(newWorkspaceSaveThreadFactory())
                 : null;
         this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::scheduleWorkspaceStateSave);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
+    }
+
+    protected SharedRequestPipeline createSharedRequestPipeline(MontoyaApi api,
+                                                                RequestBuilder requestBuilder,
+                                                                ScriptEngine scriptEngine,
+                                                                OAuth2Manager oauth2Manager) {
+        return new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
+    }
+
+    protected burp.runner.CollectionRunner createCollectionRunner(MontoyaApi api,
+                                                                    SharedRequestPipeline pipeline,
+                                                                    OAuth2Manager oauth2Manager) {
+        return new burp.runner.CollectionRunner(api, pipeline, oauth2Manager);
     }
 
     public JPanel getMainPanel() {
@@ -261,7 +274,33 @@ public class UniversalImporter {
             EnvironmentProfile activeEnvironment,
             burp.scripts.ExecutionSource executionSource,
             RedirectPolicy redirectPolicy) throws Exception {
-        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, redirectPolicy);
+        return sendSingleRequestWithBuiltRequest(
+                req,
+                colContext,
+                followRedirects,
+                runtimeOverlay,
+                oauth2TokenSink,
+                runtimeVariableSink,
+                activeEnvironment,
+                executionSource,
+                redirectPolicy,
+                ExecutionPolicy.workbenchDefaults(),
+                null);
+    }
+
+    public SingleSendResult sendSingleRequestWithBuiltRequest(
+            ApiRequest req,
+            ApiCollection colContext,
+            boolean followRedirects,
+            Map<String, String> runtimeOverlay,
+            SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink,
+            SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink,
+            EnvironmentProfile activeEnvironment,
+            burp.scripts.ExecutionSource executionSource,
+            RedirectPolicy redirectPolicy,
+            ExecutionPolicy executionPolicy,
+            PreflightDecisionHandler preflightDecisionHandler) throws Exception {
+        ExecutionResult exec = pipeline.execute(req, colContext, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, redirectPolicy, executionPolicy, preflightDecisionHandler);
         SingleSendResult result = new SingleSendResult(
             exec.response,
             exec.builtRequest,
@@ -276,7 +315,10 @@ public class UniversalImporter {
             exec
         );
         if (!exec.success) {
-            throw new RequestExecutionException(exec.errorMessage != null ? exec.errorMessage : "Request failed", exec, result);
+            String message = exec.errorMessage != null
+                    ? exec.errorMessage
+                    : (exec.preflightMessage != null ? exec.preflightMessage : "Request failed");
+            throw new RequestExecutionException(message, exec, result);
         }
         return result;
     }

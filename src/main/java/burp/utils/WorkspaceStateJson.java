@@ -7,6 +7,7 @@ import burp.history.HistoryStore;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.utils.ExecutionPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -70,6 +71,35 @@ public final class WorkspaceStateJson {
             out.historyEntries = new java.util.ArrayList<>();
         } else {
             out.historyEntries = HistoryStore.normalizeEntries(out.historyEntries, HistoryRetentionPolicy.defaultPolicy());
+        }
+        if (out.defaultResponseTimeoutMillis == null || out.defaultResponseTimeoutMillis <= 0) {
+            out.defaultResponseTimeoutMillis = 30_000;
+        } else if (out.defaultResponseTimeoutMillis < 1_000) {
+            out.defaultResponseTimeoutMillis = 1_000;
+        } else if (out.defaultResponseTimeoutMillis > 300_000) {
+            out.defaultResponseTimeoutMillis = 300_000;
+        }
+        if (out.runnerResponseTimeoutMillis == null || out.runnerResponseTimeoutMillis <= 0) {
+            out.runnerResponseTimeoutMillis = out.defaultResponseTimeoutMillis;
+        } else if (out.runnerResponseTimeoutMillis < 1_000) {
+            out.runnerResponseTimeoutMillis = 1_000;
+        } else if (out.runnerResponseTimeoutMillis > 300_000) {
+            out.runnerResponseTimeoutMillis = 300_000;
+        }
+        if (out.workbenchScriptFailureMode == null) {
+            out.workbenchScriptFailureMode = ExecutionPolicy.ScriptFailureMode.ABORT;
+        }
+        if (out.oauth2FailureMode == null) {
+            out.oauth2FailureMode = ExecutionPolicy.OAuth2FailureMode.ABORT;
+        }
+        if (out.workbenchTargetChangeMode == null) {
+            out.workbenchTargetChangeMode = ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION;
+        }
+        if (out.workbenchUnresolvedVariableMode == null) {
+            out.workbenchUnresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION;
+        }
+        if (out.runnerTargetChangeMode == null || out.runnerTargetChangeMode == ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION) {
+            out.runnerTargetChangeMode = ExecutionPolicy.TargetChangeMode.ABORT;
         }
         normalizeEnvironmentProfiles(out);
         JsonObject rawRoot = raw != null && raw.isJsonObject() ? raw.getAsJsonObject() : null;

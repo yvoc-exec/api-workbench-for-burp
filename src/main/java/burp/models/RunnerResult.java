@@ -5,6 +5,7 @@ import burp.scripts.ScriptDependentRequestResult;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
+import burp.utils.ExecutionPreflightStatus;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -32,6 +33,20 @@ public class RunnerResult {
     public String requestBody;
     public byte[] rawRequestBytes;
     public String rawRequestText;
+    public boolean requestSent;
+    public ExecutionPreflightStatus preflightStatus = ExecutionPreflightStatus.READY;
+    public String preflightMessage;
+    public boolean responseTimedOut;
+    public int timeoutMillis;
+    public String originalResolvedUrl;
+    public String effectiveResolvedUrl;
+    public boolean targetChanged;
+    public boolean oauth2Required;
+    public boolean oauth2Ready;
+    public boolean oauth2UsedStaleToken;
+    public boolean oauth2SentWithoutToken;
+    public List<String> unresolvedVariables = new ArrayList<>();
+    public List<String> policyOverridesApplied = new ArrayList<>();
     public boolean success;
     public int statusCode;
     public long responseTimeMs;
@@ -78,6 +93,18 @@ public class RunnerResult {
     }
 
     public String displayStatusLabel() {
+        if (preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY
+                || preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+            return "Blocked: " + safePreflightLabel();
+        }
+        if (responseTimedOut) {
+            return "Timed Out";
+        }
         if (isSkippedByScript()) {
             return "Skipped by Script";
         }
@@ -92,6 +119,18 @@ public class RunnerResult {
     }
 
     public String displayLogStatusLabel() {
+        if (preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                || preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY
+                || preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+            return "Blocked: " + safePreflightLabel();
+        }
+        if (responseTimedOut) {
+            return "Timed Out";
+        }
         if (isSkippedByScript()) {
             return success || errorMessage == null || errorMessage.isBlank()
                     ? "SKIPPED by script"
@@ -108,6 +147,13 @@ public class RunnerResult {
         }
         String label = "FAIL " + (errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Unknown error");
         return dependentExecution ? label + " (dependent)" : label;
+    }
+
+    private String safePreflightLabel() {
+        if (preflightMessage != null && !preflightMessage.isBlank()) {
+            return preflightMessage;
+        }
+        return preflightStatus != null ? preflightStatus.name() : "Blocked";
     }
 
     public static class AssertionResult {

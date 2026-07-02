@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.RequestOptions;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.models.ApiCollection;
@@ -40,7 +41,7 @@ class SharedRequestPipelineRedirectTest {
                 return index == 0 ? firstResponse : secondResponse;
             });
 
-            SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+            SharedRequestPipeline pipeline = pipeline(api);
             ApiCollection collection = new ApiCollection();
             collection.name = "APIM";
             collection.format = "api-workbench";
@@ -92,7 +93,7 @@ class SharedRequestPipelineRedirectTest {
                 return index == 0 ? firstResponse : loopResponse;
             });
 
-            SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+            SharedRequestPipeline pipeline = pipeline(api);
             ApiCollection collection = new ApiCollection();
             collection.name = "APIM";
             collection.format = "api-workbench";
@@ -140,6 +141,23 @@ class SharedRequestPipelineRedirectTest {
         when(header.value()).thenReturn(location);
         when(header.toString()).thenReturn("Location: " + location);
         return header;
+    }
+
+
+    private static SharedRequestPipeline pipeline(MontoyaApi api) {
+        return SharedRequestPipeline.withRequestOptionsFactory(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = mock(RequestOptions.class);
+                    when(options.withRedirectionMode(org.mockito.ArgumentMatchers.any())).thenReturn(options);
+                    when(options.withResponseTimeout(org.mockito.ArgumentMatchers.anyInt())).thenReturn(options);
+                    return options;
+                }
+        );
     }
 
     private static HttpRequestResponse responseWithLocation(int statusCode, String location) {

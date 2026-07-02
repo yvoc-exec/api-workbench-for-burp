@@ -10,12 +10,14 @@ import burp.models.RedirectHop;
 import burp.models.RedirectPolicy;
 import burp.models.RedirectTerminationReason;
 import burp.models.TrustedRedirectRule;
+import burp.testsupport.RedirectTestSupport;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -785,6 +787,71 @@ class RedirectExecutorTest {
         assertThat(other3xx.result.terminationReason).isEqualTo(RedirectTerminationReason.FINAL_RESPONSE);
         assertThat(other3xx.sentRequests).hasSize(1);
         assertThat(other3xx.result.finalResponse.response().statusCode()).isEqualTo((short) 304);
+    }
+
+    @Test
+    void timeoutExceptionProducesResponseTimeoutTermination() {
+        RedirectExecutor executor = new RedirectExecutor();
+        RedirectExecutor.RedirectRequest request = new RedirectExecutor.RedirectRequest();
+        request.initialRequest = request("GET", "/start", "api.example.test", 443, true);
+        request.initialUrl = "https://api.example.test/start";
+        request.followRedirects = true;
+        request.responseTimeoutMillis = 4_000;
+        request.hopSender = ignored -> {
+            throw new RuntimeException(new SocketTimeoutException("timed out"));
+        };
+
+        RedirectExecutor.RedirectResult result = executor.execute(request);
+
+        assertThat(result.success).isFalse();
+        assertThat(result.responseTimedOut).isTrue();
+        assertThat(result.terminationReason).isEqualTo(RedirectTerminationReason.RESPONSE_TIMEOUT);
+        assertThat(result.errorMessage).contains("4000");
+    }
+
+    @Test
+    void nestedTimeoutCauseIsDetected() {
+        assertThat(RedirectExecutor.isTimeoutFailure(new RuntimeException(new IllegalStateException(new java.util.concurrent.TimeoutException("slow")))))
+                .isTrue();
+        assertThat(RedirectExecutor.isTimeoutFailure(new InterruptedException("interrupted"))).isFalse();
+    }
+
+    @Test
+    void interruptedExceptionIsNotTimeout() {
+        assertThat(RedirectExecutor.isTimeoutFailure(new InterruptedException("interrupted"))).isFalse();
+    }
+
+    @Test
+    void timeoutAfterRedirectPreservesPreviousHops() {
+        RedirectTestSupport.withHttpFactories(() -> {
+            RedirectExecutor executor = new RedirectExecutor();
+            RedirectExecutor.RedirectRequest request = new RedirectExecutor.RedirectRequest();
+            request.initialRequest = request("GET", "/start", "api.example.test", 443, true);
+            request.initialUrl = "https://api.example.test/start";
+            request.followRedirects = true;
+            request.responseTimeoutMillis = 1_500;
+            request.hopSender = new RedirectExecutor.HopSender() {
+                private int call;
+
+                @Override
+                public HttpRequestResponse send(HttpRequest request) {
+                    call++;
+                    if (call == 1) {
+                        return response(302, "Found", "/next", null, null);
+                    }
+                    throw new RuntimeException(new SocketTimeoutException("request timed out"));
+                }
+            };
+
+            RedirectExecutor.RedirectResult result = executor.execute(request);
+
+            assertThat(result.success).isFalse();
+            assertThat(result.responseTimedOut).isTrue();
+            assertThat(result.redirectHops).hasSize(1);
+            assertThat(result.redirectHops.get(0).followed).isTrue();
+            assertThat(result.terminationReason).isEqualTo(RedirectTerminationReason.RESPONSE_TIMEOUT);
+            return null;
+        });
     }
 
     private static Harness execute(HttpRequest request,

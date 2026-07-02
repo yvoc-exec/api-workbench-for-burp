@@ -116,6 +116,7 @@ public final class HistoryTestFixtures {
         exec.success = true;
         exec.elapsedMs = 143L;
         exec.response = mockResponseResponse(200, "{\"ok\":true}", "application/json");
+        exec.requestSent = true;
         exec.requestHeaders = "Authorization: Bearer {{token}}\nContent-Type: application/json";
         exec.requestBody = "{\"username\":\"demo\",\"password\":\"{{password}}\"}";
         exec.rawRequestBytes = ("POST /login HTTP/1.1\r\nHost: api.example.test\r\n" +
@@ -152,6 +153,7 @@ public final class HistoryTestFixtures {
         result.responseHeaders = "HTTP/1.1 " + statusCode + (statusCode >= 400 ? " Error" : " OK") + "\nContent-Type: application/json";
         result.responseBody = success ? "{\"ok\":true}" : "{\"error\":\"boom\"}";
         result.errorMessage = errorMessage;
+        result.requestSent = true;
         result.assertions.add(new RunnerResult.AssertionResult("Status is 200", success, "200", String.valueOf(statusCode)));
         result.extractedVariables.put("session", "abc123");
         result.resolvedVariables.put("base_url", BASE_URL);

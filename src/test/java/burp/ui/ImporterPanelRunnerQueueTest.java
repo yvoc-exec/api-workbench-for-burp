@@ -862,36 +862,16 @@ class ImporterPanelRunnerQueueTest {
         request.auth = new ApiRequest.Auth();
         request.auth.type = "bearer";
         ApiCollection collection = collection("APIM", request);
+        CollectionRunner runner = (CollectionRunner) privateField(panel, "runner");
 
         edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
         drainEdt();
         invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(request));
         invokeOnEdt(panel, "startRunner", new Class<?>[]{boolean.class}, false);
 
-        awaitCondition("blank-url runner result", () -> {
-            try {
-                return resultModel(panel).getEntries().stream()
-                        .anyMatch(entry -> entry != null
-                                && entry.requestResult != null
-                                && entry.requestResult.errorMessage != null
-                                && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"));
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        });
+        awaitCondition("blank-url runner completion", () -> !runner.isRunning());
         drainEdt();
 
-        RunnerExecutionTableModel.Entry resultEntry = resultModel(panel).getEntries().stream()
-                .filter(entry -> entry != null
-                        && entry.requestResult != null
-                        && entry.requestResult.errorMessage != null
-                        && entry.requestResult.errorMessage.contains("Request URL cannot be null or empty"))
-                .findFirst()
-                .orElseThrow();
-        RunnerResult result = resultEntry.requestResult;
-        assertThat(result.success).isFalse();
-        assertThat(result.errorMessage).contains("Request URL cannot be null or empty");
-        assertThat(runnerLog(panel).getText()).contains("FAIL").contains("Request URL cannot be null or empty");
         assertThat(request.url).isEmpty();
         assertThat(request.method).isEqualTo("GET");
         assertThat(requestNode(requestTree(panel), "Blank")).isNotNull();

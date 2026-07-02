@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.RequestOptions;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
@@ -42,7 +43,7 @@ class SharedRequestPipelineExecutionTest {
                 () -> RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain")
         );
 
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED);
 
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -101,7 +102,7 @@ class SharedRequestPipelineExecutionTest {
                 capturedRequests,
                 () -> RunnerScriptTestFixtures.mockResponse(201, "{\"token\":\"resp-123\"}", "application/json")
         );
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.FULL_JS);
 
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -145,7 +146,7 @@ class SharedRequestPipelineExecutionTest {
                 new CopyOnWriteArrayList<>(),
                 () -> RunnerScriptTestFixtures.mockResponse(200, "ignored", "text/plain")
         );
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.FULL_JS);
 
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -177,7 +178,7 @@ class SharedRequestPipelineExecutionTest {
         when(api.http().sendRequest(any(burp.api.montoya.http.message.requests.HttpRequest.class)))
                 .thenThrow(new RuntimeException("java.net.ConnectException: Connection refused"));
 
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED);
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
 
@@ -201,7 +202,7 @@ class SharedRequestPipelineExecutionTest {
                 new CopyOnWriteArrayList<>(),
                 () -> RunnerScriptTestFixtures.mockResponse(503, "{\"error\":\"busy\"}", "application/json")
         );
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED);
 
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -228,7 +229,7 @@ class SharedRequestPipelineExecutionTest {
         when(api.http().sendRequest(any(burp.api.montoya.http.message.requests.HttpRequest.class)))
                 .thenReturn(emptyResponse);
 
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+        SharedRequestPipeline pipeline = pipeline(api, ScriptMode.DISABLED);
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
 
@@ -262,6 +263,23 @@ class SharedRequestPipelineExecutionTest {
             request.scriptBlocks.add(scriptBlock("post", ScriptDialect.POSTMAN, ScriptPhase.POST_RESPONSE, postScriptSource));
         }
         return request;
+    }
+
+
+    private static SharedRequestPipeline pipeline(MontoyaApi api, ScriptMode scriptMode) {
+        return SharedRequestPipeline.withRequestOptionsFactory(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, scriptMode),
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = mock(RequestOptions.class);
+                    when(options.withRedirectionMode(any())).thenReturn(options);
+                    when(options.withResponseTimeout(anyInt())).thenReturn(options);
+                    return options;
+                }
+        );
     }
 
     private static ScriptBlock scriptBlock(String id, ScriptDialect dialect, ScriptPhase phase, String source) {

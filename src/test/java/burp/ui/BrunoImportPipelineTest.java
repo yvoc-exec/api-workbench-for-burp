@@ -6,12 +6,17 @@ import burp.models.ApiRequest;
 import burp.parser.BrunoParser;
 import burp.scripts.ScriptDialect;
 import burp.testsupport.RunnerScriptTestFixtures;
+import burp.utils.ExecutionPolicy;
+import burp.scripts.ExecutionSource;
+import burp.models.RedirectPolicy;
 import burp.utils.ExecutionResult;
 import burp.utils.RequestBuilder;
 import burp.utils.ScriptMode;
 import burp.utils.SharedRequestPipeline;
+import burp.api.montoya.http.RequestOptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -125,9 +130,36 @@ class BrunoImportPipelineTest {
                 captured,
                 () -> RunnerScriptTestFixtures.mockResponse(200, "{\"ok\":true}", "application/json")
         );
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new burp.utils.ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = SharedRequestPipeline.withRequestOptionsFactory(
+                api,
+                new RequestBuilder(null),
+                new burp.utils.ScriptEngine(null, ScriptMode.FULL_JS),
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = Mockito.mock(RequestOptions.class);
+                    Mockito.when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+                    Mockito.when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+                    return options;
+                });
 
-        ExecutionResult result = pipeline.execute(built, collection, true);
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+        ExecutionResult result = pipeline.execute(
+                built,
+                collection,
+                true,
+                null,
+                null,
+                null,
+                null,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                null);
 
         assertThat(sendCount).hasValue(1);
         assertThat(result.success).isTrue();

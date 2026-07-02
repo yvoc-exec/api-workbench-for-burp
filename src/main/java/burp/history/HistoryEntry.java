@@ -17,6 +17,7 @@ import burp.diagnostics.DiagnosticStore;
 import burp.ui.ImporterPanel;
 import burp.utils.HttpUtils;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPreflightStatus;
 import burp.utils.RequestPathResolver;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
@@ -51,6 +52,19 @@ public class HistoryEntry {
     public HistoryResult result = HistoryResult.UNKNOWN;
     public String errorMessage;
     public List<String> unresolvedVariables = new ArrayList<>();
+    public boolean requestSent;
+    public String preflightStatus;
+    public String preflightMessage;
+    public boolean responseTimedOut;
+    public int timeoutMillis;
+    public String originalResolvedUrl;
+    public String effectiveResolvedUrl;
+    public boolean targetChanged;
+    public boolean oauth2Required;
+    public boolean oauth2Ready;
+    public boolean oauth2UsedStaleToken;
+    public boolean oauth2SentWithoutToken;
+    public List<String> policyOverridesApplied = new ArrayList<>();
     public List<HistoryAssertionResult> assertions = new ArrayList<>();
     public List<HistoryExtractionResult> extractions = new ArrayList<>();
     public String scriptEngineName;
@@ -96,27 +110,39 @@ public class HistoryEntry {
                     ? entry.responseSnapshot.body.length
                     : 0L;
             entry.requestSizeBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.length : entry.requestSnapshot.approximateSizeBytes();
+            entry.requestSent = exec.requestSent;
+            entry.preflightStatus = exec.preflightStatus != null ? exec.preflightStatus.name() : null;
+            entry.preflightMessage = exec.preflightMessage;
+            entry.responseTimedOut = exec.responseTimedOut;
+            entry.timeoutMillis = exec.timeoutMillis;
+            entry.originalResolvedUrl = exec.originalResolvedUrl;
+            entry.effectiveResolvedUrl = exec.effectiveResolvedUrl;
+            entry.targetChanged = exec.targetChangeAllowed || (exec.preflight != null && exec.preflight.targetChanged);
+            entry.oauth2Required = exec.oauth2Required;
+            entry.oauth2Ready = exec.oauth2Ready;
+            entry.oauth2UsedStaleToken = exec.oauth2UsedStaleToken;
+            entry.oauth2SentWithoutToken = exec.oauth2SentWithoutToken;
+            entry.policyOverridesApplied = exec.preflight != null
+                    ? new ArrayList<>(exec.preflight.policyOverridesApplied)
+                    : new ArrayList<>(exec.policyOverridesApplied);
             if (entry.requestSnapshot != null) {
-                entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
-                entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
-                        ? exec.rawRequestText
-                        : (exec.rawRequestBytes != null
-                        ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
-                        : null);
+                if (exec.requestSent) {
+                    entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                    entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : null);
+                }
                 entry.requestSnapshot.resolvedUrl = exec.resolvedUrl;
                 entry.requestSnapshot.resolvedVariables = exec.resolvedVariables != null
                         ? new LinkedHashMap<>(exec.resolvedVariables)
                         : new LinkedHashMap<>();
             }
-            if (isIntentionalNoResponseFlow(exec.scriptFlowControl, exec.response == null)) {
-                entry.result = historyResultForFlowControl(exec.scriptFlowControl);
-            } else {
-            entry.result = HistoryResult.from(exec.success,
-                        exec.errorMessage,
-                        hasFailedAssertion(exec.assertions),
-                        unresolvedVariables != null && !unresolvedVariables.isEmpty());
-            }
+            entry.result = HistoryResult.from(exec, hasFailedAssertion(exec.assertions),
+                    unresolvedVariables != null && !unresolvedVariables.isEmpty());
             entry.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : exec.resolvedUrl;
+            entry.effectiveResolvedUrl = exec.effectiveResolvedUrl != null ? exec.effectiveResolvedUrl : entry.finalResolvedUrl;
             entry.host = parseHost(entry.finalResolvedUrl);
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             entry.assertions = copyAssertions(exec.assertions);
@@ -139,6 +165,7 @@ public class HistoryEntry {
                 entry.result = HistoryResult.FAILURE;
             }
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+            entry.metadataSummaryText = buildExecutionMetadataText(entry);
             DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
                     "Workbench history captured")
                     .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
@@ -147,7 +174,12 @@ public class HistoryEntry {
             entry.result = HistoryResult.from(false, null, false, unresolvedVariables != null && !unresolvedVariables.isEmpty());
         }
         entry.unresolvedVariables = normalizeStrings(unresolvedVariables);
-        if (entry.responseSnapshot == null && entry.statusCode <= 0 && entry.errorMessage != null && !entry.errorMessage.isBlank()) {
+        if (entry.responseSnapshot == null
+                && entry.statusCode <= 0
+                && entry.errorMessage != null
+                && !entry.errorMessage.isBlank()
+                && entry.result != HistoryResult.BLOCKED
+                && entry.result != HistoryResult.TIMEOUT) {
             entry.result = HistoryResult.ERROR;
         }
         return entry;
@@ -163,15 +195,30 @@ public class HistoryEntry {
         entry.timestamp = Instant.now();
         entry.requestSnapshot = HistoryRequestSnapshot.from(request);
         if (result != null) {
-            entry.statusCode = result.success ? result.statusCode : (result.statusCode > 0 ? result.statusCode : -1);
+            entry.statusCode = result.statusCode >= 0 ? result.statusCode : -1;
             entry.durationMillis = result.responseTimeMs;
             entry.requestSizeBytes = estimateRequestSize(result);
             entry.responseSizeBytes = result.responseSize;
             entry.responseSnapshot = HistoryResponseSnapshot.from(result);
             entry.errorMessage = result.errorMessage;
+            entry.requestSent = result.requestSent;
+            entry.preflightStatus = result.preflightStatus != null ? result.preflightStatus.name() : null;
+            entry.preflightMessage = result.preflightMessage;
+            entry.responseTimedOut = result.responseTimedOut;
+            entry.timeoutMillis = result.timeoutMillis;
+            entry.originalResolvedUrl = result.originalResolvedUrl;
+            entry.effectiveResolvedUrl = result.effectiveResolvedUrl;
+            entry.targetChanged = result.targetChanged;
+            entry.oauth2Required = result.oauth2Required;
+            entry.oauth2Ready = result.oauth2Ready;
+            entry.oauth2UsedStaleToken = result.oauth2UsedStaleToken;
+            entry.oauth2SentWithoutToken = result.oauth2SentWithoutToken;
+            entry.policyOverridesApplied = result.policyOverridesApplied != null ? new ArrayList<>(result.policyOverridesApplied) : new ArrayList<>();
             entry.assertions = copyAssertions(result.assertions);
             entry.extractions = copyExtractions(result.extractedVariables);
-            entry.unresolvedVariables = normalizeStrings(extractUnresolvedFromResult(result));
+            entry.unresolvedVariables = normalizeStrings(result.unresolvedVariables != null && !result.unresolvedVariables.isEmpty()
+                    ? result.unresolvedVariables
+                    : extractUnresolvedFromResult(result));
             entry.scriptEngineName = result.scriptEngineName;
             entry.executionSource = result.executionSource != null ? result.executionSource.name() : null;
             entry.scriptLogs = copyScriptLogs(result.scriptLogs);
@@ -190,27 +237,25 @@ public class HistoryEntry {
             entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(entry.finalResolvedUrl);
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSnapshot != null) {
-                entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
-                entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
-                        ? result.rawRequestText
-                        : (result.rawRequestBytes != null
-                        ? new String(result.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
-                        : null);
+                if (result.requestSent) {
+                    entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
+                    entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
+                            ? result.rawRequestText
+                            : (result.rawRequestBytes != null
+                            ? new String(result.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : null);
+                }
                 entry.requestSnapshot.resolvedUrl = result.requestUrl;
                 entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
                         ? new LinkedHashMap<>(result.resolvedVariables)
                         : new LinkedHashMap<>();
             }
-            if (isIntentionalNoResponseFlow(result.scriptFlowControl, result.responseSize <= 0 && result.statusCode <= 0)) {
-                entry.result = historyResultForFlowControl(result.scriptFlowControl);
-            } else {
-                entry.result = HistoryResult.from(result.success, result.errorMessage, hasFailedAssertion(result.assertions),
-                        !entry.unresolvedVariables.isEmpty());
-            }
+            entry.result = HistoryResult.from(result, hasFailedAssertion(result.assertions), !entry.unresolvedVariables.isEmpty());
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
+            entry.metadataSummaryText = buildExecutionMetadataText(entry);
             if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
                 entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
             }
@@ -219,7 +264,12 @@ public class HistoryEntry {
                     .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
                             + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         }
-        if (entry.responseSnapshot == null && entry.statusCode <= 0 && entry.errorMessage != null && !entry.errorMessage.isBlank()) {
+        if (entry.responseSnapshot == null
+                && entry.statusCode <= 0
+                && entry.errorMessage != null
+                && !entry.errorMessage.isBlank()
+                && entry.result != HistoryResult.BLOCKED
+                && entry.result != HistoryResult.TIMEOUT) {
             entry.result = HistoryResult.ERROR;
         }
         return entry;
@@ -291,6 +341,19 @@ public class HistoryEntry {
         copy.result = source.result;
         copy.errorMessage = source.errorMessage;
         copy.unresolvedVariables = source.unresolvedVariables != null ? new ArrayList<>(source.unresolvedVariables) : new ArrayList<>();
+        copy.requestSent = source.requestSent;
+        copy.preflightStatus = source.preflightStatus;
+        copy.preflightMessage = source.preflightMessage;
+        copy.responseTimedOut = source.responseTimedOut;
+        copy.timeoutMillis = source.timeoutMillis;
+        copy.originalResolvedUrl = source.originalResolvedUrl;
+        copy.effectiveResolvedUrl = source.effectiveResolvedUrl;
+        copy.targetChanged = source.targetChanged;
+        copy.oauth2Required = source.oauth2Required;
+        copy.oauth2Ready = source.oauth2Ready;
+        copy.oauth2UsedStaleToken = source.oauth2UsedStaleToken;
+        copy.oauth2SentWithoutToken = source.oauth2SentWithoutToken;
+        copy.policyOverridesApplied = source.policyOverridesApplied != null ? new ArrayList<>(source.policyOverridesApplied) : new ArrayList<>();
         copy.assertions = copyHistoryAssertions(source.assertions);
         copy.extractions = copyHistoryExtractions(source.extractions);
         copy.scriptEngineName = source.scriptEngineName;
@@ -344,6 +407,9 @@ public class HistoryEntry {
         if (unresolvedVariables == null) {
             unresolvedVariables = new ArrayList<>();
         }
+        if (policyOverridesApplied == null) {
+            policyOverridesApplied = new ArrayList<>();
+        }
         if (assertions == null) {
             assertions = new ArrayList<>();
         }
@@ -373,6 +439,9 @@ public class HistoryEntry {
         }
         if (result == null) {
             result = HistoryResult.UNKNOWN;
+        }
+        if (preflightStatus == null) {
+            preflightStatus = result == HistoryResult.BLOCKED ? ExecutionPreflightStatus.BLOCKED_POLICY.name() : ExecutionPreflightStatus.READY.name();
         }
         if (resultClassification == null && result != null) {
             resultClassification = result.displayName();
@@ -458,52 +527,66 @@ public class HistoryEntry {
         if (metadataSummaryText != null && !metadataSummaryText.isBlank()) {
             return metadataSummaryText.trim();
         }
+        return buildLegacyMetadataText(this);
+    }
+
+    private static String buildLegacyMetadataText(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder();
-        sb.append("History ID: ").append(id != null ? id : "").append('\n');
-        sb.append("Created / Executed Timestamp: ").append(timeDisplay()).append('\n');
-        sb.append("Source: ").append(source != null ? source.displayName() : "").append('\n');
-        sb.append("Collection: ").append(collectionName != null ? collectionName : "").append('\n');
-        sb.append("Folder / Request Path: ").append(folderPath != null ? folderPath : "").append('\n');
-        sb.append("Request Name: ").append(requestName != null ? requestName : "").append('\n');
-        sb.append("Method: ").append(requestSnapshot != null && requestSnapshot.method != null ? requestSnapshot.method : "").append('\n');
-        sb.append("URL Template: ").append(requestSnapshot != null && requestSnapshot.urlTemplate != null ? requestSnapshot.urlTemplate : "").append('\n');
-        sb.append("Redirects Enabled: ").append(redirectsEnabled != null ? redirectsEnabled : "Not yet sent").append('\n');
-        sb.append("Initial Resolved URL: ").append(initialResolvedUrl != null && !initialResolvedUrl.isBlank() ? initialResolvedUrl : "Not yet sent").append('\n');
-        sb.append("Final Resolved URL: ").append(finalResolvedUrl != null && !finalResolvedUrl.isBlank() ? finalResolvedUrl : "Not yet sent").append('\n');
-        sb.append("Redirect Termination Reason: ").append(redirectTerminationReason != null ? redirectTerminationReason.displayLabel() : "Not yet sent").append('\n');
-        sb.append("Followed Redirect Hops: ").append(countFollowedRedirectHops()).append('\n');
-        sb.append("Host: ").append(host != null && !host.isBlank() ? host : "Not yet sent").append('\n');
-        sb.append("Build Mode: ").append(requestSnapshot != null && requestSnapshot.buildMode != null
-                ? requestSnapshot.buildMode.name()
-                : requestSnapshot != null && requestSnapshot.authoredRequest != null && requestSnapshot.authoredRequest.resolveBuildMode() != null
-                    ? requestSnapshot.authoredRequest.resolveBuildMode().name()
+        sb.append("History ID: ").append(entry.id != null ? entry.id : "").append('\n');
+        sb.append("Created / Executed Timestamp: ").append(entry.timeDisplay()).append('\n');
+        sb.append("Source: ").append(entry.source != null ? entry.source.displayName() : "").append('\n');
+        sb.append("Collection: ").append(entry.collectionName != null ? entry.collectionName : "").append('\n');
+        sb.append("Folder / Request Path: ").append(entry.folderPath != null ? entry.folderPath : "").append('\n');
+        sb.append("Request Name: ").append(entry.requestName != null ? entry.requestName : "").append('\n');
+        sb.append("Method: ").append(entry.requestSnapshot != null && entry.requestSnapshot.method != null ? entry.requestSnapshot.method : "").append('\n');
+        sb.append("URL Template: ").append(entry.requestSnapshot != null && entry.requestSnapshot.urlTemplate != null ? entry.requestSnapshot.urlTemplate : "").append('\n');
+        sb.append("Redirects Enabled: ").append(entry.redirectsEnabled != null ? entry.redirectsEnabled : "Not yet sent").append('\n');
+        sb.append("Initial Resolved URL: ").append(entry.initialResolvedUrl != null && !entry.initialResolvedUrl.isBlank() ? entry.initialResolvedUrl : "Not yet sent").append('\n');
+        sb.append("Final Resolved URL: ").append(entry.finalResolvedUrl != null && !entry.finalResolvedUrl.isBlank() ? entry.finalResolvedUrl : "Not yet sent").append('\n');
+        sb.append("Redirect Termination Reason: ").append(entry.redirectTerminationReason != null ? entry.redirectTerminationReason.displayLabel() : "Not yet sent").append('\n');
+        sb.append("Followed Redirect Hops: ").append(entry.countFollowedRedirectHops()).append('\n');
+        sb.append("Host: ").append(entry.host != null && !entry.host.isBlank() ? entry.host : "Not yet sent").append('\n');
+        sb.append("Build Mode: ").append(entry.requestSnapshot != null && entry.requestSnapshot.buildMode != null
+                ? entry.requestSnapshot.buildMode.name()
+                : entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null && entry.requestSnapshot.authoredRequest.resolveBuildMode() != null
+                    ? entry.requestSnapshot.authoredRequest.resolveBuildMode().name()
                     : "Not yet sent").append('\n');
-        sb.append("Active Environment: ").append(environmentName != null ? environmentName : "No Environment").append('\n');
-        sb.append("Auth Mode / Auth Source: ").append(resolveAuthLabel()).append('\n');
-        sb.append("Execution Source: ").append(executionSource != null && !executionSource.isBlank() ? executionSource : "Not yet sent").append('\n');
-        sb.append("Execution Attempt: ").append(isExecuted() ? attemptDisplay() : "Not yet sent").append('\n');
-        sb.append("Runner Attempt Number: ").append(source == HistorySource.RUNNER ? attemptDisplay() : (isExecuted() ? "Not applicable" : "Not yet sent")).append('\n');
-        sb.append("Status Code: ").append(statusCode > 0 ? statusCode : "Not yet sent").append('\n');
-        sb.append("Duration: ").append(durationMillis > 0 ? durationMillis + " ms" : "Not yet sent").append('\n');
-        sb.append("Request Size: ").append(requestSizeBytes > 0 ? requestSizeBytes + " bytes" : "Not yet sent").append('\n');
-        sb.append("Response Size: ").append(responseSizeBytes > 0 ? responseSizeBytes + " bytes" : "Not yet sent").append('\n');
-        sb.append("Result Classification: ").append(resultClassification != null && !resultClassification.isBlank() ? resultClassification : (isExecuted() ? resultDisplayName() : "Not yet sent")).append('\n');
-        sb.append("Script Engine: ").append(displayValue(scriptEngineName)).append('\n');
-        sb.append("Script Mode: ").append(displayValue(scriptMode)).append('\n');
-        sb.append("Script Dialect: ").append(displayValue(scriptDialect)).append('\n');
-        sb.append("Flow Control: ").append(scriptFlowControl != null ? scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
-        sb.append("Flow Message: ").append(scriptFlowMessage != null ? scriptFlowMessage : "").append('\n');
-        sb.append("Raw Request Available: ").append(requestSnapshot != null && requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
-        sb.append("Response Available: ").append(responseSnapshot != null && responseSnapshot.hasBody() ? "yes" : "no").append('\n');
-        sb.append("Script Logs: ").append(scriptLogs != null ? scriptLogs.size() : 0).append('\n');
-        sb.append("Script Warnings: ").append(scriptWarnings != null ? scriptWarnings.size() : 0).append('\n');
-        sb.append("Script Errors: ").append(scriptErrors != null ? scriptErrors.size() : 0).append('\n');
-        sb.append("Script Mutations: ").append(scriptVariableMutations != null ? scriptVariableMutations.size() : 0).append('\n');
-        sb.append("Error Message: ").append(errorMessage != null ? errorMessage : "").append('\n');
-        sb.append("Unresolved Variables: ").append(String.join(", ", unresolvedVariables != null ? unresolvedVariables : List.of())).append('\n');
-        if (redirectHops != null && !redirectHops.isEmpty()) {
+        sb.append("Active Environment: ").append(entry.environmentName != null ? entry.environmentName : "No Environment").append('\n');
+        sb.append("Auth Mode / Auth Source: ").append(entry.resolveAuthLabel()).append('\n');
+        sb.append("Execution Source: ").append(entry.executionSource != null && !entry.executionSource.isBlank() ? entry.executionSource : "Not yet sent").append('\n');
+        sb.append("Execution Attempt: ").append(entry.isExecuted() ? entry.attemptDisplay() : "Not yet sent").append('\n');
+        sb.append("Runner Attempt Number: ").append(entry.source == HistorySource.RUNNER ? entry.attemptDisplay() : (entry.isExecuted() ? "Not applicable" : "Not yet sent")).append('\n');
+        sb.append("Status Code: ").append(entry.statusCode > 0 ? entry.statusCode : "Not yet sent").append('\n');
+        sb.append("Duration: ").append(entry.durationMillis > 0 ? entry.durationMillis + " ms" : "Not yet sent").append('\n');
+        sb.append("Request Size: ").append(entry.requestSizeBytes > 0 ? entry.requestSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Response Size: ").append(entry.responseSizeBytes > 0 ? entry.responseSizeBytes + " bytes" : "Not yet sent").append('\n');
+        sb.append("Result Classification: ").append(entry.resultClassification != null && !entry.resultClassification.isBlank() ? entry.resultClassification : (entry.isExecuted() ? entry.resultDisplayName() : "Not yet sent")).append('\n');
+        sb.append("Script Engine: ").append(entry.displayValue(entry.scriptEngineName)).append('\n');
+        sb.append("Script Mode: ").append(entry.displayValue(entry.scriptMode)).append('\n');
+        sb.append("Script Dialect: ").append(entry.displayValue(entry.scriptDialect)).append('\n');
+        sb.append("Flow Control: ").append(entry.scriptFlowControl != null ? entry.scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');
+        sb.append("Flow Message: ").append(entry.scriptFlowMessage != null ? entry.scriptFlowMessage : "").append('\n');
+        sb.append("Raw Request Available: ").append(entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent() ? "yes" : "no").append('\n');
+        sb.append("Response Available: ").append(entry.responseSnapshot != null && entry.responseSnapshot.hasBody() ? "yes" : "no").append('\n');
+        sb.append("Script Logs: ").append(entry.scriptLogs != null ? entry.scriptLogs.size() : 0).append('\n');
+        sb.append("Script Warnings: ").append(entry.scriptWarnings != null ? entry.scriptWarnings.size() : 0).append('\n');
+        sb.append("Script Errors: ").append(entry.scriptErrors != null ? entry.scriptErrors.size() : 0).append('\n');
+        sb.append("Script Mutations: ").append(entry.scriptVariableMutations != null ? entry.scriptVariableMutations.size() : 0).append('\n');
+        sb.append("Error Message: ").append(entry.errorMessage != null ? entry.errorMessage : "").append('\n');
+        sb.append("Unresolved Variables: ").append(String.join(", ", entry.unresolvedVariables != null ? entry.unresolvedVariables : List.of())).append('\n');
+        sb.append("Request Sent: ").append(entry.requestSent ? "Yes" : "No").append('\n');
+        sb.append("Preflight Status: ").append(entry.preflightStatus != null ? entry.preflightStatus : "").append('\n');
+        sb.append("Preflight Message: ").append(entry.preflightMessage != null ? entry.preflightMessage : "").append('\n');
+        sb.append("Timeout: ").append(entry.timeoutMillis > 0 ? entry.timeoutMillis + " ms" : "").append('\n');
+        sb.append("Original Origin: ").append(originDisplay(entry.originalResolvedUrl)).append('\n');
+        sb.append("Effective Origin: ").append(originDisplay(entry.effectiveResolvedUrl != null ? entry.effectiveResolvedUrl : entry.finalResolvedUrl)).append('\n');
+        sb.append("Policy Overrides: ").append(String.join(", ", entry.policyOverridesApplied != null ? entry.policyOverridesApplied : List.of())).append('\n');
+        if (entry.redirectHops != null && !entry.redirectHops.isEmpty()) {
             sb.append("Redirect Hop Evidence:").append('\n');
-            for (RedirectHop hop : redirectHops) {
+            for (RedirectHop hop : entry.redirectHops) {
                 if (hop != null) {
                     sb.append(" - ").append(hop.safeSummary()).append('\n');
                 }
@@ -535,7 +618,9 @@ public class HistoryEntry {
         if (authType == null || authType.isBlank()) {
             return isExecuted() ? "Not yet sent" : "Not yet sent";
         }
-        StringBuilder sb = new StringBuilder(authType);
+        String normalizedType = authType.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
+                + (authType.length() > 1 ? authType.substring(1).toLowerCase(java.util.Locale.ROOT) : "");
+        StringBuilder sb = new StringBuilder(normalizedType);
         if (requestSnapshot != null && requestSnapshot.authoredRequest != null
                 && requestSnapshot.authoredRequest.authSource != null
                 && !requestSnapshot.authoredRequest.authSource.isBlank()) {
@@ -640,6 +725,33 @@ public class HistoryEntry {
         return sb.toString().trim();
     }
 
+    private static String buildExecutionMetadataText(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        return buildLegacyMetadataText(entry);
+    }
+
+    private static String originDisplay(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return "";
+        }
+        try {
+            HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
+            if (parsed == null || parsed.host == null || parsed.host.isBlank()) {
+                return "";
+            }
+            String scheme = parsed.useHttps ? "https" : "http";
+            String host = parsed.host.startsWith("[") && parsed.host.endsWith("]")
+                    ? parsed.host.substring(1, parsed.host.length() - 1)
+                    : parsed.host.toLowerCase(java.util.Locale.ROOT);
+            int port = parsed.port > 0 ? parsed.port : (parsed.useHttps ? 443 : 80);
+            return scheme + "://" + host + ":" + port;
+        } catch (Exception e) {
+            return resolvedUrl;
+        }
+    }
+
     private int countFollowedRedirectHops() {
         if (redirectHops == null || redirectHops.isEmpty()) {
             return 0;
@@ -714,6 +826,9 @@ public class HistoryEntry {
     private static int determineStatusCode(ExecutionResult exec, HttpResponse response) {
         if (response != null) {
             return response.statusCode();
+        }
+        if (exec != null && (exec.isBlockedBeforeSend() || exec.responseTimedOut)) {
+            return 0;
         }
         if (exec != null && exec.response != null && exec.response.response() != null) {
             return exec.response.response().statusCode();

@@ -9,7 +9,8 @@ public enum RedirectTerminationReason {
     LOOP_DETECTED("Redirect loop detected"),
     LIMIT_EXCEEDED("Redirect limit exceeded"),
     REQUEST_BUILD_FAILED("Failed to build redirect request"),
-    SEND_FAILED("Redirect send failed");
+    SEND_FAILED("Redirect send failed"),
+    RESPONSE_TIMEOUT("Response Timeout");
 
     private final String displayLabel;
 

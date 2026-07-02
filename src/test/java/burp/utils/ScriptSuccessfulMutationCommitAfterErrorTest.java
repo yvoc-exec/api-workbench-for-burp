@@ -1,9 +1,11 @@
 package burp.utils;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.RequestOptions;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectPolicy;
 import burp.scripts.ExecutionSource;
 import burp.scripts.GraalJsSandboxEngine;
 import burp.scripts.ScriptBlock;
@@ -15,6 +17,7 @@ import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
 import burp.scripts.ScriptDependentRequestExecutor;
 import burp.scripts.UnifiedScriptRuntime;
+import burp.utils.ExecutionPolicy;
 import burp.testsupport.RunnerScriptTestFixtures;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -27,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.when;
 
@@ -52,7 +56,12 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                 null,
                 null,
                 new CallbackSink(fixture.environment, callbackCount),
-                fixture.environment
+                fixture.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                continuingPolicy(),
+                null
         );
 
         assertThat(result.scriptErrors).isNotEmpty();
@@ -85,7 +94,12 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                 null,
                 null,
                 new CallbackSink(fixture.environment, callbackCount),
-                fixture.environment
+                fixture.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                continuingPolicy(),
+                null
         );
 
         assertThat(result.scriptErrors).isNotEmpty();
@@ -114,7 +128,12 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                 null,
                 null,
                 new CallbackSink(fixture.environment, callbackCount),
-                fixture.environment
+                fixture.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                continuingPolicy(),
+                null
         );
 
         assertThat(result.scriptErrors).isNotEmpty();
@@ -249,7 +268,8 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                 new RequestBuilder(null),
                 new ScriptEngine(null, ScriptMode.FULL_JS),
                 null,
-                new StubUnifiedScriptRuntime(scriptResult)
+                new StubUnifiedScriptRuntime(scriptResult),
+                timeout -> requestOptions()
         );
         try {
             ExecutionResult result = pipeline.execute(
@@ -260,7 +280,11 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                     null,
                     null,
                     environment,
-                    ExecutionSource.WORKBENCH_SEND
+                    ExecutionSource.WORKBENCH_SEND,
+                    null,
+                    RedirectPolicy.defaults(),
+                    continuingPolicy(),
+                    null
             );
 
             assertThat(sendCount.get()).isEqualTo(1);
@@ -282,11 +306,34 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
                 requests,
                 () -> RunnerScriptTestFixtures.mockResponse(200, "{\"token\":\"abc\",\"ok\":true}", "application/json")
         );
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), null);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                null,
+                null,
+                timeout -> requestOptions()
+        );
         ApiCollection collection = collection(blocks);
         ApiRequest request = request();
         EnvironmentProfile environment = environment();
         return new ExecutionFixture(pipeline, collection, request, environment, sendCount);
+    }
+
+    private static ExecutionPolicy continuingPolicy() {
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.scriptFailureMode = ExecutionPolicy.ScriptFailureMode.CONTINUE;
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+        return policy;
+    }
+
+    private static RequestOptions requestOptions() {
+        RequestOptions options = Mockito.mock(RequestOptions.class);
+        when(options.withRedirectionMode(any())).thenReturn(options);
+        when(options.withResponseTimeout(anyInt())).thenReturn(options);
+        return options;
     }
 
     private static ApiCollection collection(ScriptBlock... blocks) {
