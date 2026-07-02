@@ -134,6 +134,81 @@ class ImporterPanelExactTransportModeIntegrationTest {
                 .containsExactly("console.log(\"pending\");");
     }
 
+    @Test
+    void normalEditorPersistencePreservesDescriptionAndRequestVariables() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-normal-persist";
+        collection.name = "Normal Persist";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-normal-persist";
+        request.name = "Normal Persist Request";
+        request.method = "GET";
+        request.url = "https://api.example.test/original";
+        request.description = "Login endpoint description";
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = true;
+        request.variables = new ArrayList<>();
+        request.variables.add(variable("username", "test-user", "string", true));
+        request.variables.add(variable("tenant", "blue", "secret", false));
+        request.headers = new ArrayList<>();
+        request.headers.add(new ApiRequest.Header("Accept", "application/json"));
+        request.headers.add(new ApiRequest.Header("X-Original", "one"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "original-body";
+        request.body.contentType = "application/json";
+        request.preRequestScripts = new ArrayList<>();
+        request.preRequestScripts.add(new ApiRequest.Script("js", "console.log(\"original\");"));
+        collection.requests.add(request);
+
+        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        ImporterPanelTestSupport.awaitEdt();
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        JTree tree = ImporterPanelTestSupport.getField(bundle.panel, "requestTree");
+        CollectionTreeNode requestNode = findRequestNode((DefaultMutableTreeNode) tree.getModel().getRoot(), liveRequest.id);
+        assertThat(requestNode).as("request tree node").isNotNull();
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(requestNode.getPath())));
+
+        RequestEditorPanel editor = ImporterPanelTestSupport.getField(bundle.panel, "requestEditor");
+        ImporterPanelTestSupport.awaitCondition(() -> editor.getCurrentRequest() == liveRequest, Duration.ofSeconds(3));
+        ImporterPanelTestSupport.awaitEdt();
+
+        SwingUtilities.invokeAndWait(() -> {
+            editor.getMethodBox().setSelectedItem("POST");
+            editor.getUrlField().setText("https://api.example.test/changed?x=1");
+            paramsModel(editor).setRowCount(0);
+            paramsModel(editor).addRow(new Object[]{"x", "1"});
+            headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
+            editor.getBodyRawAreaForTests().setText("changed-body");
+            preScriptArea(editor).setText("console.log(\"changed\");");
+        });
+        ImporterPanelTestSupport.awaitEdt();
+
+        ImporterPanelTestSupport.invokeVoid(bundle.panel, "persistCurrentRequestEditorState", new Class<?>[0]);
+        ImporterPanelTestSupport.awaitEdt();
+
+        assertThat(liveRequest.method).isEqualTo("POST");
+        assertThat(liveRequest.url).isEqualTo("https://api.example.test/changed?x=1");
+        assertThat(liveRequest.headers)
+                .extracting(header -> header.key + "=" + header.value)
+                .containsExactly("Accept=application/xml", "X-Original=one", "Content-Type=application/json");
+        assertThat(liveRequest.body.raw).isEqualTo("changed-body");
+        assertThat(liveRequest.preRequestScripts).extracting(script -> script.exec)
+                .containsExactly("console.log(\"changed\");");
+        assertThat(liveRequest.description).isEqualTo("Login endpoint description");
+        assertThat(liveRequest.variables)
+                .extracting(variable -> variable.key + "|" + variable.value + "|" + variable.type + "|" + variable.enabled)
+                .containsExactly(
+                        "username|test-user|string|true",
+                        "tenant|blue|secret|false");
+    }
+
     private static CollectionTreeNode findRequestNode(DefaultMutableTreeNode node, String requestId) {
         if (node instanceof CollectionTreeNode ctn
                 && ctn.getNodeType() == CollectionTreeNode.Type.REQUEST
@@ -166,6 +241,15 @@ class ImporterPanelExactTransportModeIntegrationTest {
             }
         }
         throw new AssertionError("Missing row: " + key);
+    }
+
+    private static ApiRequest.Variable variable(String key, String value, String type, boolean enabled) {
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = value;
+        variable.type = type;
+        variable.enabled = enabled;
+        return variable;
     }
 
     private static JTextArea preScriptArea(RequestEditorPanel editor) {
