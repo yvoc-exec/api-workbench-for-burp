@@ -51,6 +51,150 @@ class ScriptEnvironmentMutationCallbackTest {
     }
 
     @Test
+    void runtimeSameValueSetDoesNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        environment.runtimeVariables.put("token", "same");
+        ScriptExecutionResult result = result(mutation("token", "same", "environment", false));
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.runtimeVariables).containsEntry("token", "same");
+    }
+
+    @Test
+    void runtimeUnsetAbsentKeyDoesNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        ScriptExecutionResult result = result(mutation("token", null, "environment", false));
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.runtimeVariables).doesNotContainKey("token");
+    }
+
+    @Test
+    void runtimeSetThenUnsetNetNoChangeDoesNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        ScriptExecutionResult result = result(
+                mutation("token", "runtime", "environment", false),
+                mutation("token", null, "environment", false)
+        );
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.runtimeVariables).doesNotContainKey("token");
+    }
+
+    @Test
+    void runtimeUnsetThenRestoreOriginalValueDoesNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        environment.runtimeVariables.put("token", "original");
+        ScriptExecutionResult result = result(
+                mutation("token", null, "environment", false),
+                mutation("token", "original", "environment", false)
+        );
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.runtimeVariables).containsEntry("token", "original");
+    }
+
+    @Test
+    void persistentSetThenRestoreOriginalValueDoesNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        environment.variables.put("token", "original");
+        ScriptExecutionResult result = result(
+                mutation("token", "updated", "environment", true),
+                mutation("token", "original", "environment", true)
+        );
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.variables).containsEntry("token", "original");
+    }
+
+    @Test
+    void mixedNoOpPersistentAndRuntimeMutationsDoNotCallCallback() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        environment.variables.put("persisted", "same");
+        environment.runtimeVariables.put("runtime", "same");
+        ScriptExecutionResult result = result(
+                mutation("persisted", "same", "environment", true),
+                mutation("runtime", "same", "environment", false)
+        );
+
+        CallbackState state = new CallbackState();
+        commit(result, collection, environment, state);
+
+        assertThat(state.callbackCount.get()).isZero();
+        assertThat(environment.variables).containsEntry("persisted", "same");
+        assertThat(environment.runtimeVariables).containsEntry("runtime", "same");
+    }
+
+    @Test
+    void netRuntimeChangeCallsApplyAndCallbackExactlyOnce() {
+        ApiCollection collection = collection();
+        EnvironmentProfile environment = environment();
+        ScriptExecutionResult result = result(
+                mutation("runtime", "first", "environment", false),
+                mutation("runtime", "final", "environment", false)
+        );
+
+        AtomicInteger applyCount = new AtomicInteger();
+        AtomicInteger callbackCount = new AtomicInteger();
+        AtomicReference<Map<String, String>> changedVars = new AtomicReference<>(Map.of());
+        AtomicReference<java.util.Set<String>> removedKeys = new AtomicReference<>(java.util.Set.of());
+        SharedRequestPipeline.RuntimeVariableSink sink = new SharedRequestPipeline.RuntimeVariableSink() {
+            @Override
+            public void apply(ApiCollection collection, Map<String, String> changed, java.util.Set<String> removed) {
+                applyCount.incrementAndGet();
+                changedVars.set(changed);
+                removedKeys.set(removed);
+                if (removed != null) {
+                    for (String key : removed) {
+                        environment.runtimeVariables.remove(key);
+                    }
+                }
+                if (changed != null) {
+                    for (Map.Entry<String, String> entry : changed.entrySet()) {
+                        environment.runtimeVariables.put(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+
+            @Override
+            public void environmentMutationCommitted(EnvironmentProfile env, boolean persistedChanged, boolean runtimeChanged) {
+                callbackCount.incrementAndGet();
+                assertThat(persistedChanged).isFalse();
+                assertThat(runtimeChanged).isTrue();
+            }
+        };
+
+        commit(result, collection, environment, sink);
+
+        assertThat(applyCount.get()).isEqualTo(1);
+        assertThat(callbackCount.get()).isEqualTo(1);
+        assertThat(changedVars.get()).containsEntry("runtime", "final");
+        assertThat(removedKeys.get()).isEmpty();
+        assertThat(environment.runtimeVariables).containsEntry("runtime", "final");
+    }
+
+    @Test
     void mixedEnvironmentMutationsCallOneCallback() {
         ApiCollection collection = collection();
         EnvironmentProfile environment = environment();
@@ -155,6 +299,7 @@ class ScriptEnvironmentMutationCallbackTest {
         EnvironmentProfile environment = environment();
         ScriptExecutionResult result = result(mutation("token", "rolled-back", "environment", true));
         result.success = false;
+        result.variableMutations.clear();
 
         CallbackState state = new CallbackState();
         commit(result, collection, environment, state);
