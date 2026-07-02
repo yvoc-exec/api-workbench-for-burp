@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -20,6 +21,15 @@ class ScriptVariableScopeCommitTest {
 
     @Test
     void nonPersistentEnvironmentWritesRuntimeLayerOnly() {
+        EnvironmentProfile environment = environment();
+        commit(environment, mutation("token", "runtime", "environment", false));
+
+        assertThat(environment.runtimeVariables).containsEntry("token", "runtime");
+        assertThat(environment.variables).doesNotContainKey("token");
+    }
+
+    @Test
+    void environmentMutationUpdatesOnlyEnvironmentScope() {
         EnvironmentProfile environment = environment();
         commit(environment, mutation("token", "runtime", "environment", false));
 
@@ -37,12 +47,103 @@ class ScriptVariableScopeCommitTest {
     }
 
     @Test
+    void persistentEnvironmentMutationUpdatesOnlyEnvironmentScope() {
+        EnvironmentProfile environment = environment();
+        commit(environment, mutation("token", "persisted", "environment", true));
+
+        assertThat(environment.variables).containsEntry("token", "persisted");
+        assertThat(environment.runtimeVariables).doesNotContainKey("token");
+    }
+
+    @Test
     void nonPersistentCollectionWritesRuntimeVarsOnly() {
         ApiCollection collection = collection();
         commit(collection, mutation("token", "runtime", "collection", false));
 
         assertThat(collection.runtimeVars).containsEntry("token", "runtime");
         assertThat(collection.variables).extracting(variable -> variable.key).doesNotContain("token");
+    }
+
+    @Test
+    void collectionMutationUpdatesOnlyCollectionScope() {
+        ApiCollection collection = collection();
+        commit(collection, mutation("token", "runtime", "collection", false));
+
+        assertThat(collection.runtimeVars).containsEntry("token", "runtime");
+        assertThat(collection.variables).extracting(variable -> variable.key).doesNotContain("token");
+    }
+
+    @Test
+    void nonPersistentCollectionUnsetRemovesRuntimeKey() {
+        ApiCollection collection = collection();
+        collection.runtimeVars.put("token", "temporary");
+
+        commit(collection, mutation("token", null, "collection", false));
+
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(collection.runtimeVars).doesNotContainValue(null);
+    }
+
+    @Test
+    void nonPersistentCollectionUnsetFiresChangeOnce() {
+        ApiCollection collection = collection();
+        collection.runtimeVars.put("token", "temporary");
+        AtomicInteger changeCount = new AtomicInteger();
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        commit(collection, mutation("token", null, "collection", false));
+
+        assertThat(changeCount).hasValue(1);
+    }
+
+    @Test
+    void runtimeCollectionUnsetRevealsAuthoredCollectionValue() {
+        ApiCollection collection = collection();
+        collection.variables.add(variable("token", "persisted", "string", true));
+        collection.runtimeVars.put("token", "temporary");
+
+        commit(collection, mutation("token", null, "collection", false));
+
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(RuntimeResolverFactory.build(collection, request(), environment(), null).getVariables().get("token")).isEqualTo("persisted");
+    }
+
+    @Test
+    void runtimeCollectionUnsetDoesNotRemoveAuthoredValue() {
+        ApiCollection collection = collection();
+        collection.variables.add(variable("token", "persisted", "string", true));
+        collection.runtimeVars.put("token", "temporary");
+
+        commit(collection, mutation("token", null, "collection", false));
+
+        assertThat(collection.variables)
+                .anySatisfy(variable -> {
+                    assertThat(variable.key).isEqualTo("token");
+                    assertThat(variable.value).isEqualTo("persisted");
+                });
+    }
+
+    @Test
+    void setThenUnsetRuntimeCollectionLeavesNoNullEntry() {
+        ApiCollection collection = collection();
+
+        commit(collection,
+                mutation("token", "temporary", "collection", false),
+                mutation("token", null, "collection", false));
+
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(collection.runtimeVars).doesNotContainValue(null);
+    }
+
+    @Test
+    void unsetAbsentRuntimeCollectionKeyDoesNotFireChange() {
+        ApiCollection collection = collection();
+        AtomicInteger changeCount = new AtomicInteger();
+        collection.addChangeListener(changeCount::incrementAndGet);
+
+        commit(collection, mutation("missing", null, "collection", false));
+
+        assertThat(changeCount).hasValue(0);
     }
 
     @Test
@@ -58,6 +159,19 @@ class ScriptVariableScopeCommitTest {
                     assertThat(variable.enabled).isTrue();
                 });
         assertThat(collection.runtimeVars).doesNotContainKey("token");
+    }
+
+    @Test
+    void persistentAndRuntimeMutationPathsAreNotDoubleApplied() {
+        ApiCollection collection = collection();
+        commit(collection,
+                mutation("token", "runtime", "collection", false),
+                mutation("token", "persisted", "collection", true));
+
+        assertThat(collection.runtimeVars).containsEntry("token", "runtime");
+        assertThat(collection.variables)
+                .extracting(variable -> variable.key + "=" + variable.value)
+                .contains("token=persisted");
     }
 
     @Test
@@ -98,6 +212,16 @@ class ScriptVariableScopeCommitTest {
         assertThat(collection.runtimeFolderVars).containsKey("Parent/Child");
         assertThat(collection.runtimeFolderVars.get("Parent/Child")).containsEntry("token", "runtime");
         assertThat(collection.folderVars).doesNotContainKey("Parent/Child");
+    }
+
+    @Test
+    void folderMutationUpdatesOnlyOwningFolder() {
+        ApiCollection collection = collection();
+        commit(collection, mutation("token", "runtime", "folder", false, "Parent/Child"));
+
+        assertThat(collection.runtimeFolderVars).containsKey("Parent/Child");
+        assertThat(collection.runtimeFolderVars.get("Parent/Child")).containsEntry("token", "runtime");
+        assertThat(collection.runtimeFolderVars).doesNotContainKey("Parent/Sibling");
     }
 
     @Test
@@ -145,6 +269,48 @@ class ScriptVariableScopeCommitTest {
     }
 
     @Test
+    void localVariableDoesNotLeakToNextRequest() {
+        ApiCollection collection = collection();
+        ApiRequest request = request();
+        EnvironmentProfile environment = environment();
+
+        commit(collection, request, environment, mutation("token", "local", "local", false));
+
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(RuntimeResolverFactory.build(collection, request, environment, null).getVariables().get("token")).isNull();
+    }
+
+    @Test
+    void requestVariableDoesNotBecomeCollectionRuntime() {
+        ApiCollection collection = collection();
+        commit(collection, request(), environment(), mutation("token", "request", "request", false));
+
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(collection.variables).extracting(variable -> variable.key).doesNotContain("token");
+    }
+
+    @Test
+    void sameKeyInMultipleScopesRemainsDistinct() {
+        ApiCollection collection = collection();
+        collection.variables.add(variable("token", "collection", "string", true));
+        collection.runtimeVars.put("token", "runtime-collection");
+        EnvironmentProfile environment = environment();
+        environment.variables.put("token", "environment");
+        environment.runtimeVariables.put("token", "runtime-environment");
+        ApiRequest request = request();
+        request.variables.add(variable("token", "request", "string", true));
+
+        commit(collection, request, environment, mutation("token", null, "local", false));
+
+        assertThat(collection.variables)
+                .anySatisfy(variable -> assertThat(variable.key).isEqualTo("token"));
+        assertThat(collection.runtimeVars).containsEntry("token", "runtime-collection");
+        assertThat(environment.variables).containsEntry("token", "environment");
+        assertThat(environment.runtimeVariables).containsEntry("token", "runtime-environment");
+        assertThat(request.variables).extracting(variable -> variable.key).contains("token");
+    }
+
+    @Test
     void persistentAndRuntimeMutationsAreAppliedExactlyOnce() {
         ApiCollection collection = collection();
         commit(collection,
@@ -156,6 +322,19 @@ class ScriptVariableScopeCommitTest {
         assertThat(collection.variables)
                 .extracting(variable -> variable.key + "=" + variable.value)
                 .containsExactly("token=persisted");
+    }
+
+    @Test
+    void localUnsetDoesNotDeleteCollectionValue() {
+        ApiCollection collection = collection();
+        collection.variables.add(variable("token", "persisted", "string", true));
+        collection.runtimeVars.put("token", "runtime");
+
+        commit(collection, request(), environment(), mutation("token", null, "local", false));
+
+        assertThat(collection.variables)
+                .anySatisfy(variable -> assertThat(variable.key).isEqualTo("token"));
+        assertThat(collection.runtimeVars).containsEntry("token", "runtime");
     }
 
     @Test

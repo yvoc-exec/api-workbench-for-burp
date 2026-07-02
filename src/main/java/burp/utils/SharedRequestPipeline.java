@@ -57,6 +57,11 @@ public class SharedRequestPipeline implements AutoCloseable {
 
     public interface RuntimeVariableSink {
         void apply(ApiCollection collection, Map<String, String> changedVars, Set<String> removedKeys);
+
+        default void environmentMutationCommitted(EnvironmentProfile environment,
+                                                   boolean persistedChanged,
+                                                   boolean runtimeChanged) {
+        }
     }
 
     private final MontoyaApi api;
@@ -217,9 +222,15 @@ public class SharedRequestPipeline implements AutoCloseable {
         EnvironmentProfile executionEnvironment = intent == ExecutionIntent.PREVIEW && activeEnvironment != null ? activeEnvironment.copy() : activeEnvironment;
         ApiRequest effectiveRequest = intent == ExecutionIntent.PREVIEW ? burp.scripts.ScriptExecutionContext.copyRequest(req) : req;
         burp.scripts.ScriptDependentRequestExecutor scriptDependentExecutor = intent == ExecutionIntent.PREVIEW ? null : dependentRequestExecutor;
-        Map<String, String> scriptContext = buildInitialRuntimeOverlay(executionCollection, runtimeOverlay, executionEnvironment);
-        Set<String> beforeScriptKeys = new HashSet<>(scriptContext.keySet());
-        Map<String, String> finalRuntimeOverlay = new LinkedHashMap<>(scriptContext);
+        VariableResolver baselineResolver = RuntimeResolverFactory.build(
+                executionCollection,
+                effectiveRequest,
+                executionEnvironment,
+                runtimeOverlay
+        );
+        Map<String, String> initialResolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
+        Map<String, String> finalResolvedVariables = new LinkedHashMap<>(initialResolvedVariables);
+        Map<String, String> scriptContext = new LinkedHashMap<>(initialResolvedVariables);
 
         try {
             // 1. Pre-request scripts (use isolated copy to track mutations)
@@ -236,17 +247,18 @@ public class SharedRequestPipeline implements AutoCloseable {
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
-                finalRuntimeOverlay = new LinkedHashMap<>(scriptResult.effectiveVariables);
-                result.resolvedVariables = new LinkedHashMap<>(finalRuntimeOverlay);
-                if (intent == ExecutionIntent.LIVE && !scriptResult.timedOut && !scriptResult.cancelled) {
-                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
-                }
                 if (scriptResult.timedOut || scriptResult.cancelled) {
+                    result.resolvedVariables = new LinkedHashMap<>(initialResolvedVariables);
                     result.builtRequest = null;
                     result.rawRequestBytes = null;
                     result.rawRequestText = null;
                     result.resolvedUrl = effectiveRequest != null ? effectiveRequest.url : null;
                     return result;
+                }
+                finalResolvedVariables = new LinkedHashMap<>(scriptResult.effectiveVariables);
+                result.resolvedVariables = new LinkedHashMap<>(finalResolvedVariables);
+                if (intent == ExecutionIntent.LIVE) {
+                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                 }
                 if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
                     recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
@@ -262,13 +274,15 @@ public class SharedRequestPipeline implements AutoCloseable {
                 VariableResolver legacyResolver = RuntimeResolverFactory.build(
                         executionCollection,
                         effectiveRequest,
+                        executionEnvironment,
+                        runtimeOverlay,
                         RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
                 );
                 scriptEngine.executePreRequest(effectiveRequest, legacyResolver, scriptContext);
             }
 
             VariableResolver resolver = new VariableResolver();
-            resolver.addAll(finalRuntimeOverlay);
+            resolver.addAll(finalResolvedVariables);
 
             // 2. OAuth2 token refresh if needed
             if (intent == ExecutionIntent.LIVE && oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
@@ -440,8 +454,8 @@ public class SharedRequestPipeline implements AutoCloseable {
                     col, req, activeEnvironment, "Request execution failed", result.errorMessage);
         } finally {
             result.removedVars.clear();
-            for (String key : beforeScriptKeys) {
-                if (!scriptContext.containsKey(key)) {
+            for (String key : initialResolvedVariables.keySet()) {
+                if (!finalResolvedVariables.containsKey(key)) {
                     result.removedVars.add(key);
                 }
             }
@@ -473,27 +487,6 @@ public class SharedRequestPipeline implements AutoCloseable {
 
     private boolean shouldUseUnifiedRuntime() {
         return unifiedScriptRuntime != null && unifiedScriptRuntime.isEnabled();
-    }
-
-    private Map<String, String> buildInitialRuntimeOverlay(ApiCollection collection,
-                                                           Map<String, String> runtimeOverlay,
-                                                           EnvironmentProfile activeEnvironment) {
-        Map<String, String> overlay = new LinkedHashMap<>();
-        if (collection != null) {
-            if (collection.runtimeOAuth2 != null && !collection.runtimeOAuth2.isEmpty()) {
-                overlay.putAll(collection.runtimeOAuth2);
-            }
-            if (collection.runtimeVars != null && !collection.runtimeVars.isEmpty()) {
-                overlay.putAll(collection.runtimeVars);
-            }
-        }
-        if (activeEnvironment != null) {
-            overlay.putAll(activeEnvironment.toRuntimeOverlay());
-        }
-        if (runtimeOverlay != null && !runtimeOverlay.isEmpty()) {
-            overlay.putAll(runtimeOverlay);
-        }
-        return overlay;
     }
 
     private ApiRequest applyScriptResultToRequest(ApiRequest currentRequest, ScriptExecutionResult scriptResult) {
@@ -548,6 +541,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                                EnvironmentProfile activeEnvironment,
                                                ExecutionSource effectiveSource) {
         if (scriptResult == null
+                || !scriptResult.success
                 || scriptResult.timedOut
                 || scriptResult.cancelled
                 || scriptResult.variableMutations == null
@@ -555,11 +549,12 @@ public class SharedRequestPipeline implements AutoCloseable {
             return;
         }
         boolean collectionChanged = false;
-        boolean environmentChanged = false;
+        boolean persistedEnvironmentChanged = false;
+        boolean runtimeEnvironmentChanged = false;
         Set<String> warnedGlobalKeys = new LinkedHashSet<>();
         Set<String> warnedEnvironmentKeys = new LinkedHashSet<>();
         Set<String> warnedFolderKeys = new LinkedHashSet<>();
-        Map<String, String> runtimeEnvironmentChanged = new LinkedHashMap<>();
+        Map<String, String> runtimeEnvironmentChanges = new LinkedHashMap<>();
         Set<String> runtimeEnvironmentRemoved = new LinkedHashSet<>();
 
         for (burp.scripts.ScriptVariableMutation mutation : scriptResult.variableMutations) {
@@ -581,25 +576,26 @@ public class SharedRequestPipeline implements AutoCloseable {
                     activeEnvironment.ensureDefaults();
                     if (mutation.persistent) {
                         if (mutation.newValue == null) {
-                            if (activeEnvironment.variables.remove(mutation.key) != null) {
-                                environmentChanged = true;
+                            if (activeEnvironment.variables.containsKey(mutation.key)) {
+                                activeEnvironment.variables.remove(mutation.key);
+                                persistedEnvironmentChanged = true;
                             }
                         } else {
                             String value = mutation.newValue;
                             String current = activeEnvironment.variables.put(mutation.key, value);
                             if (!Objects.equals(current, value)) {
-                                environmentChanged = true;
+                                persistedEnvironmentChanged = true;
                             }
                         }
                     } else {
                         if (mutation.newValue == null) {
-                            runtimeEnvironmentChanged.remove(mutation.key);
+                            runtimeEnvironmentChanges.remove(mutation.key);
                             runtimeEnvironmentRemoved.add(mutation.key);
                         } else {
                             runtimeEnvironmentRemoved.remove(mutation.key);
-                            runtimeEnvironmentChanged.put(mutation.key, mutation.newValue);
+                            runtimeEnvironmentChanges.put(mutation.key, mutation.newValue);
                         }
-                        environmentChanged = true;
+                        runtimeEnvironmentChanged = true;
                     }
                 }
                 case "collection" -> {
@@ -616,10 +612,17 @@ public class SharedRequestPipeline implements AutoCloseable {
                             collectionChanged = true;
                         }
                     } else {
-                        String value = mutation.newValue;
-                        String current = col.runtimeVars.put(mutation.key, value);
-                        if (!Objects.equals(current, value)) {
-                            collectionChanged = true;
+                        if (mutation.newValue == null) {
+                            boolean existed = col.runtimeVars.containsKey(mutation.key);
+                            col.runtimeVars.remove(mutation.key);
+                            if (existed) {
+                                collectionChanged = true;
+                            }
+                        } else {
+                            String current = col.runtimeVars.put(mutation.key, mutation.newValue);
+                            if (!Objects.equals(current, mutation.newValue)) {
+                                collectionChanged = true;
+                            }
                         }
                     }
                 }
@@ -654,9 +657,8 @@ public class SharedRequestPipeline implements AutoCloseable {
                         }
                     } else {
                         Map<String, String> folder = target.computeIfAbsent(folderPath, k -> new LinkedHashMap<>());
-                        String value = mutation.newValue;
-                        String current = folder.put(mutation.key, value);
-                        if (!Objects.equals(current, value)) {
+                        String current = folder.put(mutation.key, mutation.newValue);
+                        if (!Objects.equals(current, mutation.newValue)) {
                             collectionChanged = true;
                         }
                     }
@@ -676,25 +678,33 @@ public class SharedRequestPipeline implements AutoCloseable {
             col.fireChanged();
         }
 
-        if (activeEnvironment != null && (!runtimeEnvironmentChanged.isEmpty() || !runtimeEnvironmentRemoved.isEmpty())) {
+        if (activeEnvironment != null && (!runtimeEnvironmentChanges.isEmpty() || !runtimeEnvironmentRemoved.isEmpty())) {
             activeEnvironment.ensureDefaults();
             if (runtimeVariableSink != null) {
-                runtimeVariableSink.apply(col, runtimeEnvironmentChanged, runtimeEnvironmentRemoved);
+                runtimeVariableSink.apply(col, runtimeEnvironmentChanges, runtimeEnvironmentRemoved);
             } else {
                 for (String key : runtimeEnvironmentRemoved) {
                     activeEnvironment.runtimeVariables.remove(key);
                 }
-                for (Map.Entry<String, String> entry : runtimeEnvironmentChanged.entrySet()) {
+                for (Map.Entry<String, String> entry : runtimeEnvironmentChanges.entrySet()) {
                     activeEnvironment.runtimeVariables.put(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");
                 }
             }
         }
 
-        if (collectionChanged || environmentChanged || !warnedGlobalKeys.isEmpty() || !warnedEnvironmentKeys.isEmpty() || !warnedFolderKeys.isEmpty()) {
+        if (activeEnvironment != null
+                && runtimeVariableSink != null
+                && (persistedEnvironmentChanged || runtimeEnvironmentChanged)) {
+            runtimeVariableSink.environmentMutationCommitted(activeEnvironment, persistedEnvironmentChanged, runtimeEnvironmentChanged);
+        }
+
+        if (collectionChanged || persistedEnvironmentChanged || runtimeEnvironmentChanged
+                || !warnedGlobalKeys.isEmpty() || !warnedEnvironmentKeys.isEmpty() || !warnedFolderKeys.isEmpty()) {
             recordDiagnostic(DiagnosticOperation.VARIABLE_RESOLUTION, DiagnosticSeverity.INFO, effectiveSource,
                     col, req, activeEnvironment, "Script variable mutations committed",
                     "collectionChanged=" + collectionChanged
-                            + " environmentChanged=" + environmentChanged
+                            + " persistedEnvironmentChanged=" + persistedEnvironmentChanged
+                            + " runtimeEnvironmentChanged=" + runtimeEnvironmentChanged
                             + " globalWarnings=" + warnedGlobalKeys.size());
         }
     }
