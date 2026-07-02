@@ -4255,7 +4255,7 @@ public class ImporterPanel {
         if (selected == null || activeEnvironmentId == null || !Objects.equals(activeEnvironmentId, selected.id)) {
             return;
         }
-        commitEnvironmentEditorToSelectedProfile();
+        commitEnvironmentEditorToSelectedProfile(false);
     }
 
     private Map<String, String> activeEnvironmentOverlayForRuntimeUse() {
@@ -5880,6 +5880,10 @@ public class ImporterPanel {
     }
 
     private void commitEnvironmentEditorToSelectedProfile() {
+        commitEnvironmentEditorToSelectedProfile(true);
+    }
+
+    private void commitEnvironmentEditorToSelectedProfile(boolean immediateSave) {
         EnvironmentProfile selected = getSelectedEnvironmentProfile();
         if (selected == null) {
             return;
@@ -5899,7 +5903,11 @@ public class ImporterPanel {
         renderSelectedEnvironmentIntoEditor(true);
         updateEnvironmentUiState();
         syncActiveEnvironmentToEditors();
-        notifyWorkspaceChangedImmediately();
+        if (immediateSave) {
+            notifyWorkspaceChangedImmediately();
+        } else {
+            notifyWorkspaceChanged();
+        }
         appendImportLog("Saved environment \"" + selected.displayName() + "\".");
     }
 
