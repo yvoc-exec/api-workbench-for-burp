@@ -4,14 +4,18 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
+import burp.scripts.ScriptExecutionResult;
+import burp.scripts.ScriptVariableMutation;
 import burp.testsupport.RunnerScriptTestFixtures;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -27,6 +31,66 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class SharedRequestPipelineExecutionTest {
+
+    @Test
+    void liveScriptRuntimeUnsetRevealsAuthoredCollectionValue() throws Exception {
+        AtomicInteger sendCount = new AtomicInteger();
+        CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> capturedRequests = new CopyOnWriteArrayList<>();
+        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(
+                sendCount,
+                capturedRequests,
+                () -> RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain")
+        );
+
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.DISABLED), null);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest.Variable authored = new ApiRequest.Variable();
+        authored.key = "token";
+        authored.value = "persisted";
+        collection.variables.add(authored);
+        collection.runtimeVars.put("token", "temporary");
+        ApiRequest request = new ApiRequest();
+        request.name = "Unset";
+        request.method = "GET";
+        request.url = "https://api.example.test/{{token}}";
+
+        ScriptExecutionResult scriptResult = new ScriptExecutionResult();
+        scriptResult.success = true;
+        scriptResult.engineName = "GraalJS";
+        ScriptVariableMutation mutation = new ScriptVariableMutation();
+        mutation.key = "token";
+        mutation.newValue = null;
+        mutation.scope = "collection";
+        mutation.persistent = false;
+        scriptResult.variableMutations.add(mutation);
+
+        Method method = SharedRequestPipeline.class.getDeclaredMethod(
+                "commitScriptVariableMutations",
+                ScriptExecutionResult.class,
+                Map.class,
+                SharedRequestPipeline.RuntimeVariableSink.class,
+                ApiCollection.class,
+                ApiRequest.class,
+                EnvironmentProfile.class,
+                burp.scripts.ExecutionSource.class
+        );
+        method.setAccessible(true);
+        method.invoke(pipeline, scriptResult, null, null, collection, request, new EnvironmentProfile(), burp.scripts.ExecutionSource.WORKBENCH_SEND);
+
+        ExecutionResult result = pipeline.execute(request, collection, false);
+
+        assertThat(sendCount).hasValue(1);
+        assertThat(result.success).isTrue();
+        assertThat(result.rawRequestText).contains("GET /persisted HTTP/1.1");
+        assertThat(result.resolvedVariables).containsEntry("token", "persisted");
+        assertThat(collection.runtimeVars).doesNotContainKey("token");
+        assertThat(collection.runtimeVars).doesNotContainValue(null);
+        assertThat(collection.variables)
+                .extracting(variable -> variable.key + "=" + variable.value)
+                .contains("token=persisted");
+    }
 
     @Test
     void executeCapturesBuiltRequestResponseAndPostResponseArtifacts() {

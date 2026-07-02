@@ -100,6 +100,17 @@ public class ImporterPanel {
     private final CollectionRunner runner;
     private final OAuth2Manager oauth2Manager;
     private final burp.utils.RequestBuilder requestBuilder;
+    private final SharedRequestPipeline.RuntimeVariableSink scriptVariableMutationSink = new SharedRequestPipeline.RuntimeVariableSink() {
+        @Override
+        public void apply(ApiCollection collection, Map<String, String> changedVars, Set<String> removedKeys) {
+            applyRuntimeVariableDeltaToActiveEnvironment(collection, changedVars, removedKeys);
+        }
+
+        @Override
+        public void environmentMutationCommitted(EnvironmentProfile environment, boolean persistedChanged, boolean runtimeChanged) {
+            handleScriptEnvironmentMutationCommitted(environment, persistedChanged, runtimeChanged);
+        }
+    };
     private final RequestTreeMutationService requestTreeMutationService = new RequestTreeMutationService();
     private final CollectionExportService collectionExportService = new CollectionExportService();
     private final EnvironmentExportService environmentExportService = new EnvironmentExportService();
@@ -321,7 +332,7 @@ public class ImporterPanel {
             this.runner.setRuntimeOverlayProvider(collection -> hasActiveEnvironment() ? activeEnvironmentOverlay() : null);
             this.runner.setActiveEnvironmentProvider(collection -> getActiveEnvironment());
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
-            this.runner.setRuntimeVariableSink(ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment);
+            this.runner.setRuntimeVariableSink(scriptVariableMutationSink);
         }
         this.mainPanel = createUI();
         this.oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> markOAuth2ConfigDirty());
@@ -740,7 +751,7 @@ public class ImporterPanel {
                             follow,
                             runtimeOverlayForSend,
                             ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            scriptVariableMutationSink,
                             activeEnvironment,
                             null,
                             sharedRedirectPolicy);
@@ -1074,7 +1085,7 @@ public class ImporterPanel {
                             follow,
                             runtimeOverlayForReplay,
                             ImporterPanel.this::storeOAuth2TokenInActiveEnvironment,
-                            ImporterPanel.this::applyRuntimeVariableDeltaToActiveEnvironment,
+                            scriptVariableMutationSink,
                             activeEnvironment,
                             burp.scripts.ExecutionSource.HISTORY_REPLAY,
                             sharedRedirectPolicy);
@@ -4354,7 +4365,8 @@ public class ImporterPanel {
         synchronized (active) {
             if (removedKeys != null) {
                 for (String key : removedKeys) {
-                    if (key != null && active.runtimeVariables.remove(key) != null) {
+                    if (key != null && active.runtimeVariables.containsKey(key)) {
+                        active.runtimeVariables.remove(key);
                         changed = true;
                     }
                 }
@@ -4387,8 +4399,49 @@ public class ImporterPanel {
                 renderSelectedEnvironmentIntoEditor();
                 syncActiveEnvironmentToEditors();
                 updateEnvironmentUiState();
-                notifyWorkspaceChangedImmediately();
             });
+        }
+    }
+
+    private void handleScriptEnvironmentMutationCommitted(EnvironmentProfile environment,
+                                                          boolean persistedChanged,
+                                                          boolean runtimeChanged) {
+        if (environment == null || shuttingDown) {
+            return;
+        }
+        Runnable refresh = () -> {
+            EnvironmentProfile matched = findEnvironmentById(environment.id);
+            if (matched == null) {
+                for (EnvironmentProfile profile : environmentProfiles) {
+                    if (profile == environment) {
+                        matched = profile;
+                        break;
+                    }
+                }
+            }
+            if (matched == null) {
+                return;
+            }
+            EnvironmentProfile active = getActiveEnvironment();
+            boolean isActive = active != null && (Objects.equals(active.id, matched.id) || active == matched);
+            if (!environmentDirty || !Objects.equals(renderedEnvironmentEditorProfileId, matched.id)) {
+                renderSelectedEnvironmentIntoEditor(false);
+            } else {
+                updateEnvironmentUiState();
+            }
+            if (isActive) {
+                syncActiveEnvironmentToEditors();
+            }
+            syncOAuth2UiState(true);
+            updateEnvironmentUiState();
+            if (persistedChanged && importer != null) {
+                importer.requestWorkspaceStateSaveNowFromModel();
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            refresh.run();
+        } else {
+            SwingUtilities.invokeLater(refresh);
         }
     }
 
@@ -10788,7 +10841,7 @@ public class ImporterPanel {
         importer.importRequestsSequential(queue, destinations, delay,
             runtimeOverlay,
             this::storeOAuth2TokenInActiveEnvironment,
-            this::applyRuntimeVariableDeltaToActiveEnvironment,
+            scriptVariableMutationSink,
             activeEnvironment,
             this::appendImportLog,
             result -> SwingUtilities.invokeLater(() -> {
