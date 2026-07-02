@@ -3,6 +3,8 @@ package burp.runner;
 import burp.models.*;
 import burp.parser.VariableResolver;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPolicy;
+import burp.utils.ExecutionPreflightStatus;
 import burp.utils.HttpUtils;
 import burp.utils.ScriptEngine;
 import burp.utils.RequestBuilder;
@@ -70,6 +72,7 @@ public class CollectionRunner {
     private Function<ApiCollection, EnvironmentProfile> activeEnvironmentProvider = null;
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
     private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
+    private volatile ExecutionPolicy executionPolicy = ExecutionPolicy.runnerDefaults(false);
 
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
@@ -127,6 +130,28 @@ public class CollectionRunner {
     }
     public void setRuntimeVariableSink(SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink) {
         this.runtimeVariableSink = runtimeVariableSink;
+    }
+
+    public void setExecutionPolicy(ExecutionPolicy policy) {
+        ExecutionPolicy copy = policy != null ? policy.copy() : ExecutionPolicy.runnerDefaults(false);
+        copy.normalize();
+        this.executionPolicy = copy;
+    }
+
+    public ExecutionPolicy getExecutionPolicy() {
+        ExecutionPolicy copy = executionPolicy != null ? executionPolicy.copy() : ExecutionPolicy.runnerDefaults(false);
+        copy.normalize();
+        return copy;
+    }
+
+    private ExecutionPolicy effectiveExecutionPolicy() {
+        ExecutionPolicy copy = getExecutionPolicy();
+        RunnerStopConditions conditions = ensureStopConditions();
+        if (conditions != null && conditions.stopOnMissingVariable) {
+            copy.unresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.ABORT;
+        }
+        copy.normalize();
+        return copy;
     }
 
     public RunnerTerminationResult getLastTerminationResult() {
@@ -274,24 +299,6 @@ public class CollectionRunner {
                     ApiCollection col = reqToColMap.get(req);
                     if (col == null) {
                         col = colMap.getOrDefault(req.sourceCollection, null);
-                    }
-
-                    List<String> unresolvedVariables = activeStopConditions.stopOnMissingVariable
-                        ? collectUnresolvedVariables(buildPreviewResolver(req, col), req)
-                        : Collections.emptyList();
-                    if (activeStopConditions.stopOnMissingVariable && !unresolvedVariables.isEmpty()) {
-                        RunnerResult trigger = new RunnerResult();
-                        trigger.requestName = req.name;
-                        trigger.requestId = req.id;
-                        trigger.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
-                        termination.stop(RunnerTerminationType.STOPPED_ON_MISSING_VARIABLE,
-                                "Stopped on missing variable(s): " + String.join(", ", unresolvedVariables),
-                                trigger,
-                                null,
-                                "stopOnMissingVariable",
-                                null,
-                                null);
-                        break;
                     }
 
                     RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
@@ -564,8 +571,14 @@ public class CollectionRunner {
             try {
                 Map<String, String> overlay = mergeRuntimeOverlays(runtimeOverlayFor(col), runtimeOverlayOverride);
                 EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
+                ExecutionPolicy currentPolicy = effectiveExecutionPolicy();
+                boolean subclassPipeline = pipeline.getClass() != SharedRequestPipeline.class;
+                boolean previewHasUnresolvedVariables = false;
+                if (subclassPipeline && currentPolicy.unresolvedVariableMode == ExecutionPolicy.UnresolvedVariableMode.ABORT) {
+                    previewHasUnresolvedVariables = !collectUnresolvedVariables(buildPreviewResolver(req, col), req).isEmpty();
+                }
                 ExecutionResult exec;
-                if (pipeline.getClass() != SharedRequestPipeline.class) {
+                if (subclassPipeline && !(currentPolicy.unresolvedVariableMode == ExecutionPolicy.UnresolvedVariableMode.ABORT && previewHasUnresolvedVariables)) {
                     // Preserve compatibility with legacy test subclasses that override the older
                     // execute overloads but not the explicit ExecutionSource variant.
                     if (activeEnvironment == null && overlay == null && oauth2TokenSink == null && runtimeVariableSink == null) {
@@ -588,14 +601,8 @@ public class CollectionRunner {
                             runtimeVariableSink.apply(col, exec.extractedVars, removedKeys);
                         }
                     }
-                } else if (activeEnvironment == null && overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
-                } else if (activeEnvironment == null) {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, null, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
-                } else if (overlay == null && oauth2TokenSink == null) {
-                    exec = pipeline.execute(req, col, followRedirects, null, null, null, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy, currentPolicy, null);
                 }
                 if (exec == null) {
                     result.success = false;
@@ -604,6 +611,20 @@ public class CollectionRunner {
                     result.totalAttempts = maxAttempts;
                     fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
                     break;
+                }
+                if (exec.isBlockedBeforeSend()) {
+                    copyScriptOutput(result, exec);
+                    copyExecutionResultMetadata(result, exec);
+                    result.success = false;
+                    result.requestSent = false;
+                    result.statusCode = 0;
+                    result.responseSize = 0;
+                    result.responseTimeMs = exec.elapsedMs;
+                    result.errorMessage = exec.preflightMessage;
+                    result.attemptNumber = attempts;
+                    result.totalAttempts = maxAttempts;
+                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
                 if (debugRawRequest && exec != null) {
                     String rawRequestText = exec.rawRequestText != null
@@ -617,6 +638,7 @@ public class CollectionRunner {
                 }
 
                 copyScriptOutput(result, exec);
+                copyExecutionResultMetadata(result, exec);
                 if ((cancelled || Thread.currentThread().isInterrupted()) && exec.response == null) {
                     return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
                 }
@@ -934,6 +956,32 @@ public class CollectionRunner {
         result.parentRequestId = exec.parentRequestId;
         result.dependentDepth = exec.dependentDepth;
         result.triggeredByScript = exec.triggeredByScript;
+    }
+
+    static void copyExecutionResultMetadata(RunnerResult result, ExecutionResult exec) {
+        if (result == null || exec == null) {
+            return;
+        }
+        result.requestSent = exec.requestSent;
+        result.preflightStatus = exec.preflightStatus != null ? exec.preflightStatus : ExecutionPreflightStatus.READY;
+        result.preflightMessage = exec.preflightMessage;
+        result.responseTimedOut = exec.responseTimedOut;
+        result.timeoutMillis = exec.timeoutMillis;
+        result.originalResolvedUrl = exec.originalResolvedUrl;
+        result.effectiveResolvedUrl = exec.effectiveResolvedUrl;
+        result.targetChanged = exec.targetChangeAllowed || (exec.preflight != null && exec.preflight.targetChanged);
+        result.oauth2Required = exec.oauth2Required;
+        result.oauth2Ready = exec.oauth2Ready;
+        result.oauth2UsedStaleToken = exec.oauth2UsedStaleToken;
+        result.oauth2SentWithoutToken = exec.oauth2SentWithoutToken;
+        if (exec.preflight != null) {
+            result.unresolvedVariables = new ArrayList<>(exec.preflight.unresolvedVariables);
+            result.policyOverridesApplied = new ArrayList<>(exec.preflight.policyOverridesApplied);
+            result.targetChanged = exec.preflight.targetChanged;
+        } else {
+            result.unresolvedVariables = new ArrayList<>();
+            result.policyOverridesApplied = new ArrayList<>(exec.policyOverridesApplied);
+        }
     }
 
     private int applyFlowControl(List<ApiRequest> ordered,
@@ -1583,9 +1631,23 @@ public class CollectionRunner {
             snapshot.requestUrl = source.requestUrl;
             snapshot.initialResolvedUrl = source.initialResolvedUrl;
             snapshot.finalResolvedUrl = source.finalResolvedUrl;
+            snapshot.originalResolvedUrl = source.originalResolvedUrl;
+            snapshot.effectiveResolvedUrl = source.effectiveResolvedUrl;
             snapshot.redirectsEnabled = source.redirectsEnabled;
             snapshot.redirectTerminationReason = source.redirectTerminationReason;
             snapshot.redirectHops = copyRedirectHops(source.redirectHops);
+            snapshot.requestSent = source.requestSent;
+            snapshot.preflightStatus = source.preflightStatus;
+            snapshot.preflightMessage = source.preflightMessage;
+            snapshot.responseTimedOut = source.responseTimedOut;
+            snapshot.timeoutMillis = source.timeoutMillis;
+            snapshot.targetChanged = source.targetChanged;
+            snapshot.oauth2Required = source.oauth2Required;
+            snapshot.oauth2Ready = source.oauth2Ready;
+            snapshot.oauth2UsedStaleToken = source.oauth2UsedStaleToken;
+            snapshot.oauth2SentWithoutToken = source.oauth2SentWithoutToken;
+            snapshot.unresolvedVariables = source.unresolvedVariables != null ? new ArrayList<>(source.unresolvedVariables) : new ArrayList<>();
+            snapshot.policyOverridesApplied = source.policyOverridesApplied != null ? new ArrayList<>(source.policyOverridesApplied) : new ArrayList<>();
             snapshot.requestHeaders = source.requestHeaders;
             snapshot.requestBody = source.requestBody;
             snapshot.success = source.success;
@@ -1631,9 +1693,27 @@ public class CollectionRunner {
             }
             snapshot.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : snapshot.initialResolvedUrl;
             snapshot.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : snapshot.finalResolvedUrl;
+            snapshot.originalResolvedUrl = exec.originalResolvedUrl != null ? exec.originalResolvedUrl : snapshot.originalResolvedUrl;
+            snapshot.effectiveResolvedUrl = exec.effectiveResolvedUrl != null ? exec.effectiveResolvedUrl : snapshot.effectiveResolvedUrl;
             snapshot.redirectsEnabled = exec.redirectsEnabled;
             snapshot.redirectTerminationReason = exec.redirectTerminationReason;
             snapshot.redirectHops = copyRedirectHops(exec.redirectHops);
+            snapshot.requestSent = exec.requestSent;
+            snapshot.preflightStatus = exec.preflightStatus != null ? exec.preflightStatus : snapshot.preflightStatus;
+            snapshot.preflightMessage = exec.preflightMessage != null ? exec.preflightMessage : snapshot.preflightMessage;
+            snapshot.responseTimedOut = exec.responseTimedOut;
+            snapshot.timeoutMillis = exec.timeoutMillis > 0 ? exec.timeoutMillis : snapshot.timeoutMillis;
+            snapshot.targetChanged = exec.targetChangeAllowed || (exec.preflight != null && exec.preflight.targetChanged) || snapshot.targetChanged;
+            snapshot.oauth2Required = exec.oauth2Required;
+            snapshot.oauth2Ready = exec.oauth2Ready;
+            snapshot.oauth2UsedStaleToken = exec.oauth2UsedStaleToken;
+            snapshot.oauth2SentWithoutToken = exec.oauth2SentWithoutToken;
+            if (exec.preflight != null) {
+                snapshot.unresolvedVariables = new ArrayList<>(exec.preflight.unresolvedVariables);
+                snapshot.policyOverridesApplied = new ArrayList<>(exec.preflight.policyOverridesApplied);
+            } else if (exec.policyOverridesApplied != null && !exec.policyOverridesApplied.isEmpty()) {
+                snapshot.policyOverridesApplied = new ArrayList<>(exec.policyOverridesApplied);
+            }
             if (exec.assertions != null && !exec.assertions.isEmpty()) {
                 snapshot.assertions = new ArrayList<>(exec.assertions);
             }

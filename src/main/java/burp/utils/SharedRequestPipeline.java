@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.RequestOptions;
 import burp.api.montoya.http.RedirectionMode;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
@@ -69,12 +70,16 @@ public class SharedRequestPipeline implements AutoCloseable {
     private final ScriptEngine scriptEngine;
     private final UnifiedScriptRuntime unifiedScriptRuntime;
     private final OAuth2Manager oauth2Manager;
-    private final RequestOptions noRedirectRequestOptions = new NoRedirectRequestOptions();
+    private final RequestOptionsFactory requestOptionsFactory;
     private volatile boolean closed;
+
+    interface RequestOptionsFactory {
+        RequestOptions create(int timeoutMillis);
+    }
 
     public SharedRequestPipeline(MontoyaApi api, RequestBuilder requestBuilder,
                                  ScriptEngine scriptEngine, OAuth2Manager oauth2Manager) {
-        this(api, requestBuilder, scriptEngine, oauth2Manager, null);
+        this(api, requestBuilder, scriptEngine, oauth2Manager, null, SharedRequestPipeline::defaultRequestOptions);
     }
 
     SharedRequestPipeline(MontoyaApi api,
@@ -82,10 +87,20 @@ public class SharedRequestPipeline implements AutoCloseable {
                           ScriptEngine scriptEngine,
                           OAuth2Manager oauth2Manager,
                           UnifiedScriptRuntime unifiedScriptRuntime) {
+        this(api, requestBuilder, scriptEngine, oauth2Manager, unifiedScriptRuntime, SharedRequestPipeline::defaultRequestOptions);
+    }
+
+    SharedRequestPipeline(MontoyaApi api,
+                          RequestBuilder requestBuilder,
+                          ScriptEngine scriptEngine,
+                          OAuth2Manager oauth2Manager,
+                          UnifiedScriptRuntime unifiedScriptRuntime,
+                          RequestOptionsFactory requestOptionsFactory) {
         this.api = api;
         this.requestBuilder = requestBuilder;
         this.scriptEngine = scriptEngine;
         this.oauth2Manager = oauth2Manager;
+        this.requestOptionsFactory = requestOptionsFactory != null ? requestOptionsFactory : SharedRequestPipeline::defaultRequestOptions;
         this.unifiedScriptRuntime = unifiedScriptRuntime != null
                 ? unifiedScriptRuntime
                 : new UnifiedScriptRuntime(
@@ -94,8 +109,18 @@ public class SharedRequestPipeline implements AutoCloseable {
                 );
     }
 
+    public static SharedRequestPipeline withRequestOptionsFactory(MontoyaApi api,
+                                                                   RequestBuilder requestBuilder,
+                                                                   ScriptEngine scriptEngine,
+                                                                   OAuth2Manager oauth2Manager,
+                                                                   UnifiedScriptRuntime unifiedScriptRuntime,
+                                                                   java.util.function.IntFunction<RequestOptions> requestOptionsFactory) {
+        return new SharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager, unifiedScriptRuntime,
+                requestOptionsFactory != null ? requestOptionsFactory::apply : null);
+    }
+
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
+        return execute(req, col, followRedirects, null, null, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col) {
@@ -105,14 +130,14 @@ public class SharedRequestPipeline implements AutoCloseable {
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, null, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
                                    Map<String, String> runtimeOverlay,
                                    OAuth2TokenSink oauth2TokenSink,
                                    RuntimeVariableSink runtimeVariableSink) {
-        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, null, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -121,7 +146,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                    RuntimeVariableSink runtimeVariableSink,
                                    EnvironmentProfile activeEnvironment) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults());
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.WORKBENCH_SEND, null, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -131,7 +156,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                    EnvironmentProfile activeEnvironment,
                                    ExecutionSource executionSource) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults());
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -142,7 +167,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                    ExecutionSource executionSource,
                                    burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults());
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults(), ExecutionPolicy.workbenchDefaults(), null);
     }
 
     public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -154,7 +179,21 @@ public class SharedRequestPipeline implements AutoCloseable {
                                    burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
                                    RedirectPolicy redirectPolicy) {
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, ExecutionPolicy.workbenchDefaults(), null);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink,
+                                   EnvironmentProfile activeEnvironment,
+                                   ExecutionSource executionSource,
+                                   burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
+                                   RedirectPolicy redirectPolicy,
+                                   ExecutionPolicy executionPolicy,
+                                   PreflightDecisionHandler preflightDecisionHandler) {
+        ExecutionResult result = new ExecutionResult();
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, executionPolicy, preflightDecisionHandler);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -175,7 +214,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                  OAuth2TokenSink oauth2TokenSink,
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW, null, RedirectPolicy.defaults());
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, ExecutionSource.BUILD_PREVIEW, null, RedirectPolicy.defaults(), ExecutionPolicy.previewDefaults(), null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -184,7 +223,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                  RuntimeVariableSink runtimeVariableSink,
                                  EnvironmentProfile activeEnvironment,
                                  ExecutionSource executionSource) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults());
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, null, RedirectPolicy.defaults(), ExecutionPolicy.previewDefaults(), null);
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -194,7 +233,7 @@ public class SharedRequestPipeline implements AutoCloseable {
                                  EnvironmentProfile activeEnvironment,
                                  ExecutionSource executionSource,
                                  burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor) {
-        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults());
+        return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults(), ExecutionPolicy.previewDefaults(), null);
     }
 
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
@@ -205,37 +244,47 @@ public class SharedRequestPipeline implements AutoCloseable {
                                             EnvironmentProfile activeEnvironment,
                                             ExecutionSource executionSource,
                                             burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
-                                            RedirectPolicy redirectPolicy) {
+                                            RedirectPolicy redirectPolicy,
+                                            ExecutionPolicy executionPolicy,
+                                            PreflightDecisionHandler preflightDecisionHandler) {
         ExecutionIntent intent = sendRequest ? ExecutionIntent.LIVE : ExecutionIntent.PREVIEW;
+        ExecutionPolicy effectivePolicy = executionPolicy != null ? executionPolicy.copy() : (sendRequest ? ExecutionPolicy.workbenchDefaults() : ExecutionPolicy.previewDefaults());
+        effectivePolicy.normalize();
         ExecutionSource effectiveSource = intent == ExecutionIntent.PREVIEW
                 ? ExecutionSource.BUILD_PREVIEW
                 : (executionSource != null ? executionSource : ExecutionSource.WORKBENCH_SEND);
         if (result != null) {
             result.executionSource = effectiveSource;
             result.scriptEngineName = unifiedScriptRuntime != null ? unifiedScriptRuntime.getEngineName() : "Unavailable";
-            result.success = true;
             result.redirectsEnabled = followRedirects;
+            result.requestSent = false;
+            result.responseTimedOut = false;
+            result.timeoutMillis = effectivePolicy.responseTimeoutMillis;
+            result.preflightStatus = intent == ExecutionIntent.PREVIEW ? ExecutionPreflightStatus.PREVIEW_ONLY : ExecutionPreflightStatus.READY;
+            result.success = true;
         }
         recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
                 col, req, activeEnvironment, "Request build started", null);
+
         ApiCollection executionCollection = intent == ExecutionIntent.PREVIEW ? copyCollectionForPreview(col) : col;
         EnvironmentProfile executionEnvironment = intent == ExecutionIntent.PREVIEW && activeEnvironment != null ? activeEnvironment.copy() : activeEnvironment;
         ApiRequest effectiveRequest = intent == ExecutionIntent.PREVIEW ? burp.scripts.ScriptExecutionContext.copyRequest(req) : req;
         burp.scripts.ScriptDependentRequestExecutor scriptDependentExecutor = intent == ExecutionIntent.PREVIEW ? null : dependentRequestExecutor;
-        VariableResolver baselineResolver = RuntimeResolverFactory.build(
-                executionCollection,
-                effectiveRequest,
-                executionEnvironment,
-                runtimeOverlay
-        );
-        Map<String, String> initialResolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
-        Map<String, String> finalResolvedVariables = new LinkedHashMap<>(initialResolvedVariables);
-        Map<String, String> scriptContext = new LinkedHashMap<>(initialResolvedVariables);
-
+        VariableResolver baselineResolver = RuntimeResolverFactory.build(executionCollection, effectiveRequest, executionEnvironment, runtimeOverlay);
+        String originalResolvedUrl = baselineResolver.resolve(effectiveRequest != null ? effectiveRequest.url : null);
+        if (result != null) {
+            result.originalResolvedUrl = originalResolvedUrl;
+        }
+        Map<String, String> finalResolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
+        boolean preRequestScriptFailed = false;
+        boolean preRequestScriptTimedOut = false;
+        boolean preRequestScriptCancelled = false;
+        boolean continuedAfterScriptFailure = false;
+        List<String> policyOverrides = new ArrayList<>();
+        ScriptExecutionResult scriptResult = null;
         try {
-            // 1. Pre-request scripts (use isolated copy to track mutations)
             if (shouldUseUnifiedRuntime()) {
-                ScriptExecutionResult scriptResult = unifiedScriptRuntime.executePreRequest(
+                scriptResult = unifiedScriptRuntime.executePreRequest(
                         executionCollection,
                         effectiveRequest,
                         executionEnvironment,
@@ -248,29 +297,16 @@ public class SharedRequestPipeline implements AutoCloseable {
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
                 if (scriptResult.timedOut || scriptResult.cancelled) {
-                    result.resolvedVariables = new LinkedHashMap<>(initialResolvedVariables);
-                    result.builtRequest = null;
-                    result.rawRequestBytes = null;
-                    result.rawRequestText = null;
-                    result.resolvedUrl = effectiveRequest != null ? effectiveRequest.url : null;
-                    return result;
-                }
-                finalResolvedVariables = new LinkedHashMap<>(scriptResult.effectiveVariables);
-                result.resolvedVariables = new LinkedHashMap<>(finalResolvedVariables);
-                if (intent == ExecutionIntent.LIVE) {
-                    commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
-                }
-                if (sendRequest && scriptResult.flowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST) {
-                    recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
-                            col, req, activeEnvironment, "Request skipped by script", "Flow control: SKIP_REQUEST");
-                    result.response = null;
-                    result.builtRequest = null;
-                    result.rawRequestBytes = null;
-                    result.rawRequestText = null;
-                    result.resolvedUrl = effectiveRequest != null ? effectiveRequest.url : null;
-                    return result;
+                    preRequestScriptTimedOut = scriptResult.timedOut;
+                    preRequestScriptCancelled = scriptResult.cancelled;
+                } else {
+                    finalResolvedVariables = new LinkedHashMap<>(scriptResult.effectiveVariables);
+                    if (!scriptResult.errors.isEmpty() || !scriptResult.success) {
+                        preRequestScriptFailed = true;
+                    }
                 }
             } else if (scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {
+                Map<String, String> scriptContext = new LinkedHashMap<>(finalResolvedVariables);
                 VariableResolver legacyResolver = RuntimeResolverFactory.build(
                         executionCollection,
                         effectiveRequest,
@@ -279,186 +315,639 @@ public class SharedRequestPipeline implements AutoCloseable {
                         RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
                 );
                 scriptEngine.executePreRequest(effectiveRequest, legacyResolver, scriptContext);
+                finalResolvedVariables = new LinkedHashMap<>(legacyResolver.getVariables());
             }
+        } catch (Exception e) {
+            if (result != null) {
+                result.success = false;
+                result.errorMessage = extractCleanError(e);
+            }
+            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.ERROR, effectiveSource,
+                    col, req, activeEnvironment, "Request execution failed", extractCleanError(e));
+            return result;
+        }
 
-            VariableResolver resolver = new VariableResolver();
-            resolver.addAll(finalResolvedVariables);
-
-            // 2. OAuth2 token refresh if needed
-            if (intent == ExecutionIntent.LIVE && oauth2Manager != null && effectiveRequest != null && effectiveRequest.hasAuth() && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type)) {
-                try {
-                    OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
-                    if (config.isValid()) {
-                        TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
-                        if (entry != null && entry.accessToken != null) {
-                            recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.INFO, effectiveSource,
-                                    col, req, activeEnvironment, "OAuth2 token acquired", "Token resolved and injected");
-                            Map<String, String> storedVars;
-                            if (oauth2TokenSink != null) {
-                                storedVars = oauth2TokenSink.store(col, entry);
-                            } else {
-                                storedVars = new LinkedHashMap<>();
-                                if (col != null) {
-                                    col.putRuntimeOAuth2("oauth2_access_token", entry.accessToken);
-                                    storedVars.put("oauth2_access_token", entry.accessToken);
-                                    if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                                        col.putRuntimeOAuth2("oauth2_refresh_token", entry.refreshToken);
-                                        storedVars.put("oauth2_refresh_token", entry.refreshToken);
-                                    }
-                                } else {
-                                    storedVars.put("oauth2_access_token", entry.accessToken);
-                                    if (entry.refreshToken != null && !entry.refreshToken.isEmpty()) {
-                                        storedVars.put("oauth2_refresh_token", entry.refreshToken);
-                                    }
-                                }
-                            }
-                            if (storedVars != null && !storedVars.isEmpty()) {
-                                resolver.addAll(storedVars);
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    if (api != null) api.logging().logToOutput("OAuth2 refresh failed: " + e.getMessage());
-                    recordDiagnostic(DiagnosticOperation.OAUTH2_TOKEN_FETCH, DiagnosticSeverity.ERROR, effectiveSource,
-                            col, req, activeEnvironment, "OAuth2 refresh failed", e.getMessage());
+        if (scriptResult != null) {
+            if (scriptResult.timedOut) {
+                if (result != null) {
+                    result.preflightStatus = ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT;
+                    result.preflightMessage = "Request not sent — pre-request script timed out.";
+                    result.errorMessage = result.preflightMessage;
+                    result.preflight = ExecutionPreflightResult.blocked(
+                            ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT,
+                            result.preflightMessage,
+                            List.of(),
+                            originalResolvedUrl,
+                            originalResolvedUrl,
+                            originDisplay(originalResolvedUrl),
+                            originDisplay(originalResolvedUrl),
+                            false,
+                            false,
+                            false,
+                            true,
+                            true,
+                            false,
+                            false,
+                            List.of(ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT),
+                            List.of()
+                    );
+                    result.success = false;
+                    result.requestSent = false;
+                    result.resolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
                 }
-            }
-
-            // 3. Build request
-            byte[] rawRequest = requestBuilder.buildRequest(effectiveRequest, resolver);
-            result.rawRequestBytes = rawRequest;
-            result.rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
-            result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
-            warnIfUnresolved(rawRequest, effectiveRequest != null ? effectiveRequest.name : null);
-            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
-                    col, effectiveRequest, activeEnvironment, "Raw request built", result.rawRequestText);
-
-            String resolvedUrl = resolver.resolve(effectiveRequest != null ? effectiveRequest.url : null);
-            result.resolvedUrl = resolvedUrl;
-            result.initialResolvedUrl = resolvedUrl;
-            String[] requestParts = splitRawRequest(rawRequest);
-            result.requestHeaders = requestParts[0];
-            result.requestBody = requestParts[1];
-
-            if (!sendRequest) {
-                result.response = null;
                 return result;
             }
-            HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
-            burp.api.montoya.http.message.requests.HttpRequest httpRequest;
-            boolean usedFallbackRequest = false;
+            if (scriptResult.cancelled) {
+                if (result != null) {
+                    result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                    result.preflightMessage = "Request not sent — script execution was cancelled.";
+                    result.errorMessage = result.preflightMessage;
+                    result.preflight = ExecutionPreflightResult.cancelled(result.preflightMessage, originalResolvedUrl, originalResolvedUrl);
+                    result.success = false;
+                    result.requestSent = false;
+                    result.resolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
+                }
+                return result;
+            }
+            if (!scriptResult.errors.isEmpty() || !scriptResult.success) {
+                preRequestScriptFailed = true;
+            }
+        }
+
+        if (preRequestScriptFailed) {
+            if (effectivePolicy.scriptFailureMode == ExecutionPolicy.ScriptFailureMode.ABORT) {
+                if (result != null) {
+                    result.preflightStatus = ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR;
+                    result.preflightMessage = "Request not sent — pre-request script failed.";
+                    result.errorMessage = result.preflightMessage;
+                    result.preflight = ExecutionPreflightResult.blocked(
+                            ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR,
+                            result.preflightMessage,
+                            List.of(),
+                            originalResolvedUrl,
+                            originalResolvedUrl,
+                            originDisplay(originalResolvedUrl),
+                            originDisplay(originalResolvedUrl),
+                            false,
+                            false,
+                            false,
+                            true,
+                            false,
+                            false,
+                            false,
+                            List.of(ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR),
+                            List.of()
+                    );
+                    result.success = false;
+                    result.requestSent = false;
+                    result.resolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
+                }
+                return result;
+            }
+            continuedAfterScriptFailure = true;
+            if (result != null) {
+                result.continuedAfterScriptFailure = true;
+            }
+        }
+
+        VariableResolver resolver = new VariableResolver();
+        resolver.addAll(finalResolvedVariables);
+        boolean oauth2Required = effectiveRequest != null && effectiveRequest.hasAuth() && effectiveRequest.auth != null && "oauth2".equalsIgnoreCase(effectiveRequest.auth.type);
+        boolean oauth2Ready = !oauth2Required;
+        boolean oauth2UsedStaleToken = false;
+        boolean oauth2SentWithoutToken = false;
+        TokenStore.TokenEntry pendingOAuth2Entry = null;
+        Map<String, String> pendingOAuth2Variables = new LinkedHashMap<>();
+        ApiRequest requestForBuild = effectiveRequest;
+        if (intent != ExecutionIntent.PREVIEW && oauth2Required) {
             try {
-                HttpService service = HttpService.httpService(parsed.host, parsed.port, parsed.useHttps);
-                httpRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
-                        service, burp.api.montoya.core.ByteArray.byteArray(rawRequest));
-            } catch (Throwable factoryError) {
-                usedFallbackRequest = true;
-                String fallbackRaw = result.rawRequestText != null
-                        ? result.rawRequestText
-                        : new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
-                httpRequest = HistoryNativeHttpMessageFactory.request(fallbackRaw);
-            }
-            result.builtRequest = httpRequest;
-
-            // 4. Send HTTP with manual redirect handling
-            long startTime = System.currentTimeMillis();
-            RedirectExecutor redirectExecutor = new RedirectExecutor();
-            RedirectExecutor.RedirectRequest redirectRequest = new RedirectExecutor.RedirectRequest();
-            redirectRequest.initialRequest = httpRequest;
-            redirectRequest.initialUrl = resolvedUrl;
-            redirectRequest.initialRawRequestBytes = rawRequest.clone();
-            redirectRequest.followRedirects = followRedirects;
-            redirectRequest.redirectPolicy = redirectPolicy != null ? redirectPolicy : RedirectPolicy.defaults();
-            redirectRequest.hopSender = request -> api != null
-                    ? api.http().sendRequest(request, noRedirectRequestOptions)
-                    : null;
-            RedirectExecutor.RedirectResult redirectResult = redirectExecutor.execute(redirectRequest);
-            long endTime = System.currentTimeMillis();
-            result.elapsedMs = Math.max(0L, endTime - startTime);
-            result.response = redirectResult.finalResponse;
-            result.finalRequest = redirectResult.finalRequest;
-            result.finalResolvedUrl = redirectResult.finalUrl;
-            result.redirectTerminationReason = redirectResult.terminationReason;
-            result.redirectHops.clear();
-            if (redirectResult.redirectHops != null) {
-                for (RedirectHop hop : redirectResult.redirectHops) {
-                    result.redirectHops.add(RedirectHop.copyOf(hop));
+                OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
+                if (config == null || !config.isValid() || oauth2Manager == null) {
+                    throw new IllegalStateException("OAuth2 configuration unavailable");
+                }
+                TokenStore.TokenEntry entry = oauth2Manager.getValidToken(config);
+                if (entry == null || entry.accessToken == null || entry.accessToken.isBlank()) {
+                    throw new IllegalStateException("OAuth2 token acquisition failed");
+                }
+                pendingOAuth2Entry = entry;
+                oauth2Ready = true;
+                pendingOAuth2Variables.put("oauth2_access_token", entry.accessToken);
+                if (entry.refreshToken != null && !entry.refreshToken.isBlank()) {
+                    pendingOAuth2Variables.put("oauth2_refresh_token", entry.refreshToken);
+                }
+            } catch (Exception oauth2Error) {
+                oauth2Ready = false;
+                switch (effectivePolicy.oauth2FailureMode != null ? effectivePolicy.oauth2FailureMode : ExecutionPolicy.OAuth2FailureMode.ABORT) {
+                    case USE_STALE_TOKEN -> {
+                        String staleToken = findStaleOAuth2Token(effectiveRequest, executionCollection, activeEnvironment, resolver);
+                        if (staleToken == null || staleToken.isBlank()) {
+                            if (result != null) {
+                                result.preflightStatus = ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE;
+                                result.preflightMessage = "Request not sent — OAuth2 token acquisition failed.";
+                                result.errorMessage = result.preflightMessage;
+                                result.preflight = ExecutionPreflightResult.blocked(
+                                        ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE,
+                                        result.preflightMessage,
+                                        List.of(),
+                                        originalResolvedUrl,
+                                        originalResolvedUrl,
+                                        originDisplay(originalResolvedUrl),
+                                        originDisplay(originalResolvedUrl),
+                                        false,
+                                        true,
+                                        false,
+                                        preRequestScriptFailed,
+                                        preRequestScriptTimedOut,
+                                        false,
+                                        false,
+                                        List.of(ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE),
+                                        List.of()
+                                );
+                                result.success = false;
+                                return result;
+                            }
+                        } else {
+                            resolver.mutableVariables().put("oauth2_access_token", staleToken);
+                            oauth2UsedStaleToken = true;
+                            oauth2Ready = true;
+                            policyOverrides.add("OAuth2 stale-token override");
+                        }
+                    }
+                    case SEND_WITHOUT_TOKEN -> {
+                        requestForBuild = burp.scripts.ScriptExecutionContext.copyRequest(effectiveRequest);
+                        if (requestForBuild != null) {
+                            requestForBuild.auth = null;
+                        }
+                        oauth2SentWithoutToken = true;
+                        oauth2Ready = false;
+                        policyOverrides.add("OAuth2 send-without-token override");
+                    }
+                    default -> {
+                        if (result != null) {
+                            result.preflightStatus = ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE;
+                            result.preflightMessage = "Request not sent — OAuth2 token acquisition failed.";
+                            result.errorMessage = result.preflightMessage;
+                            result.preflight = ExecutionPreflightResult.blocked(
+                                    ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE,
+                                    result.preflightMessage,
+                                    List.of(),
+                                    originalResolvedUrl,
+                                    originalResolvedUrl,
+                                    originDisplay(originalResolvedUrl),
+                                    originDisplay(originalResolvedUrl),
+                                    false,
+                                    true,
+                                    false,
+                                    preRequestScriptFailed,
+                                    preRequestScriptTimedOut,
+                                    false,
+                                    false,
+                                    List.of(ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE),
+                                    List.of()
+                            );
+                            result.success = false;
+                            result.oauth2Required = true;
+                            result.oauth2Ready = false;
+                            result.requestSent = false;
+                        }
+                        return result;
+                    }
                 }
             }
-            result.success = redirectResult.success;
-            result.errorMessage = redirectResult.errorMessage;
-            result.resolvedUrl = resolvedUrl;
-            recordRedirectDiagnostics(effectiveSource, col, effectiveRequest, activeEnvironment, result.redirectHops, result.redirectTerminationReason);
-            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.INFO, effectiveSource,
-                    col, effectiveRequest, activeEnvironment, "HTTP response received",
-                    result.response != null && result.response.response() != null ? "status=" + result.response.response().statusCode() : "no response");
+        }
+        if (!pendingOAuth2Variables.isEmpty()) {
+            resolver.addAll(pendingOAuth2Variables);
+        }
 
-            if (result.response != null && result.response.response() != null && result.success) {
-                // 5. Post-response scripts
-                if ((shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
-                    Map<String, String> postExecutionOverlay = new LinkedHashMap<>(result.resolvedVariables);
-                    String body = result.response.response().bodyToString();
-                    int statusCode = result.response.response().statusCode();
-                    Map<String, List<String>> headersMap = new HashMap<>();
-                    for (var header : result.response.response().headers()) {
-                        headersMap.computeIfAbsent(header.name().toLowerCase(), k -> new ArrayList<>()).add(header.value());
-                    }
-                    // Create a temporary RunnerResult-like holder for script extraction
-                    burp.models.RunnerResult scriptResult = new burp.models.RunnerResult();
-                    scriptResult.responseBody = body;
-                    scriptResult.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
-                    scriptResult.statusCode = statusCode;
-
-                    if (shouldUseUnifiedRuntime()) {
-                        ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
-                                executionCollection,
-                                effectiveRequest,
-                                executionEnvironment,
-                                effectiveSource,
-                                1,
-                                body,
-                                statusCode,
-                                headersMap,
-                                result.elapsedMs,
-                                scriptResult,
-                                scriptDependentExecutor,
-                                postExecutionOverlay
-                        );
-                        mergeScriptResult(result, postResult);
-                        mergeScriptResult(scriptResult, postResult);
-                        recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
-                        if (intent == ExecutionIntent.LIVE && !postResult.timedOut && !postResult.cancelled) {
-                            commitScriptVariableMutations(postResult, result.resolvedVariables, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
-                        }
-                    } else if (scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {
-                        scriptEngine.executePostResponse(effectiveRequest, resolver, scriptContext, scriptResult, body, statusCode, headersMap);
-                    }
-
-                    if (!shouldUseUnifiedRuntime()) {
-                        if (!scriptResult.extractedVariables.isEmpty()) {
-                            result.extractedVars.putAll(scriptResult.extractedVariables);
-                        }
-                        if (!scriptResult.assertions.isEmpty()) {
-                            result.assertions.addAll(scriptResult.assertions);
-                        }
-                    }
-                }
-            } else if (result.success) {
+        ExecutionPreflightResult preflight = null;
+        byte[] rawRequest;
+        try {
+            rawRequest = requestBuilder.buildRequest(requestForBuild, resolver);
+        } catch (Exception buildError) {
+            if (result != null) {
                 result.success = false;
-                result.errorMessage = "No response received";
+                result.errorMessage = extractCleanError(buildError);
+                result.preflightStatus = ExecutionPreflightStatus.BLOCKED_POLICY;
+                result.preflightMessage = "Request not sent — execution policy blocked transmission.";
+                result.preflight = ExecutionPreflightResult.blocked(
+                        ExecutionPreflightStatus.BLOCKED_POLICY,
+                        result.preflightMessage,
+                        List.of(),
+                        originalResolvedUrl,
+                        originalResolvedUrl,
+                        originDisplay(originalResolvedUrl),
+                        originDisplay(originalResolvedUrl),
+                        false,
+                        oauth2Required,
+                        oauth2Ready,
+                        preRequestScriptFailed,
+                        preRequestScriptTimedOut,
+                        false,
+                        false,
+                        List.of(ExecutionPreflightStatus.BLOCKED_POLICY),
+                        policyOverrides
+                );
             }
+            return result;
+        }
+        String rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
+        String resolvedUrl = resolver.resolve(requestForBuild != null ? requestForBuild.url : null);
+        String effectiveOrigin = originDisplay(resolvedUrl);
+        String originalOrigin = originDisplay(originalResolvedUrl);
+        boolean targetChanged = hasTargetChanged(originalResolvedUrl, resolvedUrl);
+        Set<String> unresolvedTokens = RequestBuilder.findUnresolvedTokens(rawRequest);
+        List<String> unresolvedVariables = new ArrayList<>(unresolvedTokens);
+        if (result != null) {
+            result.rawRequestBytes = rawRequest;
+            result.rawRequestText = rawRequestText;
+            result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
+            result.requestHeaders = splitRawRequest(rawRequest)[0];
+            result.requestBody = splitRawRequest(rawRequest)[1];
+            result.resolvedUrl = resolvedUrl;
+            result.originalResolvedUrl = originalResolvedUrl;
+            result.effectiveResolvedUrl = resolvedUrl;
+            result.oauth2Required = oauth2Required;
+            result.oauth2Ready = oauth2Ready;
+            result.oauth2UsedStaleToken = oauth2UsedStaleToken;
+            result.oauth2SentWithoutToken = oauth2SentWithoutToken;
+            result.policyOverridesApplied.clear();
+            result.policyOverridesApplied.addAll(policyOverrides);
+            result.continuedAfterScriptFailure = continuedAfterScriptFailure;
+            result.unresolvedVariablesAllowed = false;
+            result.targetChangeAllowed = false;
+            result.requestSent = false;
+            result.responseTimedOut = false;
+        }
+
+        if (intent == ExecutionIntent.PREVIEW) {
+            if (result != null) {
+                result.preflightStatus = ExecutionPreflightStatus.PREVIEW_ONLY;
+                result.preflightMessage = "Preview only — request not sent.";
+                result.preflight = ExecutionPreflightResult.preview(
+                        result.preflightMessage,
+                        unresolvedVariables,
+                        originalResolvedUrl,
+                        resolvedUrl,
+                        originalOrigin,
+                        effectiveOrigin,
+                        List.of()
+                );
+                result.success = true;
+            }
+            return result;
+        }
+
+        boolean confirmationRequired = false;
+        List<ExecutionPreflightStatus> reasons = new ArrayList<>();
+
+        if (targetChanged) {
+            switch (effectivePolicy.targetChangeMode != null ? effectivePolicy.targetChangeMode : ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION) {
+                case ALLOW -> policyOverrides.add("Target change override");
+                case REQUIRE_CONFIRMATION -> {
+                    confirmationRequired = true;
+                    reasons.add(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE);
+                }
+                case ABORT -> reasons.add(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE);
+            }
+        }
+        if (!unresolvedVariables.isEmpty()) {
+            switch (effectivePolicy.unresolvedVariableMode != null ? effectivePolicy.unresolvedVariableMode : ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION) {
+                case ALLOW_WITH_WARNING -> policyOverrides.add("Unresolved variables override");
+                case REQUIRE_CONFIRMATION -> {
+                    confirmationRequired = true;
+                    reasons.add(ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES);
+                }
+                case ABORT -> reasons.add(ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES);
+            }
+        }
+
+        if (!reasons.isEmpty() && !confirmationRequired) {
+            ExecutionPreflightStatus status = reasons.contains(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE)
+                    ? ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                    : ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES;
+            String message = status == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                    ? "Request not sent — script-driven destination change was not approved."
+                    : "Request not sent — unresolved variables were not approved.";
+            preflight = ExecutionPreflightResult.blocked(status, message, unresolvedVariables, originalResolvedUrl, resolvedUrl, originalOrigin, effectiveOrigin, targetChanged, oauth2Required, oauth2Ready, preRequestScriptFailed, preRequestScriptTimedOut, false, false, reasons, policyOverrides);
+            if (result != null) {
+                result.preflightStatus = status;
+                result.preflightMessage = message;
+                result.errorMessage = result.preflightMessage;
+                result.preflight = preflight;
+                result.success = false;
+                result.requestSent = false;
+                result.originalResolvedUrl = originalResolvedUrl;
+                result.effectiveResolvedUrl = resolvedUrl;
+                result.oauth2Required = oauth2Required;
+                result.oauth2Ready = oauth2Ready;
+                result.oauth2UsedStaleToken = oauth2UsedStaleToken;
+                result.oauth2SentWithoutToken = oauth2SentWithoutToken;
+            }
+            return result;
+        }
+
+        if (confirmationRequired) {
+            ExecutionPreflightResult confirmationPreflight = ExecutionPreflightResult.ready(
+                    "Confirmation required for request " + (req != null && req.name != null ? req.name : ""),
+                    unresolvedVariables,
+                    originalResolvedUrl,
+                    resolvedUrl,
+                    originalOrigin,
+                    effectiveOrigin,
+                    targetChanged,
+                    oauth2Required,
+                    oauth2Ready,
+                    preRequestScriptFailed,
+                    preRequestScriptTimedOut,
+                    true,
+                    false,
+                    reasons,
+                    policyOverrides
+            );
+            boolean approved = preflightDecisionHandler != null && preflightDecisionHandler.confirm(confirmationPreflight);
+            if (approved) {
+                preflight = ExecutionPreflightResult.ready(
+                        confirmationPreflight.safeMessage,
+                        unresolvedVariables,
+                        originalResolvedUrl,
+                        resolvedUrl,
+                        originalOrigin,
+                        effectiveOrigin,
+                        targetChanged,
+                        oauth2Required,
+                        oauth2Ready,
+                        preRequestScriptFailed,
+                        preRequestScriptTimedOut,
+                        true,
+                        true,
+                        reasons,
+                        policyOverrides
+                );
+            }
+            if (!approved) {
+                ExecutionPreflightStatus status = reasons.contains(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE)
+                        ? ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                        : ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES;
+                String message = status == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                        ? "Request not sent — script-driven destination change was not approved."
+                        : "Request not sent — unresolved variables were not approved.";
+                if (preflightDecisionHandler == null) {
+                    status = ExecutionPreflightStatus.BLOCKED_POLICY;
+                    message = "Request not sent — preflight confirmation was required but unavailable.";
+                }
+                if (result != null) {
+                    result.preflightStatus = status;
+                    result.preflightMessage = message;
+                    result.errorMessage = result.preflightMessage;
+                    result.preflight = ExecutionPreflightResult.blocked(status, message, unresolvedVariables, originalResolvedUrl, resolvedUrl, originalOrigin, effectiveOrigin, targetChanged, oauth2Required, oauth2Ready, preRequestScriptFailed, preRequestScriptTimedOut, true, false, reasons, policyOverrides);
+                    result.success = false;
+                    result.requestSent = false;
+                }
+                return result;
+            }
+        } else {
+            preflight = ExecutionPreflightResult.ready(
+                    "Ready to send request " + (req != null && req.name != null ? req.name : ""),
+                    unresolvedVariables,
+                    originalResolvedUrl,
+                    resolvedUrl,
+                    originalOrigin,
+                    effectiveOrigin,
+                    targetChanged,
+                    oauth2Required,
+                    oauth2Ready,
+                    preRequestScriptFailed,
+                    preRequestScriptTimedOut,
+                    false,
+                    false,
+                    reasons,
+                    policyOverrides
+            );
+        }
+
+        if (result != null) {
+            result.preflight = preflight;
+            result.preflightStatus = ExecutionPreflightStatus.READY;
+            result.preflightMessage = preflight.safeMessage;
+            result.initialResolvedUrl = resolvedUrl;
+            result.finalResolvedUrl = resolvedUrl;
+            result.targetChangeAllowed = targetChanged && (effectivePolicy.targetChangeMode == ExecutionPolicy.TargetChangeMode.ALLOW || (preflight != null && preflight.confirmationAccepted));
+            result.unresolvedVariablesAllowed = !unresolvedVariables.isEmpty() && (effectivePolicy.unresolvedVariableMode == ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING || (preflight != null && preflight.confirmationAccepted));
+            result.oauth2Required = oauth2Required;
+            result.oauth2Ready = oauth2Ready;
+            result.oauth2UsedStaleToken = oauth2UsedStaleToken;
+            result.oauth2SentWithoutToken = oauth2SentWithoutToken;
+            result.policyOverridesApplied.clear();
+            result.policyOverridesApplied.addAll(policyOverrides);
+            result.originalResolvedUrl = originalResolvedUrl;
+            result.effectiveResolvedUrl = resolvedUrl;
+            result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
+        }
+
+        if (result != null) {
+            commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+        }
+        if (pendingOAuth2Entry != null) {
+            Map<String, String> storedVars = null;
+            if (oauth2TokenSink != null) {
+                storedVars = oauth2TokenSink.store(col, pendingOAuth2Entry);
+            } else if (col != null) {
+                col.putRuntimeOAuth2("oauth2_access_token", pendingOAuth2Entry.accessToken);
+                storedVars = new LinkedHashMap<>();
+                storedVars.put("oauth2_access_token", pendingOAuth2Entry.accessToken);
+                if (pendingOAuth2Entry.refreshToken != null && !pendingOAuth2Entry.refreshToken.isBlank()) {
+                    col.putRuntimeOAuth2("oauth2_refresh_token", pendingOAuth2Entry.refreshToken);
+                    storedVars.put("oauth2_refresh_token", pendingOAuth2Entry.refreshToken);
+                }
+            }
+            if (storedVars != null && !storedVars.isEmpty()) {
+                resolver.addAll(storedVars);
+                try {
+                    rawRequest = requestBuilder.buildRequest(requestForBuild, resolver);
+                    rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
+                    resolvedUrl = resolver.resolve(requestForBuild != null ? requestForBuild.url : null);
+                    effectiveOrigin = originDisplay(resolvedUrl);
+                    if (result != null) {
+                        result.rawRequestBytes = rawRequest;
+                        result.rawRequestText = rawRequestText;
+                        result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
+                        result.requestHeaders = splitRawRequest(rawRequest)[0];
+                        result.requestBody = splitRawRequest(rawRequest)[1];
+                        result.resolvedUrl = resolvedUrl;
+                        result.effectiveResolvedUrl = resolvedUrl;
+                    }
+                } catch (Exception rebuildError) {
+                    if (result != null) {
+                        result.success = false;
+                        result.errorMessage = extractCleanError(rebuildError);
+                        result.requestSent = false;
+                    }
+                    return result;
+                }
+            }
+        }
+
+        if (api == null) {
+            result.success = false;
+            result.errorMessage = "Montoya API unavailable";
+            return result;
+        }
+
+        HttpUtils.ParsedTarget parsed;
+        try {
+            parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
         } catch (Exception e) {
             result.success = false;
             result.errorMessage = extractCleanError(e);
-            recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.ERROR, effectiveSource,
-                    col, req, activeEnvironment, "Request execution failed", result.errorMessage);
-        } finally {
-            result.removedVars.clear();
-            for (String key : initialResolvedVariables.keySet()) {
-                if (!finalResolvedVariables.containsKey(key)) {
-                    result.removedVars.add(key);
+            return result;
+        }
+
+        HttpRequest httpRequest;
+        byte[] requestBytes = rawRequest;
+        try {
+            HttpService service = HttpService.httpService(parsed.host, parsed.port, parsed.useHttps);
+            httpRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                    service, burp.api.montoya.core.ByteArray.byteArray(requestBytes));
+        } catch (Throwable factoryError) {
+            String fallbackRaw = rawRequestText;
+            httpRequest = HistoryNativeHttpMessageFactory.request(fallbackRaw);
+        }
+        result.builtRequest = httpRequest;
+
+        long startTime = System.currentTimeMillis();
+        RedirectExecutor redirectExecutor = new RedirectExecutor();
+        RedirectExecutor.RedirectRequest redirectRequest = new RedirectExecutor.RedirectRequest();
+        redirectRequest.initialRequest = httpRequest;
+        redirectRequest.initialUrl = resolvedUrl;
+        redirectRequest.initialRawRequestBytes = requestBytes.clone();
+        redirectRequest.followRedirects = followRedirects;
+        redirectRequest.redirectPolicy = redirectPolicy != null ? redirectPolicy : RedirectPolicy.defaults();
+        redirectRequest.responseTimeoutMillis = effectivePolicy.responseTimeoutMillis;
+        RequestOptions requestOptions;
+        try {
+            requestOptions = createRequestOptions(effectivePolicy.responseTimeoutMillis);
+        } catch (RuntimeException optionError) {
+            result.success = false;
+            result.errorMessage = extractCleanError(optionError);
+            result.preflightStatus = ExecutionPreflightStatus.BLOCKED_POLICY;
+            result.preflightMessage = "Request not sent — execution policy blocked transmission.";
+            result.preflight = ExecutionPreflightResult.blocked(
+                    ExecutionPreflightStatus.BLOCKED_POLICY,
+                    result.preflightMessage,
+                    unresolvedVariables,
+                    originalResolvedUrl,
+                    resolvedUrl,
+                    originalOrigin,
+                    effectiveOrigin,
+                    targetChanged,
+                    oauth2Required,
+                    oauth2Ready,
+                    preRequestScriptFailed,
+                    preRequestScriptTimedOut,
+                    false,
+                    false,
+                    reasons,
+                    policyOverrides
+            );
+            return result;
+        }
+        redirectRequest.hopSender = request -> {
+            result.requestSent = true;
+            return api.http().sendRequest(request, requestOptions);
+        };
+
+        RedirectExecutor.RedirectResult redirectResult = redirectExecutor.execute(redirectRequest);
+        long endTime = System.currentTimeMillis();
+        result.elapsedMs = Math.max(0L, endTime - startTime);
+        result.response = redirectResult.finalResponse;
+        result.finalRequest = redirectResult.finalRequest;
+        result.finalResolvedUrl = redirectResult.finalUrl;
+        result.redirectTerminationReason = redirectResult.terminationReason;
+        result.responseTimedOut = redirectResult.responseTimedOut;
+        result.timeoutMillis = redirectResult.timeoutMillis > 0 ? redirectResult.timeoutMillis : effectivePolicy.responseTimeoutMillis;
+        result.redirectHops.clear();
+        if (redirectResult.redirectHops != null) {
+            for (RedirectHop hop : redirectResult.redirectHops) {
+                result.redirectHops.add(RedirectHop.copyOf(hop));
+            }
+        }
+        result.success = redirectResult.success;
+        result.errorMessage = redirectResult.errorMessage;
+        result.resolvedUrl = resolvedUrl;
+        recordRedirectDiagnostics(effectiveSource, col, effectiveRequest, activeEnvironment, result.redirectHops, result.redirectTerminationReason);
+
+        if (redirectResult.responseTimedOut) {
+            result.preflightStatus = ExecutionPreflightStatus.READY;
+            result.preflightMessage = "Request sent, but response timed out after " + result.timeoutMillis + " ms.";
+            result.success = false;
+            result.responseTimedOut = true;
+        } else if (!redirectResult.success && result.errorMessage == null) {
+            result.errorMessage = "No response received";
+        }
+
+        if (result.response != null && result.response.response() != null) {
+            if (redirectResult.success && (shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
+                Map<String, String> postExecutionOverlay = new LinkedHashMap<>(result.resolvedVariables);
+                String body = result.response.response().bodyToString();
+                if (body == null) {
+                    body = "";
+                }
+                int statusCode = result.response.response().statusCode();
+                Map<String, List<String>> headersMap = new HashMap<>();
+                for (var header : result.response.response().headers()) {
+                    headersMap.computeIfAbsent(header.name().toLowerCase(), k -> new ArrayList<>()).add(header.value());
+                }
+                burp.models.RunnerResult scriptResultHolder = new burp.models.RunnerResult();
+                scriptResultHolder.responseBody = body;
+                scriptResultHolder.responseBodyPreview = body.length() > 500 ? body.substring(0, 500) + "..." : body;
+                scriptResultHolder.statusCode = statusCode;
+                if (shouldUseUnifiedRuntime()) {
+                    ScriptExecutionResult postResult = unifiedScriptRuntime.executePostResponse(
+                            executionCollection,
+                            effectiveRequest,
+                            executionEnvironment,
+                            effectiveSource,
+                            1,
+                            body,
+                            statusCode,
+                            headersMap,
+                            result.elapsedMs,
+                            scriptResultHolder,
+                            scriptDependentExecutor,
+                            postExecutionOverlay
+                    );
+                    mergeScriptResult(result, postResult);
+                    mergeScriptResult(scriptResultHolder, postResult);
+                    recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
+                    if (!postResult.timedOut && !postResult.cancelled) {
+                        commitScriptVariableMutations(postResult, result.resolvedVariables, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
+                    }
+                } else if (redirectResult.success && scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {
+                    scriptEngine.executePostResponse(effectiveRequest, resolver, new LinkedHashMap<>(resolver.getVariables()), scriptResultHolder, body, statusCode, headersMap);
+                }
+                if (result != null && !preRequestScriptFailed) {
+                    result.success = redirectResult.success;
                 }
             }
+        } else if (result.success) {
+            result.success = false;
+            result.errorMessage = result.errorMessage != null ? result.errorMessage : "No response received";
+        }
+
+        if (preRequestScriptFailed) {
+            continuedAfterScriptFailure = effectivePolicy.scriptFailureMode == ExecutionPolicy.ScriptFailureMode.CONTINUE;
+            if (continuedAfterScriptFailure) {
+                result.continuedAfterScriptFailure = true;
+                result.success = false;
+            }
+        }
+
+        if (result != null) {
+            result.preflight = preflight != null ? preflight : result.preflight;
+            if (result.preflightStatus == null) {
+                result.preflightStatus = ExecutionPreflightStatus.READY;
+            }
+            result.continuedAfterScriptFailure = continuedAfterScriptFailure;
         }
         return result;
     }
@@ -494,6 +983,75 @@ public class SharedRequestPipeline implements AutoCloseable {
             return currentRequest;
         }
         return scriptResult.mutatedRequest;
+    }
+
+    private RequestOptions createRequestOptions(int timeoutMillis) {
+        if (requestOptionsFactory == null) {
+            throw new IllegalStateException("Request options factory unavailable");
+        }
+        RequestOptions options = requestOptionsFactory.create(timeoutMillis);
+        if (options == null) {
+            throw new IllegalStateException("Request options factory returned no options");
+        }
+        return options;
+    }
+
+    private static RequestOptions defaultRequestOptions(int timeoutMillis) {
+        return RequestOptions.requestOptions()
+                .withRedirectionMode(RedirectionMode.NEVER)
+                .withResponseTimeout(timeoutMillis);
+    }
+
+    private static String originDisplay(String resolvedUrl) {
+        try {
+            HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
+            if (parsed == null || parsed.host == null || parsed.host.isBlank()) {
+                return "";
+            }
+            String scheme = parsed.useHttps ? "https" : "http";
+            String host = parsed.host.startsWith("[") && parsed.host.endsWith("]")
+                    ? parsed.host.substring(1, parsed.host.length() - 1)
+                    : parsed.host.toLowerCase(Locale.ROOT);
+            int port = parsed.port > 0 ? parsed.port : (parsed.useHttps ? 443 : 80);
+            return scheme + "://" + host + ":" + port;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static boolean hasTargetChanged(String originalResolvedUrl, String effectiveResolvedUrl) {
+        String original = originDisplay(originalResolvedUrl);
+        String effective = originDisplay(effectiveResolvedUrl);
+        if (original.isBlank() || effective.isBlank()) {
+            return false;
+        }
+        return !original.equalsIgnoreCase(effective);
+    }
+
+    private String findStaleOAuth2Token(ApiRequest request, ApiCollection collection, EnvironmentProfile activeEnvironment, VariableResolver resolver) {
+        try {
+            OAuth2Config config = OAuth2Config.fromVariables(resolver != null ? resolver.getVariables() : Collections.emptyMap());
+            if (config != null) {
+                TokenStore.TokenEntry stored = TokenStore.get(TokenStore.makeKey(config));
+                if (stored != null && stored.accessToken != null && !stored.accessToken.isBlank()) {
+                    return stored.accessToken;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (resolver != null) {
+            String resolved = resolver.getVariables().get("oauth2_access_token");
+            if (resolved != null && !resolved.isBlank()) {
+                return resolved;
+            }
+        }
+        if (collection != null && collection.runtimeOAuth2 != null) {
+            String runtime = collection.runtimeOAuth2.get("oauth2_access_token");
+            if (runtime != null && !runtime.isBlank()) {
+                return runtime;
+            }
+        }
+        return null;
     }
 
     private void commitRuntimeMutations(Map<String, String> scriptContext,
@@ -1001,38 +1559,6 @@ public class SharedRequestPipeline implements AutoCloseable {
         if (msg.contains("ConnectException")) return "Connection refused - service may be down or firewalled";
         if (msg.contains("SocketTimeoutException")) return "Connection timeout - target unresponsive";
         return msg;
-    }
-
-    private static final class NoRedirectRequestOptions implements RequestOptions {
-        @Override
-        public RequestOptions withHttpMode(burp.api.montoya.http.HttpMode httpMode) {
-            return this;
-        }
-
-        @Override
-        public RequestOptions withConnectionId(String connectionId) {
-            return this;
-        }
-
-        @Override
-        public RequestOptions withUpstreamTLSVerification() {
-            return this;
-        }
-
-        @Override
-        public RequestOptions withRedirectionMode(RedirectionMode redirectionMode) {
-            return this;
-        }
-
-        @Override
-        public RequestOptions withServerNameIndicator(String serverNameIndicator) {
-            return this;
-        }
-
-        @Override
-        public RequestOptions withResponseTimeout(long responseTimeout) {
-            return this;
-        }
     }
 
     private String[] splitRawRequest(byte[] rawRequest) {

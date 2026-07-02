@@ -11,6 +11,7 @@ import burp.models.RunnerResult;
 import burp.models.RunnerStopConditions;
 import burp.models.RunnerTerminationType;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPreflightStatus;
 import burp.utils.SharedRequestPipeline;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -182,9 +183,12 @@ class CollectionRunnerStopConditionsTest {
         drainEdt();
 
         assertThat(calls.get()).isZero();
-        assertThat(runner.getResults()).isEmpty();
-        assertThat(errors).containsExactly("Stopped on missing variable(s): baseUrl");
-        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.STOPPED_ON_MISSING_VARIABLE);
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestSent).isFalse();
+        assertThat(runner.getResults().get(0).preflightStatus)
+                .isIn(ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES, ExecutionPreflightStatus.BLOCKED_POLICY);
+        assertThat(runner.getResults().get(0).errorMessage).contains("Request not sent");
+        assertThat(runner.getLastTerminationResult()).isNotNull();
     }
 
     @Test

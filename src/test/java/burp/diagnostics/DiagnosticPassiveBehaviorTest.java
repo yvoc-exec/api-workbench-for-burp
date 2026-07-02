@@ -24,9 +24,14 @@ import burp.utils.RequestBuilder;
 import burp.utils.ScriptEngine;
 import burp.utils.ScriptMode;
 import burp.utils.SharedRequestPipeline;
+import burp.models.RedirectPolicy;
+import burp.scripts.ExecutionSource;
+import burp.utils.ExecutionPolicy;
+import burp.api.montoya.http.RequestOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -145,14 +150,21 @@ class DiagnosticPassiveBehaviorTest {
         EnvironmentProfile workbenchEnvironment = importedEnvironment.copy();
 
         AtomicInteger sendCount = new AtomicInteger();
-        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+        SharedRequestPipeline pipeline = SharedRequestPipeline.withRequestOptionsFactory(
                 RunnerScriptTestFixtures.mockRunnerApi(
                         sendCount,
                         new java.util.concurrent.CopyOnWriteArrayList<>(),
                         () -> RunnerScriptTestFixtures.mockResponse(201, "{\"session\":\"resp-123\"}", "application/json")),
                 new RequestBuilder(null),
                 new ScriptEngine(null, ScriptMode.FULL_JS),
-                null);
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = Mockito.mock(RequestOptions.class);
+                    Mockito.when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+                    Mockito.when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+                    return options;
+                });
 
         ExecutionResult execution = pipeline.execute(
                 workbenchRequest,
@@ -161,7 +173,12 @@ class DiagnosticPassiveBehaviorTest {
                 workbenchEnvironment.toRuntimeOverlay(),
                 null,
                 (collection, changedVars, removedKeys) -> applyEnvironmentDelta(workbenchEnvironment, changedVars, removedKeys),
-                workbenchEnvironment);
+                workbenchEnvironment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                permissivePolicy(),
+                null);
 
         assertThat(sendCount.get()).isEqualTo(1);
         HistoryEntry historyEntry = HistoryEntry.fromWorkbenchExecution(
@@ -178,14 +195,21 @@ class DiagnosticPassiveBehaviorTest {
         runnerCollection.requests.add(runnerRequest);
         EnvironmentProfile runnerEnvironment = importedEnvironment.copy();
 
-        SharedRequestPipeline runnerPipeline = new SharedRequestPipeline(
+        SharedRequestPipeline runnerPipeline = SharedRequestPipeline.withRequestOptionsFactory(
                 RunnerScriptTestFixtures.mockRunnerApi(
                         new AtomicInteger(),
                         new java.util.concurrent.CopyOnWriteArrayList<>(),
                         () -> RunnerScriptTestFixtures.mockResponse(201, "{\"session\":\"resp-123\"}", "application/json")),
                 new RequestBuilder(null),
                 new ScriptEngine(null, ScriptMode.FULL_JS),
-                null);
+                null,
+                null,
+                timeout -> {
+                    RequestOptions options = Mockito.mock(RequestOptions.class);
+                    Mockito.when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+                    Mockito.when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+                    return options;
+                });
         CollectionRunner runner = new CollectionRunner(null, runnerPipeline, null);
         runner.setDelayMs(0);
         runner.setMaxRetries(0);
@@ -223,6 +247,14 @@ class DiagnosticPassiveBehaviorTest {
                 .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
         snapshot.sanitizedDiagnosticReport = store.sanitizedReport(true);
         return snapshot;
+    }
+
+    private static ExecutionPolicy permissivePolicy() {
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode = ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+        return policy;
     }
 
     private static void applyEnvironmentDelta(EnvironmentProfile environment,

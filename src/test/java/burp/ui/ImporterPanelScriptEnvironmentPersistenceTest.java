@@ -142,11 +142,12 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
+        waitForWorkbenchCompletion(harness);
+
         ImporterPanelTestSupport.awaitCondition(
-                () -> harness.sendCount.get() == 1 && harness.importer.modelOnlySaveCount.get() == 1,
+                () -> harness.importer.modelOnlySaveCount.get() == 1,
                 Duration.ofSeconds(10)
         );
-        ImporterPanelTestSupport.awaitEdt();
 
         assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("persisted-token");
         assertThat(harness.environment.variables).containsEntry("token", "persisted-token");
@@ -176,11 +177,7 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
-        ImporterPanelTestSupport.awaitCondition(
-                () -> harness.sendCount.get() == 1,
-                Duration.ofSeconds(10)
-        );
-        ImporterPanelTestSupport.awaitEdt();
+        waitForWorkbenchCompletion(harness);
 
         assertThat(harness.capturedRequests).hasSize(1);
         assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("runtime-token");
@@ -213,11 +210,12 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
 
         ImporterPanelTestSupport.invokeVoid(harness.panel, "executeWorkbenchSend", new Class<?>[0]);
 
+        waitForWorkbenchCompletion(harness);
+
         ImporterPanelTestSupport.awaitCondition(
-                () -> harness.sendCount.get() == 1 && harness.importer.modelOnlySaveCount.get() == 1,
+                () -> harness.importer.modelOnlySaveCount.get() == 1,
                 Duration.ofSeconds(10)
         );
-        ImporterPanelTestSupport.awaitEdt();
 
         assertThat(rawRequestText(harness.capturedRequests.get(0))).contains("draft-persisted");
         assertThat(harness.environment.variables).containsEntry("draft", "unsaved");
@@ -334,6 +332,7 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
 
         CountingImporter importer = new CountingImporter(api, ScriptMode.FULL_JS);
         ImporterPanel panel = importer.getUI();
+        panel.setPreflightDecisionHandlerForTests(preflight -> true);
 
         EnvironmentProfile environment = new EnvironmentProfile();
         environment.id = "env-1";
@@ -370,6 +369,18 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
 
         JTextArea environmentRawArea = ImporterPanelTestSupport.getField(panel, "environmentRawArea");
         return new WorkbenchHarness(importer, panel, environment, collection, requestEditor, environmentRawArea, sendCount, capturedRequests);
+    }
+
+    private static void waitForWorkbenchCompletion(WorkbenchHarness harness) {
+        ImporterPanelTestSupport.awaitCondition(
+                () -> !harness.requestEditor.isSendEnabled(),
+                Duration.ofSeconds(10)
+        );
+        ImporterPanelTestSupport.awaitCondition(
+                () -> harness.requestEditor.isSendEnabled(),
+                Duration.ofSeconds(10)
+        );
+        ImporterPanelTestSupport.awaitEdt();
     }
 
     private static ScriptBlock scriptBlock(String id, ScriptDialect dialect, ScriptPhase phase, String source, int order) {
@@ -410,6 +421,26 @@ class ImporterPanelScriptEnvironmentPersistenceTest {
         public void requestWorkspaceStateSaveNowFromModel() {
             modelOnlySaveCount.incrementAndGet();
             super.requestWorkspaceStateSaveNowFromModel();
+        }
+
+        @Override
+        protected burp.utils.SharedRequestPipeline createSharedRequestPipeline(MontoyaApi api,
+                                                                               burp.utils.RequestBuilder requestBuilder,
+                                                                               burp.utils.ScriptEngine scriptEngine,
+                                                                               burp.auth.OAuth2Manager oauth2Manager) {
+            return burp.utils.SharedRequestPipeline.withRequestOptionsFactory(
+                    api,
+                    requestBuilder,
+                    scriptEngine,
+                    oauth2Manager,
+                    null,
+                    timeout -> {
+                        RequestOptions options = Mockito.mock(RequestOptions.class);
+                        Mockito.when(options.withRedirectionMode(Mockito.any())).thenReturn(options);
+                        Mockito.when(options.withResponseTimeout(Mockito.anyInt())).thenReturn(options);
+                        return options;
+                    }
+            );
         }
 
         void resetSaveCounts() {

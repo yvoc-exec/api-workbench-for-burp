@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.auth.OAuth2Config;
+import burp.api.montoya.http.RequestOptions;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
 import burp.models.ApiCollection;
@@ -14,6 +15,10 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 
 class SharedRequestPipelinePreviewIsolationTest {
     @Test
@@ -80,7 +85,12 @@ class SharedRequestPipelinePreviewIsolationTest {
     }
 
     private SharedRequestPipeline pipeline(OAuth2Manager oauth2Manager) {
-        return new SharedRequestPipeline(null, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), oauth2Manager);
+        return SharedRequestPipeline.withRequestOptionsFactory(null, new RequestBuilder(null), new ScriptEngine(null, ScriptMode.FULL_JS), oauth2Manager, null, timeout -> {
+            RequestOptions options = mock(RequestOptions.class);
+            when(options.withRedirectionMode(any())).thenReturn(options);
+            when(options.withResponseTimeout(anyInt())).thenReturn(options);
+            return options;
+        });
     }
 
     private ApiCollection collection(String script) {

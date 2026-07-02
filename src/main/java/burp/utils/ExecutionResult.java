@@ -22,6 +22,22 @@ import java.util.Set;
  * Result of a single request execution through the shared pipeline.
  */
 public class ExecutionResult {
+    public ExecutionPreflightResult preflight;
+    public ExecutionPreflightStatus preflightStatus = ExecutionPreflightStatus.READY;
+    public String preflightMessage;
+    public boolean requestSent;
+    public boolean responseTimedOut;
+    public int timeoutMillis;
+    public String originalResolvedUrl;
+    public String effectiveResolvedUrl;
+    public boolean oauth2Required;
+    public boolean oauth2Ready;
+    public boolean oauth2UsedStaleToken;
+    public boolean oauth2SentWithoutToken;
+    public boolean continuedAfterScriptFailure;
+    public boolean unresolvedVariablesAllowed;
+    public boolean targetChangeAllowed;
+    public final List<String> policyOverridesApplied = new ArrayList<>();
     public boolean success;
     public HttpRequestResponse response;
     public HttpRequest builtRequest;
@@ -60,4 +76,20 @@ public class ExecutionResult {
     public String parentRequestId;
     public int dependentDepth;
     public boolean triggeredByScript;
+
+    public boolean isBlockedBeforeSend() {
+        if (requestSent) {
+            return false;
+        }
+        return switch (preflightStatus != null ? preflightStatus : ExecutionPreflightStatus.READY) {
+            case BLOCKED_SCRIPT_ERROR,
+                 BLOCKED_SCRIPT_TIMEOUT,
+                 BLOCKED_OAUTH2_FAILURE,
+                 BLOCKED_UNRESOLVED_VARIABLES,
+                 BLOCKED_TARGET_CHANGE,
+                 BLOCKED_POLICY,
+                 CANCELLED -> true;
+            default -> false;
+        };
+    }
 }

@@ -395,6 +395,7 @@ class HistoryEntryCompatibilityTest {
         entry.requestSnapshot.authoredRequest.authSource = "collection";
         entry.result = HistoryResult.SUCCESS;
         entry.resultClassification = null;
+        entry.metadataSummaryText = null;
 
         assertThat(entry.toMetadataText())
                 .contains("Auth Mode / Auth Source: Bearer (collection)")

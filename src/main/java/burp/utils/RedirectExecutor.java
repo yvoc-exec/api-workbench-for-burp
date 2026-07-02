@@ -11,11 +11,14 @@ import burp.models.RedirectTerminationReason;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeoutException;
 import java.util.Set;
 
 public class RedirectExecutor {
@@ -31,6 +34,7 @@ public class RedirectExecutor {
         public boolean followRedirects;
         public RedirectPolicy redirectPolicy;
         public HopSender hopSender;
+        public int responseTimeoutMillis;
     }
 
     public static final class RedirectResult {
@@ -44,6 +48,8 @@ public class RedirectExecutor {
         public boolean success;
         public String errorMessage;
         public RedirectTerminationReason terminationReason = RedirectTerminationReason.NONE;
+        public boolean responseTimedOut;
+        public int timeoutMillis;
     }
 
     public RedirectResult execute(RedirectRequest request) {
@@ -53,6 +59,7 @@ public class RedirectExecutor {
         result.finalRequest = result.initialRequest;
         result.finalUrl = result.initialUrl;
         result.success = true;
+        result.timeoutMillis = request != null ? request.responseTimeoutMillis : 0;
 
         RedirectPolicy policy = RedirectPolicy.copyOf(request != null ? request.redirectPolicy : null);
         policy.normalize();
@@ -82,6 +89,17 @@ public class RedirectExecutor {
                 try {
                     currentResponse = send(sender, currentRequest);
                 } catch (Exception e) {
+                    if (isTimeoutFailure(e)) {
+                        result.success = false;
+                        result.responseTimedOut = true;
+                        result.errorMessage = "Response timed out after " + Math.max(0, result.timeoutMillis) + " ms";
+                        result.terminationReason = RedirectTerminationReason.RESPONSE_TIMEOUT;
+                        result.totalElapsedMs = elapsedMs(started);
+                        result.finalRequest = currentRequest;
+                        result.finalUrl = currentUrl;
+                        result.finalResponse = lastResponse;
+                        return result;
+                    }
                     result.success = false;
                     result.errorMessage = extractCleanError(e);
                     result.terminationReason = RedirectTerminationReason.SEND_FAILED;
@@ -255,6 +273,30 @@ public class RedirectExecutor {
 
     private static boolean isSupportedRedirect(int statusCode) {
         return statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308;
+    }
+
+    static boolean isTimeoutFailure(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SocketTimeoutException
+                    || current instanceof HttpTimeoutException
+                    || current instanceof TimeoutException) {
+                return true;
+            }
+            String simpleName = current.getClass().getSimpleName();
+            if (simpleName != null && simpleName.toLowerCase(Locale.ROOT).contains("timeout")) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.contains("timed out") || lower.contains("timeout")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static long elapsedMs(long startedNano) {
