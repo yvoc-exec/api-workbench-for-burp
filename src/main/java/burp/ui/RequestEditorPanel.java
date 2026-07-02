@@ -758,9 +758,6 @@ public class RequestEditorPanel extends JPanel {
         exactTransportHeadersSelected = enabled;
         updateExactTransportIndicator();
         refreshResolvedMirror();
-        if (currentCollection != null) {
-            currentCollection.fireChanged();
-        }
         markDirty();
         if (requestBuildModeChangeListener != null) {
             requestBuildModeChangeListener.run();

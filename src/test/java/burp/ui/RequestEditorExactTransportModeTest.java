@@ -78,6 +78,38 @@ class RequestEditorExactTransportModeTest {
     }
 
     @Test
+    void exactModeToggleUsesDedicatedListenerWithoutGenericCollectionChange() {
+        RequestEditorPanel panel = panel();
+        ApiCollection collection = new ApiCollection();
+        ApiRequest req = request(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        collection.requests.add(req);
+        panel.setCurrentCollection(collection);
+        panel.loadRequest(req);
+
+        AtomicInteger genericCollectionChanges = new AtomicInteger();
+        AtomicInteger buildModeChanges = new AtomicInteger();
+        collection.addChangeListener(genericCollectionChanges::incrementAndGet);
+        panel.setRequestBuildModeChangeListener(buildModeChanges::incrementAndGet);
+        panel.setExactTransportWarningProviderForTests((parent, title, message) -> true);
+
+        exactItem(panel).doClick();
+
+        assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(buildModeChanges).hasValue(1);
+        assertThat(genericCollectionChanges).hasValue(0);
+        assertThat(panel.getExactTransportIndicatorForTests().isVisible()).isTrue();
+        assertThat(exactItem(panel).isSelected()).isTrue();
+
+        exactItem(panel).doClick();
+
+        assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(buildModeChanges).hasValue(2);
+        assertThat(genericCollectionChanges).hasValue(0);
+        assertThat(panel.getExactTransportIndicatorForTests().isVisible()).isFalse();
+        assertThat(exactItem(panel).isSelected()).isFalse();
+    }
+
+    @Test
     void warningCanceledLeavesCleanSafeRequest() {
         RequestEditorPanel panel = panel();
         panel.loadRequest(request(ApiRequest.BuildMode.MANUAL_PRESERVE));
