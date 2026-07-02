@@ -301,6 +301,8 @@ public class ImporterPanel {
     // Workspace persistence callback
     private Runnable workspaceChangeListener;
     private boolean suppressWorkspaceChangeNotifications = false;
+    private boolean suppressNextWorkspaceChangeNotification = false;
+    private boolean suppressNextCollectionRuntimeRefresh = false;
     private boolean suppressRequestTreeSelectionPersistence = false;
     private Map<String, String> pendingWorkspaceRequestTreePaths = Collections.emptyMap();
     // Send mode is tracked by the RequestEditorPanel send button label
@@ -339,6 +341,10 @@ public class ImporterPanel {
     }
 
     private void notifyWorkspaceChanged() {
+        if (suppressNextWorkspaceChangeNotification) {
+            suppressNextWorkspaceChangeNotification = false;
+            return;
+        }
         if (shuttingDown || suppressWorkspaceChangeNotifications) {
             return;
         }
@@ -354,6 +360,17 @@ public class ImporterPanel {
         }
         if (importer != null) {
             importer.requestWorkspaceStateSaveNow();
+        }
+    }
+
+    private void notifyWorkspaceModelChangedImmediately() {
+        if (shuttingDown || suppressWorkspaceChangeNotifications) {
+            return;
+        }
+        if (importer != null) {
+            suppressNextCollectionRuntimeRefresh = true;
+            suppressNextWorkspaceChangeNotification = true;
+            importer.requestWorkspaceStateSaveNowFromModel();
         }
     }
 
@@ -596,7 +613,7 @@ public class ImporterPanel {
             notifyWorkspaceChangedImmediately();
         });
         requestEditor.setRequestBuildModeChangeListener(() -> {
-            notifyWorkspaceChangedImmediately();
+            notifyWorkspaceModelChangedImmediately();
         });
         requestEditor.setFollowRedirectsChangeListener(selected -> notifyWorkspaceChanged());
         requestEditor.setRedirectPolicyAction(this::showRedirectPolicyDialog);
@@ -956,7 +973,7 @@ public class ImporterPanel {
         HistoryRequestContext existingContext = resolveExistingHistoryRequestContext(entry);
         if (existingContext != null && existingContext.originalRequestExists && existingContext.collection != null && existingContext.request != null) {
             ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
-            applyEditedRequestToLiveRequest(existingContext.collection, existingContext.request, snapshotRequest);
+            applyHistorySnapshotToLiveRequest(existingContext.collection, existingContext.request, snapshotRequest);
             openRequestInEditor(existingContext.request, existingContext.collection);
             if (requestEditor != null) {
                 requestEditor.markClean();
@@ -992,7 +1009,7 @@ public class ImporterPanel {
         if (entry.requestName != null && !entry.requestName.isBlank()) {
             snapshotRequest.name = entry.requestName;
         }
-        applyEditedRequestToLiveRequest(fallbackContext.collection, fallbackContext.request, snapshotRequest);
+        applyHistorySnapshotToLiveRequest(fallbackContext.collection, fallbackContext.request, snapshotRequest);
         refreshRequestTreeAfterMutation(() -> {
             openRequestInEditor(fallbackContext.request, fallbackContext.collection);
             if (requestEditor != null) {
@@ -1270,7 +1287,7 @@ public class ImporterPanel {
         }
         request.path = resolveHistoryFolderPath(entry);
         ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
-        applyEditedRequestToLiveRequest(collection, request, snapshotRequest);
+        applyHistorySnapshotToLiveRequest(collection, request, snapshotRequest);
         return new HistoryRequestContext(collection, request, false, false, null);
     }
 
@@ -1760,13 +1777,23 @@ public class ImporterPanel {
     }
 
     static void applyEditedRequestToLiveRequest(ApiCollection collection, ApiRequest liveRequest, ApiRequest edited) {
+        applyRequestStateToLiveRequest(collection, liveRequest, edited, false);
+    }
+
+    static void applyHistorySnapshotToLiveRequest(ApiCollection collection, ApiRequest liveRequest, ApiRequest snapshotRequest) {
+        applyRequestStateToLiveRequest(collection, liveRequest, snapshotRequest, true);
+    }
+
+    private static void applyRequestStateToLiveRequest(ApiCollection collection,
+                                                       ApiRequest liveRequest,
+                                                       ApiRequest edited,
+                                                       boolean replaceHistoryOwnedMetadata) {
         if (liveRequest == null || edited == null) {
             return;
         }
 
         liveRequest.method = edited.method;
         liveRequest.url = edited.url;
-        liveRequest.description = edited.description;
         liveRequest.editorMaterialized = edited.editorMaterialized;
         liveRequest.buildMode = edited.buildMode;
         liveRequest.suppressedAutoHeaders = edited.suppressedAutoHeaders != null
@@ -1774,14 +1801,17 @@ public class ImporterPanel {
                 : new LinkedHashSet<>();
         liveRequest.headers = copyHeaders(edited.headers);
         liveRequest.body = copyBody(edited.body);
-        liveRequest.variables = copyVariables(
-                edited.variables != null ? edited.variables : Collections.emptyList()
-        );
         liveRequest.preRequestScripts = copyScripts(edited.preRequestScripts);
         liveRequest.postResponseScripts = copyScripts(edited.postResponseScripts);
         liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
         liveRequest.authOverrideMode = edited.authOverrideMode != null ? edited.authOverrideMode : "inherit";
         liveRequest.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(edited.explicitAuth);
+        if (replaceHistoryOwnedMetadata) {
+            liveRequest.description = edited.description;
+            liveRequest.variables = copyVariables(
+                    edited.variables != null ? edited.variables : Collections.emptyList()
+            );
+        }
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, liveRequest);
 
         if (collection != null) {
@@ -7056,6 +7086,10 @@ public class ImporterPanel {
             if (shuttingDown) {
                 return;
             }
+            if (suppressNextCollectionRuntimeRefresh) {
+                suppressNextCollectionRuntimeRefresh = false;
+                return;
+            }
             refreshRuntimeViewsForCollection(col);
             notifyWorkspaceChanged();
         }));
@@ -7066,9 +7100,19 @@ public class ImporterPanel {
     }
 
     public WorkspaceState getWorkspaceStateSnapshot() {
+        return buildWorkspaceStateSnapshot(true);
+    }
+
+    public WorkspaceState getWorkspaceStateSnapshotFromModel() {
+        return buildWorkspaceStateSnapshot(false);
+    }
+
+    private WorkspaceState buildWorkspaceStateSnapshot(boolean persistRequestEditorState) {
         runWithWorkspaceChangeNotificationsSuppressed(() -> {
             commitOAuth2ConfigUiToActiveEnvironment();
-            persistCurrentRequestEditorState();
+            if (persistRequestEditorState) {
+                persistCurrentRequestEditorState();
+            }
         });
 
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);

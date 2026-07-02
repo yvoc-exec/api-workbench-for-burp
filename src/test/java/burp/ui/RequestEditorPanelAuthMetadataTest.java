@@ -5,6 +5,8 @@ import burp.models.ApiCollection;
 import burp.utils.AuthInheritanceResolver;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RequestEditorPanelAuthMetadataTest {
@@ -163,5 +165,114 @@ class RequestEditorPanelAuthMetadataTest {
         assertThat(liveRequest.auth.type).isEqualTo("bearer");
         assertThat(liveRequest.auth.properties).containsEntry("token", "{{collectionToken}}");
         assertThat(liveRequest.authSource).isEqualTo("collection: Demo");
+    }
+
+    @Test
+    void normalEditorApplyPreservesDescriptionAndRequestVariables() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+        collection.auth = new ApiRequest.Auth();
+        collection.auth.type = "bearer";
+        collection.auth.properties.put("token", "{{collectionToken}}");
+        collection.runtimeVars.put("runtime_key", "runtime_value");
+
+        ApiRequest liveRequest = new ApiRequest();
+        liveRequest.name = "Get Me";
+        liveRequest.path = "Get Me";
+        liveRequest.sourceCollection = "Demo";
+        liveRequest.description = "Preserve me";
+        liveRequest.authOverrideMode = "inherit";
+        liveRequest.variables = new ArrayList<>();
+        liveRequest.variables.add(variable("first", "one", "string", true));
+        liveRequest.variables.add(variable("second", "two", "secret", false));
+        collection.requests.add(liveRequest);
+        AuthInheritanceResolver.recomputeCollectionAuth(collection);
+
+        ApiRequest edited = new ApiRequest();
+        edited.name = "Get Me";
+        edited.path = "Get Me";
+        edited.sourceCollection = "Demo";
+        edited.method = "POST";
+        edited.url = "https://api.example.test/me";
+        edited.authOverrideMode = "explicit";
+        edited.explicitAuth = new ApiRequest.Auth();
+        edited.explicitAuth.type = "basic";
+        edited.explicitAuth.properties.put("username", "u");
+        edited.explicitAuth.properties.put("password", "p");
+        edited.auth = AuthInheritanceResolver.copyAuth(edited.explicitAuth);
+        edited.description = null;
+        edited.variables = new ArrayList<>();
+
+        ImporterPanel.applyEditedRequestToLiveRequest(collection, liveRequest, edited);
+
+        assertThat(liveRequest.method).isEqualTo("POST");
+        assertThat(liveRequest.url).isEqualTo("https://api.example.test/me");
+        assertThat(liveRequest.authOverrideMode).isEqualTo("explicit");
+        assertThat(liveRequest.explicitAuth).isNotNull();
+        assertThat(liveRequest.explicitAuth.type).isEqualTo("basic");
+        assertThat(liveRequest.auth).isNotNull();
+        assertThat(liveRequest.auth.type).isEqualTo("basic");
+        assertThat(liveRequest.authSource).isEqualTo("request: Get Me");
+        assertThat(liveRequest.description).isEqualTo("Preserve me");
+        assertThat(liveRequest.variables)
+                .extracting(variable -> variable.key + "|" + variable.value + "|" + variable.type + "|" + variable.enabled)
+                .containsExactly(
+                        "first|one|string|true",
+                        "second|two|secret|false");
+    }
+
+    @Test
+    void historySnapshotApplyReplacesDescriptionAndRequestVariables() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Demo";
+
+        ApiRequest liveRequest = new ApiRequest();
+        liveRequest.name = "Get Me";
+        liveRequest.path = "Get Me";
+        liveRequest.sourceCollection = "Demo";
+        liveRequest.description = "Old description";
+        liveRequest.variables = new ArrayList<>();
+        liveRequest.variables.add(variable("oldFirst", "one", "string", true));
+        liveRequest.variables.add(variable("oldSecond", "two", "secret", false));
+        collection.requests.add(liveRequest);
+
+        ApiRequest snapshotRequest = new ApiRequest();
+        snapshotRequest.name = "Get Me";
+        snapshotRequest.path = "Get Me";
+        snapshotRequest.sourceCollection = "Demo";
+        snapshotRequest.description = null;
+        snapshotRequest.variables = new ArrayList<>();
+
+        ImporterPanel.applyHistorySnapshotToLiveRequest(collection, liveRequest, snapshotRequest);
+
+        assertThat(liveRequest.description).isNull();
+        assertThat(liveRequest.variables).isNotNull().isEmpty();
+
+        ApiRequest loadedSnapshot = new ApiRequest();
+        loadedSnapshot.name = "Get Me";
+        loadedSnapshot.path = "Get Me";
+        loadedSnapshot.sourceCollection = "Demo";
+        loadedSnapshot.description = "Loaded description";
+        loadedSnapshot.variables = new ArrayList<>();
+        loadedSnapshot.variables.add(variable("loadedToken", "xyz", "string", true));
+
+        ImporterPanel.applyHistorySnapshotToLiveRequest(collection, liveRequest, loadedSnapshot);
+
+        assertThat(liveRequest.description).isEqualTo("Loaded description");
+        assertThat(liveRequest.variables)
+                .extracting(variable -> variable.key + "|" + variable.value + "|" + variable.type + "|" + variable.enabled)
+                .containsExactly("loadedToken|xyz|string|true");
+
+        loadedSnapshot.variables.get(0).value = "mutated-after-load";
+        assertThat(liveRequest.variables.get(0).value).isEqualTo("xyz");
+    }
+
+    private static ApiRequest.Variable variable(String key, String value, String type, boolean enabled) {
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = value;
+        variable.type = type;
+        variable.enabled = enabled;
+        return variable;
     }
 }

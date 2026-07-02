@@ -14,6 +14,10 @@ import burp.utils.WorkspaceStateJson;
 import burp.utils.WorkspaceStateService;
 import burp.ui.ImporterPanel;
 import burp.ui.RequestEditorPanel;
+import burp.ui.tree.CollectionTreeNode;
+import burp.testsupport.ImporterPanelTestSupport;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -21,12 +25,15 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.TreePath;
+import javax.swing.text.JTextComponent;
+import java.awt.Component;
 import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -37,6 +44,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class UniversalImporterWorkspaceSaveTest {
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     @Test
     void rapidWorkspaceChangeRequestsCollapseIntoSingleWrite() throws Exception {
@@ -174,6 +182,131 @@ class UniversalImporterWorkspaceSaveTest {
         } finally {
             fixture.importer.cleanup();
         }
+    }
+
+    @Test
+    void exactBuildModeSaveUsesModelSnapshotWithoutApplyingPendingEditorState() throws Exception {
+        AtomicInteger writeCount = new AtomicInteger(0);
+        AtomicReference<String> lastJson = new AtomicReference<>();
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doAnswer(inv -> {
+            writeCount.incrementAndGet();
+            lastJson.set(inv.getArgument(1));
+            return null;
+        }).when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+
+        MontoyaApi api = mockApi();
+        UniversalImporter importer = new UniversalImporter(api, burp.utils.ScriptMode.DISABLED, service);
+        setDebounceDelay(importer, 500);
+        ImporterPanel ui = importer.getUI();
+
+        ApiCollection collection = new ApiCollection();
+        collection.id = "col-exact-toggle";
+        collection.name = "Exact Toggle";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-exact-toggle";
+        request.name = "Exact Toggle Request";
+        request.method = "POST";
+        request.url = "https://api.example.test/original?q=hello%20world&path=a%2Fb&plus=%2B";
+        request.description = "Original description";
+        request.buildMode = ApiRequest.BuildMode.MANUAL_PRESERVE;
+        request.editorMaterialized = true;
+        request.variables = new ArrayList<>();
+        request.variables.add(variable("token", "original-token", "string", false));
+        request.headers = new ArrayList<>();
+        request.headers.add(new ApiRequest.Header("Accept", "application/json"));
+        request.headers.add(new ApiRequest.Header("X-Original", "one"));
+        request.headers.add(new ApiRequest.Header("Content-Type", "text/plain"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "original-body";
+        request.body.contentType = "text/plain";
+        request.preRequestScripts = new ArrayList<>(List.of(new ApiRequest.Script("js", "console.log(\"original\");")));
+        collection.requests.add(request);
+
+        ui.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        SwingUtilities.invokeAndWait(() -> { });
+
+        List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(ui, "loadedCollections");
+        ApiCollection liveCollection = loadedCollections.get(0);
+        ApiRequest liveRequest = liveCollection.requests.get(0);
+
+        JTree tree = requestTree(ui);
+        CollectionTreeNode requestNode = findRequestNode((DefaultMutableTreeNode) tree.getModel().getRoot(), liveRequest.id);
+        assertThat(requestNode).isNotNull();
+        SwingUtilities.invokeAndWait(() -> tree.setSelectionPath(new TreePath(requestNode.getPath())));
+        RequestEditorPanel editor = requestEditor(ui);
+        ImporterPanelTestSupport.awaitCondition(
+                () -> editor.getCurrentRequest() != null && liveRequest.id.equals(editor.getCurrentRequest().id),
+                Duration.ofSeconds(3));
+        SwingUtilities.invokeAndWait(() -> { });
+
+        SwingUtilities.invokeAndWait(() -> {
+            headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
+            headersModel(editor).addRow(new Object[]{"X-Duplicate", "one"});
+            headersModel(editor).addRow(new Object[]{"X-Duplicate", "two"});
+            editor.getUrlField().setText("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
+            paramsModel(editor).setRowCount(0);
+            paramsModel(editor).addRow(new Object[]{"q", "pending value"});
+            paramsModel(editor).addRow(new Object[]{"path", "x/y"});
+            paramsModel(editor).addRow(new Object[]{"plus", "+"});
+            bodyRawArea(editor).setText("pending-body");
+            preScriptArea(editor).setText("console.log(\"pending\");");
+        });
+        SwingUtilities.invokeAndWait(() -> { });
+
+        ApiRequest snapshotBeforeToggle = GSON.fromJson(GSON.toJson(liveRequest), ApiRequest.class);
+
+        writeCount.set(0);
+        lastJson.set(null);
+
+        clickExactTransport(editor);
+        awaitWriteCount(writeCount, 1);
+
+        assertThat(liveRequest.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(liveRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(snapshotBeforeToggle);
+        assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
+
+        WorkspaceState saved = WorkspaceStateJson.fromJson(lastJson.get());
+        ApiRequest savedRequest = saved.collections.get(0).requests.get(0);
+        assertThat(savedRequest.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(savedRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(snapshotBeforeToggle);
+        assertThat(headerRows(headersModel(editor))).containsExactly(
+                "Accept=application/xml",
+                "X-Original=one",
+                "Content-Type=text/plain",
+                "X-Duplicate=one",
+                "X-Duplicate=two");
+        assertThat(editor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
+        assertThat(bodyRawArea(editor).getText()).isEqualTo("pending-body");
+        assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
+
+        long quietDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(650);
+        ImporterPanelTestSupport.awaitCondition(() -> System.nanoTime() >= quietDeadline, Duration.ofSeconds(2));
+        SwingUtilities.invokeAndWait(() -> { });
+        assertThat(writeCount.get()).isEqualTo(1);
+        assertThat(liveRequest.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(liveRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(snapshotBeforeToggle);
+        assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
+
+        writeCount.set(0);
+        lastJson.set(null);
+        clickExactTransport(editor);
+        awaitWriteCount(writeCount, 1);
+
+        WorkspaceState savedAfterToggleOff = WorkspaceStateJson.fromJson(lastJson.get());
+        ApiRequest restoredRequest = savedAfterToggleOff.collections.get(0).requests.get(0);
+        assertThat(restoredRequest.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        assertThat(restoredRequest).usingRecursiveComparison()
+                .ignoringFields("buildMode")
+                .isEqualTo(snapshotBeforeToggle);
     }
 
     @Test
@@ -682,10 +815,148 @@ class UniversalImporterWorkspaceSaveTest {
         return (RequestEditorPanel) f.get(ui);
     }
 
-    private static DefaultTableModel headersModel(RequestEditorPanel panel) throws Exception {
-        Field f = RequestEditorPanel.class.getDeclaredField("headersModel");
-        f.setAccessible(true);
-        return (DefaultTableModel) f.get(panel);
+    private static DefaultTableModel headersModel(RequestEditorPanel panel) {
+        try {
+            Field f = RequestEditorPanel.class.getDeclaredField("headersModel");
+            f.setAccessible(true);
+            return (DefaultTableModel) f.get(panel);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static DefaultTableModel paramsModel(RequestEditorPanel panel) {
+        try {
+            Field f = RequestEditorPanel.class.getDeclaredField("paramsModel");
+            f.setAccessible(true);
+            return (DefaultTableModel) f.get(panel);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static JTextArea preScriptArea(RequestEditorPanel panel) {
+        try {
+            return (JTextArea) privateField(panel, "preScriptArea");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static CollectionTreeNode findRequestNode(DefaultMutableTreeNode node, String requestId) {
+        if (node instanceof CollectionTreeNode ctn
+                && ctn.getNodeType() == CollectionTreeNode.Type.REQUEST
+                && ctn.request != null
+                && requestId.equals(ctn.request.id)) {
+            return ctn;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            Object child = node.getChildAt(i);
+            if (child instanceof DefaultMutableTreeNode childNode) {
+                CollectionTreeNode match = findRequestNode(childNode, requestId);
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static int findRow(DefaultTableModel model, String key) {
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object value = model.getValueAt(i, 0);
+            if (key.equals(value)) {
+                return i;
+            }
+        }
+        throw new AssertionError("Missing row: " + key);
+    }
+
+    private static List<String> headerRows(List<ApiRequest.Header> headers) {
+        List<String> rows = new ArrayList<>();
+        if (headers == null) {
+            return rows;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header != null && header.key != null && !header.key.isBlank()) {
+                rows.add(header.key + "=" + (header.value != null ? header.value : ""));
+            }
+        }
+        return rows;
+    }
+
+    private static List<String> headerRows(DefaultTableModel model) {
+        List<String> rows = new ArrayList<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object key = model.getValueAt(i, 0);
+            Object value = model.getValueAt(i, 1);
+            if (key != null && !key.toString().isBlank()) {
+                rows.add(key + "=" + (value != null ? value : ""));
+            }
+        }
+        return rows;
+    }
+
+    private static ApiRequest.Variable variable(String key, String value, String type, boolean enabled) {
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = key;
+        variable.value = value;
+        variable.type = type;
+        variable.enabled = enabled;
+        return variable;
+    }
+
+    private static void clickExactTransport(RequestEditorPanel editor) throws Exception {
+        setExactTransportWarningProvider(editor);
+        SwingUtilities.invokeAndWait(() -> {
+            JPopupMenu menu = createSendDropdownMenu(editor);
+            for (Component component : menu.getComponents()) {
+                if (component instanceof JCheckBoxMenuItem item
+                        && "Exact transport headers \u2014 Advanced".equals(item.getText())) {
+                    item.doClick();
+                    return;
+                }
+            }
+            throw new AssertionError("Exact transport menu item not found");
+        });
+    }
+
+    private static void setExactTransportWarningProvider(RequestEditorPanel panel) {
+        try {
+            Class<?> providerType = Class.forName("burp.ui.RequestEditorPanel$ExactTransportWarningProvider");
+            Object provider = java.lang.reflect.Proxy.newProxyInstance(
+                    RequestEditorPanel.class.getClassLoader(),
+                    new Class<?>[]{providerType},
+                    (proxy, method, args) -> {
+                        if ("confirmEnable".equals(method.getName())) {
+                            return true;
+                        }
+                        return null;
+                    });
+            Method method = RequestEditorPanel.class.getDeclaredMethod("setExactTransportWarningProviderForTests", providerType);
+            method.setAccessible(true);
+            method.invoke(panel, provider);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static JTextComponent bodyRawArea(RequestEditorPanel panel) {
+        try {
+            return (JTextComponent) privateField(panel, "bodyRawArea");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static JPopupMenu createSendDropdownMenu(RequestEditorPanel panel) {
+        try {
+            Method method = RequestEditorPanel.class.getDeclaredMethod("createSendDropdownMenuForTests");
+            method.setAccessible(true);
+            return (JPopupMenu) method.invoke(panel);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void removeHeaderRow(RequestEditorPanel panel, String key) throws Exception {

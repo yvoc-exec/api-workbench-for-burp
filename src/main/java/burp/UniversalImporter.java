@@ -631,6 +631,16 @@ public class UniversalImporter {
         flushWorkspaceStateSave();
     }
 
+    public void requestWorkspaceStateSaveNowFromModel() {
+        if (workspaceSaveClosed) {
+            return;
+        }
+        if (debouncedWorkspaceSave != null) {
+            debouncedWorkspaceSave.stop();
+        }
+        persistWorkspaceStateSnapshot(true, false);
+    }
+
     void flushWorkspaceStateSave() {
         if (debouncedWorkspaceSave != null) {
             debouncedWorkspaceSave.stop();
@@ -646,10 +656,15 @@ public class UniversalImporter {
     }
 
     WorkspaceState captureWorkspaceStateSnapshot() throws Exception {
+        return captureWorkspaceStateSnapshot(true);
+    }
+
+    WorkspaceState captureWorkspaceStateSnapshot(boolean persistRequestEditorState) throws Exception {
         if (workspaceStateService == null || ui == null) {
             return new WorkspaceState();
         }
-        return SwingEdt.call(() -> WorkspaceState.copyOf(ui.getWorkspaceStateSnapshot()));
+        return SwingEdt.call(() -> WorkspaceState.copyOf(
+                persistRequestEditorState ? ui.getWorkspaceStateSnapshot() : ui.getWorkspaceStateSnapshotFromModel()));
     }
 
     boolean isWorkspaceSaveExecutorTerminatedForTests() {
@@ -664,11 +679,15 @@ public class UniversalImporter {
     }
 
     private void persistWorkspaceStateSnapshot(boolean waitForCompletion) {
+        persistWorkspaceStateSnapshot(waitForCompletion, true);
+    }
+
+    private void persistWorkspaceStateSnapshot(boolean waitForCompletion, boolean persistRequestEditorState) {
         if (workspaceStateService == null || ui == null) {
             return;
         }
         try {
-            WorkspaceState snapshot = captureWorkspaceStateSnapshot();
+            WorkspaceState snapshot = captureWorkspaceStateSnapshot(persistRequestEditorState);
             Future<?> future = submitWorkspaceStateSave(snapshot, !waitForCompletion);
             if (waitForCompletion && future != null) {
                 future.get();
