@@ -37,6 +37,40 @@ class RunnerFlowTargetResolverTest {
     }
 
     @Test
+    void collectionAndRequestIdDisambiguateDuplicateRequestIds() {
+        ApiRequest firstRequest = request("duplicate-id", "First", "folder-a");
+        ApiRequest secondRequest = request("duplicate-id", "Second", "folder-b");
+
+        ApiCollection first = collection("First Collection", firstRequest);
+        first.id = "first-collection-id";
+
+        ApiCollection second = collection("Second Collection", secondRequest);
+        second.id = "second-collection-id";
+
+        FlowTargetResolution resolution = resolver.resolve(
+                List.of(first, second),
+                List.of(firstRequest, secondRequest),
+                "duplicate-id",
+                "second-collection-id",
+                "duplicate-id",
+                null,
+                null,
+                null);
+
+        assertThat(resolution.status)
+                .isEqualTo(
+                        FlowTargetResolutionStatus.RESOLVED);
+        assertThat(resolution.form)
+                .isEqualTo(
+                        FlowTargetResolutionForm
+                                .COLLECTION_AND_REQUEST_ID);
+        assertThat(resolution.request)
+                .isSameAs(secondRequest);
+        assertThat(resolution.collection)
+                .isSameAs(second);
+    }
+
+    @Test
     void qualifiedPathResolvesCorrectDuplicate() {
         ApiCollection collection = collection("Collection",
                 request("dup-1", "Duplicate", "folder-a"),

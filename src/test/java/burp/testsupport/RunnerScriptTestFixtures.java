@@ -206,6 +206,7 @@ public final class RunnerScriptTestFixtures {
         public final List<RunnerResult> attemptResults = new CopyOnWriteArrayList<>();
         public final List<RunnerTimelineRow> timelineRows = new CopyOnWriteArrayList<>();
         public final List<String> errors = new CopyOnWriteArrayList<>();
+        public final List<String> debugMessages = new CopyOnWriteArrayList<>();
         public final List<List<RunnerResult>> completedRuns = new CopyOnWriteArrayList<>();
         public final List<RunnerTerminationResult> terminalResults = new CopyOnWriteArrayList<>();
 
@@ -237,6 +238,11 @@ public final class RunnerScriptTestFixtures {
         @Override
         public void onError(String message) {
             errors.add(message);
+        }
+
+        @Override
+        public void onDebug(String message) {
+            debugMessages.add(message);
         }
 
         @Override

@@ -3,6 +3,7 @@ package burp.runner;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.RunnerCancellationState;
 import burp.models.RunnerResult;
 import burp.models.RunnerTerminationType;
 import burp.scripts.ScriptLogEntry;
@@ -111,6 +112,60 @@ class CollectionRunnerRetryIntegrationTest {
     }
 
     @Test
+    void configuredStatusCodeRetriesTransportSuccessfulRealPipelineResponse() throws Exception {
+        AtomicInteger sendCount = new AtomicInteger();
+
+        CollectionRunner runner =
+                RunnerScriptTestFixtures.newRunner(
+                        RunnerScriptTestFixtures.mockRunnerApi(
+                                sendCount,
+                                null,
+                                () ->
+                                        RunnerScriptTestFixtures
+                                                .mockResponse(
+                                                        sendCount.get() == 1
+                                                                ? 503
+                                                                : 200,
+                                                        "body",
+                                                        "text/plain")));
+        runner.setDelayMs(0);
+
+        RunnerRetryPolicy policy = RunnerRetryPolicy.safeDefaults();
+        policy.maxRetries = 1;
+        policy.retryableStatusCodes = new java.util.LinkedHashSet<>(List.of(503));
+        policy.normalize();
+        runner.setRetryPolicy(policy);
+
+        RunnerScriptTestFixtures.RecordingRunnerListener listener =
+                new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+
+        ApiCollection collection =
+                collection("Retry Collection", request("real-status", "Real Status Retry", "GET"));
+
+        run(runner, collection);
+
+        assertThat(sendCount).hasValue(2);
+        assertThat(listener.attemptResults).hasSize(2);
+
+        RunnerResult firstAttempt = listener.attemptResults.get(0);
+        RunnerResult secondAttempt = listener.attemptResults.get(1);
+
+        assertThat(firstAttempt.statusCode).isEqualTo(503);
+        assertThat(firstAttempt.success).isTrue();
+        assertThat(firstAttempt.retryDecision).isEqualTo("RETRY");
+        assertThat(firstAttempt.retryFailureType).isEqualTo(RetryFailureType.HTTP_STATUS);
+
+        assertThat(secondAttempt.statusCode).isEqualTo(200);
+        assertThat(secondAttempt.success).isTrue();
+        assertThat(secondAttempt.attemptNumber).isEqualTo(2);
+
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).statusCode).isEqualTo(200);
+        assertThat(runner.getResults().get(0).attemptNumber).isEqualTo(2);
+    }
+
+    @Test
     void unconfiguredStatusCodeDoesNotRetry() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CollectionRunner runner = runner(new StubPipeline(call -> {
@@ -133,31 +188,75 @@ class CollectionRunnerRetryIntegrationTest {
     }
 
     @Test
-    void cancellationDuringBackoffStopsImmediately() throws Exception {
+    void cancellationDuringBackoffPublishesOneCancelledAttempt() throws Exception {
         AtomicInteger calls = new AtomicInteger();
-        CollectionRunner runner = runner(new StubPipeline(call -> {
-            calls.incrementAndGet();
-            return call == 1 ? connectionFailureResult("GET") : successResult("GET", 200);
-        }));
+        CollectionRunner runner =
+                runner(
+                        new StubPipeline(
+                                call -> {
+                                    calls.incrementAndGet();
+                                    return call == 1
+                                            ? connectionFailureResult("GET")
+                                            : successResult("GET", 200);
+                                }));
         RunnerRetryPolicy policy = RunnerRetryPolicy.safeDefaults();
         policy.maxRetries = 1;
         policy.retryConnectionFailures = true;
-        policy.baseDelayMillis = 1_000;
-        policy.maxDelayMillis = 1_000;
+        policy.baseDelayMillis = 5_000;
+        policy.maxDelayMillis = 5_000;
         policy.normalize();
         runner.setRetryPolicy(policy);
 
-        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        RunnerScriptTestFixtures.RecordingRunnerListener listener =
+                new RunnerScriptTestFixtures
+                        .RecordingRunnerListener();
         runner.addListener(listener);
 
-        ApiCollection collection = collection("Retry Collection", request("get-1", "Retry", "GET"));
+        ApiCollection collection =
+                collection("Retry Collection", request("get-1", "Retry", "GET"));
         runner.runCollections(List.of(collection), collection.requests);
-        await(() -> listener.attemptResults.size() == 1, 2_000L);
+
+        await(
+                () ->
+                        listener.debugMessages.stream()
+                                .anyMatch(
+                                        message ->
+                                                message != null
+                                                        && message.contains(
+                                                                "Retrying in")),
+                2_000L);
         runner.cancel();
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
 
         assertThat(calls).hasValue(1);
-        assertThat(runner.getLastTerminationResult().type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.attemptResults).hasSize(1);
+        assertThat(listener.timelineRows).hasSize(1);
+
+        RunnerResult attempt = listener.attemptResults.get(0);
+        assertThat(attempt.cancellationState)
+                .isEqualTo(
+                        RunnerCancellationState
+                                .CANCELLED_BEFORE_SEND);
+        assertThat(attempt.retryDecision).isEqualTo("NO_RETRY");
+        assertThat(attempt.retryFailureType).isEqualTo(RetryFailureType.CANCELLED);
+        assertThat(attempt.requestMayHaveBeenProcessed).isTrue();
+
+        assertThat(
+                        listener.timelineRows
+                                .get(0)
+                                .cancellationState)
+                .isEqualTo(
+                        RunnerCancellationState
+                                .CANCELLED_BEFORE_SEND
+                                .name());
+        assertThat(
+                        listener.timelineRows
+                                .get(0)
+                                .requestMayHaveBeenProcessed)
+                .isTrue();
+
+        assertThat(runner.getLastTerminationResult().type)
+                .isEqualTo(RunnerTerminationType.CANCELLED);
     }
 
     @Test
@@ -291,7 +390,7 @@ class CollectionRunnerRetryIntegrationTest {
 
     private static ExecutionResult statusFailureResult(String method, int statusCode) {
         ExecutionResult exec = new ExecutionResult();
-        exec.success = false;
+        exec.success = true;
         exec.requestSent = true;
         exec.response = response(statusCode);
         exec.errorMessage = "HTTP " + statusCode;

@@ -38,27 +38,65 @@ public final class RunnerFlowTargetResolver {
         List<Candidate> candidates = buildCandidates(collections, allowedRequests);
         String target = firstNonBlank(explicitRequestId, rawTarget, explicitRequestName);
 
-        FlowTargetResolution resolved = resolveExactRequestId(candidates, explicitRequestId);
-        if (resolved != null) return resolved;
+        FlowTargetResolution resolved = resolveCollectionAndRequestId(
+                candidates,
+                explicitCollectionId,
+                explicitRequestId);
+        if (resolved != null) {
+            return resolved;
+        }
+
+        resolved = resolveCollectionFolderAndName(
+                candidates,
+                explicitCollectionName,
+                explicitFolderPath,
+                explicitRequestName);
+        if (resolved != null) {
+            return resolved;
+        }
+
+        resolved = resolveExactRequestId(candidates, explicitRequestId);
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveExactRequestId(candidates, rawTarget);
-        if (resolved != null) return resolved;
-        resolved = resolveCollectionAndRequestId(candidates, explicitCollectionId, explicitRequestId, rawTarget);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveQualifiedPath(candidates, rawTarget);
-        if (resolved != null) return resolved;
-        resolved = resolveCollectionFolderAndName(candidates, explicitCollectionName, explicitFolderPath, explicitRequestName);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveUniqueName(candidates, explicitRequestName, rawTarget);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveCaseInsensitiveRequestId(candidates, explicitRequestId);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveCaseInsensitiveRequestId(candidates, rawTarget);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveCaseInsensitiveQualifiedPath(candidates, rawTarget);
-        if (resolved != null) return resolved;
+        if (resolved != null) {
+            return resolved;
+        }
+
         resolved = resolveCaseInsensitiveName(candidates, explicitRequestName, rawTarget);
-        if (resolved != null) return resolved;
-        return FlowTargetResolution.notFound("Flow target was not found: " + safeTargetLabel(target) + ".");
+        if (resolved != null) {
+            return resolved;
+        }
+
+        return FlowTargetResolution.notFound(
+                "Flow target was not found: " + safeTargetLabel(target) + ".");
     }
 
     private List<Candidate> buildCandidates(List<ApiCollection> collections, List<ApiRequest> allowedRequests) {
@@ -100,10 +138,24 @@ public final class RunnerFlowTargetResolver {
         return resolveMatches(matches, FlowTargetResolutionForm.REQUEST_ID, target, null);
     }
 
-    private FlowTargetResolution resolveCollectionAndRequestId(List<Candidate> candidates, String explicitCollectionId, String explicitRequestId, String rawTarget) {
-        if (isBlank(explicitCollectionId) || isBlank(explicitRequestId)) return null;
-        List<Candidate> matches = matches(candidates, c -> explicitCollectionId.equals(c.collectionId) && explicitRequestId.equals(c.requestId));
-        return resolveMatches(matches, FlowTargetResolutionForm.COLLECTION_AND_REQUEST_ID, explicitCollectionId + "/" + explicitRequestId, null);
+    private FlowTargetResolution resolveCollectionAndRequestId(
+            List<Candidate> candidates,
+            String explicitCollectionId,
+            String explicitRequestId) {
+        if (isBlank(explicitCollectionId) || isBlank(explicitRequestId)) {
+            return null;
+        }
+
+        List<Candidate> matches = matches(
+                candidates,
+                candidate -> explicitCollectionId.equals(candidate.collectionId)
+                        && explicitRequestId.equals(candidate.requestId));
+
+        return resolveMatches(
+                matches,
+                FlowTargetResolutionForm.COLLECTION_AND_REQUEST_ID,
+                explicitCollectionId + "/" + explicitRequestId,
+                null);
     }
 
     private FlowTargetResolution resolveQualifiedPath(List<Candidate> candidates, String rawTarget) {

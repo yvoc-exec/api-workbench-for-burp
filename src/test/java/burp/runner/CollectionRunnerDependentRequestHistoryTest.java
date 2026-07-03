@@ -38,6 +38,10 @@ class CollectionRunnerDependentRequestHistoryTest {
         AtomicInteger sendCount = new AtomicInteger();
         CollectionRunner runner = RunnerScriptTestFixtures.newRunner(
                 RunnerScriptTestFixtures.mockRunnerApi(sendCount, null, () -> RunnerScriptTestFixtures.mockResponse(201, "{\"ok\":true}", "application/json")));
+        RunnerScriptTestFixtures.RecordingRunnerListener listener =
+                new RunnerScriptTestFixtures
+                        .RecordingRunnerListener();
+        runner.addListener(listener);
 
         EnvironmentProfile environment = new EnvironmentProfile();
         environment.name = "Dev";
@@ -99,8 +103,29 @@ class CollectionRunnerDependentRequestHistoryTest {
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
 
         assertThat(sendCount.get()).isEqualTo(2);
-        RunnerResult childResult = runner.getResults().get(0);
-        HistoryEntry childHistory = HistoryEntry.fromRunnerAttempt(collection, child, environment, childResult);
+        RunnerResult publishedChildAttempt =
+                listener.attemptResults.stream()
+                        .filter(
+                                attempt ->
+                                        attempt != null
+                                                && "history-child"
+                                                        .equals(
+                                                                attempt.requestId))
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "Dependent child attempt was not published"));
+
+        assertThat(publishedChildAttempt.dependentExecution).isTrue();
+        assertThat(publishedChildAttempt.triggeredByScript).isTrue();
+        assertThat(publishedChildAttempt.parentRequestName).isEqualTo("History Parent");
+        assertThat(publishedChildAttempt.parentRequestId).isEqualTo("history-parent");
+        assertThat(publishedChildAttempt.dependentDepth).isEqualTo(1);
+        assertThat(publishedChildAttempt.targetResolutionForm).isEqualTo(FlowTargetResolutionForm.UNIQUE_NAME);
+        assertThat(publishedChildAttempt.qualifiedTargetPath).isEqualTo("History Collection/History Child");
+
+        HistoryEntry childHistory = HistoryEntry.fromRunnerAttempt(collection, child, environment, publishedChildAttempt);
 
         assertThat(childHistory.source.name()).isEqualTo("RUNNER");
         assertThat(childHistory.result).isEqualTo(HistoryResult.SUCCESS);
@@ -115,6 +140,12 @@ class CollectionRunnerDependentRequestHistoryTest {
         assertThat(childHistory.scriptErrors).isEmpty();
         assertThat(childHistory.scriptVariableMutations).isNotEmpty();
         assertThat(childHistory.executionSource).isEqualTo("RUNNER");
+        assertThat(childHistory.dependentExecution).isTrue();
+        assertThat(childHistory.parentRequestName).isEqualTo("History Parent");
+        assertThat(childHistory.parentRequestId).isEqualTo("history-parent");
+        assertThat(childHistory.dependentDepth).isEqualTo(1);
+        assertThat(childHistory.targetResolutionForm).isEqualTo(FlowTargetResolutionForm.UNIQUE_NAME.name());
+        assertThat(childHistory.qualifiedTargetPath).isEqualTo("History Collection/History Child");
 
         assertThat(diagnostics.snapshot())
                 .anySatisfy(event -> {
