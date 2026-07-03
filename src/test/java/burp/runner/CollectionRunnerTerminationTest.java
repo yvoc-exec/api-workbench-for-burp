@@ -7,6 +7,7 @@ import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.RunnerCancellationState;
 import burp.models.RunnerResult;
 import burp.models.RunnerTerminationResult;
 import burp.models.RunnerTerminationType;
@@ -264,7 +265,25 @@ class CollectionRunnerTerminationTest {
         assertThat(runner.getResults()).hasSize(2);
         assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
         assertThat(runner.getResults().get(1).requestName).isEqualTo("Two");
-        assertThat(runner.getResults().get(1).preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
+
+        RunnerResult cancelledResult = runner.getResults().get(1);
+        assertThat(cancelledResult.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.CANCELLED);
+        assertThat(cancelledResult.cancellationState)
+                .isEqualTo(RunnerCancellationState.CANCELLED_BEFORE_SEND);
+        assertThat(cancelledResult.retryDecision).isEqualTo("NO_RETRY");
+        assertThat(cancelledResult.retryFailureType)
+                .isEqualTo(RetryFailureType.CANCELLED);
+
+        assertThat(listener.attemptResults).hasSize(2);
+        RunnerResult cancelledAttempt = listener.attemptResults.get(1);
+        assertThat(cancelledAttempt.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.CANCELLED);
+        assertThat(cancelledAttempt.cancellationState)
+                .isEqualTo(RunnerCancellationState.CANCELLED_BEFORE_SEND);
+        assertThat(cancelledAttempt.retryDecision).isEqualTo("NO_RETRY");
+        assertThat(cancelledAttempt.retryFailureType)
+                .isEqualTo(RetryFailureType.CANCELLED);
     }
 
     @Test
