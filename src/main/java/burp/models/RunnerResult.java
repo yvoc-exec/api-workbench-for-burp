@@ -1,5 +1,7 @@
 package burp.models;
 
+import burp.runner.FlowTargetResolutionForm;
+import burp.runner.RetryFailureType;
 import burp.scripts.ExecutionSource;
 import burp.scripts.ScriptDependentRequestResult;
 import burp.scripts.ScriptFlowControl;
@@ -79,6 +81,14 @@ public class RunnerResult {
     public boolean triggeredByScript;
     public int attemptNumber = 1;
     public int totalAttempts = 1;
+    public String retryDecision;
+    public String retryReason;
+    public int retryDelayMillis;
+    public RetryFailureType retryFailureType;
+    public boolean requestMayHaveBeenProcessed;
+    public FlowTargetResolutionForm targetResolutionForm = FlowTargetResolutionForm.NONE;
+    public String qualifiedTargetPath;
+    public RunnerCancellationState cancellationState = RunnerCancellationState.NOT_CANCELLED;
 
     public boolean isSkippedByScript() {
         return scriptFlowControl == ScriptFlowControl.SKIP_REQUEST;
@@ -93,6 +103,10 @@ public class RunnerResult {
     }
 
     public String displayStatusLabel() {
+        String retrySuffix = retrySuffix();
+        if (cancellationState != null && cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+            return "Cancelled" + retrySuffix + executionSuffix();
+        }
         if (preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
@@ -100,25 +114,29 @@ public class RunnerResult {
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY
                 || preflightStatus == ExecutionPreflightStatus.CANCELLED) {
-            return "Blocked: " + safePreflightLabel();
+            return "Blocked: " + safePreflightLabel() + retrySuffix + executionSuffix();
         }
         if (responseTimedOut) {
-            return "Timed Out";
+            return "Timed Out" + retrySuffix + executionSuffix();
         }
         if (isSkippedByScript()) {
-            return "Skipped by Script";
+            return "Skipped by Script" + retrySuffix + executionSuffix();
         }
         if (isStoppedByScript()) {
-            return "Stopped by Script";
+            return "Stopped by Script" + retrySuffix + executionSuffix();
         }
         if (success) {
             String label = statusCode > 0 ? String.valueOf(statusCode) : "OK";
-            return dependentExecution ? label + " (dependent)" : label;
+            return label + retrySuffix + executionSuffix();
         }
-        return dependentExecution ? "ERR (dependent)" : "ERR";
+        return "ERR" + retrySuffix + executionSuffix();
     }
 
     public String displayLogStatusLabel() {
+        String retrySuffix = retrySuffix();
+        if (cancellationState != null && cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+            return "Cancelled" + retrySuffix + executionSuffix();
+        }
         if (preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
@@ -126,27 +144,44 @@ public class RunnerResult {
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY
                 || preflightStatus == ExecutionPreflightStatus.CANCELLED) {
-            return "Blocked: " + safePreflightLabel();
+            return "Blocked: " + safePreflightLabel() + retrySuffix + executionSuffix();
         }
         if (responseTimedOut) {
-            return "Timed Out";
+            return "Timed Out" + retrySuffix + executionSuffix();
         }
         if (isSkippedByScript()) {
             return success || errorMessage == null || errorMessage.isBlank()
-                    ? "SKIPPED by script"
-                    : "SKIPPED by script (" + errorMessage + ")";
+                    ? "SKIPPED by script" + retrySuffix + executionSuffix()
+                    : "SKIPPED by script (" + errorMessage + ")" + retrySuffix + executionSuffix();
         }
         if (isStoppedByScript()) {
             return success || errorMessage == null || errorMessage.isBlank()
-                    ? "STOPPED by script"
-                    : "STOPPED by script (" + errorMessage + ")";
+                    ? "STOPPED by script" + retrySuffix + executionSuffix()
+                    : "STOPPED by script (" + errorMessage + ")" + retrySuffix + executionSuffix();
         }
         if (success) {
             String label = statusCode > 0 ? "OK " + statusCode : "OK";
-            return dependentExecution ? label + " (dependent)" : label;
+            return label + retrySuffix + executionSuffix();
         }
         String label = "FAIL " + (errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Unknown error");
-        return dependentExecution ? label + " (dependent)" : label;
+        return label + retrySuffix + executionSuffix();
+    }
+
+    private String retrySuffix() {
+        if (attemptNumber <= 1 || totalAttempts <= 1) {
+            return "";
+        }
+        return " (retry " + attemptNumber + "/" + totalAttempts + ")";
+    }
+
+    private String executionSuffix() {
+        if (adHocExecution) {
+            return " (ad hoc)";
+        }
+        if (dependentExecution || triggeredByScript || parentRequestId != null || parentRequestName != null) {
+            return " (dependent)";
+        }
+        return "";
     }
 
     private String safePreflightLabel() {

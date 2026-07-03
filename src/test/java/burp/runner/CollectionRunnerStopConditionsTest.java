@@ -10,6 +10,7 @@ import burp.models.ApiRequest;
 import burp.models.RunnerResult;
 import burp.models.RunnerStopConditions;
 import burp.models.RunnerTerminationType;
+import burp.testsupport.RunnerScriptTestFixtures;
 import burp.utils.ExecutionResult;
 import burp.utils.ExecutionPreflightStatus;
 import burp.utils.SharedRequestPipeline;
@@ -156,18 +157,8 @@ class CollectionRunnerStopConditionsTest {
     void stopOnMissingVariableStopsBeforeRequestExecution() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CopyOnWriteArrayList<String> errors = new CopyOnWriteArrayList<>();
-        CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
-            @Override
-            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
-                calls.incrementAndGet();
-                ExecutionResult exec = new ExecutionResult();
-                exec.success = true;
-                exec.response = mockResponse(200);
-                exec.requestHeaders = "GET /missing HTTP/1.1\r\nHost: example.com\r\n\r\n";
-                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
-                return exec;
-            }
-        }, null);
+        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(calls, null, () -> mockResponse(200));
+        CollectionRunner runner = RunnerScriptTestFixtures.newRunner(api);
         runner.setMaxRetries(0);
         runner.setStopConditions(stopConditions(false, false, false, true, 0));
         runner.addListener(new TestListener(errors));

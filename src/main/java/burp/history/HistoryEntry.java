@@ -6,10 +6,13 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RedirectHop;
 import burp.models.RedirectTerminationReason;
+import burp.models.RunnerCancellationState;
 import burp.models.RunnerResult;
+import burp.runner.FlowTargetResolutionForm;
 import burp.scripts.ScriptFlowControl;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
+import burp.runner.RetryFailureType;
 import burp.diagnostics.DiagnosticEvent;
 import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
@@ -36,6 +39,19 @@ public class HistoryEntry {
     public HistorySource source = HistorySource.WORKBENCH;
     public int attemptNumber = 1;
     public int totalAttempts = 1;
+    public String retryDecision;
+    public String retryReason;
+    public int retryDelayMillis;
+    public String retryFailureType;
+    public boolean requestMayHaveBeenProcessed;
+    public String parentRequestName;
+    public String parentRequestId;
+    public boolean dependentExecution;
+    public boolean adHocExecution;
+    public int dependentDepth;
+    public String targetResolutionForm;
+    public String qualifiedTargetPath;
+    public String cancellationState;
     public String collectionId;
     public String collectionName;
     public String folderPath;
@@ -249,6 +265,19 @@ public class HistoryEntry {
             entry.responseSnapshot = HistoryResponseSnapshot.from(result);
             entry.errorMessage = result.errorMessage;
             entry.requestSent = result.requestSent;
+            entry.retryDecision = result.retryDecision;
+            entry.retryReason = result.retryReason;
+            entry.retryDelayMillis = result.retryDelayMillis;
+            entry.retryFailureType = result.retryFailureType != null ? result.retryFailureType.name() : null;
+            entry.requestMayHaveBeenProcessed = result.requestMayHaveBeenProcessed;
+            entry.parentRequestName = result.parentRequestName;
+            entry.parentRequestId = result.parentRequestId;
+            entry.dependentExecution = result.dependentExecution;
+            entry.adHocExecution = result.adHocExecution;
+            entry.dependentDepth = result.dependentDepth;
+            entry.targetResolutionForm = result.targetResolutionForm != null ? result.targetResolutionForm.name() : null;
+            entry.qualifiedTargetPath = result.qualifiedTargetPath;
+            entry.cancellationState = result.cancellationState != null ? result.cancellationState.name() : null;
             entry.preflightStatus = result.preflightStatus != null ? result.preflightStatus.name() : null;
             entry.preflightMessage = result.preflightMessage;
             entry.responseTimedOut = result.responseTimedOut;
@@ -372,6 +401,19 @@ public class HistoryEntry {
         copy.source = source.source;
         copy.attemptNumber = source.attemptNumber;
         copy.totalAttempts = source.totalAttempts;
+        copy.retryDecision = source.retryDecision;
+        copy.retryReason = source.retryReason;
+        copy.retryDelayMillis = source.retryDelayMillis;
+        copy.retryFailureType = source.retryFailureType;
+        copy.requestMayHaveBeenProcessed = source.requestMayHaveBeenProcessed;
+        copy.parentRequestName = source.parentRequestName;
+        copy.parentRequestId = source.parentRequestId;
+        copy.dependentExecution = source.dependentExecution;
+        copy.adHocExecution = source.adHocExecution;
+        copy.dependentDepth = source.dependentDepth;
+        copy.targetResolutionForm = source.targetResolutionForm;
+        copy.qualifiedTargetPath = source.qualifiedTargetPath;
+        copy.cancellationState = source.cancellationState;
         copy.collectionId = source.collectionId;
         copy.collectionName = source.collectionName;
         copy.folderPath = source.folderPath;
@@ -444,6 +486,9 @@ public class HistoryEntry {
         }
         if (totalAttempts <= 0) {
             totalAttempts = 1;
+        }
+        if (cancellationState == null || cancellationState.isBlank()) {
+            cancellationState = RunnerCancellationState.NOT_CANCELLED.name();
         }
         if (requestSnapshot == null) {
             requestSnapshot = new HistoryRequestSnapshot();
@@ -776,7 +821,92 @@ public class HistoryEntry {
         if (entry == null) {
             return "";
         }
-        return buildLegacyMetadataText(entry);
+        StringBuilder sb = new StringBuilder(buildLegacyMetadataText(entry));
+        appendMetadataLine(sb, "Attempt", entry.attemptDisplay());
+        appendMetadataLine(sb, "Retry Decision", entry.retryDecision != null && !entry.retryDecision.isBlank() ? entry.retryDecision : "NONE");
+        appendMetadataLine(sb, "Retry Reason", entry.retryReason != null ? entry.retryReason : "");
+        appendMetadataLine(sb, "Retry Delay", entry.retryDelayMillis > 0 ? entry.retryDelayMillis + " ms" : "0 ms");
+        appendMetadataLine(sb, "Execution Kind", executionKind(entry));
+        appendMetadataLine(sb, "Parent Request", parentRequestDisplay(entry));
+        appendMetadataLine(sb, "Target Resolution", targetResolutionDisplay(entry));
+        appendMetadataLine(sb, "Cancellation State", cancellationDisplay(entry));
+        appendMetadataLine(sb, "Request May Have Been Processed", entry.requestMayHaveBeenProcessed ? "yes" : "no");
+        return sb.toString().trim();
+    }
+
+    private static String executionKind(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        if (entry.cancellationState != null && !entry.cancellationState.isBlank() && !RunnerCancellationState.NOT_CANCELLED.name().equals(entry.cancellationState)) {
+            return "CANCELLED";
+        }
+        if (entry.preflightStatus != null
+                && (entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR.name())
+                || entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT.name())
+                || entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE.name())
+                || entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES.name())
+                || entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE.name())
+                || entry.preflightStatus.equals(ExecutionPreflightStatus.BLOCKED_POLICY.name()))) {
+            return "PREFLIGHT_BLOCKED";
+        }
+        if (entry.responseTimedOut) {
+            return "TIMED_OUT";
+        }
+        if (entry.adHocExecution) {
+            return "AD_HOC";
+        }
+        if (entry.dependentExecution) {
+            return "DEPENDENT";
+        }
+        if (entry.attemptNumber > 1) {
+            return "RETRY";
+        }
+        return "QUEUED";
+    }
+
+    private static String parentRequestDisplay(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (entry.parentRequestName != null && !entry.parentRequestName.isBlank()) {
+            sb.append(entry.parentRequestName);
+        }
+        if (entry.parentRequestId != null && !entry.parentRequestId.isBlank()) {
+            if (sb.length() > 0) {
+                sb.append(" [");
+            } else {
+                sb.append('[');
+            }
+            sb.append(entry.parentRequestId).append(']');
+        }
+        return sb.toString();
+    }
+
+    private static String targetResolutionDisplay(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        String form = entry.targetResolutionForm != null && !entry.targetResolutionForm.isBlank()
+                ? entry.targetResolutionForm
+                : FlowTargetResolutionForm.NONE.name();
+        String path = entry.qualifiedTargetPath != null ? entry.qualifiedTargetPath : "";
+        return path.isBlank() ? form : form + " " + path;
+    }
+
+    private static String cancellationDisplay(HistoryEntry entry) {
+        if (entry == null || entry.cancellationState == null || entry.cancellationState.isBlank()) {
+            return RunnerCancellationState.NOT_CANCELLED.name();
+        }
+        return entry.cancellationState;
+    }
+
+    private static void appendMetadataLine(StringBuilder sb, String label, String value) {
+        if (sb.length() > 0) {
+            sb.append('\n');
+        }
+        sb.append(label).append(": ").append(value != null ? value : "");
     }
 
     private static String originDisplay(String resolvedUrl) {

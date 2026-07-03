@@ -8,7 +8,7 @@ import java.util.List;
 
 public class RunnerTimelineTableModel extends AbstractTableModel {
     private final List<RunnerTimelineRow> rows = new ArrayList<>();
-    private final String[] columns = {"#", "Collection", "Request", "Status", "Time", "Retries", "Vars changed", "Assertions"};
+    private final String[] columns = {"#", "Collection", "Request", "Status", "Attempt", "Kind", "Retry Reason", "Cancellation", "Time", "Retries", "Vars changed", "Assertions"};
 
     public void addRow(RunnerTimelineRow row) {
         rows.add(row);
@@ -47,10 +47,10 @@ public class RunnerTimelineTableModel extends AbstractTableModel {
     public Class<?> getColumnClass(int column) {
         switch (column) {
             case 0:
-            case 5:
-            case 6:
+            case 9:
+            case 10:
                 return Integer.class;
-            case 4:
+            case 8:
                 return Long.class;
             default:
                 return String.class;
@@ -70,12 +70,20 @@ public class RunnerTimelineTableModel extends AbstractTableModel {
             case 3:
                 return timelineRow.status != null ? timelineRow.status : "";
             case 4:
-                return timelineRow.timeMs;
+                return timelineRow.attemptNumber + "/" + timelineRow.totalAttempts;
             case 5:
-                return timelineRow.retries;
+                return timelineRow.executionKind != null ? timelineRow.executionKind : "";
             case 6:
-                return timelineRow.varsChanged;
+                return timelineRow.retryReason != null ? timelineRow.retryReason : "";
             case 7:
+                return timelineRow.cancellationState != null ? timelineRow.cancellationState : "";
+            case 8:
+                return timelineRow.timeMs;
+            case 9:
+                return timelineRow.retries;
+            case 10:
+                return timelineRow.varsChanged;
+            case 11:
                 return timelineRow.assertions != null ? timelineRow.assertions : "";
             default:
                 return "";

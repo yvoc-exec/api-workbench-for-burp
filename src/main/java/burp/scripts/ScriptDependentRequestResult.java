@@ -2,6 +2,9 @@ package burp.scripts;
 
 import burp.models.RunnerResult;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class ScriptDependentRequestResult {
     public boolean executed;
     public boolean success;
@@ -16,6 +19,9 @@ public class ScriptDependentRequestResult {
     public int depth;
     public boolean adHoc;
     public RunnerResult runnerResult;
+    public String targetResolutionForm;
+    public String qualifiedTargetPath;
+    public List<String> candidateQualifiedPaths = new ArrayList<>();
 
     public static ScriptDependentRequestResult ignored(String warning) {
         ScriptDependentRequestResult result = new ScriptDependentRequestResult();

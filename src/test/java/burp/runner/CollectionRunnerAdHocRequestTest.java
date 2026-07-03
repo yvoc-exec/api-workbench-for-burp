@@ -71,11 +71,11 @@ class CollectionRunnerAdHocRequestTest {
         assertThat(adHocResult.rawRequestText).contains("Host: api.example.test");
         assertThat(adHocResult.rawRequestText).contains("X-AdHoc: true");
         assertThat(adHocResult.rawRequestText).contains("{\"adHoc\":true}");
-        assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (dependent)");
+        assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (ad hoc)");
         assertThat(parentResult.scriptFlowControl).isEqualTo(ScriptFlowControl.SEND_AD_HOC_REQUEST);
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
-        assertThat(listener.timelineRows).extracting(row -> row.status).contains("200 (dependent)", "200");
+        assertThat(listener.timelineRows).extracting(row -> row.status).contains("200", "200");
     }
 
     @Test
@@ -110,7 +110,7 @@ class CollectionRunnerAdHocRequestTest {
         assertThat(adHocResult.requestUrl).isEqualTo("https://api.example.test/ping");
         assertThat(adHocResult.rawRequestText).contains("GET /ping HTTP/1.1");
         assertThat(adHocResult.rawRequestText).contains("Host: api.example.test");
-        assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (dependent)");
+        assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (ad hoc)");
     }
 
     @Test

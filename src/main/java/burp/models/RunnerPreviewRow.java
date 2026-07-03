@@ -11,4 +11,9 @@ public class RunnerPreviewRow {
     public String urlPreview;
     public List<String> unresolvedVariables = new ArrayList<>();
     public String authStatus;
+    public boolean retryEligible;
+    public int maximumAttempts = 1;
+    public String retryPolicySummary;
+    public int responseTimeoutMillis;
+    public String targetChangePolicy;
 }

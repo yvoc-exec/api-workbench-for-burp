@@ -197,12 +197,12 @@ class CollectionRunnerRedirectTest {
             runner.runCollections(List.of(collection), List.of(request));
             RunnerScriptTestFixtures.waitForRunnerToStop(runner);
 
-            assertThat(sendCount).hasValue(4);
+            assertThat(sendCount).hasValue(2);
             assertThat(runner.getResults()).hasSize(1);
-            assertThat(runner.getResults().get(0).success).isTrue();
-            assertThat(runner.getResults().get(0).attemptNumber).isEqualTo(2);
-            assertThat(runner.getResults().get(0).redirectHops).hasSize(1);
-            assertThat(runner.getResults().get(0).redirectTerminationReason).isEqualTo(RedirectTerminationReason.FINAL_RESPONSE);
+            assertThat(runner.getResults().get(0).success).isFalse();
+            assertThat(runner.getResults().get(0).attemptNumber).isEqualTo(1);
+            assertThat(runner.getResults().get(0).redirectHops).hasSize(2);
+            assertThat(runner.getResults().get(0).redirectTerminationReason).isEqualTo(RedirectTerminationReason.LOOP_DETECTED);
             return null;
         });
     }

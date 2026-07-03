@@ -17,6 +17,7 @@ import burp.models.RunnerTerminationResult;
 import burp.models.RunnerTerminationType;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
+import burp.testsupport.ImporterPanelTestSupport;
 import burp.testsupport.RunnerScriptTestFixtures;
 import burp.ui.dnd.EnvironmentDragPayload;
 import burp.ui.history.HistoryDetailPanel;
@@ -28,6 +29,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JDialog;
 import javax.swing.JProgressBar;
 import javax.swing.JSpinner;
@@ -692,6 +694,34 @@ class ImporterPanelRunnerQueueTest {
     }
 
     @Test
+    void legacyRetryRestoreSetsWarningFlagAndDoesNotSaveWorkspace() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        WorkspaceState state = new WorkspaceState();
+        state.runnerRetries = 2;
+
+        ImporterPanelTestSupport.invokeVoid(bundle.panel, "restoreRunnerSettings", new Class[]{WorkspaceState.class}, state);
+        drainEdt();
+
+        assertThat(((JSpinner) privateField(bundle.panel, "runnerMaxRetriesSpinner")).getValue()).isEqualTo(2);
+        assertThat(((JCheckBox) privateField(bundle.panel, "runnerRetryConnectionFailuresCheckBox")).isSelected()).isTrue();
+        assertThat(((JCheckBox) privateField(bundle.panel, "runnerRetryTimeoutsCheckBox")).isSelected()).isTrue();
+        Mockito.verify(bundle.importer, Mockito.never()).requestWorkspaceStateSaveNow();
+        Mockito.verify(bundle.importer, Mockito.never()).requestWorkspaceStateSaveNowFromModel();
+    }
+
+    @Test
+    void absentLegacyRetryValueRestoresZeroWithoutWarningFlag() throws Exception {
+        ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        WorkspaceState state = new WorkspaceState();
+        state.runnerRetries = null;
+
+        ImporterPanelTestSupport.invokeVoid(bundle.panel, "restoreRunnerSettings", new Class[]{WorkspaceState.class}, state);
+        drainEdt();
+
+        assertThat(((JSpinner) privateField(bundle.panel, "runnerMaxRetriesSpinner")).getValue()).isEqualTo(0);
+    }
+
+    @Test
     void runnerQueueRestoreSkipsMissingRequestIdentityKeysSafely() throws Exception {
         ImporterPanel panel = newPanel();
         ApiRequest one = request("One");
@@ -822,6 +852,7 @@ class ImporterPanelRunnerQueueTest {
                 burp.utils.ExecutionResult exec = new burp.utils.ExecutionResult();
                 exec.requestHeaders = "GET " + req.url + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
                 exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                exec.requestSent = true;
                 if (attempts.getAndIncrement() == 0) {
                     exec.success = false;
                     exec.errorMessage = "retry";

@@ -9,4 +9,10 @@ public class RunnerTimelineRow {
     public int retries;
     public int varsChanged;
     public String assertions;
+    public int attemptNumber = 1;
+    public int totalAttempts = 1;
+    public String executionKind;
+    public String retryReason;
+    public String cancellationState;
+    public boolean requestMayHaveBeenProcessed;
 }

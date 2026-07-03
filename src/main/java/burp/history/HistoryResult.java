@@ -10,6 +10,7 @@ public enum HistoryResult {
     ERROR("Error"),
     ASSERTION_FAILURE("Assertion Failure"),
     MISSING_VARIABLE("Missing Variable"),
+    CANCELLED("Cancelled"),
     BLOCKED("Blocked Before Send"),
     TIMEOUT("Response Timeout"),
     SKIPPED("Skipped by Script"),
@@ -83,13 +84,16 @@ public enum HistoryResult {
                                           boolean skipped,
                                           boolean stopped,
                                           ExecutionPreflightStatus preflightStatus) {
+        if (preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+            return CANCELLED;
+        }
         if (preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
                 || preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY
-                || preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+                ) {
             return BLOCKED;
         }
         if (responseTimedOut) {

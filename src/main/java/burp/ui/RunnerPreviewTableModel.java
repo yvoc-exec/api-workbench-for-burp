@@ -9,7 +9,7 @@ import java.util.StringJoiner;
 
 public class RunnerPreviewTableModel extends AbstractTableModel {
     private final List<RunnerPreviewRow> rows = new ArrayList<>();
-    private final String[] columns = {"#", "Collection", "Method", "URL Preview", "Unresolved Vars", "Auth"};
+    private final String[] columns = {"#", "Collection", "Method", "Request", "URL Preview", "Retry Eligible", "Max Attempts", "Timeout", "Variables", "Auth", "Target Policy"};
 
     public void setRows(List<RunnerPreviewRow> previewRows) {
         rows.clear();
@@ -58,8 +58,16 @@ public class RunnerPreviewTableModel extends AbstractTableModel {
             case 2:
                 return previewRow.method != null ? previewRow.method : "";
             case 3:
-                return previewRow.urlPreview != null ? previewRow.urlPreview : "";
+                return previewRow.requestName != null ? previewRow.requestName : "";
             case 4:
+                return previewRow.urlPreview != null ? previewRow.urlPreview : "";
+            case 5:
+                return previewRow.retryEligible ? "Yes" : "No";
+            case 6:
+                return previewRow.maximumAttempts > 0 ? previewRow.maximumAttempts : 1;
+            case 7:
+                return previewRow.responseTimeoutMillis + " ms";
+            case 8:
                 if (previewRow.unresolvedVariables == null || previewRow.unresolvedVariables.isEmpty()) {
                     return "";
                 }
@@ -70,8 +78,10 @@ public class RunnerPreviewTableModel extends AbstractTableModel {
                     }
                 }
                 return joiner.toString();
-            case 5:
+            case 9:
                 return previewRow.authStatus != null ? previewRow.authStatus : "";
+            case 10:
+                return previewRow.targetChangePolicy != null ? previewRow.targetChangePolicy : "";
             default:
                 return "";
         }
