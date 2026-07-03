@@ -445,6 +445,36 @@ public class SharedRequestPipeline implements AutoCloseable {
         TokenStore.TokenEntry pendingOAuth2Entry = null;
         Map<String, String> pendingOAuth2Variables = new LinkedHashMap<>();
         ApiRequest requestForBuild = effectiveRequest;
+        String preOAuth2ResolvedUrl = resolver.resolve(
+                requestForBuild != null ? requestForBuild.url : null
+        );
+        boolean scriptMutatedDestination =
+                scriptResult != null && scriptResult.mutatedRequest != null
+                        || !finalResolvedVariables.equals(baselineResolver.getVariables());
+        if (scriptMutatedDestination
+                && isInvalidEffectiveDestination(preOAuth2ResolvedUrl)) {
+            List<String> preOAuth2UnresolvedVariables = new ArrayList<>(
+                    RequestBuilder.findUnresolvedTokens(
+                            preOAuth2ResolvedUrl != null
+                                    ? preOAuth2ResolvedUrl.getBytes(
+                                            java.nio.charset.StandardCharsets.UTF_8
+                                    )
+                                    : new byte[0]
+                    )
+            );
+            return blockInvalidEffectiveDestination(
+                    result,
+                    preOAuth2UnresolvedVariables,
+                    originalResolvedUrl,
+                    preOAuth2ResolvedUrl,
+                    oauth2Required,
+                    oauth2Ready,
+                    preRequestScriptFailed,
+                    preRequestScriptTimedOut,
+                    policyOverrides,
+                    resolver
+            );
+        }
         if (intent != ExecutionIntent.PREVIEW && oauth2Required) {
             try {
                 OAuth2Config config = OAuth2Config.fromVariables(resolver.getVariables());
@@ -770,50 +800,20 @@ public class SharedRequestPipeline implements AutoCloseable {
             result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
         }
 
-        boolean invalidEffectiveDestination = effectiveOrigin.isBlank();
-        if (!invalidEffectiveDestination && resolvedUrl != null) {
-            try {
-                HttpUtils.ParsedTarget parsedEffectiveDestination = HttpUtils.parseTargetForRequest(resolvedUrl);
-                invalidEffectiveDestination = parsedEffectiveDestination == null
-                        || parsedEffectiveDestination.host == null
-                        || parsedEffectiveDestination.host.isBlank()
-                        || parsedEffectiveDestination.host.contains("{")
-                        || parsedEffectiveDestination.host.contains("}");
-            } catch (Exception ignored) {
-                invalidEffectiveDestination = true;
-            }
+        if (isInvalidEffectiveDestination(resolvedUrl)) {
+            return blockInvalidEffectiveDestination(
+                    result,
+                    unresolvedVariables,
+                    originalResolvedUrl,
+                    resolvedUrl,
+                    oauth2Required,
+                    oauth2Ready,
+                    preRequestScriptFailed,
+                    preRequestScriptTimedOut,
+                    policyOverrides,
+                    resolver
+            );
         }
-
-        if (invalidEffectiveDestination) {
-            String message = "Request not sent — execution policy blocked transmission.";
-            if (result != null) {
-                result.success = false;
-                result.requestSent = false;
-                result.preflightStatus = ExecutionPreflightStatus.BLOCKED_POLICY;
-                result.preflightMessage = message;
-                result.errorMessage = message;
-                result.preflight = ExecutionPreflightResult.blocked(
-                        ExecutionPreflightStatus.BLOCKED_POLICY,
-                        message,
-                        unresolvedVariables,
-                        originalResolvedUrl,
-                        resolvedUrl,
-                        originalOrigin,
-                        effectiveOrigin,
-                        targetChanged,
-                        oauth2Required,
-                        oauth2Ready,
-                        preRequestScriptFailed,
-                        preRequestScriptTimedOut,
-                        false,
-                        false,
-                        List.of(ExecutionPreflightStatus.BLOCKED_POLICY),
-                        policyOverrides
-                );
-            }
-            return result;
-        }
-
         if (result != null) {
             commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
         }
@@ -1072,6 +1072,100 @@ public class SharedRequestPipeline implements AutoCloseable {
                 .withResponseTimeout(timeoutMillis);
     }
 
+    private static boolean isInvalidEffectiveDestination(String resolvedUrl) {
+        if (resolvedUrl == null || resolvedUrl.isBlank()) {
+            return true;
+        }
+
+        if (originDisplay(resolvedUrl).isBlank()) {
+            return true;
+        }
+
+        try {
+            HttpUtils.ParsedTarget parsed =
+                    HttpUtils.parseTargetForRequest(resolvedUrl);
+            if (parsed == null
+                    || parsed.host == null
+                    || parsed.host.isBlank()) {
+                return true;
+            }
+
+            return parsed.host.contains("{")
+                    || parsed.host.contains("}");
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private static ExecutionResult blockInvalidEffectiveDestination(
+            ExecutionResult result,
+            List<String> unresolvedVariables,
+            String originalResolvedUrl,
+            String effectiveResolvedUrl,
+            boolean oauth2Required,
+            boolean oauth2Ready,
+            boolean preRequestScriptFailed,
+            boolean preRequestScriptTimedOut,
+            List<String> policyOverrides,
+            VariableResolver resolver) {
+        if (result == null) {
+            return null;
+        }
+
+        String message =
+                "Request not sent — execution policy blocked transmission.";
+        String originalOrigin = originDisplay(originalResolvedUrl);
+        String effectiveOrigin = originDisplay(effectiveResolvedUrl);
+        boolean targetChanged = hasTargetChanged(
+                originalResolvedUrl,
+                effectiveResolvedUrl
+        );
+        List<String> safeUnresolvedVariables =
+                unresolvedVariables != null
+                        ? unresolvedVariables
+                        : List.of();
+        List<String> safePolicyOverrides =
+                policyOverrides != null
+                        ? policyOverrides
+                        : List.of();
+
+        result.success = false;
+        result.requestSent = false;
+        result.responseTimedOut = false;
+        result.preflightStatus = ExecutionPreflightStatus.BLOCKED_POLICY;
+        result.preflightMessage = message;
+        result.errorMessage = message;
+        result.originalResolvedUrl = originalResolvedUrl;
+        result.effectiveResolvedUrl = effectiveResolvedUrl;
+        result.oauth2Required = oauth2Required;
+        result.oauth2Ready = oauth2Ready;
+        result.targetChangeAllowed = false;
+        result.unresolvedVariablesAllowed = false;
+        result.policyOverridesApplied.clear();
+        result.policyOverridesApplied.addAll(safePolicyOverrides);
+        result.resolvedVariables = resolver != null
+                ? new LinkedHashMap<>(resolver.getVariables())
+                : new LinkedHashMap<>();
+        result.preflight = ExecutionPreflightResult.blocked(
+                ExecutionPreflightStatus.BLOCKED_POLICY,
+                message,
+                safeUnresolvedVariables,
+                originalResolvedUrl,
+                effectiveResolvedUrl,
+                originalOrigin,
+                effectiveOrigin,
+                targetChanged,
+                oauth2Required,
+                oauth2Ready,
+                preRequestScriptFailed,
+                preRequestScriptTimedOut,
+                false,
+                false,
+                List.of(ExecutionPreflightStatus.BLOCKED_POLICY),
+                safePolicyOverrides
+        );
+        return result;
+    }
     private static String originDisplay(String resolvedUrl) {
         try {
             HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
