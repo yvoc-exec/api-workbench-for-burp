@@ -26,6 +26,7 @@ import burp.scripts.ScriptExecutionResult;
 import burp.scripts.UnifiedScriptRuntime;
 
 import java.util.*;
+import java.util.function.BooleanSupplier;
 
 /**
  * Shared execution pipeline for both Workbench Send and Collection Runner.
@@ -192,8 +193,33 @@ public class SharedRequestPipeline implements AutoCloseable {
                                    RedirectPolicy redirectPolicy,
                                    ExecutionPolicy executionPolicy,
                                    PreflightDecisionHandler preflightDecisionHandler) {
+        return execute(req, col, followRedirects, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, executionPolicy, preflightDecisionHandler, () -> false);
+    }
+
+    public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                   Map<String, String> runtimeOverlay,
+                                   OAuth2TokenSink oauth2TokenSink,
+                                   RuntimeVariableSink runtimeVariableSink,
+                                   EnvironmentProfile activeEnvironment,
+                                   ExecutionSource executionSource,
+                                   burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
+                                   RedirectPolicy redirectPolicy,
+                                   ExecutionPolicy executionPolicy,
+                                   PreflightDecisionHandler preflightDecisionHandler,
+                                   BooleanSupplier cancellationRequested) {
+        if (usesLegacyExecuteOverride()) {
+            return execute(req, col, followRedirects);
+        }
         ExecutionResult result = new ExecutionResult();
-        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, executionPolicy, preflightDecisionHandler);
+        return executeInternal(req, col, followRedirects, result, true, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, executionPolicy, preflightDecisionHandler, cancellationRequested);
+    }
+
+    private boolean usesLegacyExecuteOverride() {
+        try {
+            return getClass().getMethod("execute", ApiRequest.class, ApiCollection.class, boolean.class).getDeclaringClass() != SharedRequestPipeline.class;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
     }
 
     public ExecutionResult build(ApiRequest req, ApiCollection col,
@@ -236,6 +262,26 @@ public class SharedRequestPipeline implements AutoCloseable {
         return executeInternal(req, col, true, new ExecutionResult(), false, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, RedirectPolicy.defaults(), ExecutionPolicy.previewDefaults(), null);
     }
 
+    private static boolean isCancellationRequested(BooleanSupplier cancellationRequested) {
+        try {
+            return cancellationRequested != null && cancellationRequested.getAsBoolean();
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private static ExecutionResult markCancelled(ExecutionResult result, boolean requestSent, boolean lateResponse) {
+        ExecutionResult out = result != null ? result : new ExecutionResult();
+        out.success = false;
+        out.requestSent = out.requestSent || requestSent;
+        out.responseTimedOut = false;
+        out.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+        out.preflightMessage = "Runner execution cancelled.";
+        out.errorMessage = "Runner execution cancelled.";
+        out.response = null;
+        return out;
+    }
+
     private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
                                             ExecutionResult result, boolean sendRequest,
                                             Map<String, String> runtimeOverlay,
@@ -247,6 +293,21 @@ public class SharedRequestPipeline implements AutoCloseable {
                                             RedirectPolicy redirectPolicy,
                                             ExecutionPolicy executionPolicy,
                                             PreflightDecisionHandler preflightDecisionHandler) {
+        return executeInternal(req, col, followRedirects, result, sendRequest, runtimeOverlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, executionSource, dependentRequestExecutor, redirectPolicy, executionPolicy, preflightDecisionHandler, () -> false);
+    }
+
+    private ExecutionResult executeInternal(ApiRequest req, ApiCollection col, boolean followRedirects,
+                                            ExecutionResult result, boolean sendRequest,
+                                            Map<String, String> runtimeOverlay,
+                                            OAuth2TokenSink oauth2TokenSink,
+                                            RuntimeVariableSink runtimeVariableSink,
+                                            EnvironmentProfile activeEnvironment,
+                                            ExecutionSource executionSource,
+                                            burp.scripts.ScriptDependentRequestExecutor dependentRequestExecutor,
+                                            RedirectPolicy redirectPolicy,
+                                            ExecutionPolicy executionPolicy,
+                                            PreflightDecisionHandler preflightDecisionHandler,
+                                            BooleanSupplier cancellationRequested) {
         ExecutionIntent intent = sendRequest ? ExecutionIntent.LIVE : ExecutionIntent.PREVIEW;
         ExecutionPolicy effectivePolicy = executionPolicy != null ? executionPolicy.copy() : (sendRequest ? ExecutionPolicy.workbenchDefaults() : ExecutionPolicy.previewDefaults());
         effectivePolicy.normalize();
@@ -283,6 +344,9 @@ public class SharedRequestPipeline implements AutoCloseable {
         List<String> policyOverrides = new ArrayList<>();
         ScriptExecutionResult scriptResult = null;
         try {
+            if (isCancellationRequested(cancellationRequested)) {
+                return markCancelled(result, false, false);
+            }
             if (shouldUseUnifiedRuntime()) {
                 scriptResult = unifiedScriptRuntime.executePreRequest(
                         executionCollection,
@@ -293,6 +357,9 @@ public class SharedRequestPipeline implements AutoCloseable {
                         scriptDependentExecutor,
                         runtimeOverlay
                 );
+                if (isCancellationRequested(cancellationRequested)) {
+                    return markCancelled(result, false, false);
+                }
                 effectiveRequest = applyScriptResultToRequest(effectiveRequest, scriptResult);
                 mergeScriptResult(result, scriptResult);
                 recordScriptDiagnostic(effectiveSource, col, req, activeEnvironment, scriptResult, "Pre-request completed");
@@ -315,6 +382,9 @@ public class SharedRequestPipeline implements AutoCloseable {
                         RuntimeResolverFactory.Options.withRuntimeVariableOverlay(scriptContext)
                 );
                 scriptEngine.executePreRequest(effectiveRequest, legacyResolver, scriptContext);
+                if (isCancellationRequested(cancellationRequested)) {
+                    return markCancelled(result, false, false);
+                }
                 finalResolvedVariables = new LinkedHashMap<>(legacyResolver.getVariables());
             }
         } catch (Exception e) {
@@ -474,6 +544,9 @@ public class SharedRequestPipeline implements AutoCloseable {
                     policyOverrides,
                     resolver
             );
+        }
+        if (isCancellationRequested(cancellationRequested)) {
+            return markCancelled(result, false, false);
         }
         if (intent != ExecutionIntent.PREVIEW && oauth2Required) {
             try {
@@ -814,10 +887,22 @@ public class SharedRequestPipeline implements AutoCloseable {
                     resolver
             );
         }
+        if (isCancellationRequested(cancellationRequested)) {
+            return markCancelled(result, false, false);
+        }
         if (result != null) {
+            if (isCancellationRequested(cancellationRequested)) {
+                return markCancelled(result, false, false);
+            }
             commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
         }
+        if (isCancellationRequested(cancellationRequested)) {
+            return markCancelled(result, false, false);
+        }
         if (pendingOAuth2Entry != null) {
+            if (isCancellationRequested(cancellationRequested)) {
+                return markCancelled(result, false, false);
+            }
             Map<String, String> storedVars = null;
             if (oauth2TokenSink != null) {
                 storedVars = oauth2TokenSink.store(col, pendingOAuth2Entry);
@@ -921,12 +1006,25 @@ public class SharedRequestPipeline implements AutoCloseable {
             );
             return result;
         }
+        ExecutionResult activeResult = result;
         redirectRequest.hopSender = request -> {
-            result.requestSent = true;
+            activeResult.requestSent = true;
             return api.http().sendRequest(request, requestOptions);
         };
+        redirectRequest.cancellationRequested = () -> isCancellationRequested(cancellationRequested);
+
+        if (isCancellationRequested(cancellationRequested)) {
+            return markCancelled(result, false, false);
+        }
 
         RedirectExecutor.RedirectResult redirectResult = redirectExecutor.execute(redirectRequest);
+        if (isCancellationRequested(cancellationRequested) && redirectResult != null && redirectResult.finalResponse != null) {
+            result = markCancelled(result, true, true);
+            result.elapsedMs = Math.max(0L, System.currentTimeMillis() - startTime);
+            result.redirectTerminationReason = redirectResult.terminationReason;
+            result.timeoutMillis = redirectResult.timeoutMillis > 0 ? redirectResult.timeoutMillis : effectivePolicy.responseTimeoutMillis;
+            return result;
+        }
         long endTime = System.currentTimeMillis();
         result.elapsedMs = Math.max(0L, endTime - startTime);
         result.response = redirectResult.finalResponse;
@@ -955,6 +1053,9 @@ public class SharedRequestPipeline implements AutoCloseable {
             result.errorMessage = "No response received";
         }
 
+        if (isCancellationRequested(cancellationRequested)) {
+            return markCancelled(result, redirectResult != null && redirectResult.requestSent, redirectResult != null && redirectResult.finalResponse != null);
+        }
         if (result.response != null && result.response.response() != null) {
             if (redirectResult.success && (shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {
                 Map<String, String> postExecutionOverlay = new LinkedHashMap<>(result.resolvedVariables);
@@ -989,7 +1090,13 @@ public class SharedRequestPipeline implements AutoCloseable {
                     mergeScriptResult(result, postResult);
                     mergeScriptResult(scriptResultHolder, postResult);
                     recordScriptDiagnostic(effectiveSource, col, effectiveRequest, activeEnvironment, postResult, "Post-response completed");
+                    if (isCancellationRequested(cancellationRequested)) {
+                        return markCancelled(result, true, true);
+                    }
                     if (!postResult.timedOut && !postResult.cancelled) {
+                        if (isCancellationRequested(cancellationRequested)) {
+                            return markCancelled(result, true, true);
+                        }
                         commitScriptVariableMutations(postResult, result.resolvedVariables, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
                     }
                 } else if (redirectResult.success && scriptEngine != null && scriptEngine.getScriptMode() == ScriptMode.LIMITED && col != null) {

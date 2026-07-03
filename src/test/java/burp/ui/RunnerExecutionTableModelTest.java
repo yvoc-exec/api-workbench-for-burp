@@ -20,7 +20,7 @@ class RunnerExecutionTableModelTest {
     void exposesExpectedColumnsAndStringClasses() {
         RunnerExecutionTableModel model = new RunnerExecutionTableModel();
 
-        assertThat(model.getColumnCount()).isEqualTo(12);
+        assertThat(model.getColumnCount()).isEqualTo(16);
         assertThat(model.getColumnName(0)).isEqualTo("#");
         assertThat(model.getColumnName(1)).isEqualTo("Time");
         assertThat(model.getColumnName(2)).isEqualTo("Type");
@@ -29,10 +29,14 @@ class RunnerExecutionTableModelTest {
         assertThat(model.getColumnName(5)).isEqualTo("Source");
         assertThat(model.getColumnName(6)).isEqualTo("Method");
         assertThat(model.getColumnName(7)).isEqualTo("Status");
-        assertThat(model.getColumnName(8)).isEqualTo("Result");
-        assertThat(model.getColumnName(9)).isEqualTo("Duration");
-        assertThat(model.getColumnName(10)).isEqualTo("Flow");
-        assertThat(model.getColumnName(11)).isEqualTo("Message");
+        assertThat(model.getColumnName(8)).isEqualTo("Attempt");
+        assertThat(model.getColumnName(9)).isEqualTo("Kind");
+        assertThat(model.getColumnName(10)).isEqualTo("Retry Reason");
+        assertThat(model.getColumnName(11)).isEqualTo("Cancellation");
+        assertThat(model.getColumnName(12)).isEqualTo("Result");
+        assertThat(model.getColumnName(13)).isEqualTo("Duration");
+        assertThat(model.getColumnName(14)).isEqualTo("Flow");
+        assertThat(model.getColumnName(15)).isEqualTo("Message");
         assertThat(model.getColumnClass(0)).isEqualTo(String.class);
         assertThat(model.getRowCount()).isZero();
     }
@@ -61,10 +65,14 @@ class RunnerExecutionTableModelTest {
         assertThat(model.getValueAt(0, 5)).isEqualTo("APIM");
         assertThat(model.getValueAt(0, 6)).isEqualTo("GET");
         assertThat(model.getValueAt(0, 7)).isEqualTo("201");
-        assertThat(model.getValueAt(0, 8)).isEqualTo("OK 201");
-        assertThat(model.getValueAt(0, 9)).isEqualTo("42 ms");
-        assertThat(model.getValueAt(0, 10)).isEqualTo("CONTINUE");
-        assertThat(model.getValueAt(0, 11)).isEqualTo("201");
+        assertThat(model.getValueAt(0, 8)).isEqualTo("1/1");
+        assertThat(model.getValueAt(0, 9)).isEqualTo("QUEUED");
+        assertThat(model.getValueAt(0, 10)).isEqualTo("");
+        assertThat(model.getValueAt(0, 11)).isEqualTo("NOT_CANCELLED");
+        assertThat(model.getValueAt(0, 12)).isEqualTo("OK 201");
+        assertThat(model.getValueAt(0, 13)).isEqualTo("42 ms");
+        assertThat(model.getValueAt(0, 14)).isEqualTo("CONTINUE");
+        assertThat(model.getValueAt(0, 15)).isEqualTo("201");
 
         HistoryEntry detailEntry = entry.detailEntry;
         assertThat(detailEntry).isNotNull();
@@ -116,7 +124,8 @@ class RunnerExecutionTableModelTest {
         assertThat(model.getValueAt(0, 2)).isEqualTo("RUNNER_EVENT");
         assertThat(model.getValueAt(0, 3)).isEqualTo("PAUSED");
         assertThat(model.getValueAt(0, 4)).isEqualTo("Runner Event");
-        assertThat(model.getValueAt(0, 11)).isEqualTo("Paused after current request");
+        assertThat(model.getValueAt(0, 11)).isEqualTo("");
+        assertThat(model.getValueAt(0, 15)).isEqualTo("Paused after current request");
         assertThat(model.getEntryAt(1).requestId).isEqualTo("dup-1");
         assertThat(model.getEntryAt(2).requestId).isEqualTo("dup-2");
 

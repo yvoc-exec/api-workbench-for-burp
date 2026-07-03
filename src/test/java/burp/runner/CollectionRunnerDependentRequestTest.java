@@ -207,7 +207,7 @@ class CollectionRunnerDependentRequestTest {
         assertThat(runner.getResults().get(1).requestId).isEqualTo("parent-dup");
         assertThat(runner.getResults().get(1).dependentRequestCount).isEqualTo(1);
         assertThat(runner.getResults().get(1).scriptDependentRequestResults).hasSize(1);
-        assertThat(listener.timelineRows.get(0).status).isEqualTo("200 (dependent)");
+        assertThat(listener.timelineRows.get(0).status).isEqualTo("200");
         assertThat(listener.timelineRows.get(1).status).isEqualTo("200");
     }
 
@@ -295,7 +295,7 @@ class CollectionRunnerDependentRequestTest {
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
         assertThat(childResult.resolvedVariables).containsEntry("bruno_token", "bruno-runner");
         assertThat(environment.variables).doesNotContainKey("bruno_token");
-        assertThat(listener.timelineRows).extracting(row -> row.status).contains("201 (dependent)", "201");
+        assertThat(listener.timelineRows).extracting(row -> row.status).contains("201", "201");
     }
 
     @Test

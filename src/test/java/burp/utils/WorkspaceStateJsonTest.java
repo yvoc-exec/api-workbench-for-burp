@@ -9,6 +9,7 @@ import burp.models.RedirectPolicy;
 import burp.models.TrustedRedirectRule;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.runner.RunnerRetryPolicy;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
@@ -21,6 +22,7 @@ import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.LinkedHashSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -816,6 +818,114 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.runnerFollowRedirects).isFalse();
         assertThat(parsed.runnerDebugRawRequest).isTrue();
         assertThat(parsed.runnerDetailTabIndex).isEqualTo(1);
+    }
+
+    @Test
+    void oldWorkspaceWithoutRetryPolicyDefaultsSafe() {
+        WorkspaceState parsed = WorkspaceStateJson.fromJson("""
+                {
+                  "version": 1,
+                  "collections": []
+                }
+                """);
+
+        assertThat(parsed.runnerRetries).isEqualTo(0);
+        assertThat(parsed.runnerRetryPolicyVersion).isNull();
+        assertThat(parsed.runnerRetryableMethods).containsExactly("GET", "HEAD", "OPTIONS");
+        assertThat(parsed.runnerRetryableStatusCodes).isEmpty();
+        assertThat(parsed.runnerRetryConnectionFailures).isFalse();
+        assertThat(parsed.runnerRetryTimeouts).isFalse();
+        assertThat(parsed.runnerRetryNonIdempotentMethods).isFalse();
+        assertThat(parsed.runnerRetryBaseDelayMillis).isEqualTo(200);
+        assertThat(parsed.runnerRetryMaxDelayMillis).isEqualTo(5_000);
+    }
+
+    @Test
+    void explicitOldRetryValueIsPreserved() {
+        WorkspaceState parsed = WorkspaceStateJson.fromJson("""
+                {
+                  "version": 1,
+                  "runnerRetries": 3,
+                  "collections": []
+                }
+                """);
+
+        assertThat(parsed.runnerRetries).isEqualTo(3);
+        assertThat(parsed.runnerRetryPolicyVersion).isNull();
+        assertThat(parsed.runnerRetryableMethods).containsExactly("GET", "HEAD", "OPTIONS");
+        assertThat(parsed.runnerRetryConnectionFailures).isTrue();
+        assertThat(parsed.runnerRetryTimeouts).isTrue();
+        assertThat(parsed.runnerRetryNonIdempotentMethods).isFalse();
+        assertThat(parsed.runnerRetryBaseDelayMillis).isEqualTo(200);
+        assertThat(parsed.runnerRetryMaxDelayMillis).isEqualTo(5_000);
+    }
+
+    @Test
+    void legacyRetryValueDoesNotEnablePostRetries() {
+        WorkspaceState parsed = WorkspaceStateJson.fromJson("""
+                {
+                  "version": 1,
+                  "runnerRetries": 2,
+                  "collections": []
+                }
+                """);
+
+        assertThat(parsed.runnerRetries).isEqualTo(2);
+        assertThat(parsed.runnerRetryableMethods).containsExactly("GET", "HEAD", "OPTIONS");
+        assertThat(parsed.runnerRetryConnectionFailures).isTrue();
+        assertThat(parsed.runnerRetryTimeouts).isTrue();
+        assertThat(parsed.runnerRetryNonIdempotentMethods).isFalse();
+        assertThat(parsed.runnerRetryableStatusCodes).isEmpty();
+    }
+
+    @Test
+    void newRetryPolicyRoundTrips() {
+        WorkspaceState state = new WorkspaceState();
+        state.runnerRetries = 4;
+        state.runnerRetryPolicyVersion = 1;
+        state.runnerRetryableMethods = new java.util.ArrayList<>(List.of("POST", "GET", "POST", " PUT "));
+        state.runnerRetryableStatusCodes = new java.util.ArrayList<>(List.of(503, 100, 503, 99));
+        state.runnerRetryConnectionFailures = Boolean.TRUE;
+        state.runnerRetryTimeouts = Boolean.FALSE;
+        state.runnerRetryNonIdempotentMethods = Boolean.TRUE;
+        state.runnerRetryBaseDelayMillis = 300;
+        state.runnerRetryMaxDelayMillis = 9_000;
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.runnerRetryPolicyVersion).isEqualTo(1);
+        assertThat(parsed.runnerRetries).isEqualTo(4);
+        assertThat(parsed.runnerRetryableMethods).containsExactly("GET", "POST", "PUT");
+        assertThat(parsed.runnerRetryableStatusCodes).containsExactly(100, 503);
+        assertThat(parsed.runnerRetryConnectionFailures).isTrue();
+        assertThat(parsed.runnerRetryTimeouts).isFalse();
+        assertThat(parsed.runnerRetryNonIdempotentMethods).isTrue();
+        assertThat(parsed.runnerRetryBaseDelayMillis).isEqualTo(300);
+        assertThat(parsed.runnerRetryMaxDelayMillis).isEqualTo(9_000);
+    }
+
+    @Test
+    void retryMethodsAndStatusesRoundTripDeterministically() {
+        WorkspaceState state = new WorkspaceState();
+        state.runnerRetryPolicyVersion = 1;
+        state.runnerRetryableMethods = new java.util.ArrayList<>(List.of("PATCH", "get", "POST", "PATCH"));
+        state.runnerRetryableStatusCodes = new java.util.ArrayList<>(List.of(503, 500, 503, 418));
+        state.runnerRetryNonIdempotentMethods = Boolean.TRUE;
+        state.runnerRetryConnectionFailures = Boolean.TRUE;
+        state.runnerRetryTimeouts = Boolean.TRUE;
+
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(parsed.runnerRetryableMethods).containsExactly("GET", "PATCH", "POST");
+        assertThat(parsed.runnerRetryableStatusCodes).containsExactly(418, 500, 503);
+        assertThat(parsed.runnerRetryConnectionFailures).isTrue();
+        assertThat(parsed.runnerRetryTimeouts).isTrue();
+        assertThat(parsed.runnerRetryNonIdempotentMethods).isTrue();
+        assertThat(json).contains("\"runnerRetryableMethods\": [\n    \"GET\",\n    \"PATCH\",\n    \"POST\"\n  ]");
+        assertThat(json).contains("\"runnerRetryableStatusCodes\": [\n    418,\n    500,\n    503\n  ]");
+        assertThat(WorkspaceStateJson.toJson(parsed)).contains("\"runnerRetryableMethods\": [\n    \"GET\",\n    \"PATCH\",\n    \"POST\"\n  ]");
+        assertThat(WorkspaceStateJson.toJson(parsed)).contains("\"runnerRetryableStatusCodes\": [\n    418,\n    500,\n    503\n  ]");
     }
 
     @Test

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeoutException;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 public class RedirectExecutor {
     @FunctionalInterface
@@ -35,6 +36,7 @@ public class RedirectExecutor {
         public RedirectPolicy redirectPolicy;
         public HopSender hopSender;
         public int responseTimeoutMillis;
+        public BooleanSupplier cancellationRequested = () -> false;
     }
 
     public static final class RedirectResult {
@@ -50,6 +52,7 @@ public class RedirectExecutor {
         public RedirectTerminationReason terminationReason = RedirectTerminationReason.NONE;
         public boolean responseTimedOut;
         public int timeoutMillis;
+        public boolean requestSent;
     }
 
     public RedirectResult execute(RedirectRequest request) {
@@ -84,11 +87,18 @@ public class RedirectExecutor {
 
         try {
             while (true) {
+                if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                    return cancelled(result, currentRequest, currentUrl, lastResponse != null);
+                }
                 long exchangeStart = System.nanoTime();
                 HttpRequestResponse currentResponse;
                 try {
+                    result.requestSent = true;
                     currentResponse = send(sender, currentRequest);
                 } catch (Exception e) {
+                    if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                        return cancelled(result, currentRequest, currentUrl, true);
+                    }
                     if (isTimeoutFailure(e)) {
                         result.success = false;
                         result.responseTimedOut = true;
@@ -109,6 +119,9 @@ public class RedirectExecutor {
                     result.finalResponse = lastResponse;
                     return result;
                 }
+                if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                    return cancelled(result, currentRequest, currentUrl, true);
+                }
                 long exchangeElapsedMs = elapsedMs(exchangeStart);
                 if (currentResponse == null || currentResponse.response() == null) {
                     result.success = false;
@@ -125,7 +138,13 @@ public class RedirectExecutor {
                 HttpResponse response = currentResponse.response();
                 int statusCode = response.statusCode();
                 String location = headerValue(response, "Location");
+                if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                    return cancelled(result, currentRequest, currentUrl, true);
+                }
                 if (!isSupportedRedirect(statusCode) || location == null || location.isBlank()) {
+                    if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                        return cancelled(result, currentRequest, currentUrl, true);
+                    }
                     result.finalResponse = currentResponse;
                     result.finalRequest = currentRequest;
                     result.finalUrl = currentUrl;
@@ -136,6 +155,9 @@ public class RedirectExecutor {
                 }
 
                 hopNumber++;
+                if (isCancellationRequested(request != null ? request.cancellationRequested : null)) {
+                    return cancelled(result, currentRequest, currentUrl, true);
+                }
                 URI sourceUri = parseAbsoluteUri(currentUrl);
                 URI targetUri;
                 try {
@@ -262,6 +284,27 @@ public class RedirectExecutor {
                 result.finalUrl = currentUrl;
             }
         }
+    }
+
+    private static boolean isCancellationRequested(BooleanSupplier cancellationRequested) {
+        try {
+            return cancellationRequested != null && cancellationRequested.getAsBoolean();
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private static RedirectResult cancelled(RedirectResult result, HttpRequest currentRequest, String currentUrl, boolean requestSent) {
+        RedirectResult out = result != null ? result : new RedirectResult();
+        out.success = false;
+        out.errorMessage = "Runner execution cancelled.";
+        out.terminationReason = RedirectTerminationReason.SEND_FAILED;
+        out.responseTimedOut = false;
+        out.requestSent = out.requestSent || requestSent;
+        out.finalResponse = null;
+        out.finalRequest = currentRequest;
+        out.finalUrl = currentUrl;
+        return out;
     }
 
     private static HttpRequestResponse send(HopSender sender, HttpRequest request) throws Exception {

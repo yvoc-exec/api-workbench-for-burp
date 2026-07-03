@@ -7,6 +7,7 @@ import burp.history.HistoryStore;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.runner.RunnerRetryPolicy;
 import burp.utils.ExecutionPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -27,6 +28,7 @@ public final class WorkspaceStateJson {
     public static String toJson(WorkspaceState state) {
         WorkspaceState snapshot = WorkspaceState.copyOf(state);
         normalizeCollectionProfiles(snapshot);
+        applyRunnerRetryPolicyForSave(snapshot);
         return GSON.toJson(snapshot);
     }
 
@@ -64,6 +66,7 @@ public final class WorkspaceStateJson {
         if (out.runnerQueuedRequestIdentityKeys == null) {
             out.runnerQueuedRequestIdentityKeys = new java.util.ArrayList<>();
         }
+        normalizeRunnerRetryPolicy(out);
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
         }
@@ -151,6 +154,80 @@ public final class WorkspaceStateJson {
             out.version = 1;
         }
         return out;
+    }
+
+    private static void applyRunnerRetryPolicyForSave(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        RunnerRetryPolicy policy = runnerRetryPolicyFromState(state);
+        policy.normalize();
+        state.runnerRetryPolicyVersion = 1;
+        state.runnerRetries = policy.maxRetries;
+        state.runnerRetryableMethods = new java.util.ArrayList<>(policy.retryableMethods.stream().sorted().toList());
+        state.runnerRetryableStatusCodes = new java.util.ArrayList<>(policy.retryableStatusCodes.stream().sorted().toList());
+        state.runnerRetryConnectionFailures = policy.retryConnectionFailures;
+        state.runnerRetryTimeouts = policy.retryTimeouts;
+        state.runnerRetryNonIdempotentMethods = policy.retryNonIdempotentMethods;
+        state.runnerRetryBaseDelayMillis = policy.baseDelayMillis;
+        state.runnerRetryMaxDelayMillis = policy.maxDelayMillis;
+    }
+
+    private static void normalizeRunnerRetryPolicy(WorkspaceState state) {
+        if (state == null) {
+            return;
+        }
+        if (state.runnerRetryPolicyVersion != null) {
+            RunnerRetryPolicy policy = runnerRetryPolicyFromState(state);
+            policy.normalize();
+            writeRunnerRetryPolicyToState(state, policy);
+            state.runnerRetryPolicyVersion = 1;
+            return;
+        }
+        RunnerRetryPolicy policy = RunnerRetryPolicy.safeDefaults();
+        policy.maxRetries = state.runnerRetries != null ? state.runnerRetries : 0;
+        policy.retryableMethods = new java.util.LinkedHashSet<>(java.util.List.of("GET", "HEAD", "OPTIONS"));
+        policy.retryableStatusCodes = new java.util.LinkedHashSet<>();
+        if (policy.maxRetries > 0) {
+            policy.retryConnectionFailures = true;
+            policy.retryTimeouts = true;
+        }
+        writeRunnerRetryPolicyToState(state, policy);
+    }
+
+    private static RunnerRetryPolicy runnerRetryPolicyFromState(WorkspaceState state) {
+        RunnerRetryPolicy policy = RunnerRetryPolicy.safeDefaults();
+        if (state == null) {
+            return policy;
+        }
+        policy.maxRetries = state.runnerRetries != null ? state.runnerRetries : policy.maxRetries;
+        policy.retryableMethods = state.runnerRetryableMethods != null && !state.runnerRetryableMethods.isEmpty()
+                ? new java.util.LinkedHashSet<>(state.runnerRetryableMethods)
+                : new java.util.LinkedHashSet<>(policy.retryableMethods);
+        policy.retryableStatusCodes = state.runnerRetryableStatusCodes != null
+                ? new java.util.LinkedHashSet<>(state.runnerRetryableStatusCodes)
+                : new java.util.LinkedHashSet<>();
+        policy.retryConnectionFailures = state.runnerRetryConnectionFailures != null ? state.runnerRetryConnectionFailures : policy.retryConnectionFailures;
+        policy.retryTimeouts = state.runnerRetryTimeouts != null ? state.runnerRetryTimeouts : policy.retryTimeouts;
+        policy.retryNonIdempotentMethods = state.runnerRetryNonIdempotentMethods != null ? state.runnerRetryNonIdempotentMethods : policy.retryNonIdempotentMethods;
+        policy.baseDelayMillis = state.runnerRetryBaseDelayMillis != null ? state.runnerRetryBaseDelayMillis : policy.baseDelayMillis;
+        policy.maxDelayMillis = state.runnerRetryMaxDelayMillis != null ? state.runnerRetryMaxDelayMillis : policy.maxDelayMillis;
+        return policy;
+    }
+
+    private static void writeRunnerRetryPolicyToState(WorkspaceState state, RunnerRetryPolicy policy) {
+        if (state == null || policy == null) {
+            return;
+        }
+        policy.normalize();
+        state.runnerRetries = policy.maxRetries;
+        state.runnerRetryableMethods = new java.util.ArrayList<>(policy.retryableMethods.stream().sorted().toList());
+        state.runnerRetryableStatusCodes = new java.util.ArrayList<>(policy.retryableStatusCodes.stream().sorted().toList());
+        state.runnerRetryConnectionFailures = policy.retryConnectionFailures;
+        state.runnerRetryTimeouts = policy.retryTimeouts;
+        state.runnerRetryNonIdempotentMethods = policy.retryNonIdempotentMethods;
+        state.runnerRetryBaseDelayMillis = policy.baseDelayMillis;
+        state.runnerRetryMaxDelayMillis = policy.maxDelayMillis;
     }
 
     private static void normalizeCollectionProfiles(WorkspaceState state) {

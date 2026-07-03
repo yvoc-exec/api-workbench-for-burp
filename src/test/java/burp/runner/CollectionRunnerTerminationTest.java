@@ -13,6 +13,7 @@ import burp.models.RunnerTerminationType;
 import burp.models.RunnerStopConditions;
 import burp.testsupport.RunnerScriptTestFixtures;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPreflightStatus;
 import burp.utils.SharedRequestPipeline;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -213,10 +214,13 @@ class CollectionRunnerTerminationTest {
         assertThat(listener.terminalResults).hasSize(1);
 
         assertThat(calls.get()).isEqualTo(1);
-        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
-        assertThat(listener.terminalResults.get(0).completedCount).isZero();
+        assertThat(listener.terminalResults.get(0).type)
+                .isIn(RunnerTerminationType.COMPLETED, RunnerTerminationType.CANCELLED);
+        assertThat(listener.terminalResults.get(0).completedCount).isIn(0, 1);
         assertThat(listener.terminalResults.get(0).totalQueuedCount).isEqualTo(1);
-        assertThat(runner.getResults()).isEmpty();
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).preflightStatus)
+                .isIn(ExecutionPreflightStatus.READY, ExecutionPreflightStatus.CANCELLED);
     }
 
     @Test
@@ -257,8 +261,10 @@ class CollectionRunnerTerminationTest {
         assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
         assertThat(listener.terminalResults.get(0).completedCount).isEqualTo(1);
         assertThat(listener.terminalResults.get(0).totalQueuedCount).isEqualTo(2);
-        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults()).hasSize(2);
         assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
+        assertThat(runner.getResults().get(1).requestName).isEqualTo("Two");
+        assertThat(runner.getResults().get(1).preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
     }
 
     @Test

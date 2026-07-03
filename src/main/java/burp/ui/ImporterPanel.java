@@ -30,6 +30,7 @@ import burp.utils.ExecutionPreflightResult;
 import burp.utils.PreflightDecisionHandler;
 import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.SharedRequestPipeline;
+import burp.runner.RunnerRetryPolicy;
 import burp.scripts.ScriptVariableMutation;
 import burp.ui.tree.CollectionTreeNode;
 import burp.ui.tree.BurpLikeTreeCellRenderer;
@@ -178,6 +179,15 @@ public class ImporterPanel {
     private JTabbedPane runnerDetailTabs;
     private JSpinner runnerDelaySpinner;
     private JSpinner runnerRetriesSpinner;
+    private JSpinner runnerMaxRetriesSpinner;
+    private JTextField runnerRetryableMethodsField;
+    private JCheckBox runnerRetryConnectionFailuresCheckBox;
+    private JCheckBox runnerRetryTimeoutsCheckBox;
+    private JCheckBox runnerRetryNonIdempotentCheckBox;
+    private JTextField runnerRetryStatusCodesField;
+    private JSpinner runnerRetryBaseDelaySpinner;
+    private JSpinner runnerRetryMaxDelaySpinner;
+    private boolean runnerLegacyRetryPolicyRestored;
     private JCheckBox stopOnErrorBox;
     private JCheckBox stopOnAssertionFailureBox;
     private JCheckBox stopOnStatusAtLeast400Box;
@@ -204,11 +214,17 @@ public class ImporterPanel {
     private int runnerCompletedQueueCount = 0;
     private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
     private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
+    private RunnerWarningPresenter runnerWarningPresenter = this::showRunnerWarningDialog;
 
     // Workbench environment selector
     private JComboBox<EnvironmentRef> workbenchEnvironmentCombo;
     private JButton workbenchEnvironmentImportBtn;
     private boolean suppressWorkbenchEnvironmentEvents = false;
+
+    @FunctionalInterface
+    interface RunnerWarningPresenter {
+        boolean confirm(Component parent, String title, String message);
+    }
 
     static final class WorkbenchSendSnapshot {
         final HttpRequest builtRequest;
@@ -2804,7 +2820,7 @@ public class ImporterPanel {
                                                                  RunnerTimelineRow timelineRow,
                                                                  String requestId,
                                                                  String collectionName) {
-        return new RunnerExecutionTableModel.Entry(
+        RunnerExecutionTableModel.Entry entry = new RunnerExecutionTableModel.Entry(
                 nextRunnerExecutionSequence(),
                 java.time.Instant.now(),
                 type,
@@ -2823,6 +2839,26 @@ public class ImporterPanel {
                 requestId,
                 collectionName
         );
+        if (timelineRow != null) {
+            entry.attempt = timelineRow.attemptNumber + "/" + timelineRow.totalAttempts;
+            entry.kind = timelineRow.executionKind;
+            entry.retryReason = timelineRow.retryReason;
+            entry.cancellationState = timelineRow.cancellationState;
+        } else if (requestResult != null) {
+            entry.attempt = Math.max(1, requestResult.attemptNumber) + "/" + Math.max(1, requestResult.totalAttempts);
+            entry.kind = requestResult.cancellationState != null && requestResult.cancellationState != RunnerCancellationState.NOT_CANCELLED
+                    ? "CANCELLED"
+                    : requestResult.dependentExecution
+                    ? "DEPENDENT"
+                    : requestResult.adHocExecution
+                    ? "AD_HOC"
+                    : requestResult.attemptNumber > 1
+                    ? "RETRY"
+                    : "QUEUED";
+            entry.retryReason = requestResult.retryReason;
+            entry.cancellationState = requestResult.cancellationState != null ? requestResult.cancellationState.name() : "";
+        }
+        return entry;
     }
 
     private void indexRunnerResult(RunnerResult result) {
@@ -3446,56 +3482,97 @@ public class ImporterPanel {
         configPanel.add(runnerDelaySpinner, gbc);
 
         gbc.gridx = 2;
-        configPanel.add(new JLabel("Retries:"), gbc);
+        configPanel.add(new JLabel("Max retries"), gbc);
 
         gbc.gridx = 3;
-        runnerRetriesSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 20, 1));
-        configPanel.add(runnerRetriesSpinner, gbc);
+        runnerMaxRetriesSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 10, 1));
+        runnerMaxRetriesSpinner.setToolTipText("Retries are disabled when max retries is zero.");
+        runnerRetriesSpinner = runnerMaxRetriesSpinner;
+        configPanel.add(runnerMaxRetriesSpinner, gbc);
 
         gbc.gridx = 4;
-        stopOnErrorBox = new JCheckBox("Stop on error");
-        configPanel.add(stopOnErrorBox, gbc);
+        configPanel.add(new JLabel("Retryable methods"), gbc);
 
         gbc.gridx = 5;
-        stopOnAssertionFailureBox = new JCheckBox("Stop on assertion failure");
-        configPanel.add(stopOnAssertionFailureBox, gbc);
+        runnerRetryableMethodsField = new JTextField("GET, HEAD, OPTIONS", 18);
+        runnerRetryableMethodsField.setToolTipText("PUT and DELETE require explicit addition; POST, PATCH, CONNECT, TRACE, and custom methods also require the unsafe override.");
+        configPanel.add(runnerRetryableMethodsField, gbc);
+
+        gbc.gridx = 6;
+        runnerRetryConnectionFailuresCheckBox = new JCheckBox("Retry connection failures");
+        runnerRetryConnectionFailuresCheckBox.setToolTipText("Connection retries are disabled unless this is enabled.");
+        configPanel.add(runnerRetryConnectionFailuresCheckBox, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1;
+        runnerRetryTimeoutsCheckBox = new JCheckBox("Retry response timeouts");
+        runnerRetryTimeoutsCheckBox.setToolTipText("Retries are disabled when max retries is zero.");
+        configPanel.add(runnerRetryTimeoutsCheckBox, gbc);
+
+        gbc.gridx = 1;
+        runnerRetryNonIdempotentCheckBox = new JCheckBox("Allow retries for non-idempotent methods");
+        runnerRetryNonIdempotentCheckBox.setToolTipText("POST, PATCH, CONNECT, TRACE, and custom methods require this override.");
+        configPanel.add(runnerRetryNonIdempotentCheckBox, gbc);
+
+        gbc.gridx = 2;
+        configPanel.add(new JLabel("Retry status codes"), gbc);
+
+        gbc.gridx = 3;
+        runnerRetryStatusCodesField = new JTextField(18);
+        runnerRetryStatusCodesField.setToolTipText("Blank means status-code retries are disabled.");
+        configPanel.add(runnerRetryStatusCodesField, gbc);
+
+        gbc.gridx = 4;
+        configPanel.add(new JLabel("Base retry delay (ms)"), gbc);
+
+        gbc.gridx = 5;
+        runnerRetryBaseDelaySpinner = new JSpinner(new SpinnerNumberModel(200, 0, 60_000, 50));
+        configPanel.add(runnerRetryBaseDelaySpinner, gbc);
+
+        gbc.gridx = 6;
+        configPanel.add(new JLabel("Maximum retry delay (ms)"), gbc);
+
+        gbc.gridx = 7;
+        runnerRetryMaxDelaySpinner = new JSpinner(new SpinnerNumberModel(5_000, 0, 300_000, 50));
+        configPanel.add(runnerRetryMaxDelaySpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2;
+        stopOnErrorBox = new JCheckBox("Stop on error");
+        configPanel.add(stopOnErrorBox, gbc);
+        gbc.gridx = 1;
+        stopOnAssertionFailureBox = new JCheckBox("Stop on assertion failure");
+        configPanel.add(stopOnAssertionFailureBox, gbc);
+        gbc.gridx = 2;
+        runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
+        configPanel.add(runnerDebugRawRequestBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3;
         stopOnStatusAtLeast400Box = new JCheckBox("Stop on status >= 400");
         configPanel.add(stopOnStatusAtLeast400Box, gbc);
-
         gbc.gridx = 1;
         stopOnMissingVariableBox = new JCheckBox("Stop when variable missing");
         configPanel.add(stopOnMissingVariableBox, gbc);
-
         gbc.gridx = 2;
         configPanel.add(new JLabel("Stop after failures:"), gbc);
-
         gbc.gridx = 3;
         stopAfterFailuresSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 100, 1));
         configPanel.add(stopAfterFailuresSpinner, gbc);
-
         gbc.gridx = 4;
         followRedirectsBox = new JCheckBox("Follow redirects", true);
         configPanel.add(followRedirectsBox, gbc);
-
         gbc.gridx = 5;
         JButton runnerRedirectPolicyBtn = new JButton("Redirect Policy...");
         runnerRedirectPolicyBtn.addActionListener(e -> showRedirectPolicyDialog());
         configPanel.add(runnerRedirectPolicyBtn, gbc);
 
         gbc.gridx = 6;
-        runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
-        configPanel.add(runnerDebugRawRequestBox, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 2;
         configPanel.add(new JLabel("Response timeout (ms):"), gbc);
-        gbc.gridx = 1;
+        gbc.gridx = 7;
         runnerResponseTimeoutSpinner = new JSpinner(new SpinnerNumberModel(30_000, 1_000, 300_000, 1_000));
         configPanel.add(runnerResponseTimeoutSpinner, gbc);
-        gbc.gridx = 2;
+
+        gbc.gridx = 0; gbc.gridy = 4;
         configPanel.add(new JLabel("Script destination change:"), gbc);
-        gbc.gridx = 3;
+        gbc.gridx = 1;
         runnerTargetChangeModeCombo = new JComboBox<>(new ExecutionPolicy.TargetChangeMode[] {
                 ExecutionPolicy.TargetChangeMode.ABORT,
                 ExecutionPolicy.TargetChangeMode.ALLOW
@@ -3521,6 +3598,7 @@ public class ImporterPanel {
 
         timelineModel = new RunnerTimelineTableModel();
         timelineTable = new JTable(timelineModel);
+        timelineTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
 
         runnerQueueListModel = new DefaultListModel<>();
         runnerQueueList = new JList<>(runnerQueueListModel);
@@ -8299,7 +8377,6 @@ public class ImporterPanel {
             return;
         }
         if (runnerDelaySpinner != null) state.runnerDelayMs = spinnerIntValue(runnerDelaySpinner);
-        if (runnerRetriesSpinner != null) state.runnerRetries = spinnerIntValue(runnerRetriesSpinner);
         if (stopOnErrorBox != null) state.runnerStopOnError = stopOnErrorBox.isSelected();
         if (stopOnAssertionFailureBox != null) state.runnerStopOnAssertionFailure = stopOnAssertionFailureBox.isSelected();
         if (stopOnStatusAtLeast400Box != null) state.runnerStopOnStatusAtLeast400 = stopOnStatusAtLeast400Box.isSelected();
@@ -8311,6 +8388,23 @@ public class ImporterPanel {
         ExecutionPolicy policy = currentRunnerExecutionPolicy();
         state.runnerResponseTimeoutMillis = policy.responseTimeoutMillis;
         state.runnerTargetChangeMode = policy.targetChangeMode;
+        RunnerRetryPolicy retryPolicy = readRunnerRetryPolicyFromUi();
+        if (retryPolicy == null && runner != null) {
+            retryPolicy = runner.getRetryPolicy();
+        }
+        if (retryPolicy == null) {
+            retryPolicy = RunnerRetryPolicy.safeDefaults();
+        }
+        retryPolicy.normalize();
+        state.runnerRetryPolicyVersion = 1;
+        state.runnerRetries = retryPolicy.maxRetries;
+        state.runnerRetryableMethods = new ArrayList<>(retryPolicy.retryableMethods);
+        state.runnerRetryableStatusCodes = new ArrayList<>(retryPolicy.retryableStatusCodes);
+        state.runnerRetryConnectionFailures = retryPolicy.retryConnectionFailures;
+        state.runnerRetryTimeouts = retryPolicy.retryTimeouts;
+        state.runnerRetryNonIdempotentMethods = retryPolicy.retryNonIdempotentMethods;
+        state.runnerRetryBaseDelayMillis = retryPolicy.baseDelayMillis;
+        state.runnerRetryMaxDelayMillis = retryPolicy.maxDelayMillis;
     }
 
     private void captureHistorySettings(WorkspaceState state) {
@@ -8379,7 +8473,6 @@ public class ImporterPanel {
             return;
         }
         applySpinnerState(runnerDelaySpinner, state.runnerDelayMs, 0);
-        applySpinnerState(runnerRetriesSpinner, state.runnerRetries, 0);
         applyCheckboxState(stopOnErrorBox, state.runnerStopOnError, false);
         applyCheckboxState(stopOnAssertionFailureBox, state.runnerStopOnAssertionFailure, false);
         applyCheckboxState(stopOnStatusAtLeast400Box, state.runnerStopOnStatusAtLeast400, false);
@@ -8396,6 +8489,36 @@ public class ImporterPanel {
                 mode = ExecutionPolicy.TargetChangeMode.ABORT;
             }
             runnerTargetChangeModeCombo.setSelectedItem(mode);
+        }
+        RunnerRetryPolicy retryPolicy;
+        if (state.runnerRetryPolicyVersion != null) {
+            retryPolicy = RunnerRetryPolicy.safeDefaults();
+            retryPolicy.maxRetries = state.runnerRetries != null ? state.runnerRetries : 0;
+            retryPolicy.retryableMethods = state.runnerRetryableMethods != null && !state.runnerRetryableMethods.isEmpty()
+                    ? new LinkedHashSet<>(state.runnerRetryableMethods)
+                    : new LinkedHashSet<>(List.of("GET", "HEAD", "OPTIONS"));
+            retryPolicy.retryableStatusCodes = state.runnerRetryableStatusCodes != null
+                    ? new LinkedHashSet<>(state.runnerRetryableStatusCodes)
+                    : new LinkedHashSet<>();
+            retryPolicy.retryConnectionFailures = state.runnerRetryConnectionFailures != null ? state.runnerRetryConnectionFailures : false;
+            retryPolicy.retryTimeouts = state.runnerRetryTimeouts != null ? state.runnerRetryTimeouts : false;
+            retryPolicy.retryNonIdempotentMethods = state.runnerRetryNonIdempotentMethods != null ? state.runnerRetryNonIdempotentMethods : false;
+            retryPolicy.baseDelayMillis = state.runnerRetryBaseDelayMillis != null ? state.runnerRetryBaseDelayMillis : 200;
+            retryPolicy.maxDelayMillis = state.runnerRetryMaxDelayMillis != null ? state.runnerRetryMaxDelayMillis : 5_000;
+            runnerLegacyRetryPolicyRestored = false;
+        } else {
+            retryPolicy = RunnerRetryPolicy.safeDefaults();
+            retryPolicy.maxRetries = state.runnerRetries != null ? state.runnerRetries : 0;
+            if (retryPolicy.maxRetries > 0) {
+                retryPolicy.retryConnectionFailures = true;
+                retryPolicy.retryTimeouts = true;
+            }
+            runnerLegacyRetryPolicyRestored = retryPolicy.maxRetries > 0;
+        }
+        retryPolicy.normalize();
+        applyRunnerRetryPolicyToUi(retryPolicy);
+        if (runner != null) {
+            runner.setRetryPolicy(retryPolicy);
         }
         runnerExecutionPolicy = currentRunnerExecutionPolicy();
         if (runner != null) {
@@ -11060,6 +11183,209 @@ public class ImporterPanel {
         return policy;
     }
 
+    private RunnerRetryPolicy readRunnerRetryPolicyFromUi() {
+        RunnerRetryPolicy policy = RunnerRetryPolicy.safeDefaults();
+        try {
+            if (runnerMaxRetriesSpinner != null) {
+                policy.maxRetries = spinnerIntValue(runnerMaxRetriesSpinner);
+            } else if (runnerRetriesSpinner != null) {
+                policy.maxRetries = spinnerIntValue(runnerRetriesSpinner);
+            }
+            policy.retryableMethods = parseRetryMethods(runnerRetryableMethodsField != null ? runnerRetryableMethodsField.getText() : null);
+            policy.retryConnectionFailures = runnerRetryConnectionFailuresCheckBox != null && runnerRetryConnectionFailuresCheckBox.isSelected();
+            policy.retryTimeouts = runnerRetryTimeoutsCheckBox != null && runnerRetryTimeoutsCheckBox.isSelected();
+            policy.retryNonIdempotentMethods = runnerRetryNonIdempotentCheckBox != null && runnerRetryNonIdempotentCheckBox.isSelected();
+            policy.retryableStatusCodes = parseRetryStatusCodes(runnerRetryStatusCodesField != null ? runnerRetryStatusCodesField.getText() : null);
+            if (runnerRetryBaseDelaySpinner != null) {
+                policy.baseDelayMillis = spinnerIntValue(runnerRetryBaseDelaySpinner);
+            }
+            if (runnerRetryMaxDelaySpinner != null) {
+                policy.maxDelayMillis = spinnerIntValue(runnerRetryMaxDelaySpinner);
+            }
+            policy.normalize();
+            return policy;
+        } catch (IllegalArgumentException e) {
+            showRunnerRetryValidationError(e.getMessage());
+            return null;
+        }
+    }
+
+    private void applyRunnerRetryPolicyToUi(RunnerRetryPolicy policy) {
+        RunnerRetryPolicy copy = RunnerRetryPolicy.copyOf(policy);
+        if (runnerMaxRetriesSpinner != null) {
+            runnerMaxRetriesSpinner.setValue(copy.maxRetries);
+        }
+        if (runnerRetriesSpinner != null && runnerRetriesSpinner != runnerMaxRetriesSpinner) {
+            runnerRetriesSpinner.setValue(copy.maxRetries);
+        }
+        if (runnerRetryableMethodsField != null) {
+            runnerRetryableMethodsField.setText(String.join(", ", copy.retryableMethods));
+        }
+        if (runnerRetryConnectionFailuresCheckBox != null) {
+            runnerRetryConnectionFailuresCheckBox.setSelected(copy.retryConnectionFailures);
+        }
+        if (runnerRetryTimeoutsCheckBox != null) {
+            runnerRetryTimeoutsCheckBox.setSelected(copy.retryTimeouts);
+        }
+        if (runnerRetryNonIdempotentCheckBox != null) {
+            runnerRetryNonIdempotentCheckBox.setSelected(copy.retryNonIdempotentMethods);
+        }
+        if (runnerRetryStatusCodesField != null) {
+            runnerRetryStatusCodesField.setText(copy.retryableStatusCodes.isEmpty()
+                    ? ""
+                    : copy.retryableStatusCodes.stream().sorted().map(String::valueOf).collect(java.util.stream.Collectors.joining(", ")));
+        }
+        if (runnerRetryBaseDelaySpinner != null) {
+            runnerRetryBaseDelaySpinner.setValue(copy.baseDelayMillis);
+        }
+        if (runnerRetryMaxDelaySpinner != null) {
+            runnerRetryMaxDelaySpinner.setValue(copy.maxDelayMillis);
+        }
+    }
+
+    private static Set<String> parseRetryMethods(String text) {
+        Set<String> values = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return values;
+        }
+        for (String token : text.split("[,\\s]+")) {
+            if (token == null || token.isBlank()) {
+                continue;
+            }
+            values.add(token.trim().toUpperCase(Locale.ROOT));
+        }
+        return values;
+    }
+
+    private static Set<Integer> parseRetryStatusCodes(String text) {
+        Set<Integer> values = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return values;
+        }
+        for (String token : text.split("[,\\s]+")) {
+            if (token == null || token.isBlank()) {
+                continue;
+            }
+            try {
+                int code = Integer.parseInt(token.trim());
+                if (code < 100 || code > 599) {
+                    throw new IllegalArgumentException("Invalid retry status code: " + token.trim());
+                }
+                values.add(code);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid retry status code: " + token.trim());
+            }
+        }
+        return values;
+    }
+
+    private void showRunnerRetryValidationError(String message) {
+        String text = message != null && !message.isBlank() ? message : "Invalid runner retry policy.";
+        if (GraphicsEnvironment.isHeadless()) {
+            appendRunnerLog(text);
+            return;
+        }
+        JOptionPane.showMessageDialog(mainPanel, text, "Invalid Runner retry policy", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private boolean requiresUnsafeRunnerRetryWarning(List<ApiRequest> selected,
+                                                     List<RunnerPreviewRow> previewRows,
+                                                     RunnerRetryPolicy policy) {
+        if (runnerLegacyRetryPolicyRestored && policy != null && policy.maxRetries > 0) {
+            return true;
+        }
+        if (selected == null || selected.isEmpty() || policy == null) {
+            return false;
+        }
+        for (ApiRequest request : selected) {
+            if (request == null) {
+                continue;
+            }
+            String method = request.method != null ? request.method.trim().toUpperCase(Locale.ROOT) : "GET";
+            if (!isUnsafeRetryMethod(method)) {
+                continue;
+            }
+            if (policy.isMethodRetryEligible(method)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String buildUnsafeRunnerRetryWarningMessage(List<ApiRequest> selected) {
+        StringBuilder message = new StringBuilder();
+        message.append("This retry policy can repeat a request that may already have been processed.\n");
+        message.append("A timed-out sent request may already have been processed, so retrying can duplicate side effects.\n\n");
+        if (runnerLegacyRetryPolicyRestored) {
+            message.append("Legacy workspace retry count was restored.\n");
+        }
+        List<String> affected = new ArrayList<>();
+        if (selected != null) {
+            for (ApiRequest request : selected) {
+                if (request == null) {
+                    continue;
+                }
+                String method = request.method != null ? request.method.trim().toUpperCase(Locale.ROOT) : "GET";
+                if (!isUnsafeRetryMethod(method)) {
+                    continue;
+                }
+                ApiCollection collection = requestToCollectionMap.get(request);
+                String collectionName = collection != null && collection.name != null ? collection.name : (request.sourceCollection != null ? request.sourceCollection : "");
+                String folderPath = collection != null ? RequestPathResolver.getRequestFolderPath(collection, request) : request.path;
+                StringBuilder path = new StringBuilder();
+                if (collectionName != null && !collectionName.isBlank()) {
+                    path.append(collectionName.trim());
+                }
+                if (folderPath != null && !folderPath.isBlank()) {
+                    path.append('/').append(folderPath.replace('\\', '/').trim().replaceAll("^/+|/+$", ""));
+                }
+                if (request.name != null && !request.name.isBlank()) {
+                    if (path.length() > 0) {
+                        path.append('/');
+                    }
+                    path.append(request.name.trim());
+                }
+                affected.add((path.length() > 0 ? path.toString() : safeRunnerRequestLabel(request)) + " [" + method + "]");
+            }
+        }
+        if (!affected.isEmpty()) {
+            message.append("Affected requests:\n- ").append(String.join("\n- ", affected));
+        }
+        return message.toString();
+    }
+
+    private static boolean isUnsafeRetryMethod(String method) {
+        if (method == null || method.isBlank()) {
+            return false;
+        }
+        String normalized = method.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "GET", "HEAD", "OPTIONS", "PUT", "DELETE" -> false;
+            default -> true;
+        };
+    }
+
+    private String safeRunnerRequestLabel(ApiRequest request) {
+        if (request == null) {
+            return "request";
+        }
+        if (request.name != null && !request.name.isBlank()) {
+            return request.name;
+        }
+        if (request.id != null && !request.id.isBlank()) {
+            return request.id;
+        }
+        return "request";
+    }
+
+    private boolean showRunnerWarningDialog(Component parent, String title, String message) {
+        if (GraphicsEnvironment.isHeadless()) {
+            return false;
+        }
+        int choice = JOptionPane.showConfirmDialog(parent, message, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        return choice == JOptionPane.OK_OPTION;
+    }
+
     private boolean confirmWorkbenchPreflight(ExecutionPreflightResult preflight) {
         if (preflight == null) {
             return false;
@@ -11105,6 +11431,10 @@ public class ImporterPanel {
     void setPreflightDecisionHandlerForTests(PreflightDecisionHandler handler) {
         this.preflightDecisionHandler = handler != null ? handler : this::confirmWorkbenchPreflight;
         this.preflightDecisionHandlerConfiguredForTests = true;
+    }
+
+    void setRunnerWarningPresenterForTests(RunnerWarningPresenter presenter) {
+        this.runnerWarningPresenter = presenter != null ? presenter : this::showRunnerWarningDialog;
     }
 
     private void startImport(List<ApiRequest> selected, List<String> destinations, int delay) {
@@ -11389,6 +11719,12 @@ public class ImporterPanel {
             return;
         }
 
+        RunnerRetryPolicy retryPolicy = readRunnerRetryPolicyFromUi();
+        if (retryPolicy == null) {
+            return;
+        }
+        runner.setRetryPolicy(retryPolicy);
+
         Map<String, String> runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         List<UnresolvedVariableIssue> issues = collectUnresolvedVariableIssues(loadedCollections, selected, runtimeOverlay);
         if (!issues.isEmpty()) {
@@ -11414,6 +11750,18 @@ public class ImporterPanel {
             }
         }
 
+        if (requiresUnsafeRunnerRetryWarning(selected, previewRows, retryPolicy)) {
+            String warningMessage = buildUnsafeRunnerRetryWarningMessage(selected);
+            boolean confirmed = runnerWarningPresenter != null
+                    ? runnerWarningPresenter.confirm(mainPanel, "Unsafe Runner retry policy", warningMessage)
+                    : true;
+            if (!confirmed) {
+                appendRunnerLog("Runner start cancelled: unsafe retry warning rejected.");
+                updateRunnerQueueUiState();
+                return;
+            }
+        }
+
         if (selected.isEmpty()) {
             appendRunnerLog("Runner queue is empty.");
             updateRunnerQueueUiState();
@@ -11425,7 +11773,6 @@ public class ImporterPanel {
 
     private void startRunnerExecution(List<ApiRequest> selected, boolean stepMode) {
         runner.setDelayMs((Integer) runnerDelaySpinner.getValue());
-        runner.setMaxRetries((Integer) runnerRetriesSpinner.getValue());
         runner.setStopConditions(buildRunnerStopConditionsFromUi());
         runner.setFollowRedirects(followRedirectsBox.isSelected());
         runner.setRedirectPolicy(sharedRedirectPolicy);
@@ -11490,9 +11837,6 @@ public class ImporterPanel {
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
                     resultModel.addEntry(entry);
                     appendRedirectHopRows(result);
-                    if (timelineModel != null) {
-                        timelineModel.addRow(buildTimelineRow(result));
-                    }
                     if (result != null && !result.dependentExecution && !result.adHocExecution) {
                         runnerCompletedQueueCount++;
                     }
@@ -11517,9 +11861,6 @@ public class ImporterPanel {
                             RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
                             resultModel.addEntry(entry);
                             appendRedirectHopRows(result);
-                            if (timelineModel != null) {
-                                timelineModel.addRow(buildTimelineRow(result));
-                            }
                             if (entry.detailEntry != null) {
                                 runnerDetailPanel.showEntry(entry.detailEntry);
                             }
@@ -11812,11 +12153,12 @@ public class ImporterPanel {
         runnerPreviewModel.setRows(workingPreviewRows);
 
         JTable previewTable = new JTable(runnerPreviewModel);
-        previewTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        previewTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         previewTable.setFillsViewportHeight(true);
         previewTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         JScrollPane previewScroll = new JScrollPane(previewTable);
         previewScroll.setPreferredSize(new Dimension(900, 280));
+        previewScroll.getHorizontalScrollBar().setUnitIncrement(16);
 
         int unresolvedCount = 0;
         int missingAuthCount = 0;

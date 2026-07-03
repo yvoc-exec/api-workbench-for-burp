@@ -211,7 +211,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
         assertThat(runner.getResults()).hasSize(1);
         RunnerResult parentResult = runner.getResults().get(0);
         assertThat(parentResult.success).isTrue();
-        assertThat(parentResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request target is disabled"));
+        assertThat(parentResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Flow target is disabled"));
         assertThat(parentResult.scriptDependentRequestResults).isEmpty();
         assertThat(parentResult.dependentRequestCount).isZero();
     }

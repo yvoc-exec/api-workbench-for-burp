@@ -18,7 +18,7 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
             .withZone(ZoneId.systemDefault());
 
     private final List<Entry> rows = new ArrayList<>();
-    private final String[] columns = {"#", "Time", "Type", "State", "Request", "Source", "Method", "Status", "Result", "Duration", "Flow", "Message"};
+    private final String[] columns = {"#", "Time", "Type", "State", "Request", "Source", "Method", "Status", "Attempt", "Kind", "Retry Reason", "Cancellation", "Result", "Duration", "Flow", "Message"};
 
     @Override
     public void addResult(RunnerResult result) {
@@ -111,10 +111,14 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
             case 5 -> row.source != null ? row.source : "";
             case 6 -> row.method != null ? row.method : "";
             case 7 -> row.status != null ? row.status : "";
-            case 8 -> row.result != null ? row.result : "";
-            case 9 -> row.duration != null ? row.duration : "";
-            case 10 -> row.flow != null ? row.flow : "";
-            case 11 -> row.message != null ? row.message : "";
+            case 8 -> row.attempt != null ? row.attempt : "";
+            case 9 -> row.kind != null ? row.kind : "";
+            case 10 -> row.retryReason != null ? row.retryReason : "";
+            case 11 -> row.cancellationState != null ? row.cancellationState : "";
+            case 12 -> row.result != null ? row.result : "";
+            case 13 -> row.duration != null ? row.duration : "";
+            case 14 -> row.flow != null ? row.flow : "";
+            case 15 -> row.message != null ? row.message : "";
             default -> "";
         };
     }
@@ -147,7 +151,7 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
             detailEntry.scriptDialect = result.scriptEngineName;
             detailEntry.resultClassification = detailEntry.result != null ? detailEntry.result.displayName() : null;
         }
-        return new Entry(
+        Entry entry = new Entry(
                 0,
                 Instant.now(),
                 "REQUEST_COMPLETED",
@@ -166,6 +170,11 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
                 result.requestId,
                 result.collectionName
         );
+        entry.attempt = result.attemptNumber + "/" + result.totalAttempts;
+        entry.kind = executionKind(result);
+        entry.retryReason = result.retryReason;
+        entry.cancellationState = result.cancellationState != null ? result.cancellationState.name() : "";
+        return entry;
     }
 
     private static List<RedirectHop> copyRedirectHops(List<RedirectHop> hops) {
@@ -260,6 +269,10 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
         public final RunnerTimelineRow timelineRow;
         public final String requestId;
         public final String collectionName;
+        public String attempt;
+        public String kind;
+        public String retryReason;
+        public String cancellationState;
 
         public Entry(int sequence,
                      Instant timestamp,
@@ -300,5 +313,35 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
         public String formatTime() {
             return timestamp != null ? TIME_FORMAT.format(timestamp) : "";
         }
+    }
+
+    private static String executionKind(RunnerResult result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.cancellationState != null && result.cancellationState != burp.models.RunnerCancellationState.NOT_CANCELLED) {
+            return "CANCELLED";
+        }
+        if (result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                || result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
+                || result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
+                || result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
+                || result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                || result.preflightStatus == burp.utils.ExecutionPreflightStatus.BLOCKED_POLICY) {
+            return "PREFLIGHT_BLOCKED";
+        }
+        if (result.responseTimedOut) {
+            return "TIMED_OUT";
+        }
+        if (result.adHocExecution) {
+            return "AD_HOC";
+        }
+        if (result.dependentExecution) {
+            return "DEPENDENT";
+        }
+        if (result.attemptNumber > 1) {
+            return "RETRY";
+        }
+        return "QUEUED";
     }
 }

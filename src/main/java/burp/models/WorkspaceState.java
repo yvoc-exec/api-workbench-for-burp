@@ -54,6 +54,14 @@ public class WorkspaceState {
     public String historyReplayRedirectMode;
     public RedirectPolicy redirectPolicy;
     public List<String> runnerQueuedRequestIdentityKeys = new ArrayList<>();
+    public Integer runnerRetryPolicyVersion;
+    public List<String> runnerRetryableMethods = new ArrayList<>();
+    public List<Integer> runnerRetryableStatusCodes = new ArrayList<>();
+    public Boolean runnerRetryConnectionFailures;
+    public Boolean runnerRetryTimeouts;
+    public Boolean runnerRetryNonIdempotentMethods;
+    public Integer runnerRetryBaseDelayMillis;
+    public Integer runnerRetryMaxDelayMillis;
 
     public static WorkspaceState fromCollections(List<ApiCollection> source) {
         WorkspaceState state = new WorkspaceState();
@@ -112,6 +120,14 @@ public class WorkspaceState {
         copy.runnerQueuedRequestIdentityKeys = source.runnerQueuedRequestIdentityKeys != null
                 ? new ArrayList<>(source.runnerQueuedRequestIdentityKeys)
                 : new ArrayList<>();
+        copy.runnerRetryPolicyVersion = source.runnerRetryPolicyVersion;
+        copy.runnerRetryableMethods = source.runnerRetryableMethods != null ? new ArrayList<>(source.runnerRetryableMethods) : new ArrayList<>();
+        copy.runnerRetryableStatusCodes = source.runnerRetryableStatusCodes != null ? new ArrayList<>(source.runnerRetryableStatusCodes) : new ArrayList<>();
+        copy.runnerRetryConnectionFailures = source.runnerRetryConnectionFailures;
+        copy.runnerRetryTimeouts = source.runnerRetryTimeouts;
+        copy.runnerRetryNonIdempotentMethods = source.runnerRetryNonIdempotentMethods;
+        copy.runnerRetryBaseDelayMillis = source.runnerRetryBaseDelayMillis;
+        copy.runnerRetryMaxDelayMillis = source.runnerRetryMaxDelayMillis;
         return copy;
     }
 

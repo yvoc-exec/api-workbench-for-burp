@@ -51,7 +51,7 @@ public class CollectionRunner {
     private volatile boolean running = false;
     private volatile boolean cancelled = false;
     private int delayMs = 200;
-    private int maxRetries = 1;
+    private volatile RunnerRetryPolicy retryPolicy = RunnerRetryPolicy.safeDefaults();
     private boolean followRedirects = true;
     private RedirectPolicy redirectPolicy = RedirectPolicy.defaults();
     private boolean debugRawRequest = false;
@@ -73,6 +73,7 @@ public class CollectionRunner {
     private SharedRequestPipeline.OAuth2TokenSink oauth2TokenSink;
     private SharedRequestPipeline.RuntimeVariableSink runtimeVariableSink;
     private volatile ExecutionPolicy executionPolicy = ExecutionPolicy.runnerDefaults(false);
+    private final RunnerFlowTargetResolver flowTargetResolver = new RunnerFlowTargetResolver();
 
     public CollectionRunner(MontoyaApi api) {
         this(api, null, null);
@@ -96,7 +97,24 @@ public class CollectionRunner {
     }
 
     public void setDelayMs(int delayMs) { this.delayMs = delayMs; }
-    public void setMaxRetries(int maxRetries) { this.maxRetries = Math.max(0, maxRetries); }
+    public void setMaxRetries(int maxRetries) {
+        RunnerRetryPolicy copy = RunnerRetryPolicy.copyOf(retryPolicy);
+        copy.maxRetries = maxRetries;
+        if (copy.maxRetries > 0 && !copy.retryConnectionFailures && !copy.retryTimeouts) {
+            copy.retryConnectionFailures = true;
+            copy.retryTimeouts = true;
+        }
+        copy.normalize();
+        setRetryPolicy(copy);
+    }
+    public void setRetryPolicy(RunnerRetryPolicy policy) {
+        RunnerRetryPolicy copy = RunnerRetryPolicy.copyOf(policy);
+        copy.normalize();
+        this.retryPolicy = copy;
+    }
+    public RunnerRetryPolicy getRetryPolicy() {
+        return RunnerRetryPolicy.copyOf(retryPolicy);
+    }
     public void setStopOnError(boolean stopOnError) {
         ensureStopConditions().stopOnError = stopOnError;
     }
@@ -236,9 +254,10 @@ public class CollectionRunner {
                 }
             }
         }
+        final List<ApiCollection> activeSourceCollections = sourceCollections != null ? new ArrayList<>(sourceCollections) : Collections.emptyList();
 
         List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
-        RunnerDependentRequestExecutor dependentRequestExecutor = new RunnerDependentRequestExecutor(sourceCollections, reqToColMap, colMap);
+        RunnerDependentRequestExecutor dependentRequestExecutor = new RunnerDependentRequestExecutor(activeSourceCollections, reqToColMap, colMap);
 
         ExecutorService chosenExecutor = executorServiceFactory != null ? executorServiceFactory.get() : null;
         if (chosenExecutor == null) {
@@ -302,14 +321,23 @@ public class CollectionRunner {
                     }
 
                     RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
-                    if (outcome == null || outcome.state == RequestOutcomeState.CANCELLED || outcome.state == RequestOutcomeState.FAILED_BEFORE_RESULT || outcome.result == null) {
+                    if (outcome == null || outcome.state == RequestOutcomeState.FAILED_BEFORE_RESULT || outcome.result == null) {
                         break;
                     }
 
                     RunnerResult result = outcome.result;
                     results.add(result);
                     fireOnRequestComplete(result);
-                    fireOnTimeline(buildTimelineRow(req, col, result, outcome.attempts));
+                    if (outcome.state == RequestOutcomeState.CANCELLED || result.cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+                        termination.stop(RunnerTerminationType.CANCELLED,
+                                "User cancelled the runner.",
+                                result,
+                                null,
+                                "cancelled",
+                                null,
+                                null);
+                        break;
+                    }
                     if (!result.dependentExecution && !result.adHocExecution) {
                         completedQueuedCount.incrementAndGet();
                     }
@@ -369,7 +397,7 @@ public class CollectionRunner {
                         break;
                     }
 
-                    int nextIndex = applyFlowControl(ordered, i, result, flowControlJumps, maxFlowControlJumps, termination);
+                    int nextIndex = applyFlowControl(activeSourceCollections, ordered, i, result, flowControlJumps, maxFlowControlJumps, termination);
                     if (nextIndex == Integer.MIN_VALUE) {
                         break;
                     }
@@ -466,6 +494,10 @@ public class CollectionRunner {
         }
 
         List<ApiRequest> ordered = orderRequestsForRun(selectedRequests);
+        RunnerRetryPolicy retryPolicySnapshot = getRetryPolicy();
+        ExecutionPolicy previewPolicy = effectiveExecutionPolicy();
+        int responseTimeoutMillis = previewPolicy.responseTimeoutMillis;
+        String targetChangePolicy = previewPolicy.targetChangeMode != null ? previewPolicy.targetChangeMode.name() : "";
 
         for (ApiRequest req : ordered) {
             if (req == null || req.disabled) {
@@ -482,10 +514,22 @@ public class CollectionRunner {
             row.order = req.sequenceOrder;
             row.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
             row.requestName = req.name;
-            row.method = req.method != null ? req.method.toUpperCase() : "GET";
+            row.method = req.method != null ? req.method.trim().toUpperCase(Locale.ROOT) : "GET";
             row.urlPreview = resolver.resolve(req.url);
             row.authStatus = describeAuth(req);
             row.unresolvedVariables.addAll(collectUnresolvedVariables(resolver, req));
+            int maximumAttempts = retryPolicySnapshot.maximumAttemptsFor(row.method);
+            row.retryEligible = maximumAttempts > 1;
+            row.maximumAttempts = maximumAttempts;
+            row.retryPolicySummary = maximumAttempts <= 1
+                    ? "No retries"
+                    : "Eligible; up to " + maximumAttempts + " attempts; connection=" + retryPolicySnapshot.retryConnectionFailures
+                    + "; timeout=" + retryPolicySnapshot.retryTimeouts
+                    + "; status=" + (retryPolicySnapshot.retryableStatusCodes != null && !retryPolicySnapshot.retryableStatusCodes.isEmpty()
+                    ? retryPolicySnapshot.retryableStatusCodes.stream().sorted().map(String::valueOf).collect(java.util.stream.Collectors.joining(", "))
+                    : "none");
+            row.responseTimeoutMillis = responseTimeoutMillis;
+            row.targetChangePolicy = targetChangePolicy;
             previewRows.add(row);
         }
 
@@ -532,24 +576,18 @@ public class CollectionRunner {
                                                    String parentRequestId,
                                                    int dependentDepth,
                                                    Map<String, String> runtimeOverlayOverride) throws InterruptedException {
-        RunnerResult result = new RunnerResult();
-        result.requestName = req.name;
-        result.requestId = req.id;
-        result.collectionName = col != null && col.name != null ? col.name : req.sourceCollection;
-        result.folderPath = col != null ? RequestPathResolver.getRequestFolderPath(col, req) : req.path;
-        result.method = req.method != null ? req.method.toUpperCase() : "GET";
-        result.dependentExecution = dependentExecution;
-        result.adHocExecution = adHocExecution;
-        result.parentRequestName = parentRequestName;
-        result.parentRequestId = parentRequestId;
-        result.dependentDepth = dependentDepth;
-        result.triggeredByScript = dependentExecution || adHocExecution;
-
-        fireOnRequestStart(snapshotRequestStart(result, req, col));
+        RunnerRetryPolicy policySnapshot = getRetryPolicy();
+        int maxAttempts = policySnapshot.maximumAttemptsFor(req != null ? req.method : null);
+        RunnerResult requestStart = newAttemptResult(req, col, dependentExecution, adHocExecution, parentRequestName, parentRequestId, dependentDepth, 1, maxAttempts);
+        fireOnRequestStart(snapshotRequestStart(requestStart, req, col));
 
         if (pipeline == null) {
+            RunnerResult result = newAttemptResult(req, col, dependentExecution, adHocExecution, parentRequestName, parentRequestId, dependentDepth, 1, maxAttempts);
             result.success = false;
             result.errorMessage = "Runner pipeline unavailable";
+            result.retryDecision = "NO_RETRY";
+            result.retryReason = "Retry disabled: unconfigured failure type.";
+            publishAttempt(req, col, result);
             return new RequestExecutionOutcome(result, 0, RequestOutcomeState.COMPLETED);
         }
 
@@ -565,9 +603,10 @@ public class CollectionRunner {
         }
 
         int attempts = 0;
-        int maxAttempts = Math.max(1, maxRetries + 1);
+        RunnerResult result = null;
         while (attempts < maxAttempts && !cancelled) {
             attempts++;
+            result = newAttemptResult(req, col, dependentExecution, adHocExecution, parentRequestName, parentRequestId, dependentDepth, attempts, maxAttempts);
             try {
                 Map<String, String> overlay = mergeRuntimeOverlays(runtimeOverlayFor(col), runtimeOverlayOverride);
                 EnvironmentProfile activeEnvironment = activeEnvironmentFor(col);
@@ -602,15 +641,16 @@ public class CollectionRunner {
                         }
                     }
                 } else {
-                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy, currentPolicy, null);
+                    exec = pipeline.execute(req, col, followRedirects, overlay, oauth2TokenSink, runtimeVariableSink, activeEnvironment, burp.scripts.ExecutionSource.RUNNER, dependentRequestExecutor, redirectPolicy, currentPolicy, null, () -> cancelled || Thread.currentThread().isInterrupted());
                 }
                 if (exec == null) {
                     result.success = false;
                     result.errorMessage = "Runner pipeline unavailable";
-                    result.attemptNumber = attempts;
-                    result.totalAttempts = maxAttempts;
-                    fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
-                    break;
+                    result.retryDecision = "NO_RETRY";
+                    result.retryReason = "Retry disabled: unconfigured failure type.";
+                    result.retryDelayMillis = 0;
+                    publishAttempt(req, col, result);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
                 if (exec.isBlockedBeforeSend()) {
                     copyScriptOutput(result, exec);
@@ -621,9 +661,8 @@ public class CollectionRunner {
                     result.responseSize = 0;
                     result.responseTimeMs = exec.elapsedMs;
                     result.errorMessage = exec.preflightMessage;
-                    result.attemptNumber = attempts;
-                    result.totalAttempts = maxAttempts;
-                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+                    finalizeRetryMetadata(result, classifyRetryFailure(exec, result), policySnapshot, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
                     return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
                 if (debugRawRequest && exec != null) {
@@ -639,8 +678,47 @@ public class CollectionRunner {
 
                 copyScriptOutput(result, exec);
                 copyExecutionResultMetadata(result, exec);
+                if ((cancelled || Thread.currentThread().isInterrupted()) && exec.response != null) {
+                    result.cancellationState = RunnerCancellationState.LATE_RESPONSE_IGNORED;
+                    result.success = false;
+                    result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                    result.preflightMessage = "Runner execution cancelled.";
+                    result.errorMessage = "Runner execution cancelled.";
+                    result.statusCode = 0;
+                    result.responseSize = 0;
+                    result.responseBody = null;
+                    result.responseHeaders = null;
+                    result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : result.rawRequestBytes;
+                    result.rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : result.rawRequestText);
+                    finalizeRetryMetadata(result, RetryFailureType.CANCELLED, policySnapshot, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
+                }
                 if ((cancelled || Thread.currentThread().isInterrupted()) && exec.response == null) {
-                    return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                    result.cancellationState = result.requestSent
+                            ? RunnerCancellationState.CANCELLED_DURING_HTTP_WAIT
+                            : RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                    result.success = false;
+                    result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                    result.preflightMessage = "Runner execution cancelled.";
+                    result.errorMessage = "Runner execution cancelled.";
+                    result.statusCode = 0;
+                    result.responseSize = 0;
+                    result.responseBody = null;
+                    result.responseHeaders = null;
+                    result.rawRequestBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : result.rawRequestBytes;
+                    result.rawRequestText = exec.rawRequestText != null
+                            ? exec.rawRequestText
+                            : (exec.rawRequestBytes != null
+                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            : result.rawRequestText);
+                    finalizeRetryMetadata(result, RetryFailureType.CANCELLED, policySnapshot, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
                 }
                 if (exec.assertions != null && !exec.assertions.isEmpty()) {
                     result.assertions.addAll(exec.assertions);
@@ -662,13 +740,12 @@ public class CollectionRunner {
                     result.requestHeaders = exec.requestHeaders;
                     result.requestBody = exec.requestBody;
                     result.resolvedVariables = exec.resolvedVariables != null ? new HashMap<>(exec.resolvedVariables) : new HashMap<>();
-                    result.attemptNumber = attempts;
-                    result.totalAttempts = maxAttempts;
                     recordRunnerDiagnostic(result,
                             exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? DiagnosticSeverity.INFO : DiagnosticSeverity.WARNING,
                             exec.scriptFlowControl == burp.scripts.ScriptFlowControl.SKIP_REQUEST ? "Skipped by script" : "Stopped by script",
                             "Flow Control: " + exec.scriptFlowControl);
-                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
+                    finalizeRetryMetadata(result, classifyRetryFailure(exec, result), policySnapshot, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
                     return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.COMPLETED);
                 }
 
@@ -734,10 +811,8 @@ public class CollectionRunner {
                         mergeExecutionVariables(scopedExtractedVars, extractedVars, result, exec);
                     }
 
-                    result.attemptNumber = attempts;
-                    result.totalAttempts = maxAttempts;
-                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
-
+                    finalizeSuccessfulAttempt(result, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
                     break; // Success, exit retry loop
                 } else {
                     result.success = false;
@@ -747,23 +822,73 @@ public class CollectionRunner {
                     result.redirectsEnabled = exec.redirectsEnabled;
                     result.redirectTerminationReason = exec.redirectTerminationReason;
                     result.redirectHops = copyRedirectHops(exec.redirectHops);
+                    if (exec.response != null && exec.response.response() != null) {
+                        result.statusCode = exec.response.response().statusCode();
+                        result.responseSize = exec.response.response().body() != null ? exec.response.response().body().length() : 0;
+                        result.responseTimeMs = exec.elapsedMs;
+                    }
                     if (!cancelled && !Thread.currentThread().isInterrupted()) {
                         fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
                     }
-                    result.attemptNumber = attempts;
-                    result.totalAttempts = maxAttempts;
-                    fireOnAttemptComplete(snapshotAttemptResult(result, exec, attempts, maxAttempts));
-                    if (attempts >= maxAttempts || cancelled) {
+                    RetryFailureType failureType = classifyRetryFailure(exec, result);
+                    RunnerRetryDecision decision = finalizeRetryMetadata(result, failureType, policySnapshot, attempts, maxAttempts);
+                    publishAttempt(req, col, result);
+                    if (cancelled || Thread.currentThread().isInterrupted()) {
+                        result.cancellationState = result.requestSent
+                                ? RunnerCancellationState.CANCELLED_DURING_HTTP_WAIT
+                                : RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                        result.success = false;
+                        result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                        result.preflightMessage = "Runner execution cancelled.";
+                        result.errorMessage = "Runner execution cancelled.";
+                        result.retryDecision = "NO_RETRY";
+                        result.retryReason = "Retry disabled for cancellation.";
+                        result.retryDelayMillis = 0;
+                        result.retryFailureType = RetryFailureType.CANCELLED;
+                        result.requestMayHaveBeenProcessed = result.requestSent
+                                && (failureType == RetryFailureType.CONNECTION_FAILURE
+                                || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                                || failureType == RetryFailureType.CANCELLED);
+                        return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
+                    }
+                    if (!decision.retry() || attempts >= maxAttempts || cancelled) {
                         break;
                     }
-                    int retryDelay = retryDelayMs(attempts);
-                    fireOnDebug("Retrying in " + retryDelay + "ms");
+                    fireOnDebug("Retrying in " + decision.delayMillis() + "ms");
                     try {
-                        Thread.sleep(retryDelay);
+                        if (!waitForRetryDelay(decision.delayMillis())) {
+                            result.cancellationState = RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                            result.success = false;
+                            result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                            result.preflightMessage = "Runner execution cancelled.";
+                            result.errorMessage = "Runner execution cancelled.";
+                            result.retryDecision = "NO_RETRY";
+                            result.retryReason = "Retry disabled for cancellation.";
+                            result.retryDelayMillis = 0;
+                            result.retryFailureType = RetryFailureType.CANCELLED;
+                            result.requestMayHaveBeenProcessed = result.requestSent
+                                    && (failureType == RetryFailureType.CONNECTION_FAILURE
+                                    || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                                    || failureType == RetryFailureType.CANCELLED);
+                            return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
+                        }
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         if (cancelled) {
-                            return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                            result.cancellationState = RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                            result.success = false;
+                            result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                            result.preflightMessage = "Runner execution cancelled.";
+                            result.errorMessage = "Runner execution cancelled.";
+                            result.retryDecision = "NO_RETRY";
+                            result.retryReason = "Retry disabled for cancellation.";
+                            result.retryDelayMillis = 0;
+                            result.retryFailureType = RetryFailureType.CANCELLED;
+                            result.requestMayHaveBeenProcessed = result.requestSent
+                                    && (failureType == RetryFailureType.CONNECTION_FAILURE
+                                    || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                                    || failureType == RetryFailureType.CANCELLED);
+                            return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
                         }
                         throw ie;
                     }
@@ -771,27 +896,72 @@ public class CollectionRunner {
             } catch (Exception e) {
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     Thread.currentThread().interrupt();
-                    return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
                 }
                 result.success = false;
                 result.errorMessage = extractCleanError(e);
                 if (!cancelled && !Thread.currentThread().isInterrupted()) {
                     fireOnDebug("Attempt " + attempts + "/" + maxAttempts + " failed: " + result.errorMessage);
                 }
-                result.attemptNumber = attempts;
-                result.totalAttempts = maxAttempts;
-                fireOnAttemptComplete(snapshotAttemptResult(result, null, attempts, maxAttempts));
-                if (attempts >= maxAttempts || cancelled) {
+                RetryFailureType failureType = RetryFailureType.SCRIPT_FAILURE;
+                RunnerRetryDecision decision = finalizeRetryMetadata(result, failureType, policySnapshot, attempts, maxAttempts);
+                publishAttempt(req, col, result);
+                if (cancelled || Thread.currentThread().isInterrupted()) {
+                    result.cancellationState = result.requestSent
+                            ? RunnerCancellationState.CANCELLED_DURING_HTTP_WAIT
+                            : RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                    result.success = false;
+                    result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                    result.preflightMessage = "Runner execution cancelled.";
+                    result.errorMessage = "Runner execution cancelled.";
+                    result.retryDecision = "NO_RETRY";
+                    result.retryReason = "Retry disabled for cancellation.";
+                    result.retryDelayMillis = 0;
+                    result.retryFailureType = RetryFailureType.CANCELLED;
+                    result.requestMayHaveBeenProcessed = result.requestSent
+                            && (failureType == RetryFailureType.CONNECTION_FAILURE
+                            || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                            || failureType == RetryFailureType.CANCELLED);
+                    return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
+                }
+                if (!decision.retry() || attempts >= maxAttempts || cancelled) {
                     break;
                 }
-                int retryDelay = retryDelayMs(attempts);
-                fireOnDebug("Retrying in " + retryDelay + "ms");
+                fireOnDebug("Retrying in " + decision.delayMillis() + "ms");
                 try {
-                    Thread.sleep(retryDelay);
+                    if (!waitForRetryDelay(decision.delayMillis())) {
+                        result.cancellationState = RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                        result.success = false;
+                        result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                        result.preflightMessage = "Runner execution cancelled.";
+                        result.errorMessage = "Runner execution cancelled.";
+                        result.retryDecision = "NO_RETRY";
+                        result.retryReason = "Retry disabled for cancellation.";
+                        result.retryDelayMillis = 0;
+                        result.retryFailureType = RetryFailureType.CANCELLED;
+                        result.requestMayHaveBeenProcessed = result.requestSent
+                                && (failureType == RetryFailureType.CONNECTION_FAILURE
+                                || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                                || failureType == RetryFailureType.CANCELLED);
+                        return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
+                    }
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     if (cancelled) {
-                        return new RequestExecutionOutcome(null, attempts, RequestOutcomeState.CANCELLED);
+                        result.cancellationState = RunnerCancellationState.CANCELLED_BEFORE_SEND;
+                        result.success = false;
+                        result.preflightStatus = ExecutionPreflightStatus.CANCELLED;
+                        result.preflightMessage = "Runner execution cancelled.";
+                        result.errorMessage = "Runner execution cancelled.";
+                        result.retryDecision = "NO_RETRY";
+                        result.retryReason = "Retry disabled for cancellation.";
+                        result.retryDelayMillis = 0;
+                        result.retryFailureType = RetryFailureType.CANCELLED;
+                        result.requestMayHaveBeenProcessed = result.requestSent
+                                && (failureType == RetryFailureType.CONNECTION_FAILURE
+                                || failureType == RetryFailureType.RESPONSE_TIMEOUT
+                                || failureType == RetryFailureType.CANCELLED);
+                        return new RequestExecutionOutcome(result, attempts, RequestOutcomeState.CANCELLED);
                     }
                     throw ie;
                 }
@@ -919,6 +1089,37 @@ public class CollectionRunner {
         return copy;
     }
 
+    static List<ScriptDependentRequestResult> copyDependentRequestResults(List<ScriptDependentRequestResult> results) {
+        List<ScriptDependentRequestResult> copy = new ArrayList<>();
+        if (results == null) {
+            return copy;
+        }
+        for (ScriptDependentRequestResult result : results) {
+            if (result == null) {
+                continue;
+            }
+            ScriptDependentRequestResult item = new ScriptDependentRequestResult();
+            item.executed = result.executed;
+            item.success = result.success;
+            item.message = result.message;
+            item.warningMessage = result.warningMessage;
+            item.errorMessage = result.errorMessage;
+            item.targetNameOrId = result.targetNameOrId;
+            item.resolvedRequestName = result.resolvedRequestName;
+            item.resolvedRequestId = result.resolvedRequestId;
+            item.parentRequestName = result.parentRequestName;
+            item.parentRequestId = result.parentRequestId;
+            item.depth = result.depth;
+            item.adHoc = result.adHoc;
+            item.targetResolutionForm = result.targetResolutionForm;
+            item.qualifiedTargetPath = result.qualifiedTargetPath;
+            item.candidateQualifiedPaths = result.candidateQualifiedPaths != null ? new ArrayList<>(result.candidateQualifiedPaths) : new ArrayList<>();
+            item.runnerResult = result.runnerResult;
+            copy.add(item);
+        }
+        return copy;
+    }
+
     static void copyScriptOutput(RunnerResult result, ExecutionResult exec) {
         if (result == null || exec == null) {
             return;
@@ -984,7 +1185,8 @@ public class CollectionRunner {
         }
     }
 
-    private int applyFlowControl(List<ApiRequest> ordered,
+    private int applyFlowControl(List<ApiCollection> collections,
+                                 List<ApiRequest> ordered,
                                  int currentIndex,
                                  RunnerResult result,
                                  int[] flowControlJumps,
@@ -1022,14 +1224,56 @@ public class CollectionRunner {
                 if (flowControlJumps != null && flowControlJumps.length > 0) {
                     flowControlJumps[0]++;
                 }
-                int targetIndex = resolveNextRequestIndex(ordered, result.scriptFlowNextRequestName, result.scriptFlowNextRequestId);
-                if (targetIndex < 0) {
+                FlowTargetResolution resolution = flowTargetResolver.resolve(
+                        collections,
+                        ordered,
+                        result.scriptFlowNextRequestName,
+                        null,
+                        result.scriptFlowNextRequestId,
+                        null,
+                        null,
+                        null);
+                if (resolution == null || resolution.status == FlowTargetResolutionStatus.NOT_FOUND) {
                     fireOnDebug("Script requested next request \"" + safeFlowTarget(result) + "\" but no matching request was found.");
                     recordRunnerDiagnostic(result, DiagnosticSeverity.WARNING, "Next request target not found", "Flow Control: SET_NEXT_REQUEST");
                     yield -1;
                 }
+                if (resolution.status == FlowTargetResolutionStatus.AMBIGUOUS) {
+                    result.targetResolutionForm = FlowTargetResolutionForm.NONE;
+                    result.qualifiedTargetPath = null;
+                    String details = resolution.safeMessage != null ? resolution.safeMessage : "Flow target is ambiguous.";
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.ERROR, "Next request target ambiguous", details);
+                    if (termination != null) {
+                        termination.stop(RunnerTerminationType.STOPPED_BY_SCRIPT,
+                                "Runner stopped because setNextRequest target is ambiguous.",
+                                result,
+                                null,
+                                "setNextRequest target ambiguous",
+                                ScriptFlowControl.SET_NEXT_REQUEST,
+                                null);
+                    }
+                    yield Integer.MIN_VALUE;
+                }
+                if (resolution.status == FlowTargetResolutionStatus.DISABLED) {
+                    result.targetResolutionForm = FlowTargetResolutionForm.NONE;
+                    result.qualifiedTargetPath = null;
+                    String details = resolution.safeMessage != null ? resolution.safeMessage : "Flow target is disabled.";
+                    recordRunnerDiagnostic(result, DiagnosticSeverity.ERROR, "Next request target disabled", details);
+                    if (termination != null) {
+                        termination.stop(RunnerTerminationType.STOPPED_BY_SCRIPT,
+                                "Runner stopped because setNextRequest target is disabled.",
+                                result,
+                                null,
+                                "setNextRequest target disabled",
+                                ScriptFlowControl.SET_NEXT_REQUEST,
+                                null);
+                    }
+                    yield Integer.MIN_VALUE;
+                }
+                result.targetResolutionForm = resolution.form != null ? resolution.form : FlowTargetResolutionForm.NONE;
+                result.qualifiedTargetPath = resolution.qualifiedPath;
                 recordRunnerDiagnostic(result, DiagnosticSeverity.INFO, "Next request selected by script", "Flow Control: SET_NEXT_REQUEST -> " + safeFlowTarget(result));
-                yield targetIndex;
+                yield resolution.orderedIndex;
             }
             case RUN_REQUEST, SEND_AD_HOC_REQUEST -> {
                 if (result.dependentRequestCount > 0 || (result.scriptDependentRequestResults != null && !result.scriptDependentRequestResults.isEmpty())) {
@@ -1190,25 +1434,6 @@ public class CollectionRunner {
         DiagnosticStore.getInstance().record(event);
     }
 
-    private int resolveNextRequestIndex(List<ApiRequest> ordered, String nextRequestName, String nextRequestId) {
-        if (ordered == null || ordered.isEmpty()) {
-            return -1;
-        }
-        for (int i = 0; i < ordered.size(); i++) {
-            ApiRequest request = ordered.get(i);
-            if (request == null) {
-                continue;
-            }
-            if (nextRequestId != null && !nextRequestId.isBlank() && nextRequestId.equals(request.id)) {
-                return i;
-            }
-            if (nextRequestName != null && !nextRequestName.isBlank() && nextRequestName.equals(request.name)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     private String safeFlowTarget(RunnerResult result) {
         if (result == null) {
             return "";
@@ -1226,8 +1451,7 @@ public class CollectionRunner {
         private static final int MAX_DEPENDENT_DEPTH = 3;
         private static final int MAX_DEPENDENT_REQUESTS = 20;
 
-        private final Map<String, ApiRequest> requestById = new LinkedHashMap<>();
-        private final Map<String, List<ApiRequest>> requestByName = new LinkedHashMap<>();
+        private final List<ApiCollection> sourceCollections;
         private final Map<ApiRequest, ApiCollection> requestCollections;
         private final Map<String, ApiCollection> collectionsByName;
         private final Deque<String> requestStack = new ArrayDeque<>();
@@ -1237,26 +1461,9 @@ public class CollectionRunner {
         private RunnerDependentRequestExecutor(List<ApiCollection> sourceCollections,
                                                Map<ApiRequest, ApiCollection> requestCollections,
                                                Map<String, ApiCollection> collectionsByName) {
+            this.sourceCollections = sourceCollections != null ? new ArrayList<>(sourceCollections) : new ArrayList<>();
             this.requestCollections = requestCollections != null ? requestCollections : new IdentityHashMap<>();
             this.collectionsByName = collectionsByName != null ? collectionsByName : new HashMap<>();
-            if (sourceCollections != null) {
-                for (ApiCollection collection : sourceCollections) {
-                    if (collection == null || collection.requests == null) {
-                        continue;
-                    }
-                    for (ApiRequest request : collection.requests) {
-                        if (request == null) {
-                            continue;
-                        }
-                        if (request.id != null && !request.id.isBlank()) {
-                            requestById.putIfAbsent(request.id, request);
-                        }
-                        if (request.name != null && !request.name.isBlank()) {
-                            requestByName.computeIfAbsent(request.name, k -> new ArrayList<>()).add(request);
-                        }
-                    }
-                }
-            }
         }
 
         @Override
@@ -1267,14 +1474,52 @@ public class CollectionRunner {
             if (context.executionSource != burp.scripts.ExecutionSource.RUNNER) {
                 return ScriptDependentRequestResult.ignored("runRequest is ignored outside Runner mode.");
             }
-            ApiRequest target = resolveRequest(targetNameOrId);
-            if (target == null) {
-                String message = "Dependent request target not found: " + safeLabel(targetNameOrId);
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                return ScriptDependentRequestResult.failure("Dependent request was not started because the Runner was cancelled.");
+            }
+            List<ApiCollection> allowedCollections = new ArrayList<>(sourceCollections);
+            List<ApiRequest> allowedRequests = new ArrayList<>();
+            Set<ApiRequest> seenRequests = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (ApiCollection collection : sourceCollections) {
+                if (collection == null || collection.requests == null) {
+                    continue;
+                }
+                for (ApiRequest request : collection.requests) {
+                    if (request != null && seenRequests.add(request)) {
+                        allowedRequests.add(request);
+                    }
+                }
+            }
+            for (ApiRequest request : requestCollections.keySet()) {
+                if (request != null && seenRequests.add(request)) {
+                    allowedRequests.add(request);
+                }
+            }
+            FlowTargetResolution resolution = flowTargetResolver.resolve(allowedCollections, allowedRequests, targetNameOrId, null, null, null, null, null);
+            if (resolution == null || resolution.status == FlowTargetResolutionStatus.NOT_FOUND) {
+                String message = resolution != null && resolution.safeMessage != null ? resolution.safeMessage : "Flow target was not found: " + safeLabel(targetNameOrId) + ".";
                 CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
                 return ScriptDependentRequestResult.failure(message);
             }
-            if (target.disabled) {
-                String message = "Dependent request target is disabled: " + safeLabel(target.name != null && !target.name.isBlank() ? target.name : targetNameOrId);
+            if (resolution.status == FlowTargetResolutionStatus.AMBIGUOUS) {
+                String message = resolution.safeMessage != null ? resolution.safeMessage : "Flow target is ambiguous: " + safeLabel(targetNameOrId) + ".";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.ERROR, message, String.join(", ", resolution.candidateQualifiedPaths));
+                ScriptDependentRequestResult failure = ScriptDependentRequestResult.failure(message);
+                failure.targetResolutionForm = FlowTargetResolutionForm.NONE.name();
+                failure.candidateQualifiedPaths = new ArrayList<>(resolution.candidateQualifiedPaths);
+                return failure;
+            }
+            if (resolution.status == FlowTargetResolutionStatus.DISABLED) {
+                String message = resolution.safeMessage != null ? resolution.safeMessage : "Flow target is disabled: " + safeLabel(targetNameOrId) + ".";
+                CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.ERROR, message, message);
+                ScriptDependentRequestResult failure = ScriptDependentRequestResult.failure(message);
+                failure.targetResolutionForm = FlowTargetResolutionForm.NONE.name();
+                failure.candidateQualifiedPaths = new ArrayList<>(resolution.candidateQualifiedPaths);
+                return failure;
+            }
+            ApiRequest target = resolution.request;
+            if (target == null) {
+                String message = "Dependent request target was not found: " + safeLabel(targetNameOrId);
                 CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
                 return ScriptDependentRequestResult.failure(message);
             }
@@ -1332,9 +1577,10 @@ public class CollectionRunner {
                 child.parentRequestName = context.request != null ? context.request.name : null;
                 child.parentRequestId = context.request != null ? context.request.id : null;
                 child.dependentDepth = currentDepth;
+                child.targetResolutionForm = resolution.form;
+                child.qualifiedTargetPath = resolution.qualifiedPath;
                 results.add(child);
                 fireOnRequestComplete(child);
-                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome.attempts));
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.dependentExecution ? "Dependent request executed" : "Request executed",
@@ -1352,10 +1598,20 @@ public class CollectionRunner {
                 dependentResult.parentRequestName = context.request != null ? context.request.name : null;
                 dependentResult.parentRequestId = context.request != null ? context.request.id : null;
                 dependentResult.depth = currentDepth;
+                dependentResult.targetResolutionForm = child.targetResolutionForm != null ? child.targetResolutionForm.name() : resolution.form.name();
+                dependentResult.qualifiedTargetPath = child.qualifiedTargetPath;
+                dependentResult.candidateQualifiedPaths = new ArrayList<>(resolution.candidateQualifiedPaths);
                 dependentResult.runnerResult = child;
                 return dependentResult;
             } finally {
-                requestStack.pop();
+                if (!requestStack.isEmpty()) {
+                    String top = requestStack.peek();
+                    if (Objects.equals(top, stackKey)) {
+                        requestStack.pop();
+                    } else {
+                        requestStack.removeFirstOccurrence(stackKey);
+                    }
+                }
                 dependentDepth = Math.max(0, dependentDepth - 1);
             }
         }
@@ -1373,6 +1629,9 @@ public class CollectionRunner {
                 CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
                 return ScriptDependentRequestResult.failure(message);
             }
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                return ScriptDependentRequestResult.failure("Dependent request was not started because the Runner was cancelled.");
+            }
             if (dependentDepth >= MAX_DEPENDENT_DEPTH) {
                 String message = "Dependent request depth limit reached.";
                 CollectionRunner.this.recordRunnerDiagnostic(null, DiagnosticSeverity.WARNING, message, message);
@@ -1386,7 +1645,8 @@ public class CollectionRunner {
             dependentDepth++;
             int currentDepth = dependentDepth;
             dependentCount++;
-            requestStack.push("ad-hoc:" + dependentCount);
+            String stackKey = "ad-hoc:" + dependentCount;
+            requestStack.push(stackKey);
             try {
                 ApiRequest target = request.toApiRequest();
                 ApiCollection targetCollection = context.collection;
@@ -1417,7 +1677,6 @@ public class CollectionRunner {
                 child.dependentDepth = currentDepth;
                 results.add(child);
                 fireOnRequestComplete(child);
-                fireOnTimeline(buildTimelineRow(target, targetCollection, child, outcome.attempts));
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.adHocExecution ? "Ad-hoc request executed" : "Request executed",
@@ -1436,37 +1695,21 @@ public class CollectionRunner {
                 dependentResult.parentRequestId = context.request != null ? context.request.id : null;
                 dependentResult.depth = currentDepth;
                 dependentResult.adHoc = true;
+                dependentResult.targetResolutionForm = child.targetResolutionForm != null ? child.targetResolutionForm.name() : FlowTargetResolutionForm.NONE.name();
+                dependentResult.qualifiedTargetPath = child.qualifiedTargetPath;
                 dependentResult.runnerResult = child;
                 return dependentResult;
             } finally {
-                requestStack.pop();
+                if (!requestStack.isEmpty()) {
+                    String top = requestStack.peek();
+                    if (Objects.equals(top, stackKey)) {
+                        requestStack.pop();
+                    } else {
+                        requestStack.removeFirstOccurrence(stackKey);
+                    }
+                }
                 dependentDepth = Math.max(0, dependentDepth - 1);
             }
-        }
-
-        private ApiRequest resolveRequest(String targetNameOrId) {
-            if (targetNameOrId == null || targetNameOrId.isBlank()) {
-                return null;
-            }
-            ApiRequest byId = requestById.get(targetNameOrId);
-            if (byId != null) {
-                return byId;
-            }
-            List<ApiRequest> byName = requestByName.get(targetNameOrId);
-            if (byName != null && !byName.isEmpty()) {
-                return byName.get(0);
-            }
-            for (Map.Entry<String, ApiRequest> entry : requestById.entrySet()) {
-                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
-                    return entry.getValue();
-                }
-            }
-            for (Map.Entry<String, List<ApiRequest>> entry : requestByName.entrySet()) {
-                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(targetNameOrId)) {
-                    return entry.getValue().isEmpty() ? null : entry.getValue().get(0);
-                }
-            }
-            return null;
         }
 
         private String dependentKey(ApiRequest request) {
@@ -1615,6 +1858,167 @@ public class CollectionRunner {
         return result != null && result.success && result.statusCode >= 400;
     }
 
+    private RunnerResult newAttemptResult(ApiRequest request,
+                                          ApiCollection collection,
+                                          boolean dependentExecution,
+                                          boolean adHocExecution,
+                                          String parentRequestName,
+                                          String parentRequestId,
+                                          int dependentDepth,
+                                          int attemptNumber,
+                                          int totalAttempts) {
+        RunnerResult result = new RunnerResult();
+        result.requestName = request != null ? request.name : null;
+        result.requestId = request != null ? request.id : null;
+        result.collectionName = collection != null && collection.name != null ? collection.name : (request != null ? request.sourceCollection : null);
+        result.folderPath = collection != null ? RequestPathResolver.getRequestFolderPath(collection, request) : (request != null ? request.path : null);
+        result.method = request != null && request.method != null ? request.method.toUpperCase(Locale.ROOT) : "GET";
+        result.requestUrl = request != null ? request.url : null;
+        result.initialResolvedUrl = request != null ? request.url : null;
+        result.finalResolvedUrl = request != null ? request.url : null;
+        result.dependentExecution = dependentExecution;
+        result.adHocExecution = adHocExecution;
+        result.parentRequestName = parentRequestName;
+        result.parentRequestId = parentRequestId;
+        result.dependentDepth = dependentDepth;
+        result.triggeredByScript = dependentExecution || adHocExecution;
+        result.attemptNumber = Math.max(1, attemptNumber);
+        result.totalAttempts = Math.max(1, totalAttempts);
+        result.retryDecision = "NO_RETRY";
+        result.retryReason = "Retry disabled: unconfigured failure type.";
+        result.retryDelayMillis = 0;
+        result.retryFailureType = null;
+        result.requestMayHaveBeenProcessed = false;
+        result.targetResolutionForm = FlowTargetResolutionForm.NONE;
+        result.qualifiedTargetPath = null;
+        result.cancellationState = RunnerCancellationState.NOT_CANCELLED;
+        return result;
+    }
+
+    private void finalizeSuccessfulAttempt(RunnerResult result, int attemptNumber, int totalAttempts) {
+        if (result == null) {
+            return;
+        }
+        result.attemptNumber = Math.max(1, attemptNumber);
+        result.totalAttempts = Math.max(1, totalAttempts);
+        result.retryDecision = "NO_RETRY";
+        result.retryReason = "Request completed.";
+        result.retryDelayMillis = 0;
+        result.retryFailureType = null;
+        result.requestMayHaveBeenProcessed = false;
+        result.cancellationState = result.cancellationState != null ? result.cancellationState : RunnerCancellationState.NOT_CANCELLED;
+    }
+
+    private RunnerRetryDecision finalizeRetryMetadata(RunnerResult result,
+                                                      RetryFailureType failureType,
+                                                      RunnerRetryPolicy policySnapshot,
+                                                      int attemptNumber,
+                                                      int totalAttempts) {
+        if (result == null) {
+            return new RunnerRetryDecision(false, false, "Retry disabled: unconfigured failure type.", 0, false, Math.max(1, totalAttempts));
+        }
+        RunnerRetryDecision decision = policySnapshot != null
+                ? policySnapshot.evaluate(result.method, failureType, result.requestSent, result.statusCode > 0 ? result.statusCode : null, attemptNumber)
+                : new RunnerRetryDecision(false, false, "Retry disabled: unconfigured failure type.", 0, false, Math.max(1, totalAttempts));
+        result.attemptNumber = Math.max(1, attemptNumber);
+        result.totalAttempts = Math.max(1, decision.maximumAttempts());
+        result.retryDecision = decision.retry() ? "RETRY" : "NO_RETRY";
+        result.retryReason = decision.reason();
+        result.retryDelayMillis = decision.delayMillis();
+        result.retryFailureType = failureType;
+        result.requestMayHaveBeenProcessed = decision.requestMayHaveBeenProcessed();
+        if (result.cancellationState == null) {
+            result.cancellationState = RunnerCancellationState.NOT_CANCELLED;
+        }
+        return decision;
+    }
+
+    private RetryFailureType classifyRetryFailure(ExecutionResult execution, RunnerResult attemptResult) {
+        if (attemptResult != null && attemptResult.cancellationState != null && attemptResult.cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+            return RetryFailureType.CANCELLED;
+        }
+        if (execution != null && execution.preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+            return RetryFailureType.CANCELLED;
+        }
+        if (execution != null) {
+            if (execution.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                    || execution.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
+                    || (execution.scriptErrors != null && !execution.scriptErrors.isEmpty())) {
+                return RetryFailureType.SCRIPT_FAILURE;
+            }
+            if ((execution.scriptFlowControl == ScriptFlowControl.STOP_RUN
+                    || execution.scriptFlowControl == ScriptFlowControl.SKIP_REQUEST)
+                    && execution.response == null) {
+                return RetryFailureType.PREFLIGHT_BLOCK;
+            }
+            if (execution.isBlockedBeforeSend()) {
+                return RetryFailureType.PREFLIGHT_BLOCK;
+            }
+            if (execution.responseTimedOut) {
+                return RetryFailureType.RESPONSE_TIMEOUT;
+            }
+            if (execution.response != null && execution.response.response() != null) {
+                int status = execution.response.response().statusCode();
+                if (retryPolicy != null && retryPolicy.retryableStatusCodes != null && retryPolicy.retryableStatusCodes.contains(status)) {
+                    return RetryFailureType.HTTP_STATUS;
+                }
+            }
+            if (execution.requestSent && execution.response == null) {
+                return RetryFailureType.CONNECTION_FAILURE;
+            }
+        }
+        if (attemptResult != null && attemptResult.requestSent) {
+            if (attemptResult.responseTimedOut) {
+                return RetryFailureType.RESPONSE_TIMEOUT;
+            }
+            if (attemptResult.statusCode > 0 && retryPolicy != null && retryPolicy.retryableStatusCodes != null && retryPolicy.retryableStatusCodes.contains(attemptResult.statusCode)) {
+                return RetryFailureType.HTTP_STATUS;
+            }
+            if (attemptResult.responseBody == null && attemptResult.responseHeaders == null && attemptResult.statusCode <= 0) {
+                return RetryFailureType.CONNECTION_FAILURE;
+            }
+        }
+        if (attemptResult != null && attemptResult.preflightStatus != null) {
+            if (attemptResult.preflightStatus == ExecutionPreflightStatus.CANCELLED) {
+                return RetryFailureType.CANCELLED;
+            }
+            if (attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                    || attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT) {
+                return RetryFailureType.SCRIPT_FAILURE;
+            }
+            if (attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
+                    || attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
+                    || attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                    || attemptResult.preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY) {
+                return RetryFailureType.PREFLIGHT_BLOCK;
+            }
+        }
+        return null;
+    }
+
+    private void publishAttempt(ApiRequest request, ApiCollection collection, RunnerResult result) {
+        RunnerResult snapshot = snapshotAttemptResult(result, null, result != null ? result.attemptNumber : 1, result != null ? result.totalAttempts : 1);
+        fireOnAttemptComplete(snapshot);
+        fireOnTimeline(buildTimelineRow(request, collection, result, result != null ? result.attemptNumber : 1, result != null ? result.totalAttempts : 1));
+    }
+
+    private boolean waitForRetryDelay(int delayMillis) throws InterruptedException {
+        int remaining = Math.max(0, delayMillis);
+        if (remaining <= 0) {
+            return !(cancelled || Thread.currentThread().isInterrupted());
+        }
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining);
+        while (remaining > 0) {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                return false;
+            }
+            int slice = Math.min(remaining, 250);
+            Thread.sleep(slice);
+            remaining = (int) java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+        }
+        return !(cancelled || Thread.currentThread().isInterrupted());
+    }
+
     private RunnerResult snapshotAttemptResult(RunnerResult source,
                                                ExecutionResult exec,
                                                int attemptNumber,
@@ -1646,6 +2050,19 @@ public class CollectionRunner {
             snapshot.oauth2Ready = source.oauth2Ready;
             snapshot.oauth2UsedStaleToken = source.oauth2UsedStaleToken;
             snapshot.oauth2SentWithoutToken = source.oauth2SentWithoutToken;
+            snapshot.retryDecision = source.retryDecision;
+            snapshot.retryReason = source.retryReason;
+            snapshot.retryDelayMillis = source.retryDelayMillis;
+            snapshot.retryFailureType = source.retryFailureType;
+            snapshot.requestMayHaveBeenProcessed = source.requestMayHaveBeenProcessed;
+            snapshot.targetResolutionForm = source.targetResolutionForm;
+            snapshot.qualifiedTargetPath = source.qualifiedTargetPath;
+            snapshot.cancellationState = source.cancellationState;
+            snapshot.parentRequestName = source.parentRequestName;
+            snapshot.parentRequestId = source.parentRequestId;
+            snapshot.dependentExecution = source.dependentExecution;
+            snapshot.adHocExecution = source.adHocExecution;
+            snapshot.dependentDepth = source.dependentDepth;
             snapshot.unresolvedVariables = source.unresolvedVariables != null ? new ArrayList<>(source.unresolvedVariables) : new ArrayList<>();
             snapshot.policyOverridesApplied = source.policyOverridesApplied != null ? new ArrayList<>(source.policyOverridesApplied) : new ArrayList<>();
             snapshot.requestHeaders = source.requestHeaders;
@@ -1670,6 +2087,7 @@ public class CollectionRunner {
             snapshot.scriptWarnings = source.scriptWarnings != null ? new ArrayList<>(source.scriptWarnings) : new ArrayList<>();
             snapshot.scriptErrors = source.scriptErrors != null ? new ArrayList<>(source.scriptErrors) : new ArrayList<>();
             snapshot.scriptVariableMutations = source.scriptVariableMutations != null ? new ArrayList<>(source.scriptVariableMutations) : new ArrayList<>();
+            snapshot.scriptDependentRequestResults = copyDependentRequestResults(source.scriptDependentRequestResults);
             snapshot.scriptFlowControl = source.scriptFlowControl;
             snapshot.scriptFlowMessage = source.scriptFlowMessage;
             snapshot.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
@@ -1739,6 +2157,9 @@ public class CollectionRunner {
             if (exec.scriptVariableMutations != null && !exec.scriptVariableMutations.isEmpty()) {
                 snapshot.scriptVariableMutations = new ArrayList<>(exec.scriptVariableMutations);
             }
+            if (exec.scriptDependentRequestResults != null && !exec.scriptDependentRequestResults.isEmpty()) {
+                snapshot.scriptDependentRequestResults = copyDependentRequestResults(exec.scriptDependentRequestResults);
+            }
             snapshot.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : snapshot.scriptFlowControl;
             snapshot.scriptFlowMessage = exec.scriptFlowMessage != null ? exec.scriptFlowMessage : snapshot.scriptFlowMessage;
             snapshot.scriptFlowNextRequestName = exec.scriptFlowNextRequestName != null ? exec.scriptFlowNextRequestName : snapshot.scriptFlowNextRequestName;
@@ -1749,17 +2170,53 @@ public class CollectionRunner {
         return snapshot;
     }
 
-    private RunnerTimelineRow buildTimelineRow(ApiRequest req, ApiCollection col, RunnerResult result, int attempts) {
+    private RunnerTimelineRow buildTimelineRow(ApiRequest req, ApiCollection col, RunnerResult result, int attemptNumber, int totalAttempts) {
         RunnerTimelineRow row = new RunnerTimelineRow();
         row.order = req != null ? req.sequenceOrder : 0;
         row.collectionName = col != null && col.name != null ? col.name : (req != null ? req.sourceCollection : "");
         row.requestName = req != null ? req.name : "";
         row.status = result != null ? result.displayStatusLabel() : "";
         row.timeMs = result != null ? result.responseTimeMs : 0L;
-        row.retries = Math.max(0, attempts - 1);
+        row.attemptNumber = Math.max(1, attemptNumber);
+        row.totalAttempts = Math.max(1, totalAttempts);
+        row.retries = Math.max(0, row.attemptNumber - 1);
         row.varsChanged = result != null && result.extractedVariables != null ? result.extractedVariables.size() : 0;
         row.assertions = formatAssertionSummary(result);
+        row.executionKind = executionKind(result);
+        row.retryReason = result != null ? result.retryReason : null;
+        row.cancellationState = result != null && result.cancellationState != null ? result.cancellationState.name() : RunnerCancellationState.NOT_CANCELLED.name();
+        row.requestMayHaveBeenProcessed = result != null && result.requestMayHaveBeenProcessed;
         return row;
+    }
+
+    private String executionKind(RunnerResult result) {
+        if (result == null) {
+            return "QUEUED";
+        }
+        if (result.cancellationState != null && result.cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+            return "CANCELLED";
+        }
+        if (result.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR
+                || result.preflightStatus == ExecutionPreflightStatus.BLOCKED_SCRIPT_TIMEOUT
+                || result.preflightStatus == ExecutionPreflightStatus.BLOCKED_OAUTH2_FAILURE
+                || result.preflightStatus == ExecutionPreflightStatus.BLOCKED_UNRESOLVED_VARIABLES
+                || result.preflightStatus == ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE
+                || result.preflightStatus == ExecutionPreflightStatus.BLOCKED_POLICY) {
+            return "PREFLIGHT_BLOCKED";
+        }
+        if (result.responseTimedOut) {
+            return "TIMED_OUT";
+        }
+        if (result.adHocExecution) {
+            return "AD_HOC";
+        }
+        if (result.dependentExecution) {
+            return "DEPENDENT";
+        }
+        if (result.attemptNumber > 1) {
+            return "RETRY";
+        }
+        return "QUEUED";
     }
 
     private String formatAssertionSummary(RunnerResult result) {
@@ -1778,10 +2235,6 @@ public class CollectionRunner {
             }
         }
         return passed + "/" + total;
-    }
-
-    private int retryDelayMs(int attemptNumber) {
-        return Math.max(0, delayMs * attemptNumber);
     }
 
     private RunnerStopConditions ensureStopConditions() {

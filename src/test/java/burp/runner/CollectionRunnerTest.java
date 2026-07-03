@@ -3,7 +3,9 @@ package burp.runner;
 import burp.models.RunnerResult;
 import burp.models.RunnerPreviewRow;
 import burp.models.RunnerTimelineRow;
+import burp.models.RunnerCancellationState;
 import burp.utils.ExecutionResult;
+import burp.utils.ExecutionPreflightStatus;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
@@ -322,6 +324,7 @@ class CollectionRunnerTest {
                 ExecutionResult exec = new ExecutionResult();
                 exec.requestHeaders = "GET /retry HTTP/1.1\r\nHost: example.com\r\n\r\n";
                 exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                exec.requestSent = true;
                 if (attempt == 1) {
                     exec.success = false;
                     exec.errorMessage = "temporary failure";
@@ -366,15 +369,17 @@ class CollectionRunnerTest {
         assertThat(runner.getResults().get(0).success)
                 .as("error=%s", runner.getResults().get(0).errorMessage)
                 .isTrue();
-        assertThat(timelineRows).hasSize(1);
-        assertThat(timelineRows.get(0).retries).isEqualTo(1);
-        assertThat(timelineRows.get(0).varsChanged).isEqualTo(1);
-        assertThat(timelineRows.get(0).assertions).isEqualTo("1/2");
-        assertThat(timelineRows.get(0).status).isEqualTo("200");
-        assertThat(timelineRows.get(0).timeMs).isEqualTo(123);
+        assertThat(timelineRows).hasSize(2);
+        assertThat(timelineRows.get(0).retries).isEqualTo(0);
+        assertThat(timelineRows.get(0).status).isEqualTo("ERR");
+        assertThat(timelineRows.get(1).retries).isEqualTo(1);
+        assertThat(timelineRows.get(1).varsChanged).isEqualTo(1);
+        assertThat(timelineRows.get(1).assertions).isEqualTo("1/2");
+        assertThat(timelineRows.get(1).status).isEqualTo("200 (retry 2/2)");
+        assertThat(timelineRows.get(1).timeMs).isEqualTo(123);
         assertThat(debugMessages).containsExactly(
                 "Attempt 1/2 failed: temporary failure",
-                "Retrying in 0ms",
+                "Retrying in 200ms",
                 "Attempt 2/2 passed");
     }
 
@@ -544,7 +549,7 @@ class CollectionRunnerTest {
         assertThat(completeCount.get()).isZero();
         assertThat(runner.getLastTerminationResult().type).isEqualTo(burp.models.RunnerTerminationType.CANCELLED);
         assertThat(debugMessages).isEmpty();
-        assertThat(runner.getResults()).isEmpty();
+        assertThat(runner.getResults()).hasSize(1);
 
         requestCompleteCount.set(0);
         completeCount.set(0);
