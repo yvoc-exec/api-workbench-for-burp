@@ -98,26 +98,43 @@ public class HistoryEntry {
                                                       int attemptNumber,
                                                       int totalAttempts,
                                                       Collection<String> unresolvedVariables) {
-        HistoryEntry entry = createBase(HistorySource.WORKBENCH, collection, request, environment, attemptNumber, totalAttempts);
+        HistoryEntry entry = createBase(
+                HistorySource.WORKBENCH,
+                collection,
+                request,
+                environment,
+                attemptNumber,
+                totalAttempts
+        );
         entry.timestamp = Instant.now();
         entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+        entry.unresolvedVariables = normalizeStrings(unresolvedVariables);
+
         if (exec != null) {
             entry.durationMillis = exec.elapsedMs;
             entry.errorMessage = exec.errorMessage;
             entry.statusCode = determineStatusCode(exec, null);
-            entry.responseSnapshot = exec.response != null ? HistoryResponseSnapshot.from(exec.response.response()) : null;
-            entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null
+            entry.responseSnapshot = exec.response != null
+                    ? HistoryResponseSnapshot.from(exec.response.response())
+                    : null;
+            entry.responseSizeBytes = entry.responseSnapshot != null
+                    && entry.responseSnapshot.body != null
                     ? entry.responseSnapshot.body.length
                     : 0L;
-            entry.requestSizeBytes = exec.rawRequestBytes != null ? exec.rawRequestBytes.length : entry.requestSnapshot.approximateSizeBytes();
+            entry.requestSizeBytes = exec.rawRequestBytes != null
+                    ? exec.rawRequestBytes.length
+                    : entry.requestSnapshot.approximateSizeBytes();
             entry.requestSent = exec.requestSent;
-            entry.preflightStatus = exec.preflightStatus != null ? exec.preflightStatus.name() : null;
+            entry.preflightStatus = exec.preflightStatus != null
+                    ? exec.preflightStatus.name()
+                    : null;
             entry.preflightMessage = exec.preflightMessage;
             entry.responseTimedOut = exec.responseTimedOut;
             entry.timeoutMillis = exec.timeoutMillis;
             entry.originalResolvedUrl = exec.originalResolvedUrl;
             entry.effectiveResolvedUrl = exec.effectiveResolvedUrl;
-            entry.targetChanged = exec.targetChangeAllowed || (exec.preflight != null && exec.preflight.targetChanged);
+            entry.targetChanged = exec.targetChangeAllowed
+                    || (exec.preflight != null && exec.preflight.targetChanged);
             entry.oauth2Required = exec.oauth2Required;
             entry.oauth2Ready = exec.oauth2Ready;
             entry.oauth2UsedStaleToken = exec.oauth2UsedStaleToken;
@@ -125,13 +142,19 @@ public class HistoryEntry {
             entry.policyOverridesApplied = exec.preflight != null
                     ? new ArrayList<>(exec.preflight.policyOverridesApplied)
                     : new ArrayList<>(exec.policyOverridesApplied);
+
             if (entry.requestSnapshot != null) {
                 if (exec.requestSent) {
-                    entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null ? exec.rawRequestBytes.clone() : null;
+                    entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null
+                            ? exec.rawRequestBytes.clone()
+                            : null;
                     entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
                             ? exec.rawRequestText
                             : (exec.rawRequestBytes != null
-                            ? new String(exec.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                            ? new String(
+                                    exec.rawRequestBytes,
+                                    java.nio.charset.StandardCharsets.UTF_8
+                            )
                             : null);
                 }
                 entry.requestSnapshot.resolvedUrl = exec.resolvedUrl;
@@ -139,41 +162,61 @@ public class HistoryEntry {
                         ? new LinkedHashMap<>(exec.resolvedVariables)
                         : new LinkedHashMap<>();
             }
-            entry.result = HistoryResult.from(exec, hasFailedAssertion(exec.assertions),
-                    unresolvedVariables != null && !unresolvedVariables.isEmpty());
-            entry.finalResolvedUrl = exec.finalResolvedUrl != null ? exec.finalResolvedUrl : exec.resolvedUrl;
-            entry.effectiveResolvedUrl = exec.effectiveResolvedUrl != null ? exec.effectiveResolvedUrl : entry.finalResolvedUrl;
+            entry.result = HistoryResult.from(
+                    exec,
+                    hasFailedAssertion(exec.assertions),
+                    !entry.unresolvedVariables.isEmpty()
+            );
+            entry.finalResolvedUrl = exec.finalResolvedUrl != null
+                    ? exec.finalResolvedUrl
+                    : exec.resolvedUrl;
+            entry.effectiveResolvedUrl = exec.effectiveResolvedUrl != null
+                    ? exec.effectiveResolvedUrl
+                    : entry.finalResolvedUrl;
             entry.host = parseHost(entry.finalResolvedUrl);
-            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             entry.assertions = copyAssertions(exec.assertions);
             entry.extractions = copyExtractions(exec.extractedVars);
             entry.scriptEngineName = exec.scriptEngineName;
-            entry.executionSource = exec.executionSource != null ? exec.executionSource.name() : null;
+            entry.executionSource = exec.executionSource != null
+                    ? exec.executionSource.name()
+                    : null;
             entry.scriptLogs = copyScriptLogs(exec.scriptLogs);
-            entry.scriptWarnings = exec.scriptWarnings != null ? new ArrayList<>(exec.scriptWarnings) : new ArrayList<>();
-            entry.scriptErrors = exec.scriptErrors != null ? new ArrayList<>(exec.scriptErrors) : new ArrayList<>();
+            entry.scriptWarnings = exec.scriptWarnings != null
+                    ? new ArrayList<>(exec.scriptWarnings)
+                    : new ArrayList<>();
+            entry.scriptErrors = exec.scriptErrors != null
+                    ? new ArrayList<>(exec.scriptErrors)
+                    : new ArrayList<>();
             entry.scriptVariableMutations = copyScriptMutations(exec.scriptVariableMutations);
-            entry.scriptFlowControl = exec.scriptFlowControl != null ? exec.scriptFlowControl : ScriptFlowControl.CONTINUE;
+            entry.scriptFlowControl = exec.scriptFlowControl != null
+                    ? exec.scriptFlowControl
+                    : ScriptFlowControl.CONTINUE;
             entry.scriptFlowMessage = exec.scriptFlowMessage;
             entry.scriptFlowNextRequestName = exec.scriptFlowNextRequestName;
             entry.scriptFlowNextRequestId = exec.scriptFlowNextRequestId;
             entry.redirectsEnabled = exec.redirectsEnabled;
-            entry.initialResolvedUrl = exec.initialResolvedUrl != null ? exec.initialResolvedUrl : exec.resolvedUrl;
+            entry.initialResolvedUrl = exec.initialResolvedUrl != null
+                    ? exec.initialResolvedUrl
+                    : exec.resolvedUrl;
             entry.redirectTerminationReason = exec.redirectTerminationReason;
             entry.redirectHops = copyRedirectHops(exec.redirectHops);
+
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
             }
-            entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
-            entry.metadataSummaryText = buildExecutionMetadataText(entry);
             DiagnosticStore.getInstance().record(DiagnosticEvent.of(DiagnosticOperation.HISTORY_CAPTURE, DiagnosticSeverity.INFO, "HistoryEntry",
                     "Workbench history captured")
                     .withDetails("rawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent())
                             + " authoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null)));
         } else {
-            entry.result = HistoryResult.from(false, null, false, unresolvedVariables != null && !unresolvedVariables.isEmpty());
+            entry.result = HistoryResult.from(
+                    false,
+                    null,
+                    false,
+                    !entry.unresolvedVariables.isEmpty()
+            );
         }
-        entry.unresolvedVariables = normalizeStrings(unresolvedVariables);
+
         if (entry.responseSnapshot == null
                 && entry.statusCode <= 0
                 && entry.errorMessage != null
@@ -182,6 +225,10 @@ public class HistoryEntry {
                 && entry.result != HistoryResult.TIMEOUT) {
             entry.result = HistoryResult.ERROR;
         }
+        entry.resultClassification = entry.result != null
+                ? entry.result.displayName()
+                : null;
+        entry.metadataSummaryText = buildExecutionMetadataText(entry);
         return entry;
     }
 

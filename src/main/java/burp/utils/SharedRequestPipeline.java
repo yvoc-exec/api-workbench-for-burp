@@ -318,12 +318,38 @@ public class SharedRequestPipeline implements AutoCloseable {
                 finalResolvedVariables = new LinkedHashMap<>(legacyResolver.getVariables());
             }
         } catch (Exception e) {
+            String detailedError = extractCleanError(e);
             if (result != null) {
                 result.success = false;
-                result.errorMessage = extractCleanError(e);
+                result.requestSent = false;
+                result.preflightStatus = ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR;
+                result.preflightMessage = "Request not sent — pre-request script failed.";
+                result.errorMessage = result.preflightMessage;
+                result.preflight = ExecutionPreflightResult.blocked(
+                        ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR,
+                        result.preflightMessage,
+                        List.of(),
+                        originalResolvedUrl,
+                        originalResolvedUrl,
+                        originDisplay(originalResolvedUrl),
+                        originDisplay(originalResolvedUrl),
+                        false,
+                        false,
+                        false,
+                        true,
+                        false,
+                        false,
+                        false,
+                        List.of(ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR),
+                        List.of()
+                );
+                result.resolvedVariables = new LinkedHashMap<>(baselineResolver.getVariables());
+                if (detailedError != null && !detailedError.isBlank()) {
+                    result.scriptErrors.add(detailedError);
+                }
             }
             recordDiagnostic(DiagnosticOperation.REQUEST_BUILD, DiagnosticSeverity.ERROR, effectiveSource,
-                    col, req, activeEnvironment, "Request execution failed", extractCleanError(e));
+                    col, req, activeEnvironment, "Pre-request script failed", detailedError);
             return result;
         }
 
@@ -744,6 +770,50 @@ public class SharedRequestPipeline implements AutoCloseable {
             result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
         }
 
+        boolean invalidEffectiveDestination = effectiveOrigin.isBlank();
+        if (!invalidEffectiveDestination && resolvedUrl != null) {
+            try {
+                HttpUtils.ParsedTarget parsedEffectiveDestination = HttpUtils.parseTargetForRequest(resolvedUrl);
+                invalidEffectiveDestination = parsedEffectiveDestination == null
+                        || parsedEffectiveDestination.host == null
+                        || parsedEffectiveDestination.host.isBlank()
+                        || parsedEffectiveDestination.host.contains("{")
+                        || parsedEffectiveDestination.host.contains("}");
+            } catch (Exception ignored) {
+                invalidEffectiveDestination = true;
+            }
+        }
+
+        if (invalidEffectiveDestination) {
+            String message = "Request not sent — execution policy blocked transmission.";
+            if (result != null) {
+                result.success = false;
+                result.requestSent = false;
+                result.preflightStatus = ExecutionPreflightStatus.BLOCKED_POLICY;
+                result.preflightMessage = message;
+                result.errorMessage = message;
+                result.preflight = ExecutionPreflightResult.blocked(
+                        ExecutionPreflightStatus.BLOCKED_POLICY,
+                        message,
+                        unresolvedVariables,
+                        originalResolvedUrl,
+                        resolvedUrl,
+                        originalOrigin,
+                        effectiveOrigin,
+                        targetChanged,
+                        oauth2Required,
+                        oauth2Ready,
+                        preRequestScriptFailed,
+                        preRequestScriptTimedOut,
+                        false,
+                        false,
+                        List.of(ExecutionPreflightStatus.BLOCKED_POLICY),
+                        policyOverrides
+                );
+            }
+            return result;
+        }
+
         if (result != null) {
             commitScriptVariableMutations(scriptResult, runtimeOverlay, runtimeVariableSink, col, req, activeEnvironment, effectiveSource);
         }
@@ -1022,9 +1092,15 @@ public class SharedRequestPipeline implements AutoCloseable {
     private static boolean hasTargetChanged(String originalResolvedUrl, String effectiveResolvedUrl) {
         String original = originDisplay(originalResolvedUrl);
         String effective = originDisplay(effectiveResolvedUrl);
-        if (original.isBlank() || effective.isBlank()) {
+
+        if (effective.isBlank()) {
             return false;
         }
+
+        if (original.isBlank()) {
+            return true;
+        }
+
         return !original.equalsIgnoreCase(effective);
     }
 
