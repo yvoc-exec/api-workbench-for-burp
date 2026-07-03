@@ -42,7 +42,7 @@ class CollectionRunnerCancellationTest {
     }
 
     @Test
-    void cancelDuringHttpWaitProducesSingleCancelledTerminal() throws Exception {
+    void cancelDuringHttpWaitWithLateResponseProducesSingleCancelledTerminal() throws Exception {
         HttpWaitScenario scenario = httpWaitScenario(false);
         scenario.runner.runCollections(List.of(scenario.collection), List.of(scenario.collection.requests.get(0)));
         await(scenario.sendStarted, 2_000L);
@@ -51,7 +51,7 @@ class CollectionRunnerCancellationTest {
         RunnerScriptTestFixtures.waitForRunnerToStop(scenario.runner);
 
         assertThat(scenario.runner.getResults()).hasSize(1);
-        assertThat(scenario.runner.getResults().get(0).cancellationState).isEqualTo(RunnerCancellationState.CANCELLED_DURING_HTTP_WAIT);
+        assertThat(scenario.runner.getResults().get(0).cancellationState).isEqualTo(RunnerCancellationState.LATE_RESPONSE_IGNORED);
         assertThat(scenario.listener.terminalResults).hasSize(1);
         assertThat(scenario.listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
     }
@@ -67,7 +67,7 @@ class CollectionRunnerCancellationTest {
 
         RunnerResult result = scenario.runner.getResults().get(0);
         assertThat(result.success).isFalse();
-        assertThat(result.cancellationState).isEqualTo(RunnerCancellationState.CANCELLED_DURING_HTTP_WAIT);
+        assertThat(result.cancellationState).isEqualTo(RunnerCancellationState.LATE_RESPONSE_IGNORED);
         assertThat(result.responseBody).isNull();
         assertThat(result.responseHeaders).isNull();
     }
@@ -118,10 +118,50 @@ class CollectionRunnerCancellationTest {
         scenario.runner.cancel();
         scenario.releaseResponse.countDown();
         RunnerScriptTestFixtures.waitForRunnerToStop(scenario.runner);
+        waitForCondition(() -> scenario.listener.terminalResults.size() == 1, 2_000L);
 
-        assertThat(scenario.listener.attemptResults).hasSize(1);
-        assertThat(scenario.listener.timelineRows).hasSize(1);
-        assertThat(scenario.listener.terminalResults).hasSize(1);
+        assertThat(scenario.listener.attemptResults)
+                .hasSize(1);
+        assertThat(scenario.listener.timelineRows)
+                .hasSize(1);
+        assertThat(scenario.listener.terminalResults)
+                .hasSize(1);
+
+        RunnerResult publishedAttempt =
+                scenario.listener.attemptResults.get(0);
+
+        assertThat(publishedAttempt.cancellationState)
+                .isEqualTo(
+                        RunnerCancellationState
+                                .LATE_RESPONSE_IGNORED);
+        assertThat(publishedAttempt.retryDecision)
+                .isEqualTo("NO_RETRY");
+        assertThat(publishedAttempt.retryFailureType)
+                .isEqualTo(
+                        RetryFailureType.CANCELLED);
+        assertThat(publishedAttempt.requestMayHaveBeenProcessed)
+                .isTrue();
+
+        assertThat(
+                        scenario.listener.timelineRows
+                                .get(0)
+                                .cancellationState)
+                .isEqualTo(
+                        RunnerCancellationState
+                                .LATE_RESPONSE_IGNORED
+                                .name());
+        assertThat(
+                        scenario.listener.timelineRows
+                                .get(0)
+                                .requestMayHaveBeenProcessed)
+                .isTrue();
+
+        assertThat(
+                        scenario.listener.terminalResults
+                                .get(0)
+                                .type)
+                .isEqualTo(
+                        RunnerTerminationType.CANCELLED);
     }
 
     @Test
@@ -268,6 +308,18 @@ class CollectionRunnerCancellationTest {
 
     private static void await(CountDownLatch latch, long timeoutMillis) throws InterruptedException {
         assertThat(latch.await(timeoutMillis, TimeUnit.MILLISECONDS)).isTrue();
+    }
+
+    private static void waitForCondition(java.util.function.BooleanSupplier condition, long timeoutMillis)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("Condition not met in " + timeoutMillis + " ms");
     }
 
     private static void awaitQuietly(CountDownLatch latch) {

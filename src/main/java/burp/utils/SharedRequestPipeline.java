@@ -275,6 +275,8 @@ public class SharedRequestPipeline implements AutoCloseable {
         out.success = false;
         out.requestSent = out.requestSent || requestSent;
         out.responseTimedOut = false;
+        out.cancellationRequested = true;
+        out.lateResponseIgnored = lateResponse;
         out.preflightStatus = ExecutionPreflightStatus.CANCELLED;
         out.preflightMessage = "Runner execution cancelled.";
         out.errorMessage = "Runner execution cancelled.";
@@ -1054,7 +1056,10 @@ public class SharedRequestPipeline implements AutoCloseable {
         }
 
         if (isCancellationRequested(cancellationRequested)) {
-            return markCancelled(result, redirectResult != null && redirectResult.requestSent, redirectResult != null && redirectResult.finalResponse != null);
+            return markCancelled(
+                    result,
+                    redirectResult != null && redirectResult.requestSent,
+                    redirectResult != null && redirectResult.requestSent);
         }
         if (result.response != null && result.response.response() != null) {
             if (redirectResult.success && (shouldUseUnifiedRuntime() || scriptEngine != null) && col != null) {

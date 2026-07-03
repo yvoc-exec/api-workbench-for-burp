@@ -27,6 +27,8 @@ public class ExecutionResult {
     public String preflightMessage;
     public boolean requestSent;
     public boolean responseTimedOut;
+    public boolean cancellationRequested;
+    public boolean lateResponseIgnored;
     public int timeoutMillis;
     public String originalResolvedUrl;
     public String effectiveResolvedUrl;
