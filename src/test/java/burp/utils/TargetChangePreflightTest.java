@@ -137,6 +137,195 @@ class TargetChangePreflightTest {
     }
 
     @Test
+    void unverifiableOriginalOriginRequiresWorkbenchConfirmationAndDenialBlocks() {
+        Harness harness = harness(mutation("https://resolved.example/start"));
+        harness.request.url = "https://{{host}}/start";
+        AtomicInteger confirmationCalls = new AtomicInteger();
+
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                preflight -> {
+                    confirmationCalls.incrementAndGet();
+                    return false;
+                }
+        );
+
+        assertThat(confirmationCalls.get()).isEqualTo(1);
+        assertThat(result.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE);
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.targetChanged).isTrue();
+        assertThat(result.requestSent).isFalse();
+        assertThat(harness.sendCount.get()).isZero();
+    }
+
+    @Test
+    void unverifiableOriginalOriginCanProceedOnlyAfterWorkbenchApproval() {
+        Harness harness = harness(mutation("https://resolved.example/start"));
+        harness.request.url = "https://{{host}}/start";
+        AtomicInteger confirmationCalls = new AtomicInteger();
+
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                preflight -> {
+                    confirmationCalls.incrementAndGet();
+                    return true;
+                }
+        );
+
+        assertThat(confirmationCalls.get()).isEqualTo(1);
+        assertThat(result.preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.targetChanged).isTrue();
+        assertThat(result.preflight.confirmationAccepted).isTrue();
+        assertThat(result.targetChangeAllowed).isTrue();
+        assertThat(result.requestSent).isTrue();
+        assertThat(harness.sendCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void unverifiableOriginalOriginIsBlockedByRunnerDefaults() {
+        Harness harness = harness(mutation("https://resolved.example/start"));
+        harness.request.url = "https://{{host}}/start";
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment,
+                ExecutionSource.RUNNER,
+                null,
+                RedirectPolicy.defaults(),
+                ExecutionPolicy.runnerDefaults(false),
+                null
+        );
+
+        assertThat(result.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.BLOCKED_TARGET_CHANGE);
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.targetChanged).isTrue();
+        assertThat(result.requestSent).isFalse();
+        assertThat(harness.sendCount.get()).isZero();
+    }
+
+    @Test
+    void explicitAllowCanProceedToValidEffectiveOrigin() {
+        Harness harness = harness(mutation("https://resolved.example/start"));
+        harness.request.url = "https://{{host}}/start";
+
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.normalize();
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                null
+        );
+
+        assertThat(result.preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
+        assertThat(result.targetChangeAllowed).isTrue();
+        assertThat(result.policyOverridesApplied).contains("Target change override");
+        assertThat(result.requestSent).isTrue();
+        assertThat(harness.sendCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void unresolvedPathOnVerifiableOriginDoesNotTriggerTargetChange() {
+        Harness harness = harness(mutation("https://example.test/final"));
+        harness.request.url = "https://example.test/{{path}}";
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment
+        );
+
+        assertThat(result.preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.targetChanged).isFalse();
+        assertThat(result.targetChangeAllowed).isFalse();
+        assertThat(result.requestSent).isTrue();
+        assertThat(harness.sendCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void invalidEffectiveOriginRemainsBlockedWhenTargetChangePolicyAllows() {
+        Harness harness = harness(mutation("https://{{missing}}/start"));
+        harness.request.url = "https://example.test/start";
+        harness.runtime.result.variableMutations.add(
+                mutationRecord("environment", "should_not_commit", "value", true)
+        );
+
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode =
+                ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                null,
+                null,
+                harness.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                null
+        );
+
+        assertThat(result.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.BLOCKED_POLICY);
+        assertThat(result.isBlockedBeforeSend()).isTrue();
+        assertThat(result.requestSent).isFalse();
+        assertThat(harness.sendCount.get()).isZero();
+        assertThat(harness.environment.variables)
+                .doesNotContainKey("should_not_commit");
+    }
+
+    @Test
     void workbenchTargetChangeDeniedBlocksSend() {
         Harness harness = harness(mutation("https://other.example.test/start"));
         AtomicInteger handlerCalls = new AtomicInteger();

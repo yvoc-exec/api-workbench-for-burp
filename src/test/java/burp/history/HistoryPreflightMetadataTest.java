@@ -57,6 +57,49 @@ class HistoryPreflightMetadataTest {
     }
 
     @Test
+    void workbenchMetadataIncludesUnresolvedVariablesAndFinalClassification() {
+        ExecutionResult exec = new ExecutionResult();
+        exec.success = true;
+        exec.requestSent = true;
+        exec.preflightStatus = ExecutionPreflightStatus.READY;
+        exec.preflightMessage = "Ready to send request Request";
+        exec.rawRequestBytes = (
+                "GET /{{token}} HTTP/1.1\r\n"
+                        + "Host: example.test\r\n"
+                        + "\r\n"
+        ).getBytes(StandardCharsets.UTF_8);
+        exec.rawRequestText = new String(
+                exec.rawRequestBytes,
+                StandardCharsets.UTF_8
+        );
+        exec.resolvedUrl = "https://example.test/{{token}}";
+        exec.initialResolvedUrl = exec.resolvedUrl;
+        exec.finalResolvedUrl = exec.resolvedUrl;
+        exec.originalResolvedUrl = exec.resolvedUrl;
+        exec.effectiveResolvedUrl = exec.resolvedUrl;
+
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
+                collection(),
+                request(),
+                environment(),
+                exec,
+                1,
+                1,
+                List.of("token", "accountId")
+        );
+
+        assertThat(entry.unresolvedVariables)
+                .containsExactly("token", "accountId");
+        assertThat(entry.result).isEqualTo(HistoryResult.MISSING_VARIABLE);
+        assertThat(entry.resultClassification)
+                .isEqualTo(HistoryResult.MISSING_VARIABLE.displayName());
+        assertThat(entry.toMetadataText())
+                .contains("Unresolved Variables: token, accountId");
+        assertThat(entry.toMetadataText())
+                .contains("Result Classification: Missing Variable");
+    }
+
+    @Test
     void runnerBlockedEntryPreservesPreflightStatus() {
         RunnerResult result = new RunnerResult();
         result.requestSent = false;

@@ -49,6 +49,52 @@ class SharedRequestPipelinePreflightTest {
     }
 
     @Test
+    void directlyThrownPreRequestExceptionProducesStructuredBlockedResult() {
+        AtomicInteger scriptInvocations = new AtomicInteger();
+        Harness harness = throwingHarness(scriptInvocations);
+        AtomicInteger tokenSinkCalls = new AtomicInteger();
+        AtomicInteger mutationSinkCalls = new AtomicInteger();
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                (collection, entry) -> {
+                    tokenSinkCalls.incrementAndGet();
+                    return Map.of();
+                },
+                (collection, changedVars, removedKeys) ->
+                        mutationSinkCalls.incrementAndGet(),
+                harness.environment
+        );
+
+        assertThat(scriptInvocations.get()).isEqualTo(1);
+        assertThat(harness.sendCount.get()).isZero();
+        assertThat(tokenSinkCalls.get()).isZero();
+        assertThat(mutationSinkCalls.get()).isZero();
+
+        assertThat(result.success).isFalse();
+        assertThat(result.requestSent).isFalse();
+        assertThat(result.rawRequestBytes).isNull();
+        assertThat(result.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR);
+        assertThat(result.preflightMessage)
+                .isEqualTo("Request not sent — pre-request script failed.");
+        assertThat(result.errorMessage)
+                .isEqualTo("Request not sent — pre-request script failed.");
+        assertThat(result.isBlockedBeforeSend()).isTrue();
+
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.maySend).isFalse();
+        assertThat(result.preflight.scriptFailed).isTrue();
+        assertThat(result.preflight.scriptTimedOut).isFalse();
+        assertThat(result.preflight.reasons)
+                .containsExactly(ExecutionPreflightStatus.BLOCKED_SCRIPT_ERROR);
+        assertThat(result.scriptErrors).contains("boom");
+    }
+
+    @Test
     void explicitContinuePolicyAllowsSend() {
         Harness harness = harness(scriptResult(true, false, false));
         harness.request.url = "https://example.test/ok";
@@ -181,6 +227,50 @@ class SharedRequestPipelinePreflightTest {
         return new Harness(pipeline, collection, request, environment, sendCount);
     }
 
+    private static Harness throwingHarness(AtomicInteger scriptInvocations) {
+        AtomicInteger sendCount = new AtomicInteger();
+        CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> captured =
+                new CopyOnWriteArrayList<>();
+        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(
+                sendCount,
+                captured,
+                () -> RunnerScriptTestFixtures.mockResponse(
+                        200,
+                        "OK",
+                        "text/plain"
+                )
+        );
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Collection";
+
+        ApiRequest request = new ApiRequest();
+        request.id = "req-1";
+        request.name = "Request";
+        request.method = "GET";
+        request.url = "https://example.test/";
+
+        EnvironmentProfile environment = new EnvironmentProfile();
+        environment.name = "Env";
+
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(
+                api,
+                new RequestBuilder(null),
+                new ScriptEngine(null, ScriptMode.FULL_JS),
+                Mockito.mock(OAuth2Manager.class),
+                new ThrowingRuntime(api, scriptInvocations),
+                timeout -> Mockito.mock(RequestOptions.class)
+        );
+
+        return new Harness(
+                pipeline,
+                collection,
+                request,
+                environment,
+                sendCount
+        );
+    }
+
     private static ScriptExecutionResult scriptResult(boolean success, boolean timedOut, boolean cancelled) {
         ScriptExecutionResult result = new ScriptExecutionResult();
         result.success = success;
@@ -228,6 +318,33 @@ class SharedRequestPipelinePreflightTest {
                                                        ScriptDependentRequestExecutor dependentRequestExecutor,
                                                        Map<String, String> runtimeOverlay) {
             return result;
+        }
+    }
+
+    private static final class ThrowingRuntime extends UnifiedScriptRuntime {
+        private final AtomicInteger invocations;
+
+        ThrowingRuntime(MontoyaApi api, AtomicInteger invocations) {
+            super(api, ScriptMode.FULL_JS);
+            this.invocations = invocations;
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
+
+        @Override
+        public ScriptExecutionResult executePreRequest(
+                ApiCollection collection,
+                ApiRequest request,
+                EnvironmentProfile activeEnvironment,
+                ExecutionSource executionSource,
+                int attemptNumber,
+                ScriptDependentRequestExecutor dependentRequestExecutor,
+                Map<String, String> runtimeOverlay) {
+            invocations.incrementAndGet();
+            throw new IllegalStateException("boom");
         }
     }
 }
