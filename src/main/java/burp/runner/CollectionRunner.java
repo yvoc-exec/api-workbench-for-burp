@@ -925,6 +925,12 @@ public class CollectionRunner {
             } catch (Exception e) {
                 if (cancelled || Thread.currentThread().isInterrupted()) {
                     Thread.currentThread().interrupt();
+                    markCancelledAttempt(
+                            result,
+                            cancellationStateFor(null, result),
+                            policySnapshot,
+                            attempts,
+                            maxAttempts);
                     publishAttempt(req, col, result);
                     return new RequestExecutionOutcome(
                             result,
