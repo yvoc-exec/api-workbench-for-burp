@@ -12,6 +12,7 @@ import burp.models.RedirectPolicy;
 import burp.scripts.ExecutionSource;
 import burp.scripts.ScriptDependentRequestExecutor;
 import burp.scripts.ScriptExecutionResult;
+import burp.scripts.ScriptVariableMutation;
 import burp.utils.ScriptMode;
 import burp.scripts.UnifiedScriptRuntime;
 import burp.testsupport.RunnerScriptTestFixtures;
@@ -217,30 +218,127 @@ class OAuth2PreflightTest {
         assertThat(harness.sendCount.get()).isZero();
     }
 
+    @Test
+    void invalidEffectiveDestinationBlocksBeforeOAuth2Acquisition()
+            throws Exception {
+        OAuth2Manager manager = successManager();
+        Harness harness = harness(
+                manager,
+                "https://{{missing}}/start"
+        );
+        AtomicInteger tokenSinkCalls = new AtomicInteger();
+        AtomicInteger mutationSinkCalls = new AtomicInteger();
+
+        ExecutionPolicy policy = ExecutionPolicy.workbenchDefaults();
+        policy.targetChangeMode = ExecutionPolicy.TargetChangeMode.ALLOW;
+        policy.unresolvedVariableMode =
+                ExecutionPolicy.UnresolvedVariableMode.ALLOW_WITH_WARNING;
+        policy.normalize();
+
+        ExecutionResult result = harness.pipeline.execute(
+                harness.request,
+                harness.collection,
+                false,
+                null,
+                (collection, entry) -> {
+                    tokenSinkCalls.incrementAndGet();
+                    return Map.of(
+                            "oauth2_access_token",
+                            entry.accessToken
+                    );
+                },
+                (collection, changedVars, removedKeys) ->
+                        mutationSinkCalls.incrementAndGet(),
+                harness.environment,
+                ExecutionSource.WORKBENCH_SEND,
+                null,
+                RedirectPolicy.defaults(),
+                policy,
+                null
+        );
+
+        Mockito.verify(manager, Mockito.never())
+                .getValidToken(any(OAuth2Config.class));
+
+        assertThat(result.success).isFalse();
+        assertThat(result.requestSent).isFalse();
+        assertThat(result.preflightStatus)
+                .isEqualTo(ExecutionPreflightStatus.BLOCKED_POLICY);
+        assertThat(result.preflight).isNotNull();
+        assertThat(result.preflight.maySend).isFalse();
+        assertThat(result.preflight.unresolvedVariables)
+                .contains("missing");
+        assertThat(result.oauth2Required).isTrue();
+        assertThat(result.oauth2Ready).isFalse();
+
+        assertThat(harness.sendCount.get()).isZero();
+        assertThat(tokenSinkCalls.get()).isZero();
+        assertThat(mutationSinkCalls.get()).isZero();
+        assertThat(harness.environment.variables)
+                .doesNotContainKey("should_not_commit");
+    }
     private static Harness harness(OAuth2Manager manager) {
+        return harness(manager, null);
+    }
+
+    private static Harness harness(
+            OAuth2Manager manager,
+            String mutatedUrl) {
         AtomicInteger sendCount = new AtomicInteger();
-        CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> sentRequests = new CopyOnWriteArrayList<>();
-        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(sendCount, sentRequests, () -> RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain"));
+        CopyOnWriteArrayList<
+                burp.api.montoya.http.message.requests.HttpRequest
+                > sentRequests = new CopyOnWriteArrayList<>();
+        MontoyaApi api = RunnerScriptTestFixtures.mockRunnerApi(
+                sendCount,
+                sentRequests,
+                () -> RunnerScriptTestFixtures.mockResponse(
+                        200,
+                        "OK",
+                        "text/plain"
+                )
+        );
+
         ApiCollection collection = new ApiCollection();
         collection.name = "Collection";
-        collection.runtimeOAuth2.put("oauth2_token_url", "https://oauth2.test/token");
-        collection.runtimeOAuth2.put("oauth2_client_id", "client-id");
-        collection.runtimeOAuth2.put("oauth2_client_secret", "client-secret");
-        collection.runtimeOAuth2.put("oauth2_grant", "client_credentials");
+        collection.runtimeOAuth2.put(
+                "oauth2_token_url",
+                "https://oauth2.test/token"
+        );
+        collection.runtimeOAuth2.put(
+                "oauth2_client_id",
+                "client-id"
+        );
+        collection.runtimeOAuth2.put(
+                "oauth2_client_secret",
+                "client-secret"
+        );
+        collection.runtimeOAuth2.put(
+                "oauth2_grant",
+                "client_credentials"
+        );
+
         ApiRequest request = oauth2Request();
         EnvironmentProfile environment = new EnvironmentProfile();
         environment.name = "Env";
+
         SharedRequestPipeline pipeline = new SharedRequestPipeline(
                 api,
                 new RequestBuilder(null),
                 new ScriptEngine(null, ScriptMode.FULL_JS),
                 manager,
-                new StubRuntime(api),
+                new StubRuntime(api, mutatedUrl),
                 timeout -> Mockito.mock(RequestOptions.class)
         );
-        return new Harness(pipeline, collection, request, environment, sendCount, sentRequests);
-    }
 
+        return new Harness(
+                pipeline,
+                collection,
+                request,
+                environment,
+                sendCount,
+                sentRequests
+        );
+    }
     private static OAuth2Manager failingManager(String message) {
         OAuth2Manager manager = Mockito.mock(OAuth2Manager.class);
         try {
@@ -315,9 +413,13 @@ class OAuth2PreflightTest {
                            CopyOnWriteArrayList<burp.api.montoya.http.message.requests.HttpRequest> sentRequests) {
     }
 
-    private static final class StubRuntime extends UnifiedScriptRuntime {
-        StubRuntime(MontoyaApi api) {
+    private static final class StubRuntime
+            extends UnifiedScriptRuntime {
+        private final String mutatedUrl;
+
+        StubRuntime(MontoyaApi api, String mutatedUrl) {
             super(api, ScriptMode.FULL_JS);
+            this.mutatedUrl = mutatedUrl;
         }
 
         @Override
@@ -326,24 +428,48 @@ class OAuth2PreflightTest {
         }
 
         @Override
-        public ScriptExecutionResult executePreRequest(ApiCollection collection,
-                                                       ApiRequest request,
-                                                       EnvironmentProfile activeEnvironment,
-                                                       ExecutionSource executionSource,
-                                                       int attemptNumber,
-                                                       ScriptDependentRequestExecutor dependentRequestExecutor,
-                                                       Map<String, String> runtimeOverlay) {
-            ScriptExecutionResult result = new ScriptExecutionResult();
+        public ScriptExecutionResult executePreRequest(
+                ApiCollection collection,
+                ApiRequest request,
+                EnvironmentProfile activeEnvironment,
+                ExecutionSource executionSource,
+                int attemptNumber,
+                ScriptDependentRequestExecutor dependentRequestExecutor,
+                Map<String, String> runtimeOverlay) {
+            ScriptExecutionResult result =
+                    new ScriptExecutionResult();
             result.success = true;
-            if (collection != null && collection.runtimeOAuth2 != null) {
-                result.effectiveVariables.putAll(collection.runtimeOAuth2);
+
+            if (collection != null
+                    && collection.runtimeOAuth2 != null) {
+                result.effectiveVariables.putAll(
+                        collection.runtimeOAuth2
+                );
             }
-            if (activeEnvironment != null && activeEnvironment.variables != null) {
-                result.effectiveVariables.putAll(activeEnvironment.variables);
+            if (activeEnvironment != null
+                    && activeEnvironment.variables != null) {
+                result.effectiveVariables.putAll(
+                        activeEnvironment.variables
+                );
             }
             if (runtimeOverlay != null) {
                 result.effectiveVariables.putAll(runtimeOverlay);
             }
+
+            if (mutatedUrl != null) {
+                ApiRequest mutatedRequest = copyRequest(request);
+                mutatedRequest.url = mutatedUrl;
+                result.mutatedRequest = mutatedRequest;
+
+                ScriptVariableMutation mutation =
+                        new ScriptVariableMutation();
+                mutation.scope = "environment";
+                mutation.key = "should_not_commit";
+                mutation.newValue = "value";
+                mutation.persistent = true;
+                result.variableMutations.add(mutation);
+            }
+
             return result;
         }
     }
