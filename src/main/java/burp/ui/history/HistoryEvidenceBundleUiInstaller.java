@@ -15,6 +15,7 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.GraphicsEnvironment;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
@@ -153,6 +154,16 @@ public final class HistoryEvidenceBundleUiInstaller {
         Path destination = chooser.getSelectedFile().toPath();
         if (!destination.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".zip")) {
             destination = destination.resolveSibling(destination.getFileName() + ".zip");
+        }
+        if (Files.exists(destination)) {
+            int replace = JOptionPane.showConfirmDialog(parent,
+                    "The selected file already exists. Replace it?\n" + destination,
+                    "Replace Existing Evidence Bundle",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE);
+            if (replace != JOptionPane.YES_OPTION) {
+                return null;
+            }
         }
         return new EvidenceSelection(destination, redact.isSelected());
     }
