@@ -24,7 +24,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -79,9 +78,9 @@ public final class HistoryEvidenceBundleService {
             String directoryName = uniqueDirectoryName(entry != null ? entry.id : null, index, usedDirectories);
             String directory = "entries/" + directoryName + "/";
             byte[] requestBytes = requestBytes(entry);
-            String requestRepresentation = hasRawRequest(entry) ? exactRequestRepresentation(entry) : "RECONSTRUCTED";
+            String requestRepresentation = requestRepresentation(entry);
             byte[] responseBytes = responseBytes(entry);
-            String responseRepresentation = responseBytes.length > 0 ? "RECONSTRUCTED" : "RECONSTRUCTED";
+            String responseRepresentation = responseRepresentation(entry);
             if (options.redactCommonSecrets) {
                 requestBytes = redactor.redactRequest(requestBytes);
                 responseBytes = redactor.redactResponse(responseBytes);
@@ -402,9 +401,19 @@ public final class HistoryEvidenceBundleService {
         zip.closeEntry();
     }
 
-    private String exactRequestRepresentation(HistoryEntry entry) {
-        ApiRequest authored = entry != null && entry.requestSnapshot != null ? entry.requestSnapshot.authoredRequest : null;
-        return authored != null && authored.exactHttpRequest != null ? "EXACT_RAW" : "STORED_RAW";
+    private String requestRepresentation(HistoryEntry entry) {
+        if (!hasRawRequest(entry)) {
+            return isRequestTruncated(entry) ? "RECONSTRUCTED_TRUNCATED" : "RECONSTRUCTED";
+        }
+        ApiRequest authored = entry != null && entry.requestSnapshot != null
+                ? entry.requestSnapshot.authoredRequest
+                : null;
+        String base = authored != null && authored.exactHttpRequest != null ? "EXACT_RAW" : "STORED_RAW";
+        return isRequestTruncated(entry) ? base + "_TRUNCATED" : base;
+    }
+
+    private String responseRepresentation(HistoryEntry entry) {
+        return isResponseTruncated(entry) ? "RECONSTRUCTED_TRUNCATED" : "RECONSTRUCTED";
     }
 
     private boolean hasRawRequest(HistoryEntry entry) {
@@ -464,7 +473,14 @@ public final class HistoryEvidenceBundleService {
         if (value == null || value.isEmpty()) {
             return value != null ? value : "";
         }
-        char first = value.charAt(0);
+        int index = 0;
+        while (index < value.length() && Character.isWhitespace(value.charAt(index))) {
+            index++;
+        }
+        if (index >= value.length()) {
+            return value;
+        }
+        char first = value.charAt(index);
         return first == '=' || first == '+' || first == '-' || first == '@' ? "'" + value : value;
     }
 
