@@ -50,7 +50,7 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
                     return System.identityHashCode(this);
                 }
                 if ("equals".equals(method.getName())) {
-                    return args != null && args.length == 1 && args[0] == proxy;
+                    return args != null && args.length == 1 && args[0] == providerProxy;
                 }
                 return null;
             });
@@ -65,8 +65,12 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             registered.set(true);
             return true;
         } catch (ReflectiveOperationException | LinkageError failure) {
-            if (api.logging() != null) {
-                api.logging().logToError("API Workbench context-menu registration failed: " + safeMessage(failure));
+            try {
+                if (api.logging() != null) {
+                    api.logging().logToError("API Workbench context-menu registration failed: " + safeMessage(failure));
+                }
+            } catch (Throwable ignored) {
+                // Logging must never make registration failure fatal.
             }
             return false;
         }
@@ -95,7 +99,7 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         return List.of(importItem, queueItem);
     }
 
-    List<BurpTrafficSelection> detachSelections(Object event) {
+    public List<BurpTrafficSelection> detachSelections(Object event) {
         List<Object> requestResponses = selectedRequestResponses(event);
         if (requestResponses.isEmpty()) {
             return List.of();
@@ -104,36 +108,32 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         List<BurpTrafficSelection> out = new ArrayList<>();
         int index = 0;
         for (Object requestResponse : requestResponses) {
-            Object request = invokeFirst(requestResponse, "request");
+            Object request = unwrap(invokeFirst(requestResponse, "request"));
             if (request == null) {
                 continue;
             }
-            byte[] requestBytes = bytesFrom(invokeFirst(request, "toByteArray", "body"));
+            byte[] requestBytes = bytesFrom(invokeFirst(request, "toByteArray"));
             if (requestBytes.length == 0) {
                 continue;
             }
-            Object response = invokeFirst(requestResponse, "response");
+            Object response = unwrap(invokeFirst(requestResponse, "response"));
             byte[] responseBytes = response != null ? bytesFrom(invokeFirst(response, "toByteArray")) : new byte[0];
-            Object service = invokeFirst(request, "httpService");
+            Object service = unwrap(invokeFirst(request, "httpService"));
             if (service == null) {
-                service = invokeFirst(requestResponse, "httpService");
+                service = unwrap(invokeFirst(requestResponse, "httpService"));
             }
             String host = stringValue(invokeFirst(service, "host"));
             int port = intValue(invokeFirst(service, "port"));
-            boolean secure = booleanValue(invokeFirst(service, "secure"));
-            if (host.isBlank()) {
-                host = stringValue(invokeFirst(request, "httpService", "host"));
-            }
+            boolean secure = booleanValue(invokeFirst(service, "secure", "isSecure"));
             String method = stringValue(invokeFirst(request, "method"));
-            String suggestedName = method;
             out.add(new BurpTrafficSelection(
-                    requestBytes.clone(),
-                    responseBytes.length > 0 ? responseBytes.clone() : null,
+                    requestBytes,
+                    responseBytes.length > 0 ? responseBytes : null,
                     host,
                     port,
                     secure,
                     context,
-                    suggestedName,
+                    method,
                     method,
                     index++));
         }
@@ -146,7 +146,12 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         }
         List<BurpTrafficSelection> detached = new ArrayList<>();
         for (BurpTrafficSelection selection : selections) {
-            detached.add(selection != null ? selection.copy() : null);
+            if (selection != null) {
+                detached.add(selection.copy());
+            }
+        }
+        if (detached.isEmpty()) {
+            return;
         }
         Runnable action = () -> importAction.accept(List.copyOf(detached), queue);
         if (SwingUtilities.isEventDispatchThread()) {
@@ -184,11 +189,9 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             if (!"registerContextMenuItemsProvider".equals(method.getName()) || method.getParameterCount() != 1) {
                 continue;
             }
-            if (method.getParameterTypes()[0].isAssignableFrom(providerType)
-                    || method.getParameterTypes()[0].isInstance(providerType)) {
-                return method;
-            }
-            if (method.getParameterTypes()[0].getName().equals(providerType.getName())) {
+            Class<?> parameterType = method.getParameterTypes()[0];
+            if (parameterType.getName().equals(providerType.getName())
+                    || parameterType.isAssignableFrom(providerType)) {
                 return method;
             }
         }
@@ -213,17 +216,26 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         if (value instanceof Optional<?> optional) {
             optional.ifPresent(item -> out.addAll(flatten(item)));
         } else if (value instanceof Collection<?> collection) {
-            out.addAll(collection);
+            for (Object item : collection) {
+                out.addAll(flatten(item));
+            }
         } else if (value.getClass().isArray()) {
             int length = Array.getLength(value);
             for (int i = 0; i < length; i++) {
-                out.add(Array.get(value, i));
+                out.addAll(flatten(Array.get(value, i)));
             }
         } else {
             out.add(value);
         }
         out.removeIf(java.util.Objects::isNull);
         return out;
+    }
+
+    private static Object unwrap(Object value) {
+        if (value instanceof Optional<?> optional) {
+            return optional.orElse(null);
+        }
+        return value;
     }
 
     private static Object invokeFirst(Object target, String... methodNames) {
@@ -243,26 +255,30 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
     }
 
     private static byte[] bytesFrom(Object value) {
-        if (value == null) {
+        Object unwrapped = unwrap(value);
+        if (unwrapped == null) {
             return new byte[0];
         }
-        if (value instanceof byte[] bytes) {
+        if (unwrapped instanceof byte[] bytes) {
             return bytes.clone();
         }
-        Object bytes = invokeFirst(value, "getBytes", "toByteArray");
+        Object bytes = invokeFirst(unwrapped, "getBytes", "toByteArray");
         return bytes instanceof byte[] array ? array.clone() : new byte[0];
     }
 
     private static String stringValue(Object value) {
-        return value != null ? value.toString() : "";
+        Object unwrapped = unwrap(value);
+        return unwrapped != null ? unwrapped.toString() : "";
     }
 
     private static int intValue(Object value) {
-        return value instanceof Number number ? number.intValue() : 0;
+        Object unwrapped = unwrap(value);
+        return unwrapped instanceof Number number ? number.intValue() : 0;
     }
 
     private static boolean booleanValue(Object value) {
-        return value instanceof Boolean flag && flag;
+        Object unwrapped = unwrap(value);
+        return unwrapped instanceof Boolean flag && flag;
     }
 
     private static String safeContext(Object value) {
@@ -275,6 +291,8 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
 
     private static String safeMessage(Throwable failure) {
         String message = failure != null ? failure.getMessage() : null;
-        return message != null && !message.isBlank() ? message : failure != null ? failure.getClass().getSimpleName() : "Unknown error";
+        return message != null && !message.isBlank()
+                ? message
+                : failure != null ? failure.getClass().getSimpleName() : "Unknown error";
     }
 }
