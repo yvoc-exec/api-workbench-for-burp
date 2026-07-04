@@ -36,7 +36,7 @@ class ScriptCapabilityAnalyzerTest {
                 "// pm.sendRequest('https://ignored.test');\n"
                         + "const example = \"fetch('https://ignored.test')\";\n"
                         + "/* Java.type('java.lang.Runtime') */\n"
-                        + "pm.environment.set('token', 'value');",
+                        + "pm.environment.set('tenant', 'value');",
                 ScriptDialect.POSTMAN,
                 ScriptPhase.PRE_REQUEST,
                 ScriptScope.REQUEST);
@@ -46,6 +46,42 @@ class ScriptCapabilityAnalyzerTest {
         assertThat(report.hasUnsupportedCapabilities()).isFalse();
         assertThat(report.capabilities()).containsExactly(ScriptCapability.VARIABLE_MUTATION);
         assertThat(report.riskLevel).isEqualTo(ScriptRiskLevel.MEDIUM);
+    }
+
+    @Test
+    void classifiesSupportedAdHocRunnerNetworkAsCriticalRisk() {
+        ScriptBlock block = ScriptBlock.of(
+                "awb.execution.sendAdHocRequest({method: 'GET', url: 'https://example.test'});",
+                ScriptDialect.API_WORKBENCH,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST);
+
+        ScriptCapabilityReport report = analyzer.analyze(block);
+
+        assertThat(report.hasUnsupportedCapabilities()).isFalse();
+        assertThat(report.riskLevel).isEqualTo(ScriptRiskLevel.CRITICAL);
+        assertThat(report.findings()).anySatisfy(finding -> {
+            assertThat(finding.capability()).isEqualTo(ScriptCapability.AD_HOC_NETWORK);
+            assertThat(finding.apiName()).isEqualTo("sendAdHocRequest");
+            assertThat(finding.supported()).isTrue();
+        });
+    }
+
+    @Test
+    void detectsSensitiveVariableKeysInsideGetCallsButNotComments() {
+        ScriptBlock block = ScriptBlock.of(
+                "// pm.environment.get('ignored_password');\n"
+                        + "const password = pm.environment.get('password');",
+                ScriptDialect.POSTMAN,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST);
+
+        ScriptCapabilityReport report = analyzer.analyze(block);
+
+        assertThat(report.riskLevel).isEqualTo(ScriptRiskLevel.HIGH);
+        assertThat(report.capabilities()).contains(ScriptCapability.SENSITIVE_DATA_ACCESS);
+        assertThat(report.findings()).anySatisfy(finding ->
+                assertThat(finding.apiName()).isEqualTo("sensitive variable access"));
     }
 
     @Test
