@@ -2,7 +2,6 @@ package burp.history.evidence;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
 
@@ -16,6 +15,11 @@ public final class HistoryEvidenceRedactor {
     private static final Set<String> SECRET_QUERY_KEYS = Set.of(
             "access_token", "refresh_token", "id_token", "token", "api_key",
             "apikey", "client_secret", "secret", "password");
+    private static final Set<String> SECRET_METADATA_KEYS = Set.of(
+            "authorization", "proxy-authorization", "cookie", "set-cookie",
+            "proxy-authenticate", "www-authenticate", "access_token",
+            "refresh_token", "id_token", "token", "api_key", "apikey",
+            "client_secret", "secret", "password");
 
     public byte[] redactRequest(byte[] source) {
         return redactHttpMessage(source, true);
@@ -33,10 +37,10 @@ public final class HistoryEvidenceRedactor {
         StringBuilder out = new StringBuilder(source.length());
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
-            int separator = line.indexOf('=');
+            int equals = line.indexOf('=');
             int colon = line.indexOf(':');
-            int split = separator >= 0 ? separator : colon;
-            if (split > 0 && SECRET_QUERY_KEYS.contains(normalizeKey(line.substring(0, split)))) {
+            int split = firstPositive(equals, colon);
+            if (split > 0 && SECRET_METADATA_KEYS.contains(normalizeKey(line.substring(0, split)))) {
                 out.append(line, 0, split + 1).append(REDACTED);
             } else {
                 out.append(redactQueryParametersInText(line));
@@ -142,7 +146,7 @@ public final class HistoryEvidenceRedactor {
             int equals = parameter.indexOf('=');
             String rawKey = equals >= 0 ? parameter.substring(0, equals) : parameter;
             if (SECRET_QUERY_KEYS.contains(normalizeQueryKey(rawKey))) {
-                parameters[i] = rawKey + (equals >= 0 ? "=" + REDACTED : "=" + REDACTED);
+                parameters[i] = rawKey + "=" + REDACTED;
             }
         }
         return prefix + String.join("&", parameters) + fragment;
@@ -153,10 +157,13 @@ public final class HistoryEvidenceRedactor {
             return line != null ? line : "";
         }
         int queryIndex = line.indexOf('?');
-        int end = line.indexOf(' ', queryIndex);
-        String target = end >= 0 ? line.substring(queryIndex) : line.substring(queryIndex);
+        int end = queryIndex;
+        while (end < line.length() && !Character.isWhitespace(line.charAt(end))) {
+            end++;
+        }
+        String target = line.substring(queryIndex, end);
         String redacted = redactTargetQuery(target);
-        return line.substring(0, queryIndex) + redacted + (end >= 0 ? line.substring(end) : "");
+        return line.substring(0, queryIndex) + redacted + line.substring(end);
     }
 
     private Boundary findBoundary(byte[] source) {
@@ -182,6 +189,16 @@ public final class HistoryEvidenceRedactor {
             return i;
         }
         return -1;
+    }
+
+    private int firstPositive(int left, int right) {
+        if (left < 0) {
+            return right;
+        }
+        if (right < 0) {
+            return left;
+        }
+        return Math.min(left, right);
     }
 
     private String normalizeKey(String key) {
