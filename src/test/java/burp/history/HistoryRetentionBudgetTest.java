@@ -1,5 +1,6 @@
 package burp.history;
 
+import burp.models.RedirectHop;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -99,6 +100,82 @@ class HistoryRetentionBudgetTest {
     }
 
     @Test
+    void redirectHopOnlyTruncationCountsAsTruncatedEntry() {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 4, 5, true));
+        HistoryEntry entry = entry("redirect-only", Instant.parse("2026-06-15T01:00:00Z"), false, 2, 2);
+        entry.redirectHops = new ArrayList<>(List.of(redirectHop(1, "abcdefghij", "ok")));
+
+        store.addEntry(entry);
+
+        HistoryEntry retained = store.getById("redirect-only");
+        assertThat(retained).isNotNull();
+        assertThat(retained.requestSnapshot.bodyTruncated).isFalse();
+        assertThat(retained.responseSnapshot.bodyTruncated).isFalse();
+        assertThat(retained.redirectHops).hasSize(1);
+        assertThat(retained.redirectHops.get(0).rawRequestBodyTruncated).isTrue();
+        assertThat(retained.hasTruncatedEvidence()).isTrue();
+        assertThat(store.getRetentionStats().truncatedEntryCount()).isEqualTo(1);
+    }
+
+    @Test
+    void multipleTruncatedRedirectHopsCountEntryOnce() {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 4, 5, true));
+        HistoryEntry entry = entry("multiple-redirect", Instant.parse("2026-06-15T01:00:00Z"), false, 2, 2);
+        entry.redirectHops = new ArrayList<>(List.of(
+                redirectHop(1, "abcdefghij", "uvwxyz1234"),
+                redirectHop(2, "klmnopqrst", "fedcba9876")
+        ));
+
+        store.addEntry(entry);
+
+        HistoryEntry retained = store.getById("multiple-redirect");
+        assertThat(retained).isNotNull();
+        assertThat(retained.redirectHops).extracting(hop -> hop.rawRequestBodyTruncated || hop.responseBodyTruncated)
+                .containsExactly(true, true);
+        assertThat(retained.hasTruncatedEvidence()).isTrue();
+        assertThat(store.getRetentionStats().truncatedEntryCount()).isEqualTo(1);
+    }
+
+    @Test
+    void mainAndRedirectTruncationCountEntryOnce() {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 4, 5, true));
+        HistoryEntry entry = entry("main-and-redirect", Instant.parse("2026-06-15T01:00:00Z"), false, 10, 2);
+        entry.redirectHops = new ArrayList<>(List.of(redirectHop(1, "abcdefghij", "ok")));
+
+        store.addEntry(entry);
+
+        HistoryEntry retained = store.getById("main-and-redirect");
+        assertThat(retained).isNotNull();
+        assertThat(retained.requestSnapshot.bodyTruncated).isTrue();
+        assertThat(retained.responseSnapshot.bodyTruncated).isFalse();
+        assertThat(retained.redirectHops.get(0).rawRequestBodyTruncated).isTrue();
+        assertThat(retained.hasTruncatedEvidence()).isTrue();
+        assertThat(store.getRetentionStats().truncatedEntryCount()).isEqualTo(1);
+    }
+
+    @Test
+    void untruncatedRedirectHopsDoNotIncreaseTruncatedCount() {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 4, 5, true));
+        HistoryEntry entry = entry("untruncated-redirect", Instant.parse("2026-06-15T01:00:00Z"), false, 2, 2);
+        entry.redirectHops = new ArrayList<>(List.of(redirectHop(1, "abc", "ok")));
+
+        store.addEntry(entry);
+
+        HistoryEntry retained = store.getById("untruncated-redirect");
+        assertThat(retained).isNotNull();
+        assertThat(retained.requestSnapshot.bodyTruncated).isFalse();
+        assertThat(retained.responseSnapshot.bodyTruncated).isFalse();
+        assertThat(retained.redirectHops.get(0).rawRequestBodyTruncated).isFalse();
+        assertThat(retained.redirectHops.get(0).responseBodyTruncated).isFalse();
+        assertThat(retained.hasTruncatedEvidence()).isFalse();
+        assertThat(store.getRetentionStats().truncatedEntryCount()).isZero();
+    }
+
+    @Test
     void unpinningMakesEntryEligibleForEviction() {
         HistoryStore store = new HistoryStore();
         store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 1_000_000, 1_000_000, true));
@@ -187,6 +264,28 @@ class HistoryRetentionBudgetTest {
         entry.responseSizeBytes = responseBytes;
         entry.ensureDefaults();
         return entry;
+    }
+
+    private static RedirectHop redirectHop(int hopNumber, String requestBody, String responseBody) {
+        RedirectHop hop = new RedirectHop();
+        hop.hopNumber = hopNumber;
+        hop.sourceUrl = "https://api.example.test/redirect-" + hopNumber;
+        hop.sourceMethod = "POST";
+        hop.statusCode = 302;
+        hop.location = "https://api.example.test/next-" + hopNumber;
+        hop.targetUrl = "https://api.example.test/next-" + hopNumber;
+        hop.targetMethod = "GET";
+        hop.elapsedMs = 42L;
+        hop.rawRequestBytes = ("POST /redirect-" + hopNumber + " HTTP/1.1\r\nHost: api.example.test\r\nContent-Type: text/plain\r\n\r\n" + requestBody)
+                .getBytes(StandardCharsets.UTF_8);
+        hop.rawRequestText = new String(hop.rawRequestBytes, StandardCharsets.UTF_8);
+        hop.responseHeadersText = "HTTP/1.1 302 Found\r\nContent-Type: text/plain\r\nLocation: https://api.example.test/next-" + hopNumber;
+        hop.responseBody = responseBody.getBytes(StandardCharsets.UTF_8);
+        hop.followed = true;
+        hop.failureReason = "";
+        hop.forwardedSensitiveHeaderNames = List.of("Authorization");
+        hop.strippedSensitiveHeaderNames = List.of("Cookie");
+        return hop;
     }
 
     private static byte[] bytes(char ch, int length) {

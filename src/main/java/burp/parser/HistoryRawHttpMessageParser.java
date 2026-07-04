@@ -69,7 +69,7 @@ public final class HistoryRawHttpMessageParser {
                             validHeaders = false;
                             break;
                         }
-                        String name = line.substring(0, colon).trim();
+                        String name = line.substring(0, colon);
                         if (name.isBlank() || !isHttpToken(name)) {
                             validHeaders = false;
                             break;

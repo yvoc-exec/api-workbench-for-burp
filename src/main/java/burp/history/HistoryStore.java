@@ -312,8 +312,7 @@ public class HistoryStore {
             if (entry.pinned) {
                 pinnedCount++;
             }
-            if ((entry.requestSnapshot != null && (entry.requestSnapshot.bodyTruncated || entry.requestSnapshot.rawBodyTruncated))
-                    || (entry.responseSnapshot != null && entry.responseSnapshot.bodyTruncated)) {
+            if (entry.hasTruncatedEvidence()) {
                 truncatedCount++;
             }
         }
