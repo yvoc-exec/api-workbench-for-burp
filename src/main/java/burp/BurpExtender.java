@@ -2,6 +2,8 @@ package burp;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
+import burp.ui.contextmenu.ApiWorkbenchContextMenuProvider;
+import burp.ui.traffic.BurpTrafficWorkflowCoordinator;
 import burp.utils.ScriptModeDetector;
 import burp.utils.WorkspaceStateService;
 
@@ -12,26 +14,13 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 
 /**
- * API Workbench for Burp Suite
- *
- * Supports: Postman (v2.0/v2.1), Bruno (.bru), OpenAPI/Swagger (JSON/YAML),
- *           Insomnia (v4), HAR
- *
- * Features:
- * - Auto-detect collection format
- * - Preview and select requests before import
- * - Import to Repeater, Sitemap, or Both
- * - Variable resolution with environment files
- * - Collection Runner: sequential execution with variable extraction
- * - Rate limiting and retry logic
- *
- * Author: Sachinico De Leon
- * Version: 2.0.0
- * License: MIT
+ * API Workbench for Burp Suite.
  */
 public class BurpExtender implements BurpExtension {
     private MontoyaApi api;
     private volatile UniversalImporter importer;
+    private volatile BurpTrafficWorkflowCoordinator trafficWorkflowCoordinator;
+    private volatile ApiWorkbenchContextMenuProvider contextMenuProvider;
 
     @Override
     public void initialize(MontoyaApi api) {
@@ -59,6 +48,7 @@ public class BurpExtender implements BurpExtension {
         }
 
         api.extension().registerUnloadingHandler(() -> {
+            closeContextMenuProvider();
             if (importer != null) {
                 importer.cleanup();
             }
@@ -89,8 +79,10 @@ public class BurpExtender implements BurpExtension {
             api.logging().logToOutput("Restoring API Workbench workspace state...");
             importer.restoreWorkspaceStateAfterUiRegistration();
 
+            registerContextMenuProvider(api);
             api.logging().logToOutput("API Workbench suite tab registered successfully.");
         } catch (Throwable t) {
+            closeContextMenuProvider();
             api.logging().logToError("API Workbench UI initialization failed: " + t);
             StringWriter traceWriter = new StringWriter();
             t.printStackTrace(new PrintWriter(traceWriter));
@@ -101,5 +93,38 @@ public class BurpExtender implements BurpExtension {
                 }
             }
         }
+    }
+
+    synchronized boolean registerContextMenuProvider(MontoyaApi api) {
+        if (contextMenuProvider != null && contextMenuProvider.isRegistered()) {
+            return true;
+        }
+        if (importer == null || api == null) {
+            return false;
+        }
+        trafficWorkflowCoordinator = new BurpTrafficWorkflowCoordinator(importer);
+        ApiWorkbenchContextMenuProvider provider = new ApiWorkbenchContextMenuProvider(
+                trafficWorkflowCoordinator::importTraffic);
+        if (!provider.register(api)) {
+            provider.close();
+            trafficWorkflowCoordinator = null;
+            return false;
+        }
+        contextMenuProvider = provider;
+        api.logging().logToOutput("API Workbench Burp traffic context menu registered.");
+        return true;
+    }
+
+    synchronized void closeContextMenuProvider() {
+        ApiWorkbenchContextMenuProvider provider = contextMenuProvider;
+        contextMenuProvider = null;
+        trafficWorkflowCoordinator = null;
+        if (provider != null) {
+            provider.close();
+        }
+    }
+
+    ApiWorkbenchContextMenuProvider contextMenuProviderForTests() {
+        return contextMenuProvider;
     }
 }
