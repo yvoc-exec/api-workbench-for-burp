@@ -97,7 +97,7 @@ public final class BurpTrafficWorkflowCoordinator {
 
         WorkspaceState before = WorkspaceState.copyOf(ui.getWorkspaceStateSnapshotFromModel());
         List<ApiCollection> collections = before.collections != null ? before.collections : new ArrayList<>();
-        boolean responseAvailable = !conversion.historyEntries.isEmpty();
+        boolean responseAvailable = conversion.historyEntries.stream().anyMatch(Objects::nonNull);
         TrafficDestinationDialogModel destination = new TrafficDestinationDialogModel(
                 collections,
                 conversion.requests,
@@ -126,9 +126,11 @@ public final class BurpTrafficWorkflowCoordinator {
         try {
             ui.restoreWorkspaceState(after);
             importer.requestWorkspaceStateSaveNow();
+            long queuedCount = plan.queueInRunner
+                    ? plan.requests.stream().filter(request -> request != null && !request.disabled).count()
+                    : 0L;
             String summary = plan.requestCount() + " requests imported; "
-                    + (plan.queueInRunner ? plan.requests.stream().filter(request -> request != null && !request.disabled).count() : 0)
-                    + " queued; " + plan.historyCount() + " History entries captured.";
+                    + queuedCount + " queued; " + plan.historyCount() + " History entries captured.";
             ui.appendImportLog(summary);
             messagePresenter.show(ui.getPanel(), "Burp Traffic Imported", summary, JOptionPane.INFORMATION_MESSAGE);
         } catch (RuntimeException commitFailure) {
@@ -143,13 +145,13 @@ public final class BurpTrafficWorkflowCoordinator {
         }
     }
 
-    private BurpTrafficImportPlan buildPlan(TrafficDestinationDialogModel destination,
-                                            BurpTrafficConversionResult conversion) {
+    BurpTrafficImportPlan buildPlan(TrafficDestinationDialogModel destination,
+                                    BurpTrafficConversionResult conversion) {
         List<ApiRequest> requests = new ArrayList<>();
         List<String> names = destination.generatedNames();
         for (int i = 0; i < conversion.requests.size(); i++) {
             ApiRequest source = conversion.requests.get(i);
-            ApiRequest request = source != null ? source.copy() : null;
+            ApiRequest request = source != null ? source.applyTo(new ApiRequest()) : null;
             if (request == null) {
                 throw new IllegalArgumentException("Traffic conversion produced an empty request.");
             }
@@ -176,11 +178,8 @@ public final class BurpTrafficWorkflowCoordinator {
                 entry.requestId = request.id;
                 entry.requestName = request.name;
                 entry.folderPath = request.path;
-                if (entry.requestSnapshot != null) {
-                    entry.requestSnapshot.requestId = request.id;
-                    entry.requestSnapshot.requestName = request.name;
-                    entry.requestSnapshot.collectionName = destination.effectiveCollectionName();
-                    entry.requestSnapshot.folderPath = request.path;
+                if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null) {
+                    request.applyTo(entry.requestSnapshot.authoredRequest);
                 }
                 history.add(entry);
             }
@@ -197,7 +196,7 @@ public final class BurpTrafficWorkflowCoordinator {
                 destination.queueInRunner());
     }
 
-    private WorkspaceState applyPlan(WorkspaceState before, BurpTrafficImportPlan plan) {
+    WorkspaceState applyPlan(WorkspaceState before, BurpTrafficImportPlan plan) {
         WorkspaceState after = WorkspaceState.copyOf(before);
         if (after.collections == null) {
             after.collections = new ArrayList<>();
@@ -222,13 +221,16 @@ public final class BurpTrafficWorkflowCoordinator {
         }
         destination.ensureDefaults();
         String folder = RequestTreePathService.normalizeFolderPath(plan.destinationFolder);
-        if (!folder.isBlank() && !destination.folderPaths.contains(folder)) {
+        if (!folder.isBlank() && !folderExists(destination, folder)) {
             throw new IllegalArgumentException("The selected destination folder is no longer available.");
         }
 
         List<ApiRequest> inserted = new ArrayList<>();
         for (ApiRequest request : plan.requests) {
-            ApiRequest copy = request.copy();
+            if (request == null) {
+                throw new IllegalArgumentException("The import plan contains an empty request.");
+            }
+            ApiRequest copy = request.applyTo(new ApiRequest());
             copy.sourceCollection = destination.name;
             copy.path = folder;
             destination.requests.add(copy);
@@ -267,6 +269,27 @@ public final class BurpTrafficWorkflowCoordinator {
             after.selectedTabIndex = 3;
         }
         return after;
+    }
+
+    private boolean folderExists(ApiCollection collection, String folder) {
+        if (collection == null || folder == null || folder.isBlank()) {
+            return folder == null || folder.isBlank();
+        }
+        if (collection.folderPaths != null) {
+            for (String candidate : collection.folderPaths) {
+                if (Objects.equals(RequestTreePathService.normalizeFolderPath(candidate), folder)) {
+                    return true;
+                }
+            }
+        }
+        if (collection.requests != null) {
+            for (ApiRequest request : collection.requests) {
+                if (request != null && Objects.equals(RequestTreePathService.normalizeFolderPath(request.path), folder)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private ApiCollection findCollection(List<ApiCollection> collections, ApiCollection selected) {
