@@ -88,10 +88,9 @@ public final class BurpTrafficWorkflowCoordinator {
             return;
         }
         BurpTrafficConversionResult conversion = conversionService.convert(selections);
-        if (!conversion.isSuccess()) {
+        if (conversion.hasFailures()) {
             String message = safeFailureSummary(conversion);
             messagePresenter.show(ui.getPanel(), "Traffic Import Failed", message, JOptionPane.ERROR_MESSAGE);
-            ui.appendImportLog("Burp traffic import failed: " + message.replace('\n', ' '));
             return;
         }
 
@@ -131,7 +130,6 @@ public final class BurpTrafficWorkflowCoordinator {
                     : 0L;
             String summary = plan.requestCount() + " requests imported; "
                     + queuedCount + " queued; " + plan.historyCount() + " History entries captured.";
-            ui.appendImportLog(summary);
             messagePresenter.show(ui.getPanel(), "Burp Traffic Imported", summary, JOptionPane.INFORMATION_MESSAGE);
         } catch (RuntimeException commitFailure) {
             try {
