@@ -109,7 +109,8 @@ class HistoryEvidenceBundleServiceTest {
 
         String summary = new String(files.get("summary.csv"), StandardCharsets.UTF_8);
         assertThat(summary)
-                .contains("api-workbench-evidence")
+                .contains("entry:1")
+                .contains("BURP_TRAFFIC")
                 .contains("'=@formula")
                 .doesNotContain("query-secret");
     }
