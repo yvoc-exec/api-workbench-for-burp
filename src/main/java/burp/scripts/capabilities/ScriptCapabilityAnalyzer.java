@@ -11,8 +11,9 @@ import java.util.regex.Pattern;
 
 /**
  * Deterministic, non-executing capability scanner for imported JavaScript.
- * Comments and quoted literals are replaced with whitespace before matching so
- * capability names mentioned only as documentation do not create findings.
+ * Comments and quoted literals are replaced with whitespace for executable API
+ * matching. A separate comment-free view retains quoted variable names solely
+ * for credential-key classification.
  */
 public final class ScriptCapabilityAnalyzer {
     private record Rule(Pattern pattern,
@@ -24,6 +25,18 @@ public final class ScriptCapabilityAnalyzer {
     }
 
     private static final List<Rule> RULES = rules();
+    private static final Pattern SENSITIVE_KEY_ACCESS = Pattern.compile(
+            "\\b(?:pm\\.(?:environment|collectionVariables|variables|globals)|"
+                    + "bru\\.(?:getEnvVar|getVar|getCollectionVar|getFolderVar|getRequestVar)|"
+                    + "insomnia\\.(?:environment|baseEnvironment|collectionVariables|variables)|"
+                    + "awb\\.(?:environment|collection|folder|request|local|global))"
+                    + "\\s*\\.?\\s*(?:get|has)?\\s*\\(\\s*(['\"])"
+                    + "(?:password|passphrase|secret|client_secret|access_token|refresh_token|id_token|token|api[_-]?key|authorization|cookie)"
+                    + "\\1",
+            Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
+    private static final Pattern COMPUTED_AD_HOC_NETWORK = Pattern.compile(
+            "\\b(?:awb|execution)\\s*\\[\\s*(['\"])sendAdHocRequest\\1\\s*]\\s*\\(",
+            Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
 
     public ScriptCapabilityReport analyze(ScriptBlock block) {
         ScriptCapabilityReport report = new ScriptCapabilityReport();
@@ -34,20 +47,32 @@ public final class ScriptCapabilityAnalyzer {
         report.phase = block.phase;
         report.scope = block.scope;
         report.sourcePath = block.sourcePath != null ? block.sourcePath : "";
-        String searchable = stripCommentsAndStrings(block.source != null ? block.source : "");
+        String source = block.source != null ? block.source : "";
+        String searchable = stripCommentsAndStrings(source);
+        String commentFree = stripComments(source);
         Map<String, ScriptCapabilityFinding> unique = new LinkedHashMap<>();
         for (Rule rule : RULES) {
-            if (!rule.pattern.matcher(searchable).find()) {
-                continue;
+            if (rule.pattern.matcher(searchable).find()) {
+                addFinding(unique, report, rule);
             }
-            ScriptCapabilityFinding finding = new ScriptCapabilityFinding(
-                    rule.capability,
-                    rule.apiName,
-                    rule.risk,
-                    rule.supported,
-                    rule.message);
-            unique.putIfAbsent(finding.stableKey(), finding);
-            report.riskLevel = ScriptRiskLevel.max(report.riskLevel, finding.riskLevel());
+        }
+        if (SENSITIVE_KEY_ACCESS.matcher(commentFree).find()) {
+            addFinding(unique, report, new Rule(
+                    SENSITIVE_KEY_ACCESS,
+                    ScriptCapability.SENSITIVE_DATA_ACCESS,
+                    "sensitive variable access",
+                    ScriptRiskLevel.HIGH,
+                    true,
+                    "Script may read credential-like variable values."));
+        }
+        if (COMPUTED_AD_HOC_NETWORK.matcher(commentFree).find()) {
+            addFinding(unique, report, new Rule(
+                    COMPUTED_AD_HOC_NETWORK,
+                    ScriptCapability.AD_HOC_NETWORK,
+                    "sendAdHocRequest",
+                    ScriptRiskLevel.CRITICAL,
+                    true,
+                    "Script can execute an ad-hoc HTTP request through the Runner runtime."));
         }
         report.findings.addAll(unique.values());
         report.findings.sort(Comparator
@@ -71,6 +96,19 @@ public final class ScriptCapabilityAnalyzer {
 
     public boolean hasBlockingUnsupportedCapability(ScriptBlock block) {
         return analyze(block).hasUnsupportedCapabilities();
+    }
+
+    private static void addFinding(Map<String, ScriptCapabilityFinding> unique,
+                                   ScriptCapabilityReport report,
+                                   Rule rule) {
+        ScriptCapabilityFinding finding = new ScriptCapabilityFinding(
+                rule.capability,
+                rule.apiName,
+                rule.risk,
+                rule.supported,
+                rule.message);
+        unique.putIfAbsent(finding.stableKey(), finding);
+        report.riskLevel = ScriptRiskLevel.max(report.riskLevel, finding.riskLevel());
     }
 
     private static List<Rule> rules() {
@@ -102,6 +140,9 @@ public final class ScriptCapabilityAnalyzer {
         rules.add(rule("\\b(?:runRequest|executeRequest)\\s*\\(",
                 ScriptCapability.DEPENDENT_REQUEST, "dependent request", ScriptRiskLevel.HIGH, true,
                 "Script can execute another collection request through the supported runtime."));
+        rules.add(rule("\\bsendAdHocRequest\\s*\\(",
+                ScriptCapability.AD_HOC_NETWORK, "sendAdHocRequest", ScriptRiskLevel.CRITICAL, true,
+                "Script can execute an ad-hoc HTTP request through the Runner runtime."));
         rules.add(rule("\\b(?:pm\\.sendRequest|bru\\.sendRequest|insomnia\\.sendRequest|awb\\.sendRequest|sendRequest)\\s*\\(",
                 ScriptCapability.AD_HOC_NETWORK, "sendRequest", ScriptRiskLevel.CRITICAL, false,
                 "Ad-hoc network requests are not supported by the sandbox."));
@@ -134,6 +175,14 @@ public final class ScriptCapabilityAnalyzer {
     }
 
     static String stripCommentsAndStrings(String source) {
+        return scan(source, true);
+    }
+
+    static String stripComments(String source) {
+        return scan(source, false);
+    }
+
+    private static String scan(String source, boolean stripStrings) {
         if (source == null || source.isEmpty()) {
             return "";
         }
@@ -154,15 +203,15 @@ public final class ScriptCapabilityAnalyzer {
                         i++;
                         state = State.BLOCK_COMMENT;
                     } else if (current == '\'') {
-                        out.append(' ');
+                        out.append(stripStrings ? ' ' : current);
                         state = State.SINGLE_QUOTE;
                         escaped = false;
                     } else if (current == '"') {
-                        out.append(' ');
+                        out.append(stripStrings ? ' ' : current);
                         state = State.DOUBLE_QUOTE;
                         escaped = false;
                     } else if (current == '`') {
-                        out.append(' ');
+                        out.append(stripStrings ? ' ' : current);
                         state = State.TEMPLATE;
                         escaped = false;
                     } else {
@@ -188,10 +237,10 @@ public final class ScriptCapabilityAnalyzer {
                 }
                 case SINGLE_QUOTE, DOUBLE_QUOTE, TEMPLATE -> {
                     char terminator = state == State.SINGLE_QUOTE ? '\'' : state == State.DOUBLE_QUOTE ? '"' : '`';
-                    if (current == '\n' || current == '\r') {
-                        out.append(current);
-                    } else {
+                    if (stripStrings && current != '\n' && current != '\r') {
                         out.append(' ');
+                    } else {
+                        out.append(current);
                     }
                     if (escaped) {
                         escaped = false;
