@@ -32,6 +32,7 @@ class HistoryFilterPanelTest {
                 new FieldCase("folderField", "Admin", criteria -> assertThat(criteria.folder).isEqualTo("Admin")),
                 new FieldCase("requestField", "Create User", criteria -> assertThat(criteria.requestName).isEqualTo("Create User")),
                 new FieldCase("environmentField", "UAT", criteria -> assertThat(criteria.environment).isEqualTo("UAT")),
+                new FieldCase("tagField", "Auth, Evidence", criteria -> assertThat(criteria.tagText).isEqualTo("Auth, Evidence")),
                 new FieldCase("fromField", "2026-06-01T00:00:00Z", criteria -> assertThat(criteria.fromTimestamp).isEqualTo(Instant.parse("2026-06-01T00:00:00Z"))),
                 new FieldCase("toField", "2026-06-30T23:59:59Z", criteria -> assertThat(criteria.toTimestamp).isEqualTo(Instant.parse("2026-06-30T23:59:59Z"))),
                 new FieldCase("attemptField", "2", criteria -> assertThat(criteria.attemptNumber).isEqualTo(2)),
@@ -61,7 +62,7 @@ class HistoryFilterPanelTest {
         setText(panel, "freeTextField", "log");
         setText(panel, "freeTextField", "login");
 
-        awaitCondition(() -> callbacks.get() == 1, DEBOUNCE_WAIT);
+        awaitCondition(() -> callbacks.get() >= 1, DEBOUNCE_WAIT);
         assertThat(callbacks.get()).isEqualTo(1);
         assertThat(panel.getCriteria().freeText).isEqualTo("login");
     }
@@ -98,6 +99,8 @@ class HistoryFilterPanelTest {
         criteria.requestName = "Create User";
         criteria.environment = "UAT";
         criteria.resultType = burp.history.HistoryResult.ERROR;
+        criteria.pinnedState = "Pinned";
+        criteria.tagText = "Auth";
         criteria.fromTimestamp = Instant.parse("2026-06-01T00:00:00Z");
         criteria.toTimestamp = Instant.parse("2026-06-30T23:59:59Z");
         criteria.hasResponseBody = Boolean.TRUE;
@@ -121,6 +124,8 @@ class HistoryFilterPanelTest {
         assertThat(textField(panel, "requestField").getText()).isEqualTo("Create User");
         assertThat(textField(panel, "environmentField").getText()).isEqualTo("UAT");
         assertThat(((JComboBox<?>) component(panel, "resultCombo")).getSelectedItem()).isEqualTo("Error");
+        assertThat(((JComboBox<?>) component(panel, "pinnedStateCombo")).getSelectedItem()).isEqualTo("Pinned");
+        assertThat(textField(panel, "tagField").getText()).isEqualTo("Auth");
         assertThat(textField(panel, "fromField").getText()).isEqualTo("2026-06-01T00:00:00Z");
         assertThat(textField(panel, "toField").getText()).isEqualTo("2026-06-30T23:59:59Z");
         assertThat(((JCheckBox) component(panel, "hasResponseBodyBox")).isSelected()).isTrue();
@@ -132,6 +137,24 @@ class HistoryFilterPanelTest {
         assertThat(panel.getCriteria().freeText).isEqualTo("login");
         assertThat(panel.getCriteria().source).isEqualTo(HistorySource.RUNNER);
         assertThat(panel.getCriteria().resultType).isEqualTo(burp.history.HistoryResult.ERROR);
+        assertThat(panel.getCriteria().pinnedState).isEqualTo("Pinned");
+        assertThat(panel.getCriteria().tagText).isEqualTo("Auth");
+    }
+
+    @Test
+    void pinnedStateAndTagSearchUpdateImmediately() throws Exception {
+        HistoryFilterPanel panel = new HistoryFilterPanel();
+        AtomicInteger callbacks = new AtomicInteger();
+        panel.setChangeListener(callbacks::incrementAndGet);
+
+        SwingUtilities.invokeAndWait(() -> {
+            ((JComboBox<?>) component(panel, "pinnedStateCombo")).setSelectedItem("Pinned");
+            textField(panel, "tagField").setText("Evidence");
+        });
+
+        awaitCondition(() -> callbacks.get() == 1, DEBOUNCE_WAIT);
+        assertThat(panel.getCriteria().pinnedState).isEqualTo("Pinned");
+        assertThat(panel.getCriteria().tagText).isEqualTo("Evidence");
     }
 
     @Test

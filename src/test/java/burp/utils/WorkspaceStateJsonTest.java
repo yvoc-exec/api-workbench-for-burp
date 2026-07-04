@@ -1,7 +1,11 @@
 package burp.utils;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryBodyTruncator;
 import burp.history.HistoryReplayRedirectMode;
+import burp.history.HistoryRequestSnapshot;
+import burp.history.HistoryResponseSnapshot;
+import burp.history.HistoryRetentionPolicy;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.RedirectCrossOriginMode;
@@ -21,6 +25,8 @@ import burp.testsupport.HistoryTestFixtures;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.List;
 import java.util.LinkedHashSet;
 
@@ -231,7 +237,7 @@ class WorkspaceStateJsonTest {
         String json = WorkspaceStateJson.toJson(state);
         WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
 
-        assertThat(parsed.version).isEqualTo(1);
+        assertThat(parsed.version).isEqualTo(2);
         assertThat(parsed.collections).hasSize(1);
         assertThat(parsed.collections.get(0).name).isEqualTo("Demo");
         assertThat(parsed.collections.get(0).id).isEqualTo("col-demo");
@@ -549,7 +555,7 @@ class WorkspaceStateJsonTest {
 
         WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
 
-        assertThat(migrated.version).isEqualTo(1);
+        assertThat(migrated.version).isEqualTo(2);
         assertThat(migrated.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
         assertThat(migrated.collections.get(0).requests.get(0).suppressedAutoHeaders).containsExactly("authorization");
     }
@@ -561,7 +567,7 @@ class WorkspaceStateJsonTest {
 
         WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
 
-        assertThat(migrated.version).isEqualTo(1);
+        assertThat(migrated.version).isEqualTo(2);
     }
 
     @Test
@@ -746,6 +752,113 @@ class WorkspaceStateJsonTest {
         assertThat(copy.collections.get(0).runtimeVars).doesNotContainKey("later");
         assertThat(copy.collections.get(0).folderVars.get("Admin")).doesNotContainKey("later");
         assertThat(copy.checkedRequestKeys).containsExactly("Demo\u001FFolder/Get Me\u001FGet Me\u001FGET\u001F7");
+    }
+
+    @Test
+    void workspaceCopiesDoNotAliasHistoryOrPolicy() {
+        WorkspaceState state = new WorkspaceState();
+        state.historyRetentionPolicy = new HistoryRetentionPolicy(3, 4_096L, 128L, 256L, true);
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "alias-history", Instant.parse("2026-06-15T01:45:00Z"));
+        entry.pinned = true;
+        entry.analystNotes = "Alias check";
+        entry.tags = new LinkedHashSet<>(List.of("Evidence"));
+        state.historyEntries.add(entry);
+
+        WorkspaceState copy = WorkspaceState.copyOf(state);
+
+        assertThat(copy.historyRetentionPolicy).isNotSameAs(state.historyRetentionPolicy);
+        assertThat(copy.historyEntries.get(0)).isNotSameAs(state.historyEntries.get(0));
+        assertThat(copy.historyEntries.get(0).pinned).isTrue();
+        assertThat(copy.historyEntries.get(0).analystNotes).isEqualTo("Alias check");
+
+        state.historyRetentionPolicy.maxEntries = 1;
+        state.historyEntries.get(0).analystNotes = "mutated";
+        state.historyEntries.get(0).tags.add("Later");
+
+        assertThat(copy.historyRetentionPolicy.maxEntries).isEqualTo(3);
+        assertThat(copy.historyEntries.get(0).analystNotes).isEqualTo("Alias check");
+        assertThat(copy.historyEntries.get(0).tags).containsExactly("Evidence");
+    }
+
+    @Test
+    void pinnedStateSurvivesWorkspaceRoundTrip() {
+        WorkspaceState state = new WorkspaceState();
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "pinned-history", Instant.parse("2026-06-15T01:50:00Z"));
+        entry.pinned = true;
+        entry.analystNotes = "Pinned for review";
+        entry.tags = new LinkedHashSet<>(List.of("Auth", "Evidence"));
+        state.historyEntries.add(entry);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.historyEntries).hasSize(1);
+        assertThat(parsed.historyEntries.get(0).pinned).isTrue();
+        assertThat(parsed.historyEntries.get(0).analystNotes).isEqualTo("Pinned for review");
+        assertThat(parsed.historyEntries.get(0).tags).containsExactly("Auth", "Evidence");
+    }
+
+    @Test
+    void truncationMetadataSurvivesWorkspaceRoundTrip() {
+        WorkspaceState state = new WorkspaceState();
+        state.historyRetentionPolicy = new HistoryRetentionPolicy(10, 10_000L, 4L, 5L, true);
+
+        HistoryEntry entry = new HistoryEntry();
+        entry.id = "truncated-history";
+        entry.timestamp = Instant.parse("2026-06-15T01:55:00Z");
+        entry.requestSnapshot = new HistoryRequestSnapshot();
+        entry.requestSnapshot.method = "POST";
+        entry.requestSnapshot.urlTemplate = "https://api.example.test/truncated";
+        entry.requestSnapshot.bodyAsAuthored = "abcdefgh".getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSent = "POST /truncated HTTP/1.1\r\nHost: api.example.test\r\n\r\nabcdefgh".getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText = new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8);
+        entry.responseSnapshot = new HistoryResponseSnapshot();
+        entry.responseSnapshot.statusCode = 200;
+        entry.responseSnapshot.body = "uvwxyz".getBytes(StandardCharsets.UTF_8);
+        HistoryBodyTruncator.apply(entry, state.historyRetentionPolicy);
+        state.historyEntries.add(entry);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+        HistoryEntry restored = parsed.historyEntries.get(0);
+
+        assertThat(restored.requestSnapshot.bodyTruncated).isTrue();
+        assertThat(restored.requestSnapshot.originalBodyLength).isEqualTo(8L);
+        assertThat(restored.requestSnapshot.storedBodyLength).isEqualTo(4L);
+        assertThat(restored.requestSnapshot.fullBodySha256).isNotBlank();
+        assertThat(restored.requestSnapshot.rawBodyTruncated).isTrue();
+        assertThat(restored.requestSnapshot.originalRawBodyLength).isEqualTo(8L);
+        assertThat(restored.requestSnapshot.storedRawBodyLength).isEqualTo(4L);
+        assertThat(restored.responseSnapshot.bodyTruncated).isTrue();
+        assertThat(restored.responseSnapshot.originalBodyLength).isEqualTo(6L);
+        assertThat(restored.responseSnapshot.storedBodyLength).isEqualTo(5L);
+        assertThat(restored.responseSnapshot.fullBodySha256).isNotBlank();
+    }
+
+    @Test
+    void largeHistoryWorkspaceRoundTripsWithinBound() {
+        WorkspaceState state = new WorkspaceState();
+        state.historyRetentionPolicy = new HistoryRetentionPolicy(200, 1_000_000L, 1_024L, 1_024L, true);
+
+        for (int i = 0; i < 64; i++) {
+            HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                    "bulk-" + i, Instant.parse("2026-06-15T02:00:00Z").plusSeconds(i));
+            entry.requestSnapshot.bodyAsAuthored = ("body-" + i).getBytes(StandardCharsets.UTF_8);
+            entry.requestSnapshot.originalBodyLength = entry.requestSnapshot.bodyAsAuthored.length;
+            entry.requestSnapshot.storedBodyLength = entry.requestSnapshot.bodyAsAuthored.length;
+            entry.requestSnapshot.fullBodySha256 = HistoryBodyTruncator.sha256Hex(entry.requestSnapshot.bodyAsAuthored);
+            entry.responseSnapshot.body = ("resp-" + i).getBytes(StandardCharsets.UTF_8);
+            entry.responseSnapshot.originalBodyLength = entry.responseSnapshot.body.length;
+            entry.responseSnapshot.storedBodyLength = entry.responseSnapshot.body.length;
+            entry.responseSnapshot.fullBodySha256 = HistoryBodyTruncator.sha256Hex(entry.responseSnapshot.body);
+            state.historyEntries.add(entry);
+        }
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.historyEntries).hasSize(64);
+        assertThat(parsed.historyEntries.get(0).id).isEqualTo("bulk-63");
+        assertThat(parsed.historyEntries.get(63).id).isEqualTo("bulk-0");
     }
 
     @Test

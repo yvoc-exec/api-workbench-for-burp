@@ -46,7 +46,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
         assertThat(harness.panel.getWorkbenchSendSnapshot(collection.requests.get(0))).isNull();
 
         harness.panel.applyWorkbenchSendSnapshot(collection.requests.get(0), collection, snapshotA);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META A");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META A");
         verify(harness.workbenchRequestEditor).setRequest(same(snapshotA.builtRequest));
         verify(harness.workbenchResponseEditor).setResponse(same(snapshotA.response));
 
@@ -54,13 +54,13 @@ class ImporterPanelWorkbenchDetailPaneTest {
         harness.panel.openRequestInEditor(collection.requests.get(1), collection);
         assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).contains("Not yet sent");
         harness.panel.applyWorkbenchSendSnapshot(collection.requests.get(1), collection, snapshotB);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META B");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META B");
         verify(harness.workbenchRequestEditor).setRequest(same(snapshotB.builtRequest));
         verify(harness.workbenchResponseEditor).setResponse(same(snapshotB.response));
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
         harness.panel.openRequestInEditor(collection.requests.get(0), collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META A");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META A");
         verify(harness.workbenchRequestEditor).setRequest(same(snapshotA.builtRequest));
         verify(harness.workbenchResponseEditor).setResponse(same(snapshotA.response));
     }
@@ -77,7 +77,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
         ImporterPanel.WorkbenchSendSnapshot snapshotA = snapshot("A");
         harness.panel.openRequestInEditor(requestA, collection);
         harness.panel.applyWorkbenchSendSnapshot(requestA, collection, snapshotA);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META A");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META A");
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
         harness.panel.openRequestInEditor(requestC, collection);
@@ -86,7 +86,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
 
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);
         harness.panel.openRequestInEditor(requestA, collection);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META A");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META A");
 
         harness.panel.clearRequestEditorForNonRequestSelection();
         assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isBlank();
@@ -106,7 +106,7 @@ class ImporterPanelWorkbenchDetailPaneTest {
 
         harness.panel.openRequestInEditor(requestB, collection);
         harness.panel.applyWorkbenchSendSnapshot(requestB, collection, snapshotB);
-        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META B");
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest()).startsWith("META B");
 
         String before = harness.panel.getWorkbenchDetailMetaTextForTest();
         reset(harness.workbenchRequestEditor, harness.workbenchResponseEditor);

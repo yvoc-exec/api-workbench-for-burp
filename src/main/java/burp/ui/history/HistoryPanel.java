@@ -22,7 +22,6 @@ import java.util.function.Consumer;
 
 public class HistoryPanel extends JPanel {
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
-    private static final String HISTORY_NOTICE = "History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.";
 
     private final HistoryStore historyStore;
     private final HistoryExportService exportService;
@@ -33,6 +32,7 @@ public class HistoryPanel extends JPanel {
     private final HistoryFilterPanel filterPanel = new HistoryFilterPanel();
     private final HistoryDetailPanel detailPanel;
     private final HistoryActionsPanel actionsPanel = new HistoryActionsPanel();
+    private final JLabel usageLabel = new JLabel();
     private final List<HistoryEntry> visibleEntries = new ArrayList<>();
     private final JScrollPane tableScrollPane = new JScrollPane(table);
     private HistoryFilterCriteria currentCriteria = new HistoryFilterCriteria();
@@ -65,6 +65,7 @@ public class HistoryPanel extends JPanel {
         add(buildCenterPane(), BorderLayout.CENTER);
         installActions();
         installSelectionListener();
+        detailPanel.setMetadataSaveAction(this::saveSelectedMetadata);
         filterPanel.setChangeListener(this::applyCurrentFilter);
         applyCurrentFilter();
     }
@@ -101,6 +102,10 @@ public class HistoryPanel extends JPanel {
         return actionsPanel;
     }
 
+    public JLabel getUsageLabel() {
+        return usageLabel;
+    }
+
     JScrollPane getTableScrollPane() {
         return tableScrollPane;
     }
@@ -127,7 +132,7 @@ public class HistoryPanel extends JPanel {
     }
 
     public void refreshFromStore() {
-        refreshFromStore(null);
+        refreshFromStore((String) null);
     }
 
     public void refreshFromStore(String preferredSelectedId) {
@@ -141,7 +146,11 @@ public class HistoryPanel extends JPanel {
                 }
             }
         }
-        applyCurrentFilter(selectedIds);
+        refreshFromStore(selectedIds);
+    }
+
+    private void refreshFromStore(List<String> preferredSelectedIds) {
+        applyCurrentFilter(preferredSelectedIds);
     }
 
     public void applyCurrentFilter() {
@@ -154,6 +163,7 @@ public class HistoryPanel extends JPanel {
         }
         historyStore.clear();
         refreshFromStore();
+        updateUsageBanner();
         notifyWorkspaceChanged();
     }
 
@@ -170,6 +180,49 @@ public class HistoryPanel extends JPanel {
         }
         historyStore.removeByIds(ids);
         refreshFromStore();
+        updateUsageBanner();
+        notifyWorkspaceChanged();
+    }
+
+    public void togglePinSelectedEntries() {
+        List<HistoryEntry> selected = getSelectedEntries();
+        if (selected.isEmpty()) {
+            return;
+        }
+        boolean allPinned = selected.stream().allMatch(entry -> entry != null && entry.pinned);
+        List<String> ids = new ArrayList<>();
+        for (HistoryEntry entry : selected) {
+            if (entry != null && entry.id != null) {
+                ids.add(entry.id);
+                historyStore.setPinned(entry.id, !allPinned);
+            }
+        }
+        refreshFromStore(ids);
+        updateUsageBanner();
+        notifyWorkspaceChanged();
+    }
+
+    public void clearUnpinnedEntries() {
+        int removed = historyStore.clearUnpinned();
+        if (removed > 0) {
+            refreshFromStore();
+            updateUsageBanner();
+            notifyWorkspaceChanged();
+        }
+    }
+
+    public void saveSelectedMetadata() {
+        HistoryEntry selected = getSelectedEntry();
+        if (selected == null || selected.id == null) {
+            return;
+        }
+        String entryId = selected.id;
+        String notes = detailPanel.getAnalystNotesText();
+        java.util.Collection<String> tags = HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText());
+        historyStore.updateAnalystMetadata(entryId, notes, tags);
+        historyStore.setPinned(entryId, detailPanel.getPinnedCheckBox().isSelected());
+        refreshFromStore(entryId);
+        updateUsageBanner();
         notifyWorkspaceChanged();
     }
 
@@ -260,7 +313,7 @@ public class HistoryPanel extends JPanel {
     private JComponent buildTopPanel() {
         JPanel top = new JPanel(new BorderLayout(5, 5));
         top.add(actionsPanel, BorderLayout.NORTH);
-        top.add(buildNotice(HISTORY_NOTICE), BorderLayout.CENTER);
+        top.add(buildNotice(usageLabel), BorderLayout.CENTER);
         top.add(filterPanel, BorderLayout.SOUTH);
         return top;
     }
@@ -294,7 +347,7 @@ public class HistoryPanel extends JPanel {
             }
             HistoryEntry selected = getSelectedEntry();
             detailPanel.showEntry(selected);
-            actionsPanel.updateSelectionState(table.getSelectedRowCount(), !historyStore.isEmpty());
+            updateActionState();
         });
     }
 
@@ -307,6 +360,8 @@ public class HistoryPanel extends JPanel {
         actionsPanel.setCompareAction(this::compareSelected);
         actionsPanel.setDeleteAction(this::deleteSelectedEntries);
         actionsPanel.setClearAction(this::clearHistory);
+        actionsPanel.setPinAction(this::togglePinSelectedEntries);
+        actionsPanel.setClearUnpinnedAction(this::clearUnpinnedEntries);
         actionsPanel.setExportJsonAction(this::exportSelectedJson);
         actionsPanel.setExportCsvAction(this::exportSelectedCsv);
         actionsPanel.setExportHarAction(this::exportSelectedHar);
@@ -325,7 +380,8 @@ public class HistoryPanel extends JPanel {
         restoreSelection(preferredSelectedIds);
         HistoryEntry selected = getSelectedEntry();
         detailPanel.showEntry(selected);
-        actionsPanel.updateSelectionState(table.getSelectedRowCount(), !historyStore.isEmpty());
+        updateUsageBanner();
+        updateActionState();
     }
 
     private void restoreSelection(List<String> preferredSelectedIds) {
@@ -333,28 +389,85 @@ public class HistoryPanel extends JPanel {
             table.clearSelection();
             return;
         }
-        String selectedId = null;
+        List<String> idsToSelect = new ArrayList<>();
         if (preferredSelectedIds != null) {
             for (String id : preferredSelectedIds) {
-                if (id != null && tableModel.indexOfEntryId(id) >= 0) {
-                    selectedId = id;
-                    break;
+                if (id != null && tableModel.indexOfEntryId(id) >= 0 && !idsToSelect.contains(id)) {
+                    idsToSelect.add(id);
                 }
             }
         }
-        if (selectedId == null) {
+        if (idsToSelect.isEmpty()) {
             table.clearSelection();
             return;
         }
-        int modelIndex = tableModel.indexOfEntryId(selectedId);
-        if (modelIndex < 0) {
-            return;
+        table.clearSelection();
+        int firstViewIndex = -1;
+        for (String selectedId : idsToSelect) {
+            int modelIndex = tableModel.indexOfEntryId(selectedId);
+            if (modelIndex < 0) {
+                continue;
+            }
+            int viewIndex = modelIndex;
+            if (viewIndex >= 0 && viewIndex < table.getRowCount()) {
+                if (firstViewIndex < 0) {
+                    table.getSelectionModel().setSelectionInterval(viewIndex, viewIndex);
+                    firstViewIndex = viewIndex;
+                } else {
+                    table.getSelectionModel().addSelectionInterval(viewIndex, viewIndex);
+                }
+            }
         }
-        int viewIndex = modelIndex;
-        if (viewIndex >= 0 && viewIndex < table.getRowCount()) {
-            table.getSelectionModel().setSelectionInterval(viewIndex, viewIndex);
-            table.scrollRectToVisible(table.getCellRect(viewIndex, 0, true));
+        if (firstViewIndex >= 0) {
+            table.scrollRectToVisible(table.getCellRect(firstViewIndex, 0, true));
         }
+    }
+
+    private void updateActionState() {
+        List<HistoryEntry> selected = getSelectedEntries();
+        boolean hasEntries = !historyStore.isEmpty();
+        actionsPanel.updateSelectionState(table.getSelectedRowCount(), hasEntries);
+        boolean allPinned = !selected.isEmpty() && selected.stream().allMatch(entry -> entry != null && entry.pinned);
+        actionsPanel.updatePinActionState(selected.size(), allPinned);
+    }
+
+    private void updateUsageBanner() {
+        HistoryRetentionPolicy policy = historyStore.getRetentionPolicy();
+        HistoryRetentionStats stats = historyStore.getRetentionStats();
+        usageLabel.setText(buildUsageText(policy, stats));
+        usageLabel.setForeground(stats != null && stats.overBudget() ? new Color(156, 32, 0) : new Color(96, 64, 0));
+    }
+
+    private static String buildUsageText(HistoryRetentionPolicy policy, HistoryRetentionStats stats) {
+        HistoryRetentionPolicy safePolicy = HistoryRetentionPolicy.copyOf(policy);
+        safePolicy.normalize();
+        HistoryRetentionStats safeStats = stats != null ? stats : HistoryRetentionStats.empty();
+        return "History retention: "
+                + safeStats.entryCount() + "/" + safePolicy.maxEntries + " entries; "
+                + "stored " + formatBytes(safeStats.totalEstimatedBytes()) + "/" + formatBytes(safePolicy.maxTotalStoredBytes) + "; "
+                + "request body limit " + formatBytes(safePolicy.maxRequestBodyBytesPerEntry) + "; "
+                + "response body limit " + formatBytes(safePolicy.maxResponseBodyBytesPerEntry) + "; "
+                + "pinned " + safeStats.pinnedCount() + "; "
+                + "truncated " + safeStats.truncatedEntryCount() + "; "
+                + "retain pinned " + (safePolicy.retainPinnedEntries ? "yes" : "no") + "; "
+                + "over budget: " + (safeStats.overBudget() ? "yes" : "no");
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024L) {
+            return bytes + " B";
+        }
+        double value = bytes;
+        String[] units = {"KiB", "MiB", "GiB", "TiB"};
+        int unitIndex = -1;
+        while (value >= 1024.0d && unitIndex + 1 < units.length) {
+            value /= 1024.0d;
+            unitIndex++;
+        }
+        if (unitIndex < 0) {
+            return bytes + " B";
+        }
+        return String.format(java.util.Locale.ROOT, "%.1f %s", value, units[unitIndex]);
     }
 
     private void exportEntries(String format) {
@@ -411,8 +524,8 @@ public class HistoryPanel extends JPanel {
         }
     }
 
-    private static JLabel buildNotice(String text) {
-        JLabel label = new JLabel(text);
+    private static JLabel buildNotice(JLabel label) {
+        label.setText("");
         label.setForeground(new Color(96, 64, 0));
         return label;
     }

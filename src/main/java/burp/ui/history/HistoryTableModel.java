@@ -11,7 +11,7 @@ import java.util.List;
 public class HistoryTableModel extends AbstractTableModel {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
     private static final String[] COLUMNS = {
-            "Time", "Source", "Attempt", "Collection", "Folder", "Request",
+            "Pin", "Time", "Source", "Attempt", "Collection", "Folder", "Request",
             "Method", "URL Template", "Status", "Duration", "Size", "Environment", "Result"
     };
 
@@ -71,19 +71,20 @@ public class HistoryTableModel extends AbstractTableModel {
             return "";
         }
         return switch (columnIndex) {
-            case 0 -> entry.timestamp != null ? TIME.format(entry.timestamp) : "";
-            case 1 -> entry.source != null ? entry.source.displayName() : "";
-            case 2 -> entry.attemptDisplay();
-            case 3 -> entry.collectionName != null ? entry.collectionName : "";
-            case 4 -> entry.folderPath != null ? entry.folderPath : "";
-            case 5 -> entry.requestName != null ? entry.requestName : "";
-            case 6 -> entry.requestSnapshot != null && entry.requestSnapshot.method != null ? entry.requestSnapshot.method : "";
-            case 7 -> entry.requestSnapshot != null && entry.requestSnapshot.urlTemplate != null ? entry.requestSnapshot.urlTemplate : "";
-            case 8 -> entry.statusCode > 0 ? String.valueOf(entry.statusCode) : (entry.hasError() ? "ERR" : "");
-            case 9 -> entry.durationMillis > 0 ? entry.durationMillis + "ms" : "";
-            case 10 -> entry.historySizeLabel();
-            case 11 -> entry.environmentName != null ? entry.environmentName : "";
-            case 12 -> entry.resultDisplayName();
+            case 0 -> entry.pinned ? "★" : "";
+            case 1 -> entry.timestamp != null ? TIME.format(entry.timestamp) : "";
+            case 2 -> entry.source != null ? entry.source.displayName() : "";
+            case 3 -> entry.attemptDisplay();
+            case 4 -> entry.collectionName != null ? entry.collectionName : "";
+            case 5 -> entry.folderPath != null ? entry.folderPath : "";
+            case 6 -> entry.requestName != null ? entry.requestName : "";
+            case 7 -> entry.requestSnapshot != null && entry.requestSnapshot.method != null ? entry.requestSnapshot.method : "";
+            case 8 -> entry.requestSnapshot != null && entry.requestSnapshot.urlTemplate != null ? entry.requestSnapshot.urlTemplate : "";
+            case 9 -> entry.statusCode > 0 ? String.valueOf(entry.statusCode) : (entry.hasError() ? "ERR" : "");
+            case 10 -> entry.durationMillis > 0 ? entry.durationMillis + "ms" : "";
+            case 11 -> entry.historySizeLabel();
+            case 12 -> entry.environmentName != null ? entry.environmentName : "";
+            case 13 -> entry.resultDisplayName();
             default -> "";
         };
     }

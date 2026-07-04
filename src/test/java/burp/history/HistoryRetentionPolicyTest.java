@@ -33,6 +33,6 @@ class HistoryRetentionPolicyTest {
 
     @Test
     void retentionPolicyClampsZeroToOne() {
-        assertThat(new HistoryRetentionPolicy(0).maxEntries).isEqualTo(1);
+        assertThat(new HistoryRetentionPolicy(0).maxEntries).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_ENTRIES);
     }
 }

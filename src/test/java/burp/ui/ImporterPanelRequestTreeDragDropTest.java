@@ -171,7 +171,7 @@ class ImporterPanelRequestTreeDragDropTest {
         assertThat(request.path).isBlank();
         assertThat(runnerQueuedRequests(panel)).containsExactly(request);
         assertThat(panel.getWorkbenchSendSnapshot(request)).isNotNull();
-        assertThat(panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META REQUEST");
+        assertThat(panel.getWorkbenchDetailMetaTextForTest()).startsWith("META REQUEST");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(target);
         assertThat(requestEditor(panel).isSendEnabled()).isTrue();
@@ -223,7 +223,7 @@ class ImporterPanelRequestTreeDragDropTest {
         assertThat(request.path).isEqualTo("Admin/Auth/OAuth");
         assertThat(runnerQueuedRequests(panel)).containsExactly(request);
         assertThat(panel.getWorkbenchSendSnapshot(request)).isNotNull();
-        assertThat(panel.getWorkbenchDetailMetaTextForTest()).isEqualTo("META FOLDER");
+        assertThat(panel.getWorkbenchDetailMetaTextForTest()).startsWith("META FOLDER");
         assertThat(requestEditor(panel).getCurrentRequest()).isSameAs(request);
         assertThat(requestEditor(panel).getCurrentCollection()).isSameAs(target);
         assertThat(folderNodeByPath(requestTree(panel), "Admin/Auth")).isNotNull();

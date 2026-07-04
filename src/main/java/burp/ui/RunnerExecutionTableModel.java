@@ -139,7 +139,7 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
             detailEntry.requestName = result.requestName;
             detailEntry.requestId = result.requestId;
             detailEntry.collectionName = result.collectionName;
-            detailEntry.collectionId = result.collectionName;
+            detailEntry.collectionId = result.collectionId != null ? result.collectionId : detailEntry.collectionId;
             detailEntry.folderPath = result.folderPath;
             detailEntry.initialResolvedUrl = result.initialResolvedUrl != null ? result.initialResolvedUrl : result.requestUrl;
             detailEntry.finalResolvedUrl = result.finalResolvedUrl != null ? result.finalResolvedUrl : result.requestUrl;

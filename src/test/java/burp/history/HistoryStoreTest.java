@@ -95,8 +95,8 @@ class HistoryStoreTest {
         assertThat(store.snapshot().get(1).id).isEqualTo("replacement");
 
         store.setRetentionPolicy(new HistoryRetentionPolicy(0));
-        assertThat(store.getRetentionPolicy().maxEntries).isEqualTo(1);
-        assertThat(store.snapshot()).hasSize(1);
+        assertThat(store.getRetentionPolicy().maxEntries).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_ENTRIES);
+        assertThat(store.snapshot()).hasSize(2);
 
         List<HistoryEntry> normalized = HistoryStore.normalizeEntries(
                 new ArrayList<>(List.of(missingTimestamp, duplicate, older)),

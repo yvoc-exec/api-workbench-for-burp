@@ -3,6 +3,7 @@ package burp.utils;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.history.HistoryRetentionPolicy;
 import burp.testsupport.TestResourceLoader;
 import org.junit.jupiter.api.Test;
 
@@ -18,7 +19,7 @@ class WorkspaceCompatibilityFixtureTest {
     void currentWorkspaceFixtureRestoresCollectionsEnvironmentsHistoryAndUIState() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/workspace/current-workspace.json"));
 
-        assertThat(state.version).isEqualTo(1);
+        assertThat(state.version).isEqualTo(2);
         assertThat(state.activeEnvironmentId).isEqualTo("env-dev");
         assertThat(state.collections).hasSize(1);
         assertThat(state.collections.get(0).name).isEqualTo("APIM");
@@ -34,6 +35,9 @@ class WorkspaceCompatibilityFixtureTest {
         assertThat(state.environments.get(0).name).isEqualTo("Dev");
         assertThat(state.environments.get(0).oauth2.config).containsEntry("accessTokenUrl", "https://auth.example.test/token");
         assertThat(state.environments.get(0).oauth2.outputBindings).containsEntry("accessToken", "oauth2_access_token");
+        assertThat(state.historyRetentionPolicy).isNotNull();
+        assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
+        assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
         assertThat(state.historyEntries).hasSize(2);
         assertThat(state.diagnosticsCaptureEnabled).isTrue();
         assertThat(state.checkedRequestKeys).containsExactly("APIM\u001FAuth/OAuth\u001FLogin\u001FPOST\u001F1");
@@ -44,10 +48,12 @@ class WorkspaceCompatibilityFixtureTest {
     void legacyWorkspaceFixtureDefaultsMissingStateSafely() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/workspace/legacy-workspace.json"));
 
-        assertThat(state.version).isEqualTo(1);
+        assertThat(state.version).isEqualTo(2);
         assertThat(state.collections).hasSize(1);
         assertThat(state.environments).isEmpty();
         assertThat(state.activeEnvironmentId).isNull();
+        assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_ENTRIES);
+        assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_TOTAL_STORED_BYTES);
         assertThat(state.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
         assertThat(state.collections.get(0).requests.get(0).suppressedAutoHeaders).isEmpty();
     }

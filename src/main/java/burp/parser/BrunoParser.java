@@ -23,6 +23,7 @@ import java.util.zip.ZipInputStream;
  * Bruno stores each request as a separate .bru file in a folder structure.
  */
 public class BrunoParser implements CollectionParser {
+    private final ArchiveImportLimits archiveImportLimits;
     private static final Pattern BRUNO_STANDARD_METHOD_PATTERN = Pattern.compile(
             "^\\s*(get|post|put|delete|patch|head|options|trace|connect)\\s*(\\{|[^\\n]*$)",
             Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
@@ -37,6 +38,15 @@ public class BrunoParser implements CollectionParser {
             "none", "json", "text", "xml", "graphql", "form-urlencoded", "multipart-form");
     private static final Set<String> SUPPORTED_AUTH_SELECTORS = Set.of(
             "none", "noauth", "no_auth", "basic", "bearer", "apikey", "oauth2");
+
+    public BrunoParser() {
+        this(ArchiveImportLimits.defaultLimits());
+    }
+
+    public BrunoParser(ArchiveImportLimits archiveImportLimits) {
+        this.archiveImportLimits = ArchiveImportLimits.copyOf(archiveImportLimits);
+        this.archiveImportLimits.normalize();
+    }
 
     @Override
     public boolean canParse(File file) {
@@ -66,9 +76,9 @@ public class BrunoParser implements CollectionParser {
         collection.name = file.getName().replace(".bru", "");
         Path extractedZipRoot = null;
         try {
-            if (isBrunoZip(file)) {
-                extractedZipRoot = Files.createTempDirectory("bruno-import-");
-                extractBrunoZip(file.toPath(), extractedZipRoot);
+            if (isZipFile(file)) {
+                extractedZipRoot = createTemporaryExtractionDirectory();
+                SafeArchiveExtractor.extract(file.toPath(), extractedZipRoot, archiveImportLimits);
                 Path brunoRoot = determineBrunoRoot(extractedZipRoot);
                 if (brunoRoot == null) {
                     brunoRoot = extractedZipRoot;
@@ -119,57 +129,49 @@ public class BrunoParser implements CollectionParser {
         }
     }
 
-    private boolean isBrunoZip(File file) {
-        if (file == null || !file.isFile()) {
-            return false;
-        }
-        return file.getName().toLowerCase(Locale.ROOT).endsWith(".zip") && looksLikeBrunoZip(file);
-    }
-
     private boolean looksLikeBrunoZip(File file) {
         if (file == null || !file.isFile()) {
             return false;
         }
         try (ZipInputStream zin = new ZipInputStream(Files.newInputStream(file.toPath()))) {
             ZipEntry entry;
+            int inspected = 0;
             while ((entry = zin.getNextEntry()) != null) {
-                if (entry == null || entry.isDirectory()) {
-                    continue;
+                inspected++;
+                if (inspected > Math.max(1, archiveImportLimits.maxEntries)) {
+                    throw new ArchiveImportLimitException(
+                            ArchiveImportLimitException.Reason.ENTRY_COUNT,
+                            entry.getName(),
+                            inspected,
+                            archiveImportLimits.maxEntries
+                    );
                 }
-                String entryName = entry.getName() != null ? entry.getName().replace('\\', '/').toLowerCase(Locale.ROOT) : "";
+                String entryName;
+                try {
+                    entryName = SafeArchiveExtractor.normalizeEntryName(entry.getName()).toLowerCase(Locale.ROOT);
+                } catch (ArchiveImportLimitException e) {
+                    throw e;
+                }
                 if (entryName.endsWith(".bru") || entryName.endsWith("bruno.json")) {
                     return true;
                 }
             }
+        } catch (ArchiveImportLimitException e) {
+            return true;
         } catch (Exception ignored) {
             return false;
         }
         return false;
     }
 
-    private void extractBrunoZip(Path zipPath, Path targetDir) throws IOException {
-        if (zipPath == null || targetDir == null) {
-            return;
-        }
-        Files.createDirectories(targetDir);
-        try (ZipInputStream zin = new ZipInputStream(Files.newInputStream(zipPath))) {
-            ZipEntry entry;
-            while ((entry = zin.getNextEntry()) != null) {
-                Path out = targetDir.resolve(entry.getName()).normalize();
-                if (!out.startsWith(targetDir)) {
-                    continue;
-                }
-                if (entry.isDirectory()) {
-                    Files.createDirectories(out);
-                } else {
-                    Path parent = out.getParent();
-                    if (parent != null) {
-                        Files.createDirectories(parent);
-                    }
-                    Files.copy(zin, out, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
+    Path createTemporaryExtractionDirectory() throws IOException {
+        return Files.createTempDirectory("bruno-import-");
+    }
+
+    private boolean isZipFile(File file) {
+        return file != null
+                && file.isFile()
+                && file.getName().toLowerCase(Locale.ROOT).endsWith(".zip");
     }
 
     private Path determineBrunoRoot(Path extractedRoot) throws IOException {

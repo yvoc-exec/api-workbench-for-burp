@@ -34,11 +34,12 @@ class HistoryPanelTest {
         JSplitPane splitPane = (JSplitPane) panel.getComponent(1);
 
         assertThat(panel.getHistoryTable().getRowCount()).isZero();
-        assertThat(panel.getHistoryTable().getColumnCount()).isEqualTo(13);
+        assertThat(panel.getHistoryTable().getColumnCount()).isEqualTo(14);
         assertThat(panel.getHistoryTable().getTableHeader()).isNotNull();
-        assertThat(panel.getHistoryTable().getColumnName(0)).isEqualTo("Time");
-        assertThat(panel.getHistoryTable().getColumnName(7)).isEqualTo("URL Template");
-        assertThat(panel.getHistoryTable().getColumnName(12)).isEqualTo("Result");
+        assertThat(panel.getHistoryTable().getColumnName(0)).isEqualTo("Pin");
+        assertThat(panel.getHistoryTable().getColumnName(1)).isEqualTo("Time");
+        assertThat(panel.getHistoryTable().getColumnName(8)).isEqualTo("URL Template");
+        assertThat(panel.getHistoryTable().getColumnName(13)).isEqualTo("Result");
         assertThat(panel.getTableScrollPane().getMinimumSize().width).isGreaterThanOrEqualTo(460);
         assertThat(panel.getTableScrollPane().getMinimumSize().height).isGreaterThanOrEqualTo(220);
         assertThat(panel.getTableScrollPane().getPreferredSize().width).isGreaterThanOrEqualTo(820);
@@ -53,12 +54,19 @@ class HistoryPanelTest {
         assertThat(topPanel.getComponentCount()).isEqualTo(3);
         assertThat(topPanel.getComponent(1)).isInstanceOf(JLabel.class);
         assertThat(((JLabel) topPanel.getComponent(1)).getText())
-                .isEqualTo("History keeps the latest 1000 entries; older entries are automatically removed. Stored history may contain raw requests, responses, tokens, cookies, and other sensitive evidence.");
+                .contains("History retention:")
+                .contains("0/1000 entries")
+                .contains("request body limit")
+                .contains("response body limit")
+                .contains("truncated 0")
+                .contains("over budget: no");
+        assertThat(panel.getUsageLabel().getText()).contains("pinned 0");
         assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
         assertThat(panel.getFilterPanel().getMinimumSize().height).isLessThanOrEqualTo(72);
         assertThat(panel.getFilterPanel().getComponentCount()).isGreaterThan(0);
         assertThat(panel.getDetailPanel().isRequestNativeViewerAvailable()).isFalse();
         assertThat(panel.getDetailPanel().isResponseNativeViewerAvailable()).isFalse();
+        assertThat(panel.getDetailPanel().getTabbedPane().indexOfTab("Evidence")).isGreaterThanOrEqualTo(0);
     }
 
     @Test
@@ -89,6 +97,10 @@ class HistoryPanelTest {
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("Content-Type: application/json");
+        assertThat(panel.getActionsPanel().getPinButton().isEnabled()).isTrue();
+        assertThat(panel.getActionsPanel().getPinButton().getText()).isEqualTo("Pin");
+        assertThat(panel.getDetailPanel().getPinnedCheckBox().isSelected()).isFalse();
+        assertThat(panel.getDetailPanel().getSaveMetadataButton().isEnabled()).isTrue();
 
         panel.getActionsPanel().getLoadButton().doClick();
         panel.getActionsPanel().getReplayButton().doClick();
@@ -99,12 +111,23 @@ class HistoryPanelTest {
         assertThat(replay.get().id).isEqualTo("first");
         assertThat(repeater.get().id).isEqualTo("first");
 
+        panel.getDetailPanel().getPinnedCheckBox().setSelected(true);
+        panel.getDetailPanel().getAnalystNotesArea().setText("Reviewed");
+        panel.getDetailPanel().getTagsField().setText("Auth, auth, Evidence");
+        panel.getDetailPanel().getSaveMetadataButton().doClick();
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(store.getById("first").pinned).isTrue();
+        assertThat(store.getById("first").analystNotes).isEqualTo("Reviewed");
+        assertThat(store.getById("first").tags).containsExactly("Auth", "Evidence");
+        assertThat(panel.getActionsPanel().getPinButton().getText()).isEqualTo("Unpin");
+        assertThat(changeCount.get()).isGreaterThanOrEqualTo(1);
+
         HistoryFilterCriteria criteria = new HistoryFilterCriteria();
         criteria.source = HistorySource.RUNNER;
         panel.getFilterPanel().setCriteria(criteria);
         panel.refreshFromStore("second");
         assertThat(panel.getHistoryTable().getRowCount()).isEqualTo(1);
-        assertThat(panel.getHistoryTable().getValueAt(0, 5)).isEqualTo(HistoryTestFixtures.REQUEST_NAME);
+        assertThat(panel.getHistoryTable().getValueAt(0, 6)).isEqualTo(HistoryTestFixtures.REQUEST_NAME);
         panel.getHistoryTable().setRowSelectionInterval(0, 0);
 
         panel.deleteSelectedEntries();
@@ -159,6 +182,7 @@ class HistoryPanelTest {
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(entry.requestSnapshot.urlTemplate).isEqualTo("{{base_url}}/login");
         assertThat(entry.requestSnapshot.displayBodyText()).contains("{{password}}");
+        assertThat(panel.getDetailPanel().getEvidenceStatusLabel().getText()).contains("Selected entry");
         assertThat(store.snapshot()).hasSize(1);
 
         panel.getHistoryTable().clearSelection();

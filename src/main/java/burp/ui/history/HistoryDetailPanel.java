@@ -10,7 +10,11 @@ import burp.history.HistoryEntry;
 import burp.ui.SwingShortcutSupport;
 
 import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.*;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.function.Consumer;
 
 public class HistoryDetailPanel extends JPanel {
     private static final String NATIVE_CARD = "native";
@@ -23,16 +27,25 @@ public class HistoryDetailPanel extends JPanel {
     private final JTextArea assertionsArea = new JTextArea();
     private final JTextArea scriptArea = new JTextArea();
     private final JTextArea metadataArea = new JTextArea();
+    private final JCheckBox pinnedCheckBox = new JCheckBox("Pinned");
+    private final JTextArea analystNotesArea = new JTextArea();
+    private final JTextField tagsField = new JTextField();
+    private final JButton saveMetadataButton = new JButton("Save");
+    private final JLabel evidenceStatusLabel = new JLabel("Evidence can be edited and saved explicitly.");
     private final CardLayout requestCardLayout = new CardLayout();
     private final JPanel requestCardPanel = new JPanel(requestCardLayout);
     private final CardLayout responseCardLayout = new CardLayout();
     private final JPanel responseCardPanel = new JPanel(responseCardLayout);
+    private final JPanel evidencePanel = new JPanel(new BorderLayout(6, 6));
+    private final JScrollPane analystNotesScrollPane = new JScrollPane(analystNotesArea);
     private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
     private final boolean requestNativeViewerAvailable;
     private final boolean responseNativeViewerAvailable;
     private String requestNativeViewerReason;
     private String responseNativeViewerReason;
+    private Runnable metadataSaveAction;
+    private HistoryEntry currentEntry;
 
     public HistoryDetailPanel() {
         this(null);
@@ -73,12 +86,14 @@ public class HistoryDetailPanel extends JPanel {
         configureTextArea(assertionsArea);
         configureTextArea(scriptArea);
         configureTextArea(metadataArea);
+        configureEvidenceEditor();
         SwingShortcutSupport.installTextComponentShortcuts(requestArea);
         SwingShortcutSupport.installTextComponentShortcuts(responseArea);
         SwingShortcutSupport.installTextComponentShortcuts(variablesArea);
         SwingShortcutSupport.installTextComponentShortcuts(assertionsArea);
         SwingShortcutSupport.installTextComponentShortcuts(scriptArea);
         SwingShortcutSupport.installTextComponentShortcuts(metadataArea);
+        SwingShortcutSupport.installTextComponentShortcuts(analystNotesArea);
 
         tabs.addTab("Request", requestCardPanel);
         tabs.addTab("Response", responseCardPanel);
@@ -86,11 +101,17 @@ public class HistoryDetailPanel extends JPanel {
         tabs.addTab("Variables / Environment", createFallbackScrollPane(variablesArea));
         tabs.addTab("Script Output", createFallbackScrollPane(scriptArea));
         tabs.addTab("Assertions / Extractions", createFallbackScrollPane(assertionsArea));
+        tabs.addTab("Evidence", evidencePanel);
         add(tabs, BorderLayout.CENTER);
         clear();
     }
 
+    public void setMetadataSaveAction(Runnable metadataSaveAction) {
+        this.metadataSaveAction = metadataSaveAction;
+    }
+
     public void showEntry(HistoryEntry entry) {
+        currentEntry = entry;
         if (entry == null) {
             clear();
             return;
@@ -136,6 +157,15 @@ public class HistoryDetailPanel extends JPanel {
         assertionsArea.setCaretPosition(0);
         scriptArea.setCaretPosition(0);
         metadataArea.setCaretPosition(0);
+        pinnedCheckBox.setSelected(entry.pinned);
+        analystNotesArea.setText(entry.analystNotes != null ? entry.analystNotes : "");
+        analystNotesArea.setCaretPosition(0);
+        tagsField.setText(joinTags(entry.tags));
+        String metadataText = entry.toMetadataText();
+        evidenceStatusLabel.setText(metadataText != null && !metadataText.isBlank()
+                ? "Selected entry evidence and analyst metadata"
+                : "Evidence can be edited and saved explicitly.");
+        saveMetadataButton.setEnabled(true);
     }
 
     public void setRequestMessage(HttpRequest request) {
@@ -167,12 +197,18 @@ public class HistoryDetailPanel extends JPanel {
     }
 
     public void clear() {
+        currentEntry = null;
         requestArea.setText("");
         responseArea.setText("");
         variablesArea.setText("");
         assertionsArea.setText("");
         scriptArea.setText("");
         metadataArea.setText("");
+        pinnedCheckBox.setSelected(false);
+        analystNotesArea.setText("");
+        tagsField.setText("");
+        evidenceStatusLabel.setText("Evidence can be edited and saved explicitly.");
+        saveMetadataButton.setEnabled(false);
 
         if (requestEditor != null) {
             try {
@@ -225,6 +261,26 @@ public class HistoryDetailPanel extends JPanel {
         return metadataArea;
     }
 
+    public JCheckBox getPinnedCheckBox() {
+        return pinnedCheckBox;
+    }
+
+    public JTextArea getAnalystNotesArea() {
+        return analystNotesArea;
+    }
+
+    public JTextField getTagsField() {
+        return tagsField;
+    }
+
+    public JButton getSaveMetadataButton() {
+        return saveMetadataButton;
+    }
+
+    public JLabel getEvidenceStatusLabel() {
+        return evidenceStatusLabel;
+    }
+
     public JTabbedPane getTabbedPane() {
         return tabs;
     }
@@ -245,11 +301,88 @@ public class HistoryDetailPanel extends JPanel {
         return responseNativeViewerReason;
     }
 
+    public HistoryEntry getCurrentEntry() {
+        return currentEntry;
+    }
+
+    public String getTagsText() {
+        return tagsField.getText();
+    }
+
+    public String getAnalystNotesText() {
+        return analystNotesArea.getText();
+    }
+
     private static void configureTextArea(JTextArea area) {
         area.setEditable(false);
         area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         area.setLineWrap(false);
         area.setWrapStyleWord(false);
+    }
+
+    private void configureEvidenceEditor() {
+        evidencePanel.setBorder(new EmptyBorder(8, 8, 8, 8));
+        analystNotesArea.setEditable(true);
+        analystNotesArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        analystNotesArea.setLineWrap(true);
+        analystNotesArea.setWrapStyleWord(true);
+        analystNotesScrollPane.setPreferredSize(new Dimension(360, 180));
+        evidenceStatusLabel.setBorder(new EmptyBorder(0, 0, 4, 0));
+        tagsField.setToolTipText("Comma-separated analyst tags");
+        saveMetadataButton.addActionListener(e -> {
+            if (metadataSaveAction != null) {
+                metadataSaveAction.run();
+            }
+        });
+
+        JPanel form = new JPanel(new GridBagLayout());
+        form.setOpaque(false);
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 0, 4, 8);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 0;
+        gbc.gridy = 0;
+
+        gbc.gridx = 0;
+        form.add(new JLabel("Pinned:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(pinnedCheckBox, gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        form.add(new JLabel("Tags:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(tagsField, gbc);
+
+        gbc.gridy++;
+        gbc.gridx = 0;
+        gbc.weightx = 0;
+        gbc.anchor = GridBagConstraints.NORTHWEST;
+        form.add(new JLabel("Analyst Notes:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        gbc.weighty = 1;
+        gbc.fill = GridBagConstraints.BOTH;
+        form.add(analystNotesScrollPane, gbc);
+
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.setOpaque(false);
+        footer.add(evidenceStatusLabel, BorderLayout.CENTER);
+        footer.add(saveMetadataButton, BorderLayout.EAST);
+
+        evidencePanel.add(form, BorderLayout.CENTER);
+        evidencePanel.add(footer, BorderLayout.SOUTH);
+    }
+
+    private static String joinTags(java.util.Collection<String> tags) {
+        if (tags == null || tags.isEmpty()) {
+            return "";
+        }
+        return String.join(", ", new LinkedHashSet<>(tags));
     }
 
     private static JScrollPane createFallbackScrollPane(JTextArea area) {

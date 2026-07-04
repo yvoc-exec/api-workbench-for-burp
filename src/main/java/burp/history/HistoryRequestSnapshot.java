@@ -29,6 +29,17 @@ public class HistoryRequestSnapshot {
     public String rawRequestSentText;
     public String resolvedUrl;
     public Map<String, String> resolvedVariables = new LinkedHashMap<>();
+    public boolean bodyTruncated;
+    public long originalBodyLength;
+    public long storedBodyLength;
+    public String fullBodySha256;
+    public String truncationReason = "";
+    public boolean rawBodyTruncated;
+    public long originalRawBodyLength;
+    public long storedRawBodyLength;
+    public String fullRawBodySha256;
+    public String rawTruncationReason = "";
+    public String parseWarning = "";
 
     public static HistoryRequestSnapshot from(ApiRequest request) {
         HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
@@ -60,6 +71,19 @@ public class HistoryRequestSnapshot {
             }
         }
         snapshot.bodyAsAuthored = serializeBodyText(request).getBytes(StandardCharsets.UTF_8);
+        snapshot.originalBodyLength = snapshot.bodyAsAuthored.length;
+        snapshot.storedBodyLength = snapshot.bodyAsAuthored.length;
+        snapshot.fullBodySha256 = snapshot.bodyAsAuthored.length > 0
+                ? HistoryBodyTruncator.sha256Hex(snapshot.bodyAsAuthored)
+                : "";
+        snapshot.bodyTruncated = false;
+        snapshot.truncationReason = "";
+        snapshot.rawBodyTruncated = false;
+        snapshot.originalRawBodyLength = 0L;
+        snapshot.storedRawBodyLength = 0L;
+        snapshot.fullRawBodySha256 = "";
+        snapshot.rawTruncationReason = "";
+        snapshot.parseWarning = "";
         return snapshot;
     }
 
@@ -91,6 +115,17 @@ public class HistoryRequestSnapshot {
         copy.rawRequestSentText = source.rawRequestSentText;
         copy.resolvedUrl = source.resolvedUrl;
         copy.resolvedVariables = source.resolvedVariables != null ? new LinkedHashMap<>(source.resolvedVariables) : new LinkedHashMap<>();
+        copy.bodyTruncated = source.bodyTruncated;
+        copy.originalBodyLength = source.originalBodyLength;
+        copy.storedBodyLength = source.storedBodyLength;
+        copy.fullBodySha256 = source.fullBodySha256;
+        copy.truncationReason = source.truncationReason;
+        copy.rawBodyTruncated = source.rawBodyTruncated;
+        copy.originalRawBodyLength = source.originalRawBodyLength;
+        copy.storedRawBodyLength = source.storedRawBodyLength;
+        copy.fullRawBodySha256 = source.fullRawBodySha256;
+        copy.rawTruncationReason = source.rawTruncationReason;
+        copy.parseWarning = source.parseWarning;
         return copy;
     }
 
@@ -160,6 +195,24 @@ public class HistoryRequestSnapshot {
         return "";
     }
 
+    public String truncationSummary() {
+        StringBuilder sb = new StringBuilder();
+        if (bodyTruncated) {
+            appendEvidenceLine(sb, "Request body truncated", storedBodyLength, originalBodyLength, fullBodySha256);
+        } else if (originalBodyLength > 0 && fullBodySha256 != null && !fullBodySha256.isBlank()) {
+            appendEvidenceLine(sb, "Request body", storedBodyLength > 0 ? storedBodyLength : originalBodyLength, originalBodyLength, fullBodySha256);
+        }
+        if (rawBodyTruncated) {
+            appendEvidenceLine(sb, "Raw request body truncated", storedRawBodyLength, originalRawBodyLength, fullRawBodySha256);
+        } else if (originalRawBodyLength > 0 && fullRawBodySha256 != null && !fullRawBodySha256.isBlank()) {
+            appendEvidenceLine(sb, "Raw request body", storedRawBodyLength > 0 ? storedRawBodyLength : originalRawBodyLength, originalRawBodyLength, fullRawBodySha256);
+        }
+        if (parseWarning != null && !parseWarning.isBlank()) {
+            appendLine(sb, "Parse warning: " + parseWarning);
+        }
+        return sb.toString().trim();
+    }
+
     public String toCurlCommand() {
         ApiRequest request = toApiRequest();
         StringBuilder out = new StringBuilder();
@@ -205,6 +258,39 @@ public class HistoryRequestSnapshot {
         if (bodyAsAuthored != null) {
             size += bodyAsAuthored.length;
         }
+        if (rawRequestSent != null) {
+            size += rawRequestSent.length;
+        }
+        if (rawRequestSentText != null) {
+            size += rawRequestSentText.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (resolvedUrl != null) {
+            size += resolvedUrl.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (bodyMode != null) {
+            size += bodyMode.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (authType != null) {
+            size += authType.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (buildMode != null) {
+            size += buildMode.name().getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (fullBodySha256 != null) {
+            size += fullBodySha256.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (truncationReason != null) {
+            size += truncationReason.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (fullRawBodySha256 != null) {
+            size += fullRawBodySha256.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (rawTruncationReason != null) {
+            size += rawTruncationReason.getBytes(StandardCharsets.UTF_8).length;
+        }
+        if (parseWarning != null) {
+            size += parseWarning.getBytes(StandardCharsets.UTF_8).length;
+        }
         return size;
     }
 
@@ -236,7 +322,25 @@ public class HistoryRequestSnapshot {
         if (!bodyText.isBlank()) {
             sb.append('\n').append("Body as Authored:").append('\n').append(bodyText).append('\n');
         }
+        String evidence = truncationSummary();
+        if (!evidence.isBlank()) {
+            sb.append('\n').append(evidence).append('\n');
+        }
         return sb.toString().trim();
+    }
+
+    private static void appendEvidenceLine(StringBuilder sb, String label, long stored, long original, String hash) {
+        appendLine(sb, label + ": stored " + stored + " of " + original + " bytes; SHA-256=" + (hash != null ? hash : ""));
+    }
+
+    private static void appendLine(StringBuilder sb, String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append('\n');
+        }
+        sb.append(line);
     }
 
     private static String serializeBodyText(ApiRequest request) {

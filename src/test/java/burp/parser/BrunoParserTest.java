@@ -18,6 +18,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BrunoParserTest {
 
@@ -781,11 +782,10 @@ class BrunoParserTest {
                     """);
         }});
 
-        ApiCollection collection = new BrunoParser().parse(zip.toFile());
-
-        assertThat(collection.name).isEqualTo("Safe Bruno");
-        assertThat(collection.requests).hasSize(1);
-        assertThat(collection.requests.get(0).name).isEqualTo("Get Users");
+        assertThatThrownBy(() -> new BrunoParser().parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.UNSAFE_PATH));
     }
 
     private static Path createBrunoZip(String prefix, Map<String, String> entries) throws Exception {

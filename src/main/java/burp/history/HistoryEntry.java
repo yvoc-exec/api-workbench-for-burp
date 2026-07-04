@@ -10,9 +10,12 @@ import burp.models.RunnerCancellationState;
 import burp.models.RunnerResult;
 import burp.runner.FlowTargetResolutionForm;
 import burp.scripts.ScriptFlowControl;
+import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptLogEntry;
 import burp.scripts.ScriptVariableMutation;
 import burp.runner.RetryFailureType;
+import burp.parser.HistoryRawHttpMessageParser;
+import burp.parser.HistoryRawHttpMessageParser.ParsedRawHttpMessage;
 import burp.diagnostics.DiagnosticEvent;
 import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
@@ -31,6 +34,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.ToLongFunction;
 import java.util.UUID;
 
 public class HistoryEntry {
@@ -106,6 +110,9 @@ public class HistoryEntry {
     public String scriptOutputSummaryText;
     public String assertionsSummaryText;
     public String metadataSummaryText;
+    public boolean pinned;
+    public String analystNotes = "";
+    public LinkedHashSet<String> tags = new LinkedHashSet<>();
 
     public static HistoryEntry fromWorkbenchExecution(ApiCollection collection,
                                                       ApiRequest request,
@@ -258,6 +265,15 @@ public class HistoryEntry {
         entry.timestamp = Instant.now();
         entry.requestSnapshot = HistoryRequestSnapshot.from(request);
         if (result != null) {
+            if ((entry.collectionId == null || entry.collectionId.isBlank()) && result.collectionId != null) {
+                entry.collectionId = result.collectionId;
+            }
+            if ((entry.collectionName == null || entry.collectionName.isBlank()) && result.collectionName != null) {
+                entry.collectionName = result.collectionName;
+            }
+            if (entry.requestSnapshot != null && result.buildMode != null) {
+                entry.requestSnapshot.buildMode = result.buildMode;
+            }
             entry.statusCode = result.statusCode >= 0 ? result.statusCode : -1;
             entry.durationMillis = result.responseTimeMs;
             entry.requestSizeBytes = estimateRequestSize(result);
@@ -358,7 +374,7 @@ public class HistoryEntry {
         entry.timestamp = Instant.now();
         entry.requestName = parent != null ? parent.requestName : null;
         entry.requestId = parent != null ? parent.requestId : null;
-        entry.collectionId = parent != null ? parent.collectionName : null;
+        entry.collectionId = parent != null ? parent.collectionId : null;
         entry.collectionName = parent != null ? parent.collectionName : null;
         entry.folderPath = parent != null ? parent.folderPath : null;
         entry.statusCode = hop != null ? hop.statusCode : -1;
@@ -376,17 +392,30 @@ public class HistoryEntry {
         entry.redirectTerminationReason = parent != null ? parent.redirectTerminationReason : RedirectTerminationReason.NONE;
         entry.redirectHops = hop != null ? List.of(RedirectHop.copyOf(hop)) : new ArrayList<>();
         entry.requestSnapshot = new HistoryRequestSnapshot();
-        entry.requestSnapshot.method = hop != null ? hop.sourceMethod : null;
+        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(
+                hop != null ? hop.rawRequestBytes : null,
+                hop != null ? hop.rawRequestText : null
+        );
+        entry.requestSnapshot.method = parsed.method() != null && !parsed.method().isBlank()
+                ? parsed.method()
+                : (hop != null ? hop.sourceMethod : null);
         entry.requestSnapshot.urlTemplate = hop != null ? hop.sourceUrl : null;
         entry.requestSnapshot.resolvedUrl = hop != null ? hop.sourceUrl : null;
-        entry.requestSnapshot.rawRequestSent = hop != null && hop.rawRequestBytes != null ? hop.rawRequestBytes.clone() : null;
-        entry.requestSnapshot.rawRequestSentText = hop != null ? hop.rawRequestText : null;
+        entry.requestSnapshot.rawRequestSent = parsed.rawBytes();
+        entry.requestSnapshot.rawRequestSentText = parsed.rawText();
         entry.requestSnapshot.authoredRequest = null;
+        entry.requestSnapshot.bodyMode = "raw";
+        entry.requestSnapshot.bodyAsAuthored = parsed.bodyBytes();
+        entry.requestSnapshot.parseWarning = parsed.parseWarning();
         entry.requestSnapshot.resolvedVariables = new LinkedHashMap<>();
         entry.requestSnapshot.headersAsAuthored = new ArrayList<>();
-        if (hop != null && hop.rawRequestText != null) {
-            entry.requestSnapshot.bodyAsAuthored = hop.rawRequestText.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        for (HistoryHeader header : parsed.headers()) {
+            HistoryHeader headerCopy = HistoryHeader.copyOf(header);
+            if (headerCopy != null) {
+                entry.requestSnapshot.headersAsAuthored.add(headerCopy);
+            }
         }
+        entry.requestSnapshot.buildMode = parent != null ? parent.buildMode : null;
         entry.metadataSummaryText = buildRedirectHopMetadataText(hop);
         return entry;
     }
@@ -468,6 +497,9 @@ public class HistoryEntry {
         copy.scriptOutputSummaryText = source.scriptOutputSummaryText;
         copy.assertionsSummaryText = source.assertionsSummaryText;
         copy.metadataSummaryText = source.metadataSummaryText;
+        copy.pinned = source.pinned;
+        copy.analystNotes = source.analystNotes;
+        copy.tags = source.tags != null ? new LinkedHashSet<>(source.tags) : new LinkedHashSet<>();
         return copy;
     }
 
@@ -538,6 +570,15 @@ public class HistoryEntry {
         if (resultClassification == null && result != null) {
             resultClassification = result.displayName();
         }
+        if (analystNotes == null) {
+            analystNotes = "";
+        }
+        if (tags == null) {
+            tags = new LinkedHashSet<>();
+        } else {
+            tags = HistoryBodyTruncator.normalizeTags(tags);
+        }
+        HistoryBodyTruncator.normalizeSnapshotDefaults(this);
     }
 
     public String attemptDisplay() {
@@ -615,11 +656,160 @@ public class HistoryEntry {
         return formatBytes(bytes);
     }
 
+    public long estimatedStoredBytes() {
+        long size = 0L;
+
+        size = addUtf8(size, id);
+        size = addUtf8(size, timestamp != null ? timestamp.toString() : null);
+        size = addUtf8(size, source != null ? source.name() : null);
+        size = addUtf8(size, retryDecision);
+        size = addUtf8(size, retryReason);
+        size = addUtf8(size, retryFailureType);
+        size = addUtf8(size, parentRequestName);
+        size = addUtf8(size, parentRequestId);
+        size = addUtf8(size, targetResolutionForm);
+        size = addUtf8(size, qualifiedTargetPath);
+        size = addUtf8(size, cancellationState);
+        size = addUtf8(size, collectionId);
+        size = addUtf8(size, collectionName);
+        size = addUtf8(size, folderPath);
+        size = addUtf8(size, requestId);
+        size = addUtf8(size, requestName);
+        size = addUtf8(size, environmentId);
+        size = addUtf8(size, environmentName);
+        size = addUtf8(size, errorMessage);
+        size = addUtf8(size, preflightStatus);
+        size = addUtf8(size, preflightMessage);
+        size = addUtf8(size, originalResolvedUrl);
+        size = addUtf8(size, effectiveResolvedUrl);
+        size = addUtf8(size, finalResolvedUrl);
+        size = addUtf8(size, initialResolvedUrl);
+        size = addUtf8(size, host);
+        size = addUtf8(size, scriptMode);
+        size = addUtf8(size, scriptDialect);
+        size = addUtf8(size, resultClassification);
+        size = addUtf8(size, variablesSummaryText);
+        size = addUtf8(size, scriptOutputSummaryText);
+        size = addUtf8(size, assertionsSummaryText);
+        size = addUtf8(size, metadataSummaryText);
+        size = addUtf8(size, analystNotes);
+        size = addUtf8(size, scriptEngineName);
+        size = addUtf8(size, executionSource);
+        size = addUtf8(size, scriptFlowMessage);
+        size = addUtf8(size, scriptFlowNextRequestName);
+        size = addUtf8(size, scriptFlowNextRequestId);
+        size = addUtf8(size, result != null ? result.name() : null);
+        size = addUtf8(size, requestSnapshot != null ? requestSnapshot.truncationSummary() : null);
+        size = addUtf8(size, responseSnapshot != null ? responseSnapshot.truncationSummary() : null);
+
+        size = addBoolean(size, pinned);
+        size = addBoolean(size, requestMayHaveBeenProcessed);
+        size = addBoolean(size, dependentExecution);
+        size = addBoolean(size, adHocExecution);
+        size = addBoolean(size, requestSent);
+        size = addBoolean(size, responseTimedOut);
+        size = addBoolean(size, targetChanged);
+        size = addBoolean(size, oauth2Required);
+        size = addBoolean(size, oauth2Ready);
+        size = addBoolean(size, oauth2UsedStaleToken);
+        size = addBoolean(size, oauth2SentWithoutToken);
+        size = addBoolean(size, redirectsEnabled != null ? redirectsEnabled : false);
+
+        size = addLong(size, attemptNumber);
+        size = addLong(size, totalAttempts);
+        size = addLong(size, retryDelayMillis);
+        size = addLong(size, dependentDepth);
+        size = addLong(size, timeoutMillis);
+        size = addLong(size, statusCode);
+        size = addLong(size, durationMillis);
+        size = addLong(size, requestSizeBytes);
+        size = addLong(size, responseSizeBytes);
+
+        size = addCollectionStrings(size, unresolvedVariables);
+        size = addCollectionStrings(size, policyOverridesApplied);
+        size = addCollectionStrings(size, scriptWarnings);
+        size = addCollectionStrings(size, scriptErrors);
+        size = addCollectionStrings(size, tags);
+
+        size = addCollectionObjects(size, assertions, assertion -> {
+            long total = 0L;
+            total = addUtf8(total, assertion != null ? assertion.name : null);
+            total = addUtf8(total, assertion != null ? assertion.expected : null);
+            total = addUtf8(total, assertion != null ? assertion.actual : null);
+            total = addUtf8(total, assertion != null ? assertion.message : null);
+            total = addBoolean(total, assertion != null && assertion.passed);
+            return total;
+        });
+
+        size = addCollectionObjects(size, extractions, extraction -> {
+            long total = 0L;
+            total = addUtf8(total, extraction != null ? extraction.name : null);
+            total = addUtf8(total, extraction != null ? extraction.value : null);
+            total = addUtf8(total, extraction != null ? extraction.source : null);
+            total = addUtf8(total, extraction != null ? extraction.message : null);
+            return total;
+        });
+
+        size = addCollectionObjects(size, scriptLogs, log -> {
+            long total = 0L;
+            total = addUtf8(total, log != null ? log.level : null);
+            total = addUtf8(total, log != null ? log.message : null);
+            total = addUtf8(total, log != null ? log.scriptId : null);
+            total = addUtf8(total, log != null ? log.scriptName : null);
+            return total;
+        });
+
+        size = addCollectionObjects(size, scriptVariableMutations, mutation -> {
+            long total = 0L;
+            total = addUtf8(total, mutation != null ? mutation.key : null);
+            total = addUtf8(total, mutation != null ? mutation.oldValue : null);
+            total = addUtf8(total, mutation != null ? mutation.newValue : null);
+            total = addUtf8(total, mutation != null ? mutation.scope : null);
+            total = addUtf8(total, mutation != null ? mutation.scopePath : null);
+            total = addUtf8(total, mutation != null ? mutation.sourceScriptId : null);
+            total = addUtf8(total, mutation != null ? mutation.sourceScriptName : null);
+            total = addBoolean(total, mutation != null && mutation.persistent);
+            return total;
+        });
+
+        size = addCollectionObjects(size, redirectHops, hop -> {
+            long total = 0L;
+            total = addUtf8(total, hop != null ? hop.sourceUrl : null);
+            total = addUtf8(total, hop != null ? hop.sourceMethod : null);
+            total = addUtf8(total, hop != null ? hop.location : null);
+            total = addUtf8(total, hop != null ? hop.targetUrl : null);
+            total = addUtf8(total, hop != null ? hop.targetMethod : null);
+            total = addUtf8(total, hop != null ? hop.responseHeadersText : null);
+            total = addUtf8(total, hop != null ? hop.rawRequestText : null);
+            total = addUtf8(total, hop != null ? hop.failureReason : null);
+            total = addBytes(total, hop != null ? hop.rawRequestBytes : null);
+            total = addBytes(total, hop != null ? hop.responseBody : null);
+            total = addLong(total, hop != null ? hop.hopNumber : 0);
+            total = addLong(total, hop != null ? hop.statusCode : 0);
+            total = addLong(total, hop != null ? hop.elapsedMs : 0L);
+            total = addCollectionStrings(total, hop != null ? hop.forwardedSensitiveHeaderNames : null);
+            total = addCollectionStrings(total, hop != null ? hop.strippedSensitiveHeaderNames : null);
+            return total;
+        });
+
+        size = addRequestSnapshot(size, requestSnapshot);
+        size = addResponseSnapshot(size, responseSnapshot);
+
+        return Math.max(size, 0L);
+    }
+
     public String toMetadataText() {
-        if (metadataSummaryText != null && !metadataSummaryText.isBlank()) {
-            return metadataSummaryText.trim();
+        String base = metadataSummaryText != null && !metadataSummaryText.isBlank()
+                ? metadataSummaryText.trim()
+                : buildLegacyMetadataText(this);
+        String evidence = buildEvidenceMetadataText(this);
+        if (evidence.isBlank()) {
+            return base;
         }
-        return buildLegacyMetadataText(this);
+        if (base == null || base.isBlank()) {
+            return evidence.trim();
+        }
+        return (base + '\n' + evidence).trim();
     }
 
     private static String buildLegacyMetadataText(HistoryEntry entry) {
@@ -630,6 +820,7 @@ public class HistoryEntry {
         sb.append("History ID: ").append(entry.id != null ? entry.id : "").append('\n');
         sb.append("Created / Executed Timestamp: ").append(entry.timeDisplay()).append('\n');
         sb.append("Source: ").append(entry.source != null ? entry.source.displayName() : "").append('\n');
+        sb.append("Collection ID: ").append(entry.collectionId != null ? entry.collectionId : "").append('\n');
         sb.append("Collection: ").append(entry.collectionName != null ? entry.collectionName : "").append('\n');
         sb.append("Folder / Request Path: ").append(entry.folderPath != null ? entry.folderPath : "").append('\n');
         sb.append("Request Name: ").append(entry.requestName != null ? entry.requestName : "").append('\n');
@@ -685,6 +876,46 @@ public class HistoryEntry {
             }
         }
         return sb.toString().trim();
+    }
+
+    private static String buildEvidenceMetadataText(HistoryEntry entry) {
+        if (entry == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        appendEvidenceLine(sb, "Pinned", entry.pinned ? "Yes" : "No");
+        appendEvidenceLine(sb, "Analyst Notes", entry.analystNotes != null ? entry.analystNotes : "");
+        appendEvidenceLine(sb, "Tags", String.join(", ", entry.tags != null ? entry.tags : List.<String>of()));
+        if (entry.requestSnapshot != null) {
+            appendEvidenceBlock(sb, entry.requestSnapshot.truncationSummary());
+        }
+        if (entry.responseSnapshot != null) {
+            appendEvidenceBlock(sb, entry.responseSnapshot.truncationSummary());
+        }
+        return sb.toString().trim();
+    }
+
+    private static void appendEvidenceBlock(StringBuilder sb, String block) {
+        if (block == null || block.isBlank()) {
+            return;
+        }
+        for (String line : block.split("\n")) {
+            appendEvidenceLine(sb, line);
+        }
+    }
+
+    private static void appendEvidenceLine(StringBuilder sb, String label, String value) {
+        appendEvidenceLine(sb, label + ": " + (value != null ? value : ""));
+    }
+
+    private static void appendEvidenceLine(StringBuilder sb, String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append('\n');
+        }
+        sb.append(line);
     }
 
     private String displayValue(String value) {
@@ -1162,6 +1393,235 @@ public class HistoryEntry {
             }
         }
         return normalized;
+    }
+
+    private static long addRequestSnapshot(long size, HistoryRequestSnapshot snapshot) {
+        if (snapshot == null) {
+            return size;
+        }
+        size = addUtf8(size, snapshot.bodyMode);
+        size = addUtf8(size, snapshot.authType);
+        size = addUtf8(size, snapshot.fullBodySha256);
+        size = addUtf8(size, snapshot.truncationReason);
+        size = addUtf8(size, snapshot.fullRawBodySha256);
+        size = addUtf8(size, snapshot.rawTruncationReason);
+        size = addUtf8(size, snapshot.parseWarning);
+        size = addUtf8(size, snapshot.resolvedUrl);
+        size = addBytes(size, snapshot.bodyAsAuthored);
+        size = addBytes(size, snapshot.rawRequestSent);
+        size = addUtf8(size, snapshot.rawRequestSentText);
+        size = addLong(size, snapshot.originalBodyLength);
+        size = addLong(size, snapshot.storedBodyLength);
+        size = addLong(size, snapshot.originalRawBodyLength);
+        size = addLong(size, snapshot.storedRawBodyLength);
+        size = addLong(size, snapshot.bodyTruncated ? 1 : 0);
+        size = addLong(size, snapshot.rawBodyTruncated ? 1 : 0);
+        size = addCollectionMap(size, snapshot.requestVariablesAsAuthored);
+        size = addCollectionMap(size, snapshot.resolvedVariables);
+        size = addApiRequest(size, snapshot.authoredRequest);
+        return size;
+    }
+
+    private static long addResponseSnapshot(long size, HistoryResponseSnapshot snapshot) {
+        if (snapshot == null) {
+            return size;
+        }
+        size = addUtf8(size, snapshot.reasonPhrase);
+        size = addUtf8(size, snapshot.mimeType);
+        size = addUtf8(size, snapshot.fullBodySha256);
+        size = addUtf8(size, snapshot.truncationReason);
+        size = addBytes(size, snapshot.body);
+        size = addLong(size, snapshot.originalBodyLength);
+        size = addLong(size, snapshot.storedBodyLength);
+        size = addLong(size, snapshot.bodyTruncated ? 1 : 0);
+        size = addHeaders(size, snapshot.headers);
+        return size;
+    }
+
+    private static long addApiRequest(long size, ApiRequest request) {
+        if (request == null) {
+            return size;
+        }
+        size = addUtf8(size, request.id);
+        size = addUtf8(size, request.name);
+        size = addUtf8(size, request.path);
+        size = addUtf8(size, request.sourceCollection);
+        size = addUtf8(size, request.method);
+        size = addUtf8(size, request.url);
+        size = addUtf8(size, request.description);
+        size = addUtf8(size, request.authOverrideMode);
+        size = addUtf8(size, request.authSource);
+        size = addBoolean(size, request.editorMaterialized);
+        size = addUtf8(size, request.buildMode != null ? request.buildMode.name() : null);
+        size = addCollectionStrings(size, request.suppressedAutoHeaders != null ? request.suppressedAutoHeaders : List.of());
+        size = addCollectionObjects(size, request.headers, header -> {
+            long total = 0L;
+            total = addUtf8(total, header != null ? header.key : null);
+            total = addUtf8(total, header != null ? header.value : null);
+            total = addBoolean(total, header != null && header.disabled);
+            return total;
+        });
+        size = addApiRequestBody(size, request.body);
+        size = addCollectionObjects(size, request.variables, variable -> {
+            long total = 0L;
+            total = addUtf8(total, variable != null ? variable.key : null);
+            total = addUtf8(total, variable != null ? variable.value : null);
+            total = addUtf8(total, variable != null ? variable.type : null);
+            total = addBoolean(total, variable != null && variable.enabled);
+            return total;
+        });
+        size = addCollectionObjects(size, request.preRequestScripts, script -> {
+            long total = 0L;
+            total = addUtf8(total, script != null ? script.type : null);
+            total = addUtf8(total, script != null ? script.exec : null);
+            return total;
+        });
+        size = addCollectionObjects(size, request.postResponseScripts, script -> {
+            long total = 0L;
+            total = addUtf8(total, script != null ? script.type : null);
+            total = addUtf8(total, script != null ? script.exec : null);
+            return total;
+        });
+        size = addCollectionObjects(size, request.scriptBlocks, block -> {
+            long total = 0L;
+            total = addUtf8(total, block != null && block.id != null ? block.id : null);
+            total = addUtf8(total, block != null && block.dialect != null ? block.dialect.name() : null);
+            total = addUtf8(total, block != null && block.phase != null ? block.phase.name() : null);
+            total = addUtf8(total, block != null && block.scope != null ? block.scope.name() : null);
+            total = addUtf8(total, block != null ? block.source : null);
+            total = addUtf8(total, block != null ? block.sourceFormat : null);
+            total = addUtf8(total, block != null ? block.sourcePath : null);
+            total = addLong(total, block != null ? block.order : 0);
+            if (block != null && block.metadata != null) {
+                total = addCollectionMap(total, block.metadata);
+            }
+            total = addBoolean(total, block != null && block.enabled);
+            return total;
+        });
+        size = addApiAuth(size, request.auth);
+        size = addApiAuth(size, request.explicitAuth);
+        return size;
+    }
+
+    private static long addApiRequestBody(long size, ApiRequest.Body body) {
+        if (body == null) {
+            return size;
+        }
+        size = addUtf8(size, body.mode);
+        size = addUtf8(size, body.raw);
+        size = addUtf8(size, body.contentType);
+        if (body.graphql != null) {
+            size = addUtf8(size, body.graphql.query);
+            size = addUtf8(size, body.graphql.variables);
+        }
+        size = addCollectionObjects(size, body.urlencoded, field -> {
+            long total = 0L;
+            total = addUtf8(total, field != null ? field.key : null);
+            total = addUtf8(total, field != null ? field.value : null);
+            total = addUtf8(total, field != null ? field.type : null);
+            total = addUtf8(total, field != null ? field.filePath : null);
+            total = addBoolean(total, field != null && field.fileUpload);
+            total = addBoolean(total, field != null && field.disabled);
+            return total;
+        });
+        size = addCollectionObjects(size, body.formdata, field -> {
+            long total = 0L;
+            total = addUtf8(total, field != null ? field.key : null);
+            total = addUtf8(total, field != null ? field.value : null);
+            total = addUtf8(total, field != null ? field.type : null);
+            total = addUtf8(total, field != null ? field.filePath : null);
+            total = addBoolean(total, field != null && field.fileUpload);
+            total = addBoolean(total, field != null && field.disabled);
+            return total;
+        });
+        return size;
+    }
+
+    private static long addApiAuth(long size, ApiRequest.Auth auth) {
+        if (auth == null) {
+            return size;
+        }
+        size = addUtf8(size, auth.type);
+        size = addCollectionMap(size, auth.properties);
+        return size;
+    }
+
+    private static long addHeaders(long size, List<HistoryHeader> headers) {
+        if (headers == null) {
+            return size;
+        }
+        for (HistoryHeader header : headers) {
+            size = safeAdd(size, 16L);
+            size = addUtf8(size, header != null ? header.name : null);
+            size = addUtf8(size, header != null ? header.value : null);
+            size = addBoolean(size, header != null && header.disabled);
+        }
+        return size;
+    }
+
+    private static long addCollectionMap(long size, Map<String, String> values) {
+        if (values == null) {
+            return size;
+        }
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            size = safeAdd(size, 16L);
+            size = addUtf8(size, entry.getKey());
+            size = addUtf8(size, entry.getValue());
+        }
+        return size;
+    }
+
+    private static long addCollectionStrings(long size, Collection<String> values) {
+        if (values == null) {
+            return size;
+        }
+        for (String value : values) {
+            size = safeAdd(size, 12L);
+            size = addUtf8(size, value);
+        }
+        return size;
+    }
+
+    private static <T> long addCollectionObjects(long size, Collection<T> values, ToLongFunction<T> estimator) {
+        if (values == null || estimator == null) {
+            return size;
+        }
+        for (T value : values) {
+            size = safeAdd(size, 12L);
+            size = safeAdd(size, estimator.applyAsLong(value));
+        }
+        return size;
+    }
+
+    private static long addBytes(long size, byte[] bytes) {
+        return safeAdd(size, bytes != null ? bytes.length : 0L);
+    }
+
+    private static long addUtf8(long size, String value) {
+        return safeAdd(size, utf8Length(value));
+    }
+
+    private static long addLong(long size, long value) {
+        return safeAdd(size, 8L);
+    }
+
+    private static long addBoolean(long size, boolean value) {
+        return safeAdd(size, 1L);
+    }
+
+    private static long utf8Length(String value) {
+        return value != null ? value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length : 0L;
+    }
+
+    private static long safeAdd(long left, long right) {
+        if (right <= 0) {
+            return left;
+        }
+        if (left >= Long.MAX_VALUE - right) {
+            return Long.MAX_VALUE;
+        }
+        long total = left + right;
+        return total < 0 ? Long.MAX_VALUE : total;
     }
 
     private static String formatBytes(long bytes) {

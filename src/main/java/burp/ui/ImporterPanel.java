@@ -945,7 +945,11 @@ public class ImporterPanel {
         }
         if (entry.collectionName == null) {
             entry.collectionName = result.collectionName != null ? result.collectionName : (request != null ? request.sourceCollection : null);
-            entry.collectionId = entry.collectionName;
+        }
+        if (entry.collectionId == null) {
+            entry.collectionId = result.collectionId != null
+                    ? result.collectionId
+                    : (collection != null ? collection.ensureId() : null);
         }
         if (entry.folderPath == null) {
             entry.folderPath = resolveHistoryFolderPath(collection, request, entry);
