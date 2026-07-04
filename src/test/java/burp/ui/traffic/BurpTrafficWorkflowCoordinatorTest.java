@@ -22,8 +22,10 @@ import static org.mockito.Mockito.mock;
 
 class BurpTrafficWorkflowCoordinatorTest {
     @Test
-    void appliesExistingCollectionImportToDetachedWorkspaceAndQueuesEnabledRequests() {
+    void appliesExistingCollectionImportToDetachedWorkspaceAndAppendsEnabledRequestsToRunnerQueue() {
         WorkspaceState before = workspaceWithExistingCollection();
+        before.runnerQueuedRequestIdentityKeys.add("Existing Collection\u001Fid=existing-id");
+        before.runnerQueuedRequestIdentityKeys.add("Existing Collection\u001Fid=existing-id");
         ApiCollection selectedDestination = before.collections.get(0);
         ApiRequest imported = importedRequest("imported-id", "Imported Request");
         HistoryEntry history = importedHistory(imported);
@@ -43,7 +45,10 @@ class BurpTrafficWorkflowCoordinatorTest {
 
         assertThat(before.collections.get(0).requests).hasSize(1);
         assertThat(before.historyEntries).isEmpty();
-        assertThat(before.runnerQueuedRequestIdentityKeys).isEmpty();
+        assertThat(before.runnerQueuedRequestIdentityKeys)
+                .containsExactly(
+                        "Existing Collection\u001Fid=existing-id",
+                        "Existing Collection\u001Fid=existing-id");
 
         ApiCollection destination = after.collections.get(0);
         assertThat(destination.requests).hasSize(2);
@@ -58,7 +63,9 @@ class BurpTrafficWorkflowCoordinatorTest {
             assertThat(entry.requestId).isEqualTo("imported-id");
         });
         assertThat(after.runnerQueuedRequestIdentityKeys)
-                .containsExactly("Existing Collection\u001Fid=imported-id");
+                .containsExactly(
+                        "Existing Collection\u001Fid=existing-id",
+                        "Existing Collection\u001Fid=imported-id");
         assertThat(after.selectedRequestIdentityKey)
                 .isEqualTo("Existing Collection\u001Fid=imported-id");
         assertThat(after.selectedTabIndex).isEqualTo(3);
