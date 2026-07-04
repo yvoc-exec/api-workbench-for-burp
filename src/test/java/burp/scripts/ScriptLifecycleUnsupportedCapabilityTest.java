@@ -5,7 +5,6 @@ import burp.models.ApiRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -55,10 +54,10 @@ class ScriptLifecycleUnsupportedCapabilityTest {
             assertThat(issue.capabilityName()).isEqualTo("sendRequest");
             assertThat(issue.riskLevel()).isEqualTo(burp.scripts.capabilities.ScriptRiskLevel.CRITICAL);
         });
-        assertThat(result.errors).singleElement()
-                .asString()
-                .contains(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
-                .contains("sendRequest");
+        assertThat(result.errors).singleElement().satisfies(error ->
+                assertThat(error)
+                        .contains(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
+                        .contains("sendRequest"));
         assertThat(result.mutatedRequest.url).isEqualTo("https://example.test/original");
         verify(engine, never()).execute(anyString(), anyMap(), any(Runnable.class));
     }
