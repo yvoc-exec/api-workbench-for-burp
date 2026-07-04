@@ -379,7 +379,6 @@ public class HistoryEntry {
         entry.folderPath = parent != null ? parent.folderPath : null;
         entry.statusCode = hop != null ? hop.statusCode : -1;
         entry.durationMillis = hop != null ? hop.elapsedMs : 0L;
-        entry.requestSizeBytes = hop != null && hop.rawRequestBytes != null ? hop.rawRequestBytes.length : 0L;
         entry.responseSnapshot = responseSnapshotFromRedirectHop(hop);
         entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null ? entry.responseSnapshot.body.length : 0L;
         entry.errorMessage = hop != null ? hop.failureReason : null;
@@ -396,7 +395,8 @@ public class HistoryEntry {
                 hop != null ? hop.rawRequestBytes : null,
                 hop != null ? hop.rawRequestText : null
         );
-        entry.requestSnapshot.method = parsed.method() != null && !parsed.method().isBlank()
+        entry.requestSizeBytes = parsed.rawBytes().length;
+        entry.requestSnapshot.method = parsed.isTrustedRequest()
                 ? parsed.method()
                 : (hop != null ? hop.sourceMethod : null);
         entry.requestSnapshot.urlTemplate = hop != null ? hop.sourceUrl : null;
@@ -405,15 +405,24 @@ public class HistoryEntry {
         entry.requestSnapshot.rawRequestSentText = parsed.rawText();
         entry.requestSnapshot.authoredRequest = null;
         entry.requestSnapshot.bodyMode = "raw";
-        entry.requestSnapshot.bodyAsAuthored = parsed.bodyBytes();
+        entry.requestSnapshot.bodyAsAuthored = parsed.isTrustedRequest() ? parsed.bodyBytes() : new byte[0];
         entry.requestSnapshot.parseWarning = parsed.parseWarning();
         entry.requestSnapshot.resolvedVariables = new LinkedHashMap<>();
         entry.requestSnapshot.headersAsAuthored = new ArrayList<>();
-        for (HistoryHeader header : parsed.headers()) {
-            HistoryHeader headerCopy = HistoryHeader.copyOf(header);
-            if (headerCopy != null) {
-                entry.requestSnapshot.headersAsAuthored.add(headerCopy);
+        if (parsed.isTrustedRequest()) {
+            for (HistoryHeader header : parsed.headers()) {
+                HistoryHeader headerCopy = HistoryHeader.copyOf(header);
+                if (headerCopy != null) {
+                    entry.requestSnapshot.headersAsAuthored.add(headerCopy);
+                }
             }
+        }
+        if (hop != null) {
+            entry.requestSnapshot.rawBodyTruncated = hop.rawRequestBodyTruncated;
+            entry.requestSnapshot.originalRawBodyLength = hop.originalRawRequestBodyLength;
+            entry.requestSnapshot.storedRawBodyLength = hop.storedRawRequestBodyLength;
+            entry.requestSnapshot.fullRawBodySha256 = hop.fullRawRequestBodySha256;
+            entry.requestSnapshot.rawTruncationReason = hop.rawRequestTruncationReason;
         }
         entry.requestSnapshot.buildMode = parent != null ? parent.buildMode : null;
         entry.metadataSummaryText = buildRedirectHopMetadataText(hop);
@@ -781,12 +790,22 @@ public class HistoryEntry {
             total = addUtf8(total, hop != null ? hop.targetMethod : null);
             total = addUtf8(total, hop != null ? hop.responseHeadersText : null);
             total = addUtf8(total, hop != null ? hop.rawRequestText : null);
+            total = addUtf8(total, hop != null ? hop.fullRawRequestBodySha256 : null);
+            total = addUtf8(total, hop != null ? hop.rawRequestTruncationReason : null);
+            total = addUtf8(total, hop != null ? hop.fullResponseBodySha256 : null);
+            total = addUtf8(total, hop != null ? hop.responseTruncationReason : null);
             total = addUtf8(total, hop != null ? hop.failureReason : null);
             total = addBytes(total, hop != null ? hop.rawRequestBytes : null);
             total = addBytes(total, hop != null ? hop.responseBody : null);
             total = addLong(total, hop != null ? hop.hopNumber : 0);
             total = addLong(total, hop != null ? hop.statusCode : 0);
             total = addLong(total, hop != null ? hop.elapsedMs : 0L);
+            total = addBoolean(total, hop != null && hop.rawRequestBodyTruncated);
+            total = addBoolean(total, hop != null && hop.responseBodyTruncated);
+            total = addLong(total, hop != null ? hop.originalRawRequestBodyLength : 0L);
+            total = addLong(total, hop != null ? hop.storedRawRequestBodyLength : 0L);
+            total = addLong(total, hop != null ? hop.originalResponseBodyLength : 0L);
+            total = addLong(total, hop != null ? hop.storedResponseBodyLength : 0L);
             total = addCollectionStrings(total, hop != null ? hop.forwardedSensitiveHeaderNames : null);
             total = addCollectionStrings(total, hop != null ? hop.strippedSensitiveHeaderNames : null);
             return total;
@@ -962,6 +981,15 @@ public class HistoryEntry {
         snapshot.headers = parseHeaders(hop.responseHeadersText);
         snapshot.body = hop.responseBody != null ? hop.responseBody.clone() : null;
         snapshot.mimeType = findContentType(snapshot.headers);
+        snapshot.bodyTruncated = hop.responseBodyTruncated;
+        snapshot.originalBodyLength = hop.originalResponseBodyLength > 0
+                ? hop.originalResponseBodyLength
+                : snapshot.body != null ? snapshot.body.length : 0L;
+        snapshot.storedBodyLength = hop.storedResponseBodyLength > 0
+                ? hop.storedResponseBodyLength
+                : snapshot.body != null ? snapshot.body.length : 0L;
+        snapshot.fullBodySha256 = hop.fullResponseBodySha256 != null ? hop.fullResponseBodySha256 : "";
+        snapshot.truncationReason = hop.responseTruncationReason != null ? hop.responseTruncationReason : "";
         return snapshot;
     }
 

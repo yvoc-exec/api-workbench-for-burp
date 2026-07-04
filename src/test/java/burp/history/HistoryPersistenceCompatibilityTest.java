@@ -20,6 +20,7 @@ class HistoryPersistenceCompatibilityTest {
     void oldHistoryJsonRestoresDefaults() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/legacy-history.json"));
 
+        assertThat(state.version).isEqualTo(2);
         assertThat(state.historyRetentionPolicy).isNotNull();
         assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
         assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
@@ -64,6 +65,7 @@ class HistoryPersistenceCompatibilityTest {
     void futureFieldsAndMissingCollectionsOrListsLoadWithoutThrowing() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/future-history.json"));
 
+        assertThat(state.version).isGreaterThanOrEqualTo(2);
         assertThat(state.historyEntries).hasSize(1);
         HistoryEntry entry = state.historyEntries.get(0);
         assertThat(entry.result).isEqualTo(HistoryResult.UNKNOWN);
@@ -152,6 +154,7 @@ class HistoryPersistenceCompatibilityTest {
         followed.location = "/next";
         followed.followed = true;
         followed.rawRequestBytes = "GET /next HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        followed.rawRequestText = new String(followed.rawRequestBytes, StandardCharsets.UTF_8);
         followed.responseBody = "{\"step\":1}".getBytes(StandardCharsets.UTF_8);
         followed.forwardedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Authorization"));
         followed.strippedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Proxy-Authorization"));
@@ -164,10 +167,12 @@ class HistoryPersistenceCompatibilityTest {
         blocked.followed = false;
         blocked.failureReason = "Redirects disabled";
         blocked.rawRequestBytes = "POST /final HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        blocked.rawRequestText = new String(blocked.rawRequestBytes, StandardCharsets.UTF_8);
         blocked.responseBody = "{\"step\":2}".getBytes(StandardCharsets.UTF_8);
         blocked.forwardedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Cookie"));
         blocked.strippedSensitiveHeaderNames = new java.util.ArrayList<>(List.of("Proxy-Authorization"));
         entry.redirectHops = new java.util.ArrayList<>(List.of(followed, blocked));
+        HistoryBodyTruncator.apply(entry, new HistoryRetentionPolicy(100, 10_000L, 4L, 5L, true));
 
         HistoryPersistenceService service = new HistoryPersistenceService();
         WorkspaceState state = new WorkspaceState();
@@ -188,12 +193,19 @@ class HistoryPersistenceCompatibilityTest {
         assertThat(reloaded.redirectHops.get(1).followed).isFalse();
         assertThat(reloaded.redirectHops.get(0).rawRequestBytes).isEqualTo(followed.rawRequestBytes);
         assertThat(reloaded.redirectHops.get(1).rawRequestBytes).isEqualTo(blocked.rawRequestBytes);
+        assertThat(reloaded.redirectHops.get(0).rawRequestBodyTruncated).isFalse();
+        assertThat(reloaded.redirectHops.get(0).originalRawRequestBodyLength).isZero();
+        assertThat(reloaded.redirectHops.get(0).storedRawRequestBodyLength).isZero();
+        assertThat(reloaded.redirectHops.get(0).responseBodyTruncated).isTrue();
+        assertThat(reloaded.redirectHops.get(0).storedResponseBodyLength).isEqualTo(5L);
+        assertThat(reloaded.redirectHops.get(0).fullResponseBodySha256).isEqualTo(entry.redirectHops.get(0).fullResponseBodySha256);
         assertThat(reloaded.requestSnapshot.rawRequestSent).isEqualTo(entry.requestSnapshot.rawRequestSent);
         assertThat(reloaded.responseSnapshot.body).isEqualTo(entry.responseSnapshot.body);
         assertThat(reloaded.redirectHops.get(0).forwardedSensitiveHeaderNames).containsExactly("Authorization");
         assertThat(reloaded.redirectHops.get(0).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
         assertThat(reloaded.redirectHops.get(1).forwardedSensitiveHeaderNames).containsExactly("Cookie");
         assertThat(reloaded.redirectHops.get(1).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
+        assertThat(restored.version).isEqualTo(2);
     }
 
     @Test

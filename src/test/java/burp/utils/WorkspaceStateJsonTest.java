@@ -35,6 +35,86 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WorkspaceStateJsonTest {
 
     @Test
+    void newWorkspaceSerializesCurrentVersion() {
+        WorkspaceState state = new WorkspaceState();
+
+        String json = WorkspaceStateJson.toJson(state);
+
+        assertThat(JsonParser.parseString(json).getAsJsonObject().get("version").getAsInt())
+                .isEqualTo(WorkspaceState.CURRENT_VERSION);
+    }
+
+    @Test
+    void versionOneWorkspaceIsUpgradedOnSave() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 1;
+
+        String json = WorkspaceStateJson.toJson(state);
+
+        assertThat(JsonParser.parseString(json).getAsJsonObject().get("version").getAsInt())
+                .isEqualTo(WorkspaceState.CURRENT_VERSION);
+    }
+
+    @Test
+    void versionOneWorkspaceIsUpgradedOnLoad() {
+        WorkspaceState parsed = WorkspaceStateJson.fromJson("""
+                {
+                  "version": 1,
+                  "collections": []
+                }
+                """);
+
+        assertThat(parsed.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
+    }
+
+    @Test
+    void futureWorkspaceVersionIsPreserved() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 7;
+
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
+
+        assertThat(JsonParser.parseString(json).getAsJsonObject().get("version").getAsInt()).isEqualTo(7);
+        assertThat(parsed.version).isEqualTo(7);
+    }
+
+    @Test
+    void serializationDoesNotMutateCallerVersion() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 1;
+
+        WorkspaceStateJson.toJson(state);
+
+        assertThat(state.version).isEqualTo(1);
+    }
+
+    @Test
+    void versionTwoHistoryPolicyAndMetadataRoundTrip() {
+        WorkspaceState state = new WorkspaceState();
+        state.version = 2;
+        state.historyRetentionPolicy = new HistoryRetentionPolicy(9, 12_345L, 67L, 89L, true);
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "version-two-history", Instant.parse("2026-06-15T01:49:00Z"));
+        entry.pinned = true;
+        entry.analystNotes = "Reviewed";
+        entry.tags = new LinkedHashSet<>(List.of("Auth", "Evidence"));
+        state.historyEntries.add(entry);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.version).isEqualTo(2);
+        assertThat(parsed.historyRetentionPolicy.maxEntries).isEqualTo(9);
+        assertThat(parsed.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(12_345L);
+        assertThat(parsed.historyRetentionPolicy.maxRequestBodyBytesPerEntry).isEqualTo(67L);
+        assertThat(parsed.historyRetentionPolicy.maxResponseBodyBytesPerEntry).isEqualTo(89L);
+        assertThat(parsed.historyEntries).hasSize(1);
+        assertThat(parsed.historyEntries.get(0).pinned).isTrue();
+        assertThat(parsed.historyEntries.get(0).analystNotes).isEqualTo("Reviewed");
+        assertThat(parsed.historyEntries.get(0).tags).containsExactly("Auth", "Evidence");
+    }
+
+    @Test
     void environmentProfilesPersistAndRestore() {
         WorkspaceState state = new WorkspaceState();
         EnvironmentProfile profile = new EnvironmentProfile();

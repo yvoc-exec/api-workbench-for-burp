@@ -1,6 +1,9 @@
 package burp.history;
 
 import burp.models.ApiRequest;
+import burp.models.RedirectHop;
+import burp.models.WorkspaceState;
+import burp.utils.WorkspaceStateJson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
@@ -146,6 +149,125 @@ class HistoryBodyTruncationTest {
         assertThat(entry.responseSnapshot.storedBodyLength).isEqualTo(8);
     }
 
+    @Test
+    void redirectHopRequestAndResponseBodiesAreTruncated() {
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-truncate", "ok", "ok", null);
+        entry.redirectHops.add(redirectHop("abcdefghij", "uvwxyz1234"));
+
+        HistoryBodyTruncator.apply(entry, policy(4, 10_000, 5));
+
+        RedirectHop hop = entry.redirectHops.get(0);
+        assertThat(hop.rawRequestBodyTruncated).isTrue();
+        assertThat(hop.originalRawRequestBodyLength).isEqualTo(10L);
+        assertThat(hop.storedRawRequestBodyLength).isEqualTo(4L);
+        assertThat(hop.rawRequestText).contains("POST /redirect-hop HTTP/1.1");
+        assertThat(hop.rawRequestText).doesNotContain("efghij");
+        assertThat(hop.responseBodyTruncated).isTrue();
+        assertThat(hop.originalResponseBodyLength).isEqualTo(10L);
+        assertThat(hop.storedResponseBodyLength).isEqualTo(5L);
+        assertThat(new String(hop.responseBody, StandardCharsets.UTF_8)).isEqualTo("uvwxy");
+    }
+
+    @Test
+    void redirectHopHashesMatchCompleteOriginalBodies() {
+        String requestBody = "abcdefghij";
+        String responseBody = "uvwxyz1234";
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-hash", "ok", "ok", null);
+        entry.redirectHops.add(redirectHop(requestBody, responseBody));
+
+        HistoryBodyTruncator.apply(entry, policy(4, 10_000, 5));
+
+        RedirectHop hop = entry.redirectHops.get(0);
+        assertThat(hop.fullRawRequestBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(requestBody.getBytes(StandardCharsets.UTF_8)));
+        assertThat(hop.fullResponseBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(responseBody.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void redirectHopRepeatedTruncationPreservesOriginalEvidenceMetadata() {
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-repeat", "ok", "ok", null);
+        entry.redirectHops.add(redirectHop("abcdefghij", "uvwxyz1234"));
+
+        HistoryBodyTruncator.apply(entry, policy(8, 10_000, 8));
+        RedirectHop once = RedirectHop.copyOf(entry.redirectHops.get(0));
+
+        HistoryBodyTruncator.apply(entry, policy(4, 10_000, 5));
+        RedirectHop twice = entry.redirectHops.get(0);
+
+        assertThat(twice.fullRawRequestBodySha256).isEqualTo(once.fullRawRequestBodySha256);
+        assertThat(twice.originalRawRequestBodyLength).isEqualTo(10L);
+        assertThat(twice.storedRawRequestBodyLength).isEqualTo(4L);
+        assertThat(twice.fullResponseBodySha256).isEqualTo(once.fullResponseBodySha256);
+        assertThat(twice.originalResponseBodyLength).isEqualTo(10L);
+        assertThat(twice.storedResponseBodyLength).isEqualTo(5L);
+    }
+
+    @Test
+    void redirectHopFullPayloadSuffixAbsentFromHistoryJson() {
+        String requestSuffix = "REQ-SUFFIX-FULL";
+        String responseSuffix = "RESP-SUFFIX-FULL";
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-json", "ok", "ok", null);
+        entry.redirectHops.add(redirectHop("prefix-" + requestSuffix, "prefix-" + responseSuffix));
+
+        HistoryBodyTruncator.apply(entry, policy(6, 10_000, 6));
+
+        RedirectHop hop = entry.redirectHops.get(0);
+        String json = new HistoryJsonExportService().export(List.of(entry));
+        assertThat(hop.rawRequestText).doesNotContain(requestSuffix);
+        assertThat(new String(hop.rawRequestBytes, StandardCharsets.UTF_8)).doesNotContain(requestSuffix);
+        assertThat(new String(hop.responseBody, StandardCharsets.UTF_8)).doesNotContain(responseSuffix);
+        assertThat(json).doesNotContain(requestSuffix);
+        assertThat(json).doesNotContain(responseSuffix);
+        assertThat(hop.fullRawRequestBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(("prefix-" + requestSuffix).getBytes(StandardCharsets.UTF_8)));
+        assertThat(hop.fullResponseBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(("prefix-" + responseSuffix).getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void redirectHopFullPayloadSuffixAbsentFromWorkspaceJson() {
+        String requestSuffix = "WORKSPACE-REQ-SUFFIX";
+        String responseSuffix = "WORKSPACE-RESP-SUFFIX";
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-workspace", "ok", "ok", null);
+        entry.redirectHops.add(redirectHop("prefix-" + requestSuffix, "prefix-" + responseSuffix));
+
+        HistoryBodyTruncator.apply(entry, policy(6, 10_000, 6));
+
+        WorkspaceState state = new WorkspaceState();
+        state.historyEntries.add(entry);
+        String json = WorkspaceStateJson.toJson(state);
+
+        assertThat(json).doesNotContain(requestSuffix);
+        assertThat(json).doesNotContain(responseSuffix);
+        assertThat(WorkspaceStateJson.fromJson(json).historyEntries.get(0).redirectHops.get(0).fullRawRequestBodySha256)
+                .isEqualTo(entry.redirectHops.get(0).fullRawRequestBodySha256);
+    }
+
+    @Test
+    void malformedRedirectRawEvidenceIsBounded() {
+        HistoryEntry entry = entryWithRequestAndResponse("redirect-hop-malformed", "ok", "ok", null);
+        RedirectHop hop = new RedirectHop();
+        hop.hopNumber = 1;
+        hop.sourceUrl = "https://api.example.test/malformed";
+        hop.sourceMethod = "POST";
+        hop.rawRequestBytes = "BROKEN-RAW-EVIDENCE-SUFFIX".getBytes(StandardCharsets.UTF_8);
+        hop.rawRequestText = "BROKEN-RAW-EVIDENCE-SUFFIX";
+        hop.responseBody = "response".getBytes(StandardCharsets.UTF_8);
+        entry.redirectHops.add(hop);
+
+        HistoryBodyTruncator.apply(entry, policy(8, 10_000, 8));
+
+        RedirectHop stored = entry.redirectHops.get(0);
+        assertThat(stored.rawRequestBodyTruncated).isTrue();
+        assertThat(stored.rawRequestTruncationReason).isEqualTo(HistoryBodyTruncator.RAW_REQUEST_EVIDENCE_LIMIT_REASON);
+        assertThat(stored.originalRawRequestBodyLength)
+                .isEqualTo("BROKEN-RAW-EVIDENCE-SUFFIX".getBytes(StandardCharsets.UTF_8).length);
+        assertThat(stored.storedRawRequestBodyLength).isEqualTo(8L);
+        assertThat(stored.rawRequestText).doesNotContain("EVIDENCE-SUFFIX");
+        assertThat(stored.rawRequestText).isEqualTo(new String(stored.rawRequestBytes, StandardCharsets.UTF_8));
+    }
+
     private static HistoryRetentionPolicy policy(long requestLimit, long totalLimit, long responseLimit) {
         return new HistoryRetentionPolicy(100, totalLimit, requestLimit, responseLimit, true);
     }
@@ -199,5 +321,24 @@ class HistoryBodyTruncationTest {
             entry.requestSnapshot.rawRequestSentText = new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8);
         }
         return entry;
+    }
+
+    private static RedirectHop redirectHop(String requestBody, String responseBody) {
+        RedirectHop hop = new RedirectHop();
+        hop.hopNumber = 1;
+        hop.sourceUrl = "https://api.example.test/redirect-hop";
+        hop.sourceMethod = "POST";
+        hop.statusCode = 302;
+        hop.location = "https://api.example.test/next";
+        hop.targetUrl = "https://api.example.test/next";
+        hop.targetMethod = "POST";
+        hop.elapsedMs = 12L;
+        hop.rawRequestBytes = ("POST /redirect-hop HTTP/1.1\r\nHost: api.example.test\r\nContent-Type: text/plain\r\n\r\n" + requestBody)
+                .getBytes(StandardCharsets.UTF_8);
+        hop.rawRequestText = new String(hop.rawRequestBytes, StandardCharsets.UTF_8);
+        hop.responseHeadersText = "HTTP/1.1 302 Found\r\nContent-Type: text/plain\r\nLocation: https://api.example.test/next";
+        hop.responseBody = responseBody.getBytes(StandardCharsets.UTF_8);
+        hop.followed = true;
+        return hop;
     }
 }
