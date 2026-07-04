@@ -1,6 +1,7 @@
 package burp.scripts;
 
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.capabilities.ScriptCapabilityAnalyzer;
 import burp.scripts.capabilities.ScriptCapabilityFinding;
 import burp.scripts.capabilities.ScriptCapabilityReport;
@@ -68,10 +69,7 @@ public class ScriptLifecycleExecutor {
                         UNSUPPORTED_SCRIPT_CAPABILITY + ": " + capabilityReport.unsupportedSummary(),
                         block.id,
                         block.sourceFormat);
-                if (context.scriptErrorsStopExecution) {
-                    break;
-                }
-                continue;
+                break;
             }
 
             VariableScopeStore.Snapshot blockCheckpoint = context.variableStore.checkpoint();
@@ -84,7 +82,7 @@ public class ScriptLifecycleExecutor {
                     context.variableStore.refreshRequestState();
                 });
             } catch (GraalJsSandboxEngine.ScriptTimedOutException t) {
-                context.restoreRequest(phaseRequestSnapshot);
+                restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);
                 result.timedOut = true;
@@ -93,7 +91,7 @@ public class ScriptLifecycleExecutor {
                 context.error(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (GraalJsSandboxEngine.ScriptCancelledException t) {
-                context.restoreRequest(phaseRequestSnapshot);
+                restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);
                 result.cancelled = true;
@@ -101,7 +99,7 @@ public class ScriptLifecycleExecutor {
                 context.warn(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (Throwable t) {
-                context.restoreRequest(blockRequestSnapshot);
+                restoreRequest(context, blockRequestSnapshot);
                 context.variableStore.restore(blockCheckpoint);
                 trimMutations(result, mutationCountBeforeBlock);
                 String message = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
@@ -121,6 +119,14 @@ public class ScriptLifecycleExecutor {
         result.effectiveVariables.clear();
         result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
         return result;
+    }
+
+    private void restoreRequest(ScriptExecutionContext context, ApiRequest snapshot) {
+        context.restoreRequest(snapshot);
+        if (context.request != null) {
+            context.request.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(
+                    snapshot != null ? snapshot.exactHttpRequest : null);
+        }
     }
 
     private String scriptLabel(ScriptBlock block) {
