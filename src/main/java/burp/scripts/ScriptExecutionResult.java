@@ -18,6 +18,7 @@ public class ScriptExecutionResult {
     public final List<ScriptAssertionResult> assertions = new ArrayList<>();
     public final List<ScriptVariableMutation> variableMutations = new ArrayList<>();
     public final List<ScriptDependentRequestResult> dependentRequestResults = new ArrayList<>();
+    public final List<ScriptUnsupportedCapability> unsupportedCapabilities = new ArrayList<>();
     public final List<String> warnings = new ArrayList<>();
     public final List<String> errors = new ArrayList<>();
     public final Map<String, String> effectiveVariables = new LinkedHashMap<>();
@@ -29,5 +30,9 @@ public class ScriptExecutionResult {
 
     public boolean hasScriptErrors() {
         return !errors.isEmpty();
+    }
+
+    public boolean hasUnsupportedCapabilities() {
+        return !unsupportedCapabilities.isEmpty();
     }
 }
