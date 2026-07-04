@@ -1005,9 +1005,11 @@ public class CollectionRunner {
         if (source != null) {
             snapshot.requestName = source.requestName;
             snapshot.requestId = source.requestId;
+            snapshot.collectionId = source.collectionId;
             snapshot.collectionName = source.collectionName;
             snapshot.folderPath = source.folderPath;
             snapshot.method = source.method;
+            snapshot.buildMode = source.buildMode;
             snapshot.host = source.host;
             snapshot.path = source.path;
             snapshot.requestUrl = source.requestUrl;
@@ -1030,7 +1032,10 @@ public class CollectionRunner {
         } else if (req != null) {
             snapshot.requestName = req.name;
             snapshot.requestId = req.id;
+            snapshot.collectionId = col != null ? col.ensureId() : null;
+            snapshot.collectionName = col != null ? col.name : null;
             snapshot.method = req.method != null ? req.method.toUpperCase() : "GET";
+            snapshot.buildMode = req.resolveBuildMode();
             snapshot.requestUrl = req.url;
             snapshot.initialResolvedUrl = req.url;
             snapshot.finalResolvedUrl = req.url;
@@ -1038,6 +1043,9 @@ public class CollectionRunner {
         }
         if (col != null && snapshot.collectionName == null) {
             snapshot.collectionName = col.name;
+        }
+        if (col != null && snapshot.collectionId == null) {
+            snapshot.collectionId = col.ensureId();
         }
         return snapshot;
     }
@@ -1922,9 +1930,11 @@ public class CollectionRunner {
         RunnerResult result = new RunnerResult();
         result.requestName = request != null ? request.name : null;
         result.requestId = request != null ? request.id : null;
+        result.collectionId = collection != null ? collection.ensureId() : null;
         result.collectionName = collection != null && collection.name != null ? collection.name : (request != null ? request.sourceCollection : null);
         result.folderPath = collection != null ? RequestPathResolver.getRequestFolderPath(collection, request) : (request != null ? request.path : null);
         result.method = request != null && request.method != null ? request.method.toUpperCase(Locale.ROOT) : "GET";
+        result.buildMode = request != null ? request.resolveBuildMode() : null;
         result.requestUrl = request != null ? request.url : null;
         result.initialResolvedUrl = request != null ? request.url : null;
         result.finalResolvedUrl = request != null ? request.url : null;
@@ -2251,11 +2261,13 @@ public class CollectionRunner {
         if (source != null) {
             snapshot.requestName = source.requestName;
             snapshot.requestId = source.requestId;
+            snapshot.collectionId = source.collectionId;
             snapshot.collectionName = source.collectionName;
             snapshot.folderPath = source.folderPath;
             snapshot.host = source.host;
             snapshot.path = source.path;
             snapshot.method = source.method;
+            snapshot.buildMode = source.buildMode;
             snapshot.requestUrl = source.requestUrl;
             snapshot.initialResolvedUrl = source.initialResolvedUrl;
             snapshot.finalResolvedUrl = source.finalResolvedUrl;

@@ -14,7 +14,7 @@ public class HistoryCsvExportService {
 
     public String export(Collection<HistoryEntry> entries) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Time,Source,Attempt,Collection,Folder,Request,Method,URL Template,Status,Duration,Size,Environment,Result,Error\n");
+        sb.append("Time,Source,Attempt,Collection,Folder,Request,Method,URL Template,Status,Duration,Size,Environment,Result,Pinned,Tags,Notes,Request Body Truncated,Request Original Body Bytes,Request Stored Body Bytes,Request Body SHA-256,Response Body Truncated,Response Original Body Bytes,Response Stored Body Bytes,Response Body SHA-256,Error\n");
         for (HistoryEntry entry : entries != null ? entries : List.<HistoryEntry>of()) {
             sb.append(row(entry)).append('\n');
         }
@@ -44,6 +44,17 @@ public class HistoryCsvExportService {
         sb.append(',').append(HistorySanitizer.csvCell(entry != null ? entry.historySizeLabel() : ""));
         sb.append(',').append(HistorySanitizer.csvCell(entry != null ? entry.environmentName : ""));
         sb.append(',').append(HistorySanitizer.csvCell(entry != null ? entry.resultDisplayName() : ""));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.pinned ? "Yes" : "No"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.tags != null ? String.join(", ", entry.tags) : ""));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null ? entry.analystNotes : ""));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.requestSnapshot != null && entry.requestSnapshot.bodyTruncated ? "Yes" : "No"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.requestSnapshot != null ? String.valueOf(entry.requestSnapshot.originalBodyLength) : "0"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.requestSnapshot != null ? String.valueOf(entry.requestSnapshot.storedBodyLength) : "0"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.requestSnapshot != null ? entry.requestSnapshot.fullBodySha256 : ""));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.responseSnapshot != null && entry.responseSnapshot.bodyTruncated ? "Yes" : "No"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.responseSnapshot != null ? String.valueOf(entry.responseSnapshot.originalBodyLength) : "0"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.responseSnapshot != null ? String.valueOf(entry.responseSnapshot.storedBodyLength) : "0"));
+        sb.append(',').append(HistorySanitizer.csvCell(entry != null && entry.responseSnapshot != null ? entry.responseSnapshot.fullBodySha256 : ""));
         sb.append(',').append(HistorySanitizer.csvCell(entry != null ? entry.errorMessage : ""));
         return sb.toString();
     }

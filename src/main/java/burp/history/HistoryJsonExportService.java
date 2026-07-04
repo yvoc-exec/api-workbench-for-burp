@@ -19,11 +19,15 @@ public class HistoryJsonExportService {
 
     public String export(Collection<HistoryEntry> entries) {
         JsonObject root = new JsonObject();
-        root.addProperty("version", 1);
+        root.addProperty("version", 2);
         root.addProperty("generatedAt", Instant.now().toString());
         JsonArray array = new JsonArray();
         for (HistoryEntry entry : entries != null ? entries : List.<HistoryEntry>of()) {
-            array.add(gson.toJsonTree(HistoryEntry.copyOf(entry)));
+            HistoryEntry copy = HistoryEntry.copyOf(entry);
+            if (copy != null) {
+                copy.ensureDefaults();
+                array.add(gson.toJsonTree(copy));
+            }
         }
         root.add("entries", array);
         return gson.toJson(root);

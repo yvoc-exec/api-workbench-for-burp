@@ -20,6 +20,8 @@ public class HistoryFilterCriteria {
     public Boolean hasResponseBody;
     public Boolean hasError;
     public Boolean hasAssertionFailure;
+    public String pinnedState;
+    public String tagText;
     public Integer attemptNumber;
     public Integer totalAttempts;
     public Boolean retriesOnly;
@@ -44,6 +46,8 @@ public class HistoryFilterCriteria {
         copy.hasResponseBody = source.hasResponseBody;
         copy.hasError = source.hasError;
         copy.hasAssertionFailure = source.hasAssertionFailure;
+        copy.pinnedState = source.pinnedState;
+        copy.tagText = source.tagText;
         copy.attemptNumber = source.attemptNumber;
         copy.totalAttempts = source.totalAttempts;
         copy.retriesOnly = source.retriesOnly;
@@ -94,6 +98,12 @@ public class HistoryFilterCriteria {
             return false;
         }
         if (hasAssertionFailure != null && entry.hasAssertionFailure() != hasAssertionFailure) {
+            return false;
+        }
+        if (!matchesPinnedState(entry, pinnedState)) {
+            return false;
+        }
+        if (tagText != null && !tagText.isBlank() && !matchesTagText(entry, tagText)) {
             return false;
         }
         if (attemptNumber != null && entry.attemptNumber != attemptNumber) {
@@ -158,6 +168,43 @@ public class HistoryFilterCriteria {
                 || containsIgnoreCase(entry.requestSnapshot != null ? entry.requestSnapshot.urlTemplate : null, filter)
                 || containsIgnoreCase(entry.requestSnapshot != null ? entry.requestSnapshot.displayBodyText() : null, filter)
                 || containsIgnoreCase(entry.responseSnapshot != null ? entry.responseSnapshot.bodyAsText() : null, filter)
+                || containsIgnoreCase(entry.analystNotes, filter)
+                || containsIgnoreCase(joinTags(entry), filter)
                 || containsIgnoreCase(entry.toMetadataText(), filter);
+    }
+
+    private static boolean matchesPinnedState(HistoryEntry entry, String pinnedState) {
+        if (pinnedState == null || pinnedState.isBlank()) {
+            return true;
+        }
+        String normalized = pinnedState.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "pinned" -> entry.pinned;
+            case "unpinned" -> !entry.pinned;
+            default -> true;
+        };
+    }
+
+    private static boolean matchesTagText(HistoryEntry entry, String tagFilter) {
+        if (entry == null || tagFilter == null || tagFilter.isBlank()) {
+            return true;
+        }
+        String normalizedFilter = tagFilter.toLowerCase(Locale.ROOT);
+        if (entry.tags == null || entry.tags.isEmpty()) {
+            return false;
+        }
+        for (String tag : entry.tags) {
+            if (tag != null && tag.toLowerCase(Locale.ROOT).contains(normalizedFilter)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String joinTags(HistoryEntry entry) {
+        if (entry == null || entry.tags == null || entry.tags.isEmpty()) {
+            return "";
+        }
+        return String.join(", ", entry.tags);
     }
 }

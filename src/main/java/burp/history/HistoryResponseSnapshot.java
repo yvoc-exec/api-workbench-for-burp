@@ -14,6 +14,11 @@ public class HistoryResponseSnapshot {
     public List<HistoryHeader> headers = new ArrayList<>();
     public byte[] body;
     public String mimeType;
+    public boolean bodyTruncated;
+    public long originalBodyLength;
+    public long storedBodyLength;
+    public String fullBodySha256;
+    public String truncationReason = "";
 
     public static HistoryResponseSnapshot from(HttpResponse response) {
         HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
@@ -37,6 +42,13 @@ public class HistoryResponseSnapshot {
         if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && snapshot.body != null) {
             snapshot.mimeType = "text/plain";
         }
+        snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
+        snapshot.storedBodyLength = snapshot.originalBodyLength;
+        snapshot.fullBodySha256 = snapshot.originalBodyLength > 0
+                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
+                : "";
+        snapshot.bodyTruncated = false;
+        snapshot.truncationReason = "";
         return snapshot;
     }
 
@@ -53,6 +65,13 @@ public class HistoryResponseSnapshot {
         if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && snapshot.body != null) {
             snapshot.mimeType = "text/plain";
         }
+        snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
+        snapshot.storedBodyLength = snapshot.originalBodyLength;
+        snapshot.fullBodySha256 = snapshot.originalBodyLength > 0
+                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
+                : "";
+        snapshot.bodyTruncated = false;
+        snapshot.truncationReason = "";
         return snapshot;
     }
 
@@ -74,6 +93,11 @@ public class HistoryResponseSnapshot {
         }
         copy.body = source.body != null ? source.body.clone() : null;
         copy.mimeType = source.mimeType;
+        copy.bodyTruncated = source.bodyTruncated;
+        copy.originalBodyLength = source.originalBodyLength;
+        copy.storedBodyLength = source.storedBodyLength;
+        copy.fullBodySha256 = source.fullBodySha256;
+        copy.truncationReason = source.truncationReason;
         return copy;
     }
 
@@ -118,7 +142,21 @@ public class HistoryResponseSnapshot {
         if (hasBody()) {
             sb.append('\n').append("Body:").append('\n').append(bodyAsText()).append('\n');
         }
+        String evidence = truncationSummary();
+        if (!evidence.isBlank()) {
+            sb.append('\n').append(evidence).append('\n');
+        }
         return sb.toString().trim();
+    }
+
+    public String truncationSummary() {
+        if (!bodyTruncated) {
+            if (originalBodyLength > 0 && fullBodySha256 != null && !fullBodySha256.isBlank()) {
+                return "Body: stored " + storedBodyLength + " of " + originalBodyLength + " bytes; SHA-256=" + fullBodySha256;
+            }
+            return "";
+        }
+        return "Body truncated: stored " + storedBodyLength + " of " + originalBodyLength + " bytes; SHA-256=" + (fullBodySha256 != null ? fullBodySha256 : "");
     }
 
     private static List<HistoryHeader> parseHeaders(String responseHeaders) {

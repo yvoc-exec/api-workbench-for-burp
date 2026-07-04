@@ -17,6 +17,8 @@ public class HistoryActionsPanel extends JPanel {
     private final JButton exportButton = new JButton("Export");
     private final JButton deleteButton = new JButton("Delete Selected");
     private final JButton clearButton = new JButton("Clear History");
+    private final JButton pinButton = new JButton("Pin");
+    private final JButton clearUnpinnedButton = new JButton("Clear Unpinned");
 
     private Runnable loadAction;
     private Runnable replayAction;
@@ -29,6 +31,8 @@ public class HistoryActionsPanel extends JPanel {
     private Runnable exportHarAction;
     private Runnable deleteAction;
     private Runnable clearAction;
+    private Runnable pinAction;
+    private Runnable clearUnpinnedAction;
     private HistoryReplayRedirectMode replayRedirectMode = HistoryReplayRedirectMode.RECORDED;
     private Consumer<HistoryReplayRedirectMode> replayRedirectModeChangeListener;
     private Runnable redirectPolicyAction;
@@ -49,8 +53,11 @@ public class HistoryActionsPanel extends JPanel {
         add(exportButton);
         add(deleteButton);
         add(clearButton);
+        add(pinButton);
+        add(clearUnpinnedButton);
         installActions();
         updateSelectionState(0, false);
+        updatePinActionState(0, false);
     }
 
     public void setLoadAction(Runnable loadAction) {
@@ -97,6 +104,14 @@ public class HistoryActionsPanel extends JPanel {
         this.clearAction = clearAction;
     }
 
+    public void setPinAction(Runnable pinAction) {
+        this.pinAction = pinAction;
+    }
+
+    public void setClearUnpinnedAction(Runnable clearUnpinnedAction) {
+        this.clearUnpinnedAction = clearUnpinnedAction;
+    }
+
     public HistoryReplayRedirectMode getReplayRedirectMode() {
         return replayRedirectMode;
     }
@@ -128,6 +143,14 @@ public class HistoryActionsPanel extends JPanel {
         clearButton.setEnabled(hasEntries);
         exportButton.setEnabled(hasEntries);
         replayMenuButton.setEnabled(oneOrMore);
+        pinButton.setEnabled(oneOrMore);
+        clearUnpinnedButton.setEnabled(hasEntries);
+    }
+
+    public void updatePinActionState(int selectedCount, boolean allSelectedPinned) {
+        boolean oneOrMore = selectedCount > 0;
+        pinButton.setEnabled(oneOrMore);
+        pinButton.setText(oneOrMore && allSelectedPinned ? "Unpin" : "Pin");
     }
 
     public JButton getLoadButton() {
@@ -170,6 +193,14 @@ public class HistoryActionsPanel extends JPanel {
         return clearButton;
     }
 
+    public JButton getPinButton() {
+        return pinButton;
+    }
+
+    public JButton getClearUnpinnedButton() {
+        return clearUnpinnedButton;
+    }
+
     private void installActions() {
         loadButton.addActionListener(e -> trigger(loadAction));
         replayButton.addActionListener(e -> trigger(replayAction));
@@ -180,6 +211,8 @@ public class HistoryActionsPanel extends JPanel {
         compareButton.addActionListener(e -> trigger(compareAction));
         deleteButton.addActionListener(e -> trigger(deleteAction));
         clearButton.addActionListener(e -> trigger(clearAction));
+        pinButton.addActionListener(e -> trigger(pinAction));
+        clearUnpinnedButton.addActionListener(e -> trigger(clearUnpinnedAction));
         exportButton.addActionListener(e -> showExportMenu());
     }
 

@@ -17,6 +17,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class HistoryPersistenceCompatibilityTest {
 
     @Test
+    void oldHistoryJsonRestoresDefaults() {
+        WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/legacy-history.json"));
+
+        assertThat(state.historyRetentionPolicy).isNotNull();
+        assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
+        assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
+        assertThat(state.historyEntries).hasSize(1);
+        HistoryEntry entry = state.historyEntries.get(0);
+        assertThat(entry.pinned).isFalse();
+        assertThat(entry.analystNotes).isEmpty();
+        assertThat(entry.tags).isEmpty();
+        assertThat(entry.requestSnapshot.bodyTruncated).isFalse();
+        assertThat(entry.requestSnapshot.originalBodyLength).isZero();
+        assertThat(entry.requestSnapshot.storedBodyLength).isZero();
+        assertThat(entry.requestSnapshot.fullBodySha256).isEmpty();
+    }
+
+    @Test
     void currentHistorySchemaLoadsNewestFirstAndPreservesRawSentEvidence() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/current-history.json"));
 
@@ -58,7 +76,7 @@ class HistoryPersistenceCompatibilityTest {
     }
 
     @Test
-    void duplicateHistoryIdsAreDeduplicatedAndRetentionAppliesDuringRestore() {
+    void duplicateIdsRemainDeterministicallyDeduplicated() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/duplicate-history.json"));
         assertThat(state.historyEntries).hasSize(1);
         assertThat(state.historyEntries.get(0).id).isEqualTo("hist-dup");
@@ -69,6 +87,30 @@ class HistoryPersistenceCompatibilityTest {
         new HistoryPersistenceService().restoreStore(store, state);
         assertThat(store.snapshot()).hasSize(1);
         assertThat(store.snapshot().get(0).id).isEqualTo("hist-dup");
+    }
+
+    @Test
+    void oldRetentionPolicyRestoresSafeDefaults() {
+        WorkspaceState state = WorkspaceStateJson.fromJson("""
+                {
+                  "version": 1,
+                  "historyRetentionPolicy": {
+                    "maxEntries": 0,
+                    "maxTotalStoredBytes": 0,
+                    "maxRequestBodyBytesPerEntry": 0,
+                    "maxResponseBodyBytesPerEntry": 0,
+                    "retainPinnedEntries": true
+                  },
+                  "historyEntries": []
+                }
+                """);
+
+        assertThat(state.historyRetentionPolicy).isNotNull();
+        assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
+        assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
+        assertThat(state.historyRetentionPolicy.maxRequestBodyBytesPerEntry).isEqualTo(1L * 1024L * 1024L);
+        assertThat(state.historyRetentionPolicy.maxResponseBodyBytesPerEntry).isEqualTo(2L * 1024L * 1024L);
+        assertThat(state.historyRetentionPolicy.retainPinnedEntries).isTrue();
     }
 
     @Test

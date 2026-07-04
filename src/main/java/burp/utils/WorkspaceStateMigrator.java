@@ -3,6 +3,8 @@ package burp.utils;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
 import burp.models.ApiCollection;
+import burp.history.HistoryEntry;
+import burp.history.HistoryRetentionPolicy;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -14,7 +16,7 @@ import java.util.Set;
  * single place for future schema migrations.</p>
  */
 public final class WorkspaceStateMigrator {
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
 
     private WorkspaceStateMigrator() {
     }
@@ -23,7 +25,7 @@ public final class WorkspaceStateMigrator {
         if (state == null) {
             return null;
         }
-        if (state.version <= 0) {
+        if (state.version < CURRENT_VERSION) {
             state.version = CURRENT_VERSION;
         }
         if (state.collections == null) {
@@ -34,6 +36,17 @@ public final class WorkspaceStateMigrator {
         }
         if (state.historyEntries == null) {
             state.historyEntries = new java.util.ArrayList<>();
+        }
+        if (state.historyRetentionPolicy == null) {
+            state.historyRetentionPolicy = HistoryRetentionPolicy.defaultPolicy();
+        } else {
+            state.historyRetentionPolicy = HistoryRetentionPolicy.copyOf(state.historyRetentionPolicy);
+        }
+        state.historyRetentionPolicy.normalize();
+        for (HistoryEntry entry : state.historyEntries) {
+            if (entry != null) {
+                entry.ensureDefaults();
+            }
         }
         for (EnvironmentProfile profile : state.environments) {
             if (profile != null) {

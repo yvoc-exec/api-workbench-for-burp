@@ -1,25 +1,22 @@
 package burp.parser;
 
-import burp.diagnostics.DiagnosticEvent;
-import burp.diagnostics.DiagnosticOperation;
-import burp.diagnostics.DiagnosticSeverity;
-import burp.diagnostics.DiagnosticStore;
 import burp.models.ApiCollection;
-import burp.models.ApiRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BrunoParserZipSafetyTest {
 
@@ -27,331 +24,312 @@ class BrunoParserZipSafetyTest {
     Path tempDir;
 
     @Test
-    void canParseRejectsCorruptAndUnrelatedZipArchives() throws Exception {
-        Path corrupt = tempDir.resolve("corrupt.zip");
-        Files.writeString(corrupt, "not a zip", StandardCharsets.UTF_8);
+    void rejectsEntryCountLimit() throws Exception {
+        Path extractionRoot = tempDir.resolve("entry-count");
+        Path zip = createZip("entry-count.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Entry Count"}
+                        """,
+                "collection/requests/one.bru", sampleRequest("One", 1),
+                "collection/requests/two.bru", sampleRequest("Two", 2)
+        )));
 
-        Path unrelated = createZip("unrelated.zip", Map.of(
-                "notes/readme.txt", "hello"
-        ));
+        BrunoParser parser = newParser(new ArchiveImportLimits(1, 1_024, 1_024, 8, 200.0), extractionRoot);
 
-        BrunoParser parser = new BrunoParser();
-
-        assertThat(parser.canParse(corrupt.toFile())).isFalse();
-        assertThat(parser.canParse(unrelated.toFile())).isFalse();
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.ENTRY_COUNT));
+        assertThat(Files.exists(extractionRoot)).isFalse();
     }
 
     @Test
-    void parseIgnoresAbsoluteZipEntriesAndImportsSafeRequestsOnly() throws Exception {
-        Path zip = createZip("absolute-entry.zip", new LinkedHashMap<>() {{
-            put("Collection/bruno.json", """
-                    {
-                      "name": "Absolute Safe"
-                    }
-                    """);
-            put("Collection/Safe/GetUsers.bru", """
-                    meta {
-                      name: Get Users
-                      type: http
-                      seq: 1
-                    }
+    void rejectsTotalUncompressedSizeLimit() throws Exception {
+        Path extractionRoot = tempDir.resolve("total-bytes");
+        Path zip = createZip("total-bytes.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Total Bytes"}
+                        """,
+                "collection/requests/one.bru", sampleRequest("One", 1),
+                "collection/requests/two.bru", sampleRequest("Two", 2)
+        )));
 
-                    get {
-                      url: https://api.example.test/users
-                    }
-                    """);
-            put("/escape/Nope.bru", """
-                    meta {
-                      name: Nope
-                      type: http
-                      seq: 2
-                    }
+        BrunoParser parser = newParser(new ArchiveImportLimits(10, 40, 1_024, 8, 200.0), extractionRoot);
 
-                    get {
-                      url: https://api.example.test/nope
-                    }
-                    """);
-        }});
-
-        ApiCollection collection = new BrunoParser().parse(zip.toFile());
-
-        assertThat(collection.name).isEqualTo("Absolute Safe");
-        assertThat(collection.requests).hasSize(1);
-        assertThat(collection.requests.get(0).name).isEqualTo("Get Users");
-        assertThat(collection.requests.get(0).path).isEqualTo("Safe/Get Users");
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.TOTAL_UNCOMPRESSED_BYTES));
+        assertThat(Files.exists(extractionRoot)).isFalse();
     }
 
     @Test
-    void parseIgnoresPathTraversalZipEntriesAndKeepsSafeEntriesOnly() throws Exception {
-        Path zip = createZip("traversal-entry.zip", new LinkedHashMap<>() {{
-            put("Collection/bruno.json", """
-                    {
-                      "name": "Traversal Safe"
-                    }
-                    """);
-            put("Collection/Safe/GetUsers.bru", """
-                    meta {
-                      name: Get Users
-                      type: http
-                      seq: 1
-                    }
+    void rejectsSingleEntryLimit() throws Exception {
+        Path extractionRoot = tempDir.resolve("single-entry");
+        Path zip = createZip("single-entry.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Single Entry"}
+                        """,
+                "collection/requests/large.bru", sampleRequest("Large", 1_024)
+        )));
 
-                    get {
-                      url: https://api.example.test/users
-                    }
-                    """);
-            put("../escape/Nope.bru", """
-                    meta {
-                      name: Nope
-                      type: http
-                      seq: 2
-                    }
+        BrunoParser parser = newParser(new ArchiveImportLimits(10, 10_240, 64, 8, 200.0), extractionRoot);
 
-                    get {
-                      url: https://api.example.test/nope
-                    }
-                    """);
-        }});
-
-        ApiCollection collection = new BrunoParser().parse(zip.toFile());
-
-        assertThat(collection.name).isEqualTo("Traversal Safe");
-        assertThat(collection.requests).hasSize(1);
-        assertThat(collection.requests.get(0).name).isEqualTo("Get Users");
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.ENTRY_UNCOMPRESSED_BYTES));
+        assertThat(Files.exists(extractionRoot)).isFalse();
     }
 
     @Test
-    void parseDeletesTemporaryExtractionDirectoryAfterReadingZip() throws Exception {
-        String previousTmpDir = System.getProperty("java.io.tmpdir");
-        System.setProperty("java.io.tmpdir", tempDir.toString());
+    void rejectsExcessiveCompressionRatio() throws Exception {
+        Path extractionRoot = tempDir.resolve("ratio");
+        String repeated = "A".repeat(8_192);
+        Path zip = createZip("ratio.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Ratio"}
+                        """,
+                "collection/requests/large.bru", repeated
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(10, 100_000, 100_000, 8, 1.1), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.COMPRESSION_RATIO));
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    @Test
+    void rejectsExcessivePathDepth() throws Exception {
+        Path extractionRoot = tempDir.resolve("depth");
+        Path zip = createZip("depth.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Depth"}
+                        """,
+                "collection/a/b/c/d/e/f/g/too-deep.bru", sampleRequest("Too Deep", 1)
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(10, 10_240, 10_240, 4, 200.0), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.PATH_DEPTH));
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    @Test
+    void cleansTemporaryDirectoryAfterLimitFailure() throws Exception {
+        Path extractionRoot = tempDir.resolve("cleanup");
+        Path zip = createZip("cleanup.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Cleanup"}
+                        """,
+                "collection/requests/one.bru", sampleRequest("One", 1),
+                "collection/requests/two.bru", sampleRequest("Two", 2)
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(1, 1_024, 1_024, 8, 200.0), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class);
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    @Test
+    void doesNotReturnPartialCollectionAfterLimitFailure() throws Exception {
+        Path extractionRoot = tempDir.resolve("partial");
+        Path zip = createZip("partial.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Partial"}
+                        """,
+                "collection/requests/one.bru", sampleRequest("One", 1),
+                "collection/requests/two.bru", sampleRequest("Two", 2)
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(1, 1_024, 1_024, 8, 200.0), extractionRoot);
+
+        ApiCollection collection = null;
         try {
-            Path zip = createZip("cleanup.zip", Map.of(
-                    "collection/bruno.json", """
-                            {
-                              "name": "Cleanup"
-                            }
-                            """,
-                    "collection/requests/get-users.bru", """
-                            meta {
-                              name: Get Users
-                              type: http
-                              seq: 1
-                            }
-
-                            get {
-                              url: https://api.example.test/users
-                            }
-                            """
-            ));
-
-            ApiCollection collection = new BrunoParser().parse(zip.toFile());
-            assertThat(collection.name).isEqualTo("Cleanup");
-
-            List<Path> leftoverTempRoots = new ArrayList<>();
-            try (var stream = Files.list(tempDir)) {
-                stream.filter(path -> path.getFileName() != null && path.getFileName().toString().startsWith("bruno-import-"))
-                        .forEach(leftoverTempRoots::add);
-            }
-            assertThat(leftoverTempRoots).isEmpty();
-        } finally {
-            if (previousTmpDir != null) {
-                System.setProperty("java.io.tmpdir", previousTmpDir);
-            } else {
-                System.clearProperty("java.io.tmpdir");
-            }
+            collection = parser.parse(zip.toFile());
+        } catch (ArchiveImportLimitException expected) {
+            // expected
         }
+
+        assertThat(collection).isNull();
+        assertThat(Files.exists(extractionRoot)).isFalse();
     }
 
     @Test
-    void parseReportsMalformedBrunoRequestsAndKeepsValidSiblings() throws Exception {
-        DiagnosticStore store = DiagnosticStore.getInstance();
-        boolean previousCapture = store.isCaptureEnabled();
-        store.setCaptureEnabled(true);
-        store.clear();
-        try {
-            Path zip = createZip("malformed.zip", new LinkedHashMap<>() {{
-                put("collection/bruno.json", """
-                        {
-                          "name": "Malformed Bruno"
-                        }
-                        """);
-                put("collection/requests/Valid.bru", """
+    void validArchiveStillImports() throws Exception {
+        Path extractionRoot = tempDir.resolve("valid");
+        Path zip = createZip("valid.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Valid Collection"}
+                        """,
+                "collection/requests/get-users.bru", """
                         meta {
-                          name: Valid
+                          name: Get Users
                           type: http
                           seq: 1
                         }
 
                         get {
-                          url: https://api.example.test/valid
+                          url: https://api.example.test/users
                         }
-                        """);
-                put("collection/requests/Broken.bru", """
-                        meta {
-                          name: Broken
-                          type: http
-                          seq: 2
-                        }
+                        """
+        )));
 
-                        post {
-                          url: https://api.example.test/broken
-                        }
+        BrunoParser parser = newParser(new ArchiveImportLimits(), extractionRoot);
+        ApiCollection collection = parser.parse(zip.toFile());
 
-                        body:json {
-                          {
-                            "broken": true
-                        """);
-            }});
-
-            ApiCollection collection = new BrunoParser().parse(zip.toFile());
-
-            assertThat(collection.requests).hasSize(1);
-            assertThat(collection.requests.get(0).name).isEqualTo("Valid");
-            assertThat(collection.importedRequestCount).isEqualTo(1);
-            assertThat(collection.skippedRequestCount).isEqualTo(1);
-            assertThat(collection.importWarnings).hasSize(1);
-            assertThat(collection.importWarnings.get(0))
-                    .contains("Broken.bru")
-                    .contains("Unclosed Bruno block");
-            assertThat(store.snapshot())
-                    .filteredOn(event -> event.operation == DiagnosticOperation.IMPORT && event.severity == DiagnosticSeverity.WARNING)
-                    .anySatisfy(event -> {
-                        assertThat(event.message).contains("Bruno import warning");
-                        assertThat(event.attributes).containsKey("path");
-                    });
-        } finally {
-            store.clear();
-            store.setCaptureEnabled(previousCapture);
-        }
+        assertThat(collection.name).isEqualTo("Valid Collection");
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).name).isEqualTo("Get Users");
+        assertThat(Files.exists(extractionRoot)).isFalse();
     }
 
     @Test
-    void parseRecoversValidSiblingRequestsFromSameFileWithUnclosedBlock() throws Exception {
-        DiagnosticStore store = DiagnosticStore.getInstance();
-        boolean previousCapture = store.isCaptureEnabled();
-        store.setCaptureEnabled(true);
-        store.clear();
-        try {
-            Path root = Files.createTempDirectory(tempDir, "bruno-recover");
-            Files.writeString(root.resolve("BrokenAndRecovered.bru"), """
-                    meta {
-                      name: Broken And Recovered
-                      type: http
-                      seq: 1
-                    }
+    void rejectsAbsoluteAndDriveQualifiedPaths() throws Exception {
+        Path absoluteZip = createZip("absolute.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Absolute"}
+                        """,
+                "/escape/Nope.bru", sampleRequest("Nope", 1)
+        )));
+        Path driveZip = createZip("drive.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Drive"}
+                        """,
+                "C:/escape/Nope.bru", sampleRequest("Nope", 1)
+        )));
 
-                    post {
-                      url: https://api.example.test/broken
+        BrunoParser parser = newParser(new ArchiveImportLimits(), tempDir.resolve("absolute"));
 
-                    body:json {
-                      {
-                        "broken": true
-                      }
+        assertThatThrownBy(() -> parser.parse(absoluteZip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.UNSAFE_PATH));
 
-                    get {
-                      url: https://api.example.test/recovered
-                    }
-                    """, StandardCharsets.UTF_8);
-
-            ApiCollection collection = new BrunoParser().parse(root.toFile());
-
-            assertThat(collection.requests).hasSize(1);
-            assertThat(collection.requests.get(0).method).isEqualTo("GET");
-            assertThat(collection.requests.get(0).url).isEqualTo("https://api.example.test/recovered");
-            assertThat(collection.importedRequestCount).isEqualTo(1);
-            assertThat(collection.skippedRequestCount).isGreaterThanOrEqualTo(1);
-            assertThat(collection.importWarnings).isNotEmpty();
-            assertThat(collection.importWarnings.get(0)).contains("BrokenAndRecovered.bru").contains("Unclosed Bruno block");
-        } finally {
-            store.clear();
-            store.setCaptureEnabled(previousCapture);
-        }
+        BrunoParser driveParser = newParser(new ArchiveImportLimits(), tempDir.resolve("drive"));
+        assertThatThrownBy(() -> driveParser.parse(driveZip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.UNSAFE_PATH));
     }
 
     @Test
-    void folderAndZipImportsProduceEquivalentBrunoRequestModels() throws Exception {
-        Path folder = Files.createDirectories(tempDir.resolve("folder-import"));
-        Files.writeString(folder.resolve("bruno.json"), """
-                {
-                  "name": "Equivalence",
-                  "vars": {
-                    "baseUrl": "https://api.example.test"
-                  }
-                }
-                """, StandardCharsets.UTF_8);
-        Files.createDirectories(folder.resolve("Admin"));
-        Files.writeString(folder.resolve("Admin").resolve("Users.bru"), """
+    void countsDirectoriesTowardEntryLimit() throws Exception {
+        Path extractionRoot = tempDir.resolve("directories");
+        Path zip = createZip("directories.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Directories"}
+                        """,
+                "collection/requests/one.bru", sampleRequest("One", 1)
+        )), List.of("collection/", "collection/requests/"));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(2, 10_240, 10_240, 8, 200.0), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.ENTRY_COUNT));
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    @Test
+    void rejectsDuplicateNormalizedOutputPaths() throws Exception {
+        Path extractionRoot = tempDir.resolve("duplicates");
+        Path zip = createZip("duplicates.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Duplicates"}
+                        """,
+                "collection/Requests/One.bru", sampleRequest("One", 1),
+                "collection/requests/one.bru", sampleRequest("One Again", 2)
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.DUPLICATE_OUTPUT_PATH));
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    @Test
+    void keepsExistingZipSlipProtection() throws Exception {
+        Path extractionRoot = tempDir.resolve("zip-slip");
+        Path zip = createZip("zip-slip.zip", files(Map.of(
+                "collection/bruno.json", """
+                        {"name":"Zip Slip"}
+                        """,
+                "../escape/Nope.bru", sampleRequest("Nope", 1)
+        )));
+
+        BrunoParser parser = newParser(new ArchiveImportLimits(), extractionRoot);
+
+        assertThatThrownBy(() -> parser.parse(zip.toFile()))
+                .isInstanceOf(ArchiveImportLimitException.class)
+                .satisfies(throwable -> assertThat(((ArchiveImportLimitException) throwable).getReason())
+                        .isEqualTo(ArchiveImportLimitException.Reason.UNSAFE_PATH));
+        assertThat(Files.exists(extractionRoot)).isFalse();
+    }
+
+    private static Map<String, String> files(Map<String, String> entries) {
+        return new LinkedHashMap<>(entries);
+    }
+
+    private static String sampleRequest(String name, int seq) {
+        return """
                 meta {
-                  name: Users
+                  name: %s
                   type: http
-                  seq: 7
+                  seq: %d
                 }
 
                 get {
-                  url: {{baseUrl}}/users
+                  url: https://api.example.test/%s
                 }
-
-                headers {
-                  Authorization: Bearer {{token}}
-                }
-
-                auth:bearer {
-                  token: {{token}}
-                }
-                """, StandardCharsets.UTF_8);
-
-        Path zip = createZip("equivalence.zip", new LinkedHashMap<>() {{
-            put("collection/bruno.json", """
-                    {
-                      "name": "Equivalence",
-                      "vars": {
-                        "baseUrl": "https://api.example.test"
-                      }
-                    }
-                    """);
-            put("collection/Admin/Users.bru", """
-                    meta {
-                      name: Users
-                      type: http
-                      seq: 7
-                    }
-
-                    get {
-                      url: {{baseUrl}}/users
-                    }
-
-                    headers {
-                      Authorization: Bearer {{token}}
-                    }
-
-                    auth:bearer {
-                      token: {{token}}
-                    }
-                    """);
-        }});
-
-        ApiCollection folderCollection = new BrunoParser().parse(folder.toFile());
-        ApiCollection zipCollection = new BrunoParser().parse(zip.toFile());
-
-        assertThat(zipCollection.name).isEqualTo(folderCollection.name);
-        assertThat(zipCollection.environment).isEqualTo(folderCollection.environment);
-        assertThat(zipCollection.requests).hasSize(folderCollection.requests.size());
-        assertThat(zipCollection.requests.get(0).name).isEqualTo(folderCollection.requests.get(0).name);
-        assertThat(zipCollection.requests.get(0).path).isEqualTo(folderCollection.requests.get(0).path);
-        assertThat(zipCollection.requests.get(0).method).isEqualTo(folderCollection.requests.get(0).method);
-        assertThat(zipCollection.requests.get(0).auth.type).isEqualTo(folderCollection.requests.get(0).auth.type);
-        assertThat(zipCollection.requests.get(0).auth.properties).isEqualTo(folderCollection.requests.get(0).auth.properties);
+                """.formatted(name, seq, name.toLowerCase());
     }
 
-    private Path createZip(String name, Map<String, String> entries) throws Exception {
+    private Path createZip(String name, Map<String, String> entries) throws IOException {
+        return createZip(name, entries, java.util.List.of());
+    }
+
+    private Path createZip(String name, Map<String, String> entries, java.util.List<String> directories) throws IOException {
         Path zip = tempDir.resolve(name);
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(zip), StandardCharsets.UTF_8)) {
+            for (String directory : directories) {
+                if (directory == null || directory.isBlank()) {
+                    continue;
+                }
+                String normalized = directory.endsWith("/") ? directory : directory + "/";
+                ZipEntry entry = new ZipEntry(normalized);
+                out.putNextEntry(entry);
+                out.closeEntry();
+            }
             for (Map.Entry<String, String> entry : entries.entrySet()) {
-                out.putNextEntry(new ZipEntry(entry.getKey()));
+                ZipEntry zipEntry = new ZipEntry(entry.getKey());
+                out.putNextEntry(zipEntry);
                 out.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
                 out.closeEntry();
             }
         }
         return zip;
+    }
+
+    private BrunoParser newParser(ArchiveImportLimits limits, Path extractionRoot) {
+        return new BrunoParser(limits) {
+            @Override
+            Path createTemporaryExtractionDirectory() throws IOException {
+                Files.createDirectories(extractionRoot);
+                return extractionRoot;
+            }
+        };
     }
 }

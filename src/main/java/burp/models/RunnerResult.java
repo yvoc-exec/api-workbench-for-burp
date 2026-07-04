@@ -20,11 +20,13 @@ import java.util.Map;
 public class RunnerResult {
     public String requestName;
     public String requestId;
+    public String collectionId;
     public String collectionName;
     public String folderPath;
     public String host;
     public String path;
     public String method;
+    public ApiRequest.BuildMode buildMode;
     public String requestUrl;
     public String initialResolvedUrl;
     public String finalResolvedUrl;

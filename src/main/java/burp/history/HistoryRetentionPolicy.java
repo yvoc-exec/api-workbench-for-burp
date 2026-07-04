@@ -1,16 +1,79 @@
 package burp.history;
 
 public class HistoryRetentionPolicy {
-    public int maxEntries = 1000;
+    public static final int DEFAULT_MAX_ENTRIES = 1_000;
+    public static final long DEFAULT_MAX_TOTAL_STORED_BYTES = 100L * 1024L * 1024L;
+    public static final long DEFAULT_MAX_REQUEST_BODY_BYTES_PER_ENTRY = 1L * 1024L * 1024L;
+    public static final long DEFAULT_MAX_RESPONSE_BODY_BYTES_PER_ENTRY = 2L * 1024L * 1024L;
+
+    public int maxEntries;
+    public long maxTotalStoredBytes;
+    public long maxRequestBodyBytesPerEntry;
+    public long maxResponseBodyBytesPerEntry;
+    public boolean retainPinnedEntries;
 
     public HistoryRetentionPolicy() {
+        this(
+                DEFAULT_MAX_ENTRIES,
+                DEFAULT_MAX_TOTAL_STORED_BYTES,
+                DEFAULT_MAX_REQUEST_BODY_BYTES_PER_ENTRY,
+                DEFAULT_MAX_RESPONSE_BODY_BYTES_PER_ENTRY,
+                true
+        );
     }
 
     public HistoryRetentionPolicy(int maxEntries) {
-        this.maxEntries = Math.max(1, maxEntries);
+        this(
+                maxEntries,
+                DEFAULT_MAX_TOTAL_STORED_BYTES,
+                DEFAULT_MAX_REQUEST_BODY_BYTES_PER_ENTRY,
+                DEFAULT_MAX_RESPONSE_BODY_BYTES_PER_ENTRY,
+                true
+        );
+    }
+
+    public HistoryRetentionPolicy(int maxEntries,
+                                  long maxTotalStoredBytes,
+                                  long maxRequestBodyBytesPerEntry,
+                                  long maxResponseBodyBytesPerEntry,
+                                  boolean retainPinnedEntries) {
+        this.maxEntries = maxEntries;
+        this.maxTotalStoredBytes = maxTotalStoredBytes;
+        this.maxRequestBodyBytesPerEntry = maxRequestBodyBytesPerEntry;
+        this.maxResponseBodyBytesPerEntry = maxResponseBodyBytesPerEntry;
+        this.retainPinnedEntries = retainPinnedEntries;
+        normalize();
     }
 
     public static HistoryRetentionPolicy defaultPolicy() {
-        return new HistoryRetentionPolicy(1000);
+        return new HistoryRetentionPolicy();
+    }
+
+    public static HistoryRetentionPolicy copyOf(HistoryRetentionPolicy source) {
+        if (source == null) {
+            return defaultPolicy();
+        }
+        return new HistoryRetentionPolicy(
+                source.maxEntries,
+                source.maxTotalStoredBytes,
+                source.maxRequestBodyBytesPerEntry,
+                source.maxResponseBodyBytesPerEntry,
+                source.retainPinnedEntries
+        );
+    }
+
+    public void normalize() {
+        if (maxEntries <= 0) {
+            maxEntries = DEFAULT_MAX_ENTRIES;
+        }
+        if (maxTotalStoredBytes <= 0) {
+            maxTotalStoredBytes = DEFAULT_MAX_TOTAL_STORED_BYTES;
+        }
+        if (maxRequestBodyBytesPerEntry <= 0) {
+            maxRequestBodyBytesPerEntry = DEFAULT_MAX_REQUEST_BODY_BYTES_PER_ENTRY;
+        }
+        if (maxResponseBodyBytesPerEntry <= 0) {
+            maxResponseBodyBytesPerEntry = DEFAULT_MAX_RESPONSE_BODY_BYTES_PER_ENTRY;
+        }
     }
 }

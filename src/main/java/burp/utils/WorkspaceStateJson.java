@@ -27,8 +27,7 @@ public final class WorkspaceStateJson {
 
     public static String toJson(WorkspaceState state) {
         WorkspaceState snapshot = WorkspaceState.copyOf(state);
-        normalizeCollectionProfiles(snapshot);
-        applyRunnerRetryPolicyForSave(snapshot);
+        normalize(snapshot);
         return GSON.toJson(snapshot);
     }
 
@@ -67,13 +66,19 @@ public final class WorkspaceStateJson {
             out.runnerQueuedRequestIdentityKeys = new java.util.ArrayList<>();
         }
         normalizeRunnerRetryPolicy(out);
+        if (out.historyRetentionPolicy == null) {
+            out.historyRetentionPolicy = HistoryRetentionPolicy.defaultPolicy();
+        } else {
+            out.historyRetentionPolicy = HistoryRetentionPolicy.copyOf(out.historyRetentionPolicy);
+        }
+        out.historyRetentionPolicy.normalize();
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
         }
         if (out.historyEntries == null) {
             out.historyEntries = new java.util.ArrayList<>();
         } else {
-            out.historyEntries = HistoryStore.normalizeEntries(out.historyEntries, HistoryRetentionPolicy.defaultPolicy());
+            out.historyEntries = HistoryStore.normalizeEntries(out.historyEntries, out.historyRetentionPolicy);
         }
         if (out.defaultResponseTimeoutMillis == null || out.defaultResponseTimeoutMillis <= 0) {
             out.defaultResponseTimeoutMillis = 30_000;
@@ -300,13 +305,14 @@ public final class WorkspaceStateJson {
         if (request == null) {
             return;
         }
-        boolean buildModeDeclared = rawRequest != null
-                && rawRequest.has("buildMode")
-                && !rawRequest.get("buildMode").isJsonNull();
-        if (!buildModeDeclared) {
-            request.buildMode = request.editorMaterialized
-                    ? burp.models.ApiRequest.BuildMode.MANUAL_PRESERVE
-                    : burp.models.ApiRequest.BuildMode.AUTO_COMPATIBLE;
+        if (rawRequest != null) {
+            boolean buildModeDeclared = rawRequest.has("buildMode")
+                    && !rawRequest.get("buildMode").isJsonNull();
+            if (!buildModeDeclared) {
+                request.buildMode = request.editorMaterialized
+                        ? burp.models.ApiRequest.BuildMode.MANUAL_PRESERVE
+                        : burp.models.ApiRequest.BuildMode.AUTO_COMPATIBLE;
+            }
         }
         if (request.suppressedAutoHeaders == null) {
             request.suppressedAutoHeaders = new java.util.LinkedHashSet<>();

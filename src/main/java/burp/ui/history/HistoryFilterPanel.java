@@ -26,6 +26,8 @@ public class HistoryFilterPanel extends JPanel {
     private final JTextField requestField = new JTextField(8);
     private final JTextField environmentField = new JTextField(8);
     private final JComboBox<String> resultCombo = new JComboBox<>(new String[]{"All", "Success", "Failure", "Error", "Assertion Failure", "Missing Variable", "Skipped by Script", "Stopped by Script", "Unknown"});
+    private final JComboBox<String> pinnedStateCombo = new JComboBox<>(new String[]{"All", "Pinned", "Unpinned"});
+    private final JTextField tagField = new JTextField(8);
     private final JTextField fromField = new JTextField(9);
     private final JTextField toField = new JTextField(9);
     private final JCheckBox hasResponseBodyBox = new JCheckBox("Has body");
@@ -98,6 +100,9 @@ public class HistoryFilterPanel extends JPanel {
         criteria.environment = emptyToNull(environmentField.getText());
         String result = comboText(resultCombo);
         criteria.resultType = "All".equalsIgnoreCase(result) ? null : resultFromText(result);
+        String pinnedState = comboText(pinnedStateCombo);
+        criteria.pinnedState = "All".equalsIgnoreCase(pinnedState) ? null : pinnedState;
+        criteria.tagText = emptyToNull(tagField.getText());
         criteria.fromTimestamp = parseInstant(fromField.getText());
         criteria.toTimestamp = parseInstant(toField.getText());
         criteria.hasResponseBody = hasResponseBodyBox.isSelected() ? Boolean.TRUE : null;
@@ -125,6 +130,8 @@ public class HistoryFilterPanel extends JPanel {
             requestField.setText(next.requestName != null ? next.requestName : "");
             environmentField.setText(next.environment != null ? next.environment : "");
             resultCombo.setSelectedItem(next.resultType != null ? next.resultType.displayName() : "All");
+            pinnedStateCombo.setSelectedItem(next.pinnedState != null ? capitalize(next.pinnedState) : "All");
+            tagField.setText(next.tagText != null ? next.tagText : "");
             fromField.setText(next.fromTimestamp != null ? next.fromTimestamp.toString() : "");
             toField.setText(next.toTimestamp != null ? next.toTimestamp.toString() : "");
             hasResponseBodyBox.setSelected(Boolean.TRUE.equals(next.hasResponseBody));
@@ -170,6 +177,9 @@ public class HistoryFilterPanel extends JPanel {
         attachLiveFilterListeners(environmentField);
         environmentField.addActionListener(immediateListener);
         resultCombo.addActionListener(immediateListener);
+        pinnedStateCombo.addActionListener(immediateListener);
+        attachLiveFilterListeners(tagField);
+        tagField.addActionListener(immediateListener);
         attachLiveFilterListeners(fromField);
         fromField.addActionListener(immediateListener);
         attachLiveFilterListeners(toField);
@@ -213,6 +223,8 @@ public class HistoryFilterPanel extends JPanel {
         addField(row, "Folder", folderField);
         addField(row, "Request", requestField);
         addField(row, "Env", environmentField);
+        addField(row, "Pinned", pinnedStateCombo);
+        addField(row, "Tags", tagField);
         addField(row, "From", fromField);
         addField(row, "To", toField);
         addField(row, "Attempt", attemptField);
@@ -343,5 +355,17 @@ public class HistoryFilterPanel extends JPanel {
 
     private static String emptyToNull(String text) {
         return text == null || text.isBlank() ? null : text.trim();
+    }
+
+    private static String capitalize(String value) {
+        if (value == null || value.isBlank()) {
+            return "All";
+        }
+        String trimmed = value.trim().toLowerCase(Locale.ROOT);
+        return switch (trimmed) {
+            case "pinned" -> "Pinned";
+            case "unpinned" -> "Unpinned";
+            default -> value;
+        };
     }
 }
