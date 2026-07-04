@@ -2,7 +2,8 @@ package burp.history;
 
 public enum HistorySource {
     WORKBENCH("Workbench"),
-    RUNNER("Runner");
+    RUNNER("Runner"),
+    BURP_TRAFFIC("Burp Traffic");
 
     private final String displayName;
 

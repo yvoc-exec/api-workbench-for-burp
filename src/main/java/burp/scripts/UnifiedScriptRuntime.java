@@ -317,7 +317,7 @@ public class UnifiedScriptRuntime {
             return false;
         }
         for (ScriptBlock block : blocks) {
-            if (block != null && block.enabled && block.phase == phase && block.source != null && !block.source.isBlank()) {
+            if (block != null && block.phase == phase && block.source != null && !block.source.isBlank()) {
                 return true;
             }
         }

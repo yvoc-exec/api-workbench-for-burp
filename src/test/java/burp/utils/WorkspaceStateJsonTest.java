@@ -12,6 +12,7 @@ import burp.models.RedirectCrossOriginMode;
 import burp.models.RedirectPolicy;
 import burp.models.TrustedRedirectRule;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.models.WorkspaceState;
 import burp.runner.RunnerRetryPolicy;
 import burp.scripts.ScriptBlock;
@@ -138,6 +139,36 @@ class WorkspaceStateJsonTest {
                 .containsEntry("token", "uat-token");
         assertThat(parsed.environments.get(0).oauth2.config).containsEntry("oauth2_client_id", "uat-client");
         assertThat(parsed.environments.get(0).oauth2.outputBindings).containsEntry("accessToken", "token");
+    }
+
+    @Test
+    void exactSnapshotRoundTripsWithoutAliasing() {
+        WorkspaceState state = new WorkspaceState();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Traffic";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-1";
+        request.name = "GET /users";
+        request.method = "GET";
+        request.url = "https://api.example.test/users";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = "GET /users HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        request.exactHttpRequest.serviceHost = "api.example.test";
+        request.exactHttpRequest.servicePort = 443;
+        request.exactHttpRequest.secure = true;
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        collection.requests.add(request);
+        state.collections.add(collection);
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
+
+        assertThat(parsed.collections.get(0).requests.get(0).exactHttpRequest).isNotNull();
+        assertThat(parsed.collections.get(0).requests.get(0).exactHttpRequest.rawRequestBytes)
+                .isEqualTo(request.exactHttpRequest.rawRequestBytes);
+        parsed.collections.get(0).requests.get(0).exactHttpRequest.rawRequestBytes[0] = 'X';
+        assertThat(request.exactHttpRequest.rawRequestBytes[0]).isEqualTo((byte) 'G');
     }
 
     @Test

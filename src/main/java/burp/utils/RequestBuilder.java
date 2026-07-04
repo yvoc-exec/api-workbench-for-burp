@@ -35,6 +35,14 @@ public class RequestBuilder {
     }
 
     public byte[] buildRequest(ApiRequest request, VariableResolver resolver) throws Exception {
+        if (request != null
+                && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
+                && request.exactHttpRequest != null
+                && request.exactHttpRequest.pristine
+                && request.exactHttpRequest.rawRequestBytes != null
+                && request.exactHttpRequest.rawRequestBytes.length > 0) {
+            return request.exactHttpRequest.rawRequestBytes.clone();
+        }
         RequestBuildPolicy policy = RequestBuildPolicy.forRequest(request);
         BuildContext ctx = buildHeadersAndBody(request, resolver, policy);
         List<String> rawHeaders = ctx.rawHeaders;

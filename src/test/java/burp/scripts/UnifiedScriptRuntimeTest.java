@@ -178,6 +178,67 @@ class UnifiedScriptRuntimeTest {
     }
 
     @Test
+    void disabledCanonicalPreRequestBlockSuppressesLegacyFallback() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-disabled-native";
+        request.name = "Disabled Native";
+        request.sourceCollection = "APIM";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.preRequestScripts = new ArrayList<>(List.of(
+                new ApiRequest.Script("js", "console.log('legacy fallback');")
+        ));
+        request.scriptBlocks = new ArrayList<>(List.of(scriptBlock(
+                "request-pre-disabled",
+                ScriptDialect.POSTMAN,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST,
+                "console.log('native');",
+                1)));
+        request.scriptBlocks.get(0).enabled = false;
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Send", 1);
+
+        assertThat(result.success).isTrue();
+        assertThat(result.logs).isEmpty();
+        assertThat(result.errors).isEmpty();
+    }
+
+    @Test
+    void scriptMutationInvalidatesExactSnapshot() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-exact";
+        request.name = "Exact";
+        request.sourceCollection = "APIM";
+        request.method = "GET";
+        request.url = "https://example.test";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        request.scriptBlocks = new ArrayList<>(List.of(scriptBlock(
+                "request-pre",
+                ScriptDialect.POSTMAN,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST,
+                "pm.request.url = 'https://example.test/changed';",
+                1)));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Send", 1);
+
+        assertThat(result.mutatedRequest.exactHttpRequest).isNotNull();
+        assertThat(result.mutatedRequest.exactHttpRequest.pristine).isFalse();
+        assertThat(result.mutatedRequest.exactHttpRequest.invalidationReason).isEqualTo("SCRIPT_MUTATION");
+    }
+
+    @Test
     void consoleErrorIsCapturedAsErrorLevelLogAndScriptError() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";

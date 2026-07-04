@@ -2,6 +2,7 @@ package burp.exporter;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.ParserRegistry;
 import burp.utils.RequestPathResolver;
 import org.junit.jupiter.api.Test;
@@ -65,6 +66,34 @@ class CollectionExportRoundTripTest {
         try (Stream<Path> children = Files.list(directoryTarget)) {
             assertThat(children).isEmpty();
         }
+    }
+
+    @Test
+    void nativeRoundTripPreservesExactSnapshotWithoutAliasing() throws Exception {
+        ApiCollection collection = ExportTestFixtures.sampleCollection();
+        ApiRequest request = collection.requests.get(0);
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = "GET /users HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        request.exactHttpRequest.serviceHost = "api.example.test";
+        request.exactHttpRequest.servicePort = 443;
+        request.exactHttpRequest.secure = true;
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        Path output = tempDir.resolve("apim.api-workbench.json");
+
+        new CollectionExportService().exportCollection(
+                collection,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, output, false, null, Map.of())
+        );
+
+        ApiCollection imported = new ParserRegistry().detectParser(output.toFile()).parse(output.toFile());
+        ApiRequest restored = requestById(imported, request.id);
+
+        assertThat(restored.exactHttpRequest).isNotNull();
+        assertThat(restored.exactHttpRequest.rawRequestBytes).isEqualTo(request.exactHttpRequest.rawRequestBytes);
+        restored.exactHttpRequest.rawRequestBytes[0] = 'X';
+        assertThat(request.exactHttpRequest.rawRequestBytes[0]).isEqualTo((byte) 'G');
     }
 
     private static ApiRequest requestById(ApiCollection collection, String id) {

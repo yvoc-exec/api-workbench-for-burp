@@ -3,9 +3,11 @@ package burp.scripts;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.utils.ScriptMode;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -124,6 +126,35 @@ class ScriptMutationTransactionTest {
     }
 
     @Test
+    void phaseTimeoutRestoresExactTransportAfterEarlierRequestMutation() {
+        ApiCollection collection = collection();
+        ApiRequest request = exactRequest();
+        byte[] originalRaw = request.exactHttpRequest.rawRequestBytes.clone();
+        String originalFingerprint = request.exactHttpRequest.semanticFingerprint;
+        collection.scriptBlocks.add(block("""
+                awb.request.url = 'https://example.test/mutated';
+                """));
+        collection.scriptBlocks.add(block("""
+                while (true) {}
+                """));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS, 150);
+        try {
+            ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Send", 1);
+
+            assertThat(result.timedOut).isTrue();
+            assertThat(result.mutatedRequest.url).isEqualTo("https://example.test/start");
+            assertThat(result.mutatedRequest.exactHttpRequest).isNotNull();
+            assertThat(result.mutatedRequest.exactHttpRequest.pristine).isTrue();
+            assertThat(result.mutatedRequest.exactHttpRequest.invalidationReason).isEmpty();
+            assertThat(result.mutatedRequest.exactHttpRequest.semanticFingerprint).isEqualTo(originalFingerprint);
+            assertThat(result.mutatedRequest.exactHttpRequest.rawRequestBytes).isEqualTo(originalRaw);
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
     void failedBlockRestoresRequestAndVariablesButKeepsPriorSuccessfulBlockWhenNotTimeout() {
         ApiCollection collection = collection();
         ApiRequest request = request();
@@ -181,6 +212,23 @@ class ScriptMutationTransactionTest {
         request.method = "GET";
         request.url = "https://example.test/start";
         request.path = "Parent/Child/Request";
+        return request;
+    }
+
+    private ApiRequest exactRequest() {
+        ApiRequest request = request();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.editorMaterialized = true;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "GET /start HTTP/1.1\r\nHost: example.test\r\n\r\n")
+                .getBytes(StandardCharsets.ISO_8859_1);
+        request.exactHttpRequest.serviceHost = "example.test";
+        request.exactHttpRequest.servicePort = 443;
+        request.exactHttpRequest.secure = true;
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.invalidationReason = "";
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
         return request;
     }
 

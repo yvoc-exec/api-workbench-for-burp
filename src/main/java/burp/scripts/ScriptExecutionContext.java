@@ -305,33 +305,7 @@ public class ScriptExecutionContext {
         if (source == null) {
             return new ApiRequest();
         }
-        ApiRequest copy = new ApiRequest();
-        copy.id = source.id;
-        copy.name = source.name;
-        copy.path = source.path;
-        copy.sourceCollection = source.sourceCollection;
-        copy.method = source.method;
-        copy.url = source.url;
-        copy.description = source.description;
-        copy.editorMaterialized = source.editorMaterialized;
-        copy.buildMode = source.buildMode;
-        copy.suppressedAutoHeaders = source.suppressedAutoHeaders != null
-                ? new java.util.LinkedHashSet<>(source.suppressedAutoHeaders)
-                : new java.util.LinkedHashSet<>();
-        copy.disabled = source.disabled;
-        copy.sequenceOrder = source.sequenceOrder;
-        copy.authInherited = source.authInherited;
-        copy.authExplicitlyDisabled = source.authExplicitlyDisabled;
-        copy.authSource = source.authSource;
-        copy.authOverrideMode = source.authOverrideMode;
-        copy.auth = copyAuth(source.auth);
-        copy.explicitAuth = copyAuth(source.explicitAuth);
-        copy.headers = copyHeaders(source.headers);
-        copy.body = copyBody(source.body);
-        copy.variables = copyVariables(source.variables);
-        copy.preRequestScripts = copyScripts(source.preRequestScripts);
-        copy.postResponseScripts = copyScripts(source.postResponseScripts);
-        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
+        ApiRequest copy = source.applyTo(new ApiRequest());
         if (source.hasBody() && copy.body == null) {
             copy.body = new ApiRequest.Body();
             copy.body.mode = source.body != null ? source.body.mode : null;

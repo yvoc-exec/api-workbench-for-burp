@@ -1,14 +1,27 @@
 package burp.scripts;
 
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
+import burp.scripts.capabilities.ScriptCapabilityAnalyzer;
+import burp.scripts.capabilities.ScriptCapabilityFinding;
+import burp.scripts.capabilities.ScriptCapabilityReport;
 
 import java.util.List;
 
 public class ScriptLifecycleExecutor {
+    public static final String UNSUPPORTED_SCRIPT_CAPABILITY = "UNSUPPORTED_SCRIPT_CAPABILITY";
+
     private final GraalJsSandboxEngine sandboxEngine;
+    private final ScriptCapabilityAnalyzer capabilityAnalyzer;
 
     public ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine) {
+        this(sandboxEngine, new ScriptCapabilityAnalyzer());
+    }
+
+    ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine,
+                            ScriptCapabilityAnalyzer capabilityAnalyzer) {
         this.sandboxEngine = sandboxEngine;
+        this.capabilityAnalyzer = capabilityAnalyzer != null ? capabilityAnalyzer : new ScriptCapabilityAnalyzer();
     }
 
     public ScriptExecutionResult execute(ScriptExecutionContext context, List<ScriptBlock> blocks) {
@@ -36,6 +49,32 @@ public class ScriptLifecycleExecutor {
             if (block == null || !block.enabled || block.source == null || block.source.isBlank()) {
                 continue;
             }
+            ScriptCapabilityReport capabilityReport = capabilityAnalyzer.analyzeAndAnnotate(block);
+            if (capabilityReport.hasUnsupportedCapabilities()) {
+                for (ScriptCapabilityFinding finding : capabilityReport.findings()) {
+                    if (finding == null || finding.supported()) {
+                        continue;
+                    }
+                    result.unsupportedCapabilities.add(new ScriptUnsupportedCapability(
+                            block.id,
+                            block.dialect,
+                            block.phase,
+                            block.scope,
+                            finding.apiName(),
+                            finding.safeMessage(),
+                            finding.riskLevel(),
+                            block.sourcePath));
+                }
+                context.error(
+                        UNSUPPORTED_SCRIPT_CAPABILITY + ": " + capabilityReport.unsupportedSummary(),
+                        block.id,
+                        block.sourceFormat);
+                result.mutatedRequest = context.request;
+                result.effectiveVariables.clear();
+                result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
+                throw new UnsupportedScriptCapabilityException(result);
+            }
+
             VariableScopeStore.Snapshot blockCheckpoint = context.variableStore.checkpoint();
             ApiRequest blockRequestSnapshot = ScriptExecutionContext.copyRequest(context.request);
             int mutationCountBeforeBlock = result.variableMutations.size();
@@ -46,7 +85,7 @@ public class ScriptLifecycleExecutor {
                     context.variableStore.refreshRequestState();
                 });
             } catch (GraalJsSandboxEngine.ScriptTimedOutException t) {
-                context.restoreRequest(phaseRequestSnapshot);
+                restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);
                 result.timedOut = true;
@@ -55,7 +94,7 @@ public class ScriptLifecycleExecutor {
                 context.error(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (GraalJsSandboxEngine.ScriptCancelledException t) {
-                context.restoreRequest(phaseRequestSnapshot);
+                restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);
                 result.cancelled = true;
@@ -63,7 +102,7 @@ public class ScriptLifecycleExecutor {
                 context.warn(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
             } catch (Throwable t) {
-                context.restoreRequest(blockRequestSnapshot);
+                restoreRequest(context, blockRequestSnapshot);
                 context.variableStore.restore(blockCheckpoint);
                 trimMutations(result, mutationCountBeforeBlock);
                 String message = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
@@ -85,12 +124,21 @@ public class ScriptLifecycleExecutor {
         return result;
     }
 
+    private void restoreRequest(ScriptExecutionContext context, ApiRequest snapshot) {
+        context.restoreRequest(snapshot);
+        if (context.request != null) {
+            context.request.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(
+                    snapshot != null ? snapshot.exactHttpRequest : null);
+        }
+    }
+
     private String scriptLabel(ScriptBlock block) {
         if (block == null) {
             return "";
         }
         String id = block.id != null && !block.id.isBlank() ? block.id : null;
-        String name = block.metadata != null ? block.metadata.get("name") : null; name = name != null && !name.isBlank() ? name : null;
+        String name = block.metadata != null ? block.metadata.get("name") : null;
+        name = name != null && !name.isBlank() ? name : null;
         if (id == null && name == null) {
             return "";
         }
