@@ -831,6 +831,25 @@ public class HistoryEntry {
         return (base + '\n' + evidence).trim();
     }
 
+    public boolean hasTruncatedEvidence() {
+        if (requestSnapshot != null
+                && (requestSnapshot.bodyTruncated || requestSnapshot.rawBodyTruncated)) {
+            return true;
+        }
+        if (responseSnapshot != null && responseSnapshot.bodyTruncated) {
+            return true;
+        }
+        if (redirectHops == null || redirectHops.isEmpty()) {
+            return false;
+        }
+        for (RedirectHop hop : redirectHops) {
+            if (hop != null && (hop.rawRequestBodyTruncated || hop.responseBodyTruncated)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String buildLegacyMetadataText(HistoryEntry entry) {
         if (entry == null) {
             return "";
@@ -911,6 +930,7 @@ public class HistoryEntry {
         if (entry.responseSnapshot != null) {
             appendEvidenceBlock(sb, entry.responseSnapshot.truncationSummary());
         }
+        appendRedirectTruncationEvidence(sb, entry.redirectHops);
         return sb.toString().trim();
     }
 
@@ -935,6 +955,36 @@ public class HistoryEntry {
             sb.append('\n');
         }
         sb.append(line);
+    }
+
+    private static void appendRedirectTruncationEvidence(StringBuilder sb, List<RedirectHop> hops) {
+        if (hops == null || hops.isEmpty()) {
+            return;
+        }
+        int encounterIndex = 0;
+        for (RedirectHop hop : hops) {
+            encounterIndex++;
+            if (hop == null) {
+                continue;
+            }
+            int displayHopNumber = hop.hopNumber > 0 ? hop.hopNumber : encounterIndex;
+            if (hop.rawRequestBodyTruncated) {
+                appendEvidenceLine(sb,
+                        "Redirect hop " + displayHopNumber
+                                + " raw request truncated: stored " + hop.storedRawRequestBodyLength
+                                + " of " + hop.originalRawRequestBodyLength
+                                + " bytes; SHA-256=" + (hop.fullRawRequestBodySha256 != null ? hop.fullRawRequestBodySha256 : "")
+                                + "; reason=" + (hop.rawRequestTruncationReason != null ? hop.rawRequestTruncationReason : ""));
+            }
+            if (hop.responseBodyTruncated) {
+                appendEvidenceLine(sb,
+                        "Redirect hop " + displayHopNumber
+                                + " response body truncated: stored " + hop.storedResponseBodyLength
+                                + " of " + hop.originalResponseBodyLength
+                                + " bytes; SHA-256=" + (hop.fullResponseBodySha256 != null ? hop.fullResponseBodySha256 : "")
+                                + "; reason=" + (hop.responseTruncationReason != null ? hop.responseTruncationReason : ""));
+            }
+        }
     }
 
     private String displayValue(String value) {
