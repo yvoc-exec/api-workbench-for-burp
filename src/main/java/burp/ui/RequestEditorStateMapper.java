@@ -2,6 +2,7 @@ package burp.ui;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptPhase;
 import burp.parser.VariableResolver;
@@ -117,14 +118,22 @@ final class RequestEditorStateMapper {
         ctx.bodyFormModel.setRowCount(0);
         if (req.body != null) {
             ctx.setBodyModeInternal.accept(req.body.mode != null ? req.body.mode : "none");
-            if ("raw".equals(req.body.mode) && req.body.raw != null) {
-                ctx.bodyRawArea.setText(req.body.raw);
+            if ("raw".equals(req.body.mode)) {
+                if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
+                    ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
+                } else if (req.body.raw != null) {
+                    ctx.bodyRawArea.setText(req.body.raw);
+                }
             }
             if ("graphql".equals(req.body.mode) && req.body.graphql != null) {
                 ctx.bodyRawArea.setText(req.body.graphql.query != null ? req.body.graphql.query : "");
             }
-            if ("file".equals(req.body.mode) && req.body.raw != null) {
-                ctx.bodyRawArea.setText(req.body.raw);
+            if ("file".equals(req.body.mode)) {
+                if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
+                    ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
+                } else if (req.body.raw != null) {
+                    ctx.bodyRawArea.setText(req.body.raw);
+                }
             }
             if (req.body.urlencoded != null) {
                 for (ApiRequest.Body.FormField f : req.body.urlencoded) {
@@ -172,6 +181,7 @@ final class RequestEditorStateMapper {
         req.suppressedAutoHeaders = currentRequest.suppressedAutoHeaders != null
                 ? new LinkedHashSet<>(currentRequest.suppressedAutoHeaders)
                 : new LinkedHashSet<>();
+        req.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(currentRequest.exactHttpRequest);
 
         String authMode = (String) ctx.authTypeBox.getSelectedItem();
         req.authOverrideMode = RequestEditorPanel.selectionToOverrideMode(authMode);
@@ -204,7 +214,7 @@ final class RequestEditorStateMapper {
                 req.body.graphql = copyGraphQL(existingBody.graphql);
             }
             if ("raw".equals(bodyMode)) {
-                req.body.raw = ctx.bodyRawArea.getText();
+                req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
             } else if ("graphql".equals(bodyMode)) {
                 ApiRequest.Body.GraphQL graphQL = existingBody != null
                         ? copyGraphQL(existingBody.graphql)
@@ -215,7 +225,7 @@ final class RequestEditorStateMapper {
                 graphQL.query = ctx.bodyRawArea.getText();
                 req.body.graphql = graphQL;
             } else if ("file".equals(bodyMode)) {
-                req.body.raw = ctx.bodyRawArea.getText();
+                req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
                 if ("urlencoded".equals(bodyMode)) {
                     req.body.urlencoded = mergeFormFields(ctx.bodyFormModel,
@@ -234,7 +244,34 @@ final class RequestEditorStateMapper {
             req.scriptBlocks.addAll(convertLegacyScripts(req.preRequestScripts, ScriptPhase.PRE_REQUEST, currentRequest));
             req.scriptBlocks.addAll(convertLegacyScripts(req.postResponseScripts, ScriptPhase.POST_RESPONSE, currentRequest));
         }
+        reconcileExactHttpSnapshot(currentRequest, req);
         return req;
+    }
+
+    private static String preserveBinaryPlaceholderBody(ApiRequest currentRequest, String bodyText) {
+        if (currentRequest == null
+                || currentRequest.exactHttpRequest == null
+                || !currentRequest.exactHttpRequest.binaryBody
+                || !ExactHttpRequestSnapshot.isBinaryBodyPlaceholder(bodyText)) {
+            return bodyText;
+        }
+        return currentRequest.body != null ? currentRequest.body.raw : null;
+    }
+
+    private static void reconcileExactHttpSnapshot(ApiRequest currentRequest, ApiRequest builtRequest) {
+        if (currentRequest == null || builtRequest == null || builtRequest.exactHttpRequest == null) {
+            return;
+        }
+        String expectedFingerprint = currentRequest.exactHttpRequest.semanticFingerprint;
+        String actualFingerprint = builtRequest.computeSemanticFingerprint();
+        if (expectedFingerprint == null || expectedFingerprint.isBlank()) {
+            builtRequest.exactHttpRequest.semanticFingerprint = actualFingerprint;
+            return;
+        }
+        builtRequest.exactHttpRequest.semanticFingerprint = expectedFingerprint;
+        if (!expectedFingerprint.equals(actualFingerprint)) {
+            builtRequest.invalidateExactTransport("REQUEST_EDITOR_SEMANTIC_CHANGE");
+        }
     }
 
     static void clearEditor(Context ctx) {

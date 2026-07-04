@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
@@ -164,12 +165,37 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.scriptBlocks = parseScriptBlocks(obj.getAsJsonArray("scriptBlocks"));
             request.disabled = getBoolean(obj, "disabled", false);
             request.sequenceOrder = getInt(obj, "sequenceOrder", 0);
+            request.exactHttpRequest = parseExactHttpRequest(obj.getAsJsonObject("exactHttpRequest"));
             requests.add(request);
             if (exportedAuthSources != null) {
                 exportedAuthSources.put(request, request.authSource);
             }
         }
         return requests;
+    }
+
+    private ExactHttpRequestSnapshot parseExactHttpRequest(JsonObject object) {
+        if (object == null || object.entrySet().isEmpty()) {
+            return null;
+        }
+        ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
+        String rawRequestBase64 = getString(object, "rawRequestBase64", null);
+        if (rawRequestBase64 != null && !rawRequestBase64.isBlank()) {
+            try {
+                snapshot.rawRequestBytes = java.util.Base64.getDecoder().decode(rawRequestBase64);
+            } catch (IllegalArgumentException ignored) {
+                snapshot.rawRequestBytes = null;
+            }
+        }
+        snapshot.serviceHost = getString(object, "serviceHost", null);
+        snapshot.servicePort = getInt(object, "servicePort", 0);
+        snapshot.secure = getBoolean(object, "secure", false);
+        snapshot.pristine = getBoolean(object, "pristine", true);
+        snapshot.binaryBody = getBoolean(object, "binaryBody", false);
+        snapshot.sourceContext = getString(object, "sourceContext", null);
+        snapshot.invalidationReason = getString(object, "invalidationReason", null);
+        snapshot.semanticFingerprint = getString(object, "semanticFingerprint", null);
+        return snapshot;
     }
 
     private ApiRequest.BuildMode parseBuildMode(String buildMode, boolean editorMaterialized) {

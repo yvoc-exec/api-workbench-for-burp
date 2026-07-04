@@ -1,8 +1,9 @@
 package burp.models;
 
-import java.util.*;
-
+import burp.history.HistoryBodyTruncator;
 import burp.scripts.ScriptBlock;
+
+import java.util.*;
 
 /**
  * Unified API Request model used across all collection formats.
@@ -25,6 +26,7 @@ public class ApiRequest {
     public List<Header> headers = new ArrayList<>();
     public Body body;
     public Auth auth;
+    public ExactHttpRequestSnapshot exactHttpRequest;
     /** True when the editor has materialized request-owned headers/body after load/import. */
     public boolean editorMaterialized = false;
     /** Explicit request-build intent used by the runtime builder and editor persistence. */
@@ -117,24 +119,48 @@ public class ApiRequest {
         target.method = method;
         target.url = url;
         target.description = description;
-        target.headers = headers != null ? new ArrayList<>(headers) : new ArrayList<>();
-        target.body = body;
-        target.auth = auth;
+        target.headers = copyHeaders(headers);
+        target.body = copyBody(body);
+        target.auth = copyAuth(auth);
+        target.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(exactHttpRequest);
         target.editorMaterialized = editorMaterialized;
         target.buildMode = buildMode;
         target.suppressedAutoHeaders = suppressedAutoHeaders != null ? new LinkedHashSet<>(suppressedAutoHeaders) : new LinkedHashSet<>();
-        target.variables = variables != null ? new ArrayList<>(variables) : new ArrayList<>();
-        target.preRequestScripts = preRequestScripts != null ? new ArrayList<>(preRequestScripts) : new ArrayList<>();
-        target.postResponseScripts = postResponseScripts != null ? new ArrayList<>(postResponseScripts) : new ArrayList<>();
-        target.scriptBlocks = scriptBlocks != null ? new ArrayList<>(scriptBlocks) : new ArrayList<>();
+        target.variables = copyVariables(variables);
+        target.preRequestScripts = copyScripts(preRequestScripts);
+        target.postResponseScripts = copyScripts(postResponseScripts);
+        target.scriptBlocks = copyScriptBlocks(scriptBlocks);
         target.disabled = disabled;
         target.sequenceOrder = sequenceOrder;
         target.authInherited = authInherited;
         target.authExplicitlyDisabled = authExplicitlyDisabled;
         target.authSource = authSource;
         target.authOverrideMode = authOverrideMode;
-        target.explicitAuth = explicitAuth;
+        target.explicitAuth = copyAuth(explicitAuth);
         return target;
+    }
+
+    public void invalidateExactTransport(String reason) {
+        if (exactHttpRequest == null) {
+            return;
+        }
+        exactHttpRequest.pristine = false;
+        exactHttpRequest.invalidationReason = reason != null ? reason : "";
+    }
+
+    public String computeSemanticFingerprint() {
+        StringBuilder canonical = new StringBuilder();
+        canonical.append(method != null ? method : "").append('\n');
+        canonical.append(url != null ? url : "").append('\n');
+        canonical.append(description != null ? description : "").append('\n');
+        canonical.append(buildMode != null ? buildMode.name() : "").append('\n');
+        canonical.append(authOverrideMode != null ? authOverrideMode : "").append('\n');
+        appendHeaders(canonical, headers);
+        appendBody(canonical, body);
+        appendAuth(canonical, auth);
+        appendAuth(canonical, explicitAuth);
+        appendVariables(canonical, variables);
+        return HistoryBodyTruncator.sha256Hex(canonical.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     public boolean isAutoCompatibleMode() {
@@ -210,5 +236,197 @@ public class ApiRequest {
         }
         String normalized = headerName.trim().toLowerCase(Locale.ROOT);
         return normalized.isEmpty() ? null : normalized;
+    }
+
+    private static void appendHeaders(StringBuilder canonical, List<Header> source) {
+        if (source == null) {
+            return;
+        }
+        for (Header header : source) {
+            canonical.append("H:");
+            canonical.append(header != null && header.key != null ? header.key : "");
+            canonical.append('=');
+            canonical.append(header != null && header.value != null ? header.value : "");
+            canonical.append('|');
+            canonical.append(header != null && header.disabled);
+            canonical.append('\n');
+        }
+    }
+
+    private static void appendBody(StringBuilder canonical, Body source) {
+        if (source == null) {
+            return;
+        }
+        canonical.append("B:").append(source.mode != null ? source.mode : "").append('\n');
+        canonical.append(source.raw != null ? source.raw : "").append('\n');
+        canonical.append(source.contentType != null ? source.contentType : "").append('\n');
+        if (source.graphql != null) {
+            canonical.append(source.graphql.query != null ? source.graphql.query : "").append('\n');
+            canonical.append(source.graphql.variables != null ? source.graphql.variables : "").append('\n');
+        }
+        appendFormFields(canonical, source.urlencoded, "U");
+        appendFormFields(canonical, source.formdata, "F");
+    }
+
+    private static void appendFormFields(StringBuilder canonical, List<Body.FormField> source, String prefix) {
+        if (source == null) {
+            return;
+        }
+        for (Body.FormField field : source) {
+            canonical.append(prefix).append(':');
+            canonical.append(field != null && field.key != null ? field.key : "");
+            canonical.append('=');
+            canonical.append(field != null && field.value != null ? field.value : "");
+            canonical.append('|');
+            canonical.append(field != null && field.type != null ? field.type : "");
+            canonical.append('|');
+            canonical.append(field != null && field.fileUpload);
+            canonical.append('|');
+            canonical.append(field != null && field.filePath != null ? field.filePath : "");
+            canonical.append('|');
+            canonical.append(field != null && field.disabled);
+            canonical.append('\n');
+        }
+    }
+
+    private static void appendAuth(StringBuilder canonical, Auth source) {
+        if (source == null) {
+            return;
+        }
+        canonical.append("A:").append(source.type != null ? source.type : "").append('\n');
+        source.properties.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> canonical.append(entry.getKey() != null ? entry.getKey() : "")
+                        .append('=')
+                        .append(entry.getValue() != null ? entry.getValue() : "")
+                        .append('\n'));
+    }
+
+    private static void appendVariables(StringBuilder canonical, List<Variable> source) {
+        if (source == null) {
+            return;
+        }
+        for (Variable variable : source) {
+            canonical.append("V:");
+            canonical.append(variable != null && variable.key != null ? variable.key : "");
+            canonical.append('=');
+            canonical.append(variable != null && variable.value != null ? variable.value : "");
+            canonical.append('|');
+            canonical.append(variable != null && variable.type != null ? variable.type : "");
+            canonical.append('|');
+            canonical.append(variable != null && variable.enabled);
+            canonical.append('\n');
+        }
+    }
+
+    private static List<Header> copyHeaders(List<Header> source) {
+        List<Header> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Header header : source) {
+            if (header == null) {
+                copy.add(null);
+            } else {
+                copy.add(new Header(header.key, header.value, header.disabled));
+            }
+        }
+        return copy;
+    }
+
+    private static Body copyBody(Body source) {
+        if (source == null) {
+            return null;
+        }
+        Body copy = new Body();
+        copy.mode = source.mode;
+        copy.raw = source.raw;
+        copy.contentType = source.contentType;
+        if (source.graphql != null) {
+            copy.graphql = new Body.GraphQL();
+            copy.graphql.query = source.graphql.query;
+            copy.graphql.variables = source.graphql.variables;
+        }
+        copy.formdata = copyFormFields(source.formdata);
+        copy.urlencoded = copyFormFields(source.urlencoded);
+        return copy;
+    }
+
+    private static List<Body.FormField> copyFormFields(List<Body.FormField> source) {
+        List<Body.FormField> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Body.FormField field : source) {
+            if (field == null) {
+                copy.add(null);
+                continue;
+            }
+            Body.FormField formField = new Body.FormField(field.key, field.value);
+            formField.type = field.type;
+            formField.fileUpload = field.fileUpload;
+            formField.filePath = field.filePath;
+            formField.disabled = field.disabled;
+            copy.add(formField);
+        }
+        return copy;
+    }
+
+    private static Auth copyAuth(Auth source) {
+        if (source == null) {
+            return null;
+        }
+        Auth copy = new Auth();
+        copy.type = source.type;
+        if (source.properties != null) {
+            copy.properties.putAll(source.properties);
+        }
+        return copy;
+    }
+
+    private static List<Variable> copyVariables(List<Variable> source) {
+        List<Variable> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Variable variable : source) {
+            if (variable == null) {
+                copy.add(null);
+                continue;
+            }
+            Variable item = new Variable();
+            item.key = variable.key;
+            item.value = variable.value;
+            item.type = variable.type;
+            item.enabled = variable.enabled;
+            copy.add(item);
+        }
+        return copy;
+    }
+
+    private static List<Script> copyScripts(List<Script> source) {
+        List<Script> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Script script : source) {
+            if (script == null) {
+                copy.add(null);
+            } else {
+                copy.add(new Script(script.type, script.exec));
+            }
+        }
+        return copy;
+    }
+
+    private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> source) {
+        List<ScriptBlock> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (ScriptBlock block : source) {
+            copy.add(ScriptBlock.copyOf(block));
+        }
+        return copy;
     }
 }

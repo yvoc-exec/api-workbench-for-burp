@@ -3,6 +3,7 @@ package burp.exporter;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.parser.VariableResolver;
 import com.google.gson.JsonArray;
@@ -116,6 +117,32 @@ public final class ApiWorkbenchCollectionExporter {
         out.add("scriptBlocks", scriptBlocksToJson(request.scriptBlocks));
         out.addProperty("disabled", request.disabled);
         out.addProperty("sequenceOrder", request.sequenceOrder);
+        out.add("exactHttpRequest", exactHttpRequestToJson(request.exactHttpRequest));
+        return out;
+    }
+
+    private static JsonObject exactHttpRequestToJson(ExactHttpRequestSnapshot snapshot) {
+        JsonObject out = new JsonObject();
+        if (snapshot == null) {
+            return out;
+        }
+        if (snapshot.rawRequestBytes != null && snapshot.rawRequestBytes.length > 0) {
+            out.addProperty("rawRequestBase64", java.util.Base64.getEncoder().encodeToString(snapshot.rawRequestBytes));
+        }
+        out.addProperty("serviceHost", snapshot.serviceHost != null ? snapshot.serviceHost : "");
+        out.addProperty("servicePort", snapshot.servicePort);
+        out.addProperty("secure", snapshot.secure);
+        out.addProperty("pristine", snapshot.pristine);
+        out.addProperty("binaryBody", snapshot.binaryBody);
+        if (snapshot.sourceContext != null) {
+            out.addProperty("sourceContext", snapshot.sourceContext);
+        }
+        if (snapshot.invalidationReason != null) {
+            out.addProperty("invalidationReason", snapshot.invalidationReason);
+        }
+        if (snapshot.semanticFingerprint != null) {
+            out.addProperty("semanticFingerprint", snapshot.semanticFingerprint);
+        }
         return out;
     }
 

@@ -1,8 +1,6 @@
 package burp.history;
 
 import burp.models.ApiRequest;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -14,8 +12,6 @@ import java.util.Map;
 import java.util.Objects;
 
 public class HistoryRequestSnapshot {
-    private static final Gson COPY_GSON = new GsonBuilder().disableHtmlEscaping().create();
-
     public String method;
     public String urlTemplate;
     public List<HistoryHeader> headersAsAuthored = new ArrayList<>();
@@ -396,6 +392,6 @@ public class HistoryRequestSnapshot {
         if (request == null) {
             return null;
         }
-        return COPY_GSON.fromJson(COPY_GSON.toJson(request), ApiRequest.class);
+        return request.applyTo(new ApiRequest());
     }
 }

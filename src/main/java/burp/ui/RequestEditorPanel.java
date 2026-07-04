@@ -720,6 +720,13 @@ public class RequestEditorPanel extends JPanel {
         if (loadingRequest || updatingVariableStyles || currentRequest == null) {
             return false;
         }
+        if (!enable
+                && currentRequest.exactHttpRequest != null
+                && currentRequest.exactHttpRequest.binaryBody
+                && currentRequest.exactHttpRequest.pristine) {
+            setExactHttpModeSelected(true);
+            return false;
+        }
         if (enable == exactTransportHeadersSelected && currentRequest.isExactHttpMode() == enable) {
             return true;
         }

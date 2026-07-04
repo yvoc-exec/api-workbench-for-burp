@@ -1359,7 +1359,15 @@ public final class ScriptBindingsFactory {
         if (context == null || context.request == null || context.requestBinding == null) {
             return;
         }
+        String beforeFingerprint = context.request.computeSemanticFingerprint();
         context.requestBinding.applyTo(context.request);
+        String afterFingerprint = context.request.computeSemanticFingerprint();
+        if (!java.util.Objects.equals(beforeFingerprint, afterFingerprint)) {
+            context.request.invalidateExactTransport("SCRIPT_MUTATION");
+            if (context.request.exactHttpRequest != null && context.request.exactHttpRequest.semanticFingerprint == null) {
+                context.request.exactHttpRequest.semanticFingerprint = beforeFingerprint;
+            }
+        }
     }
 
     static String sanitizeValue(String value) {

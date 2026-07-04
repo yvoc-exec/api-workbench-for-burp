@@ -1078,33 +1078,11 @@ public final class RequestTreeMutationService {
         if (source == null) {
             return null;
         }
-        ApiRequest copy = new ApiRequest();
+        ApiRequest copy = source.applyTo(new ApiRequest());
         copy.id = UUID.randomUUID().toString();
         copy.name = RequestTreeNamingPolicy.normalizeTreeLabel(targetName);
         copy.path = targetPath != null ? targetPath : source.path;
         copy.sourceCollection = targetCollectionName != null ? targetCollectionName : source.sourceCollection;
-        copy.description = source.description;
-        copy.method = source.method;
-        copy.url = source.url;
-        copy.headers = copyHeaders(source.headers);
-        copy.body = copyBody(source.body);
-        copy.auth = AuthInheritanceResolver.copyAuth(source.auth);
-        copy.editorMaterialized = source.editorMaterialized;
-        copy.buildMode = source.buildMode;
-        copy.suppressedAutoHeaders = source.suppressedAutoHeaders != null
-                ? new LinkedHashSet<>(source.suppressedAutoHeaders)
-                : new LinkedHashSet<>();
-        copy.variables = copyVariables(source.variables);
-        copy.preRequestScripts = copyScripts(source.preRequestScripts);
-        copy.postResponseScripts = copyScripts(source.postResponseScripts);
-        copy.scriptBlocks = copyScriptBlocks(source.scriptBlocks);
-        copy.disabled = source.disabled;
-        copy.sequenceOrder = source.sequenceOrder;
-        copy.authInherited = source.authInherited;
-        copy.authExplicitlyDisabled = source.authExplicitlyDisabled;
-        copy.authSource = source.authSource;
-        copy.authOverrideMode = source.authOverrideMode;
-        copy.explicitAuth = AuthInheritanceResolver.copyAuth(source.explicitAuth);
         return copy;
     }
 

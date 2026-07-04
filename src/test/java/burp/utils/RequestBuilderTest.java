@@ -993,4 +993,45 @@ class RequestBuilderTest {
         assertThat(body).contains("--" + boundary);
         assertThat(body).contains("--" + boundary + "--");
     }
+
+    @Test
+    void pristineExactRequestBuildsOriginalBytes() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "https://api.example.test/upload";
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "changed";
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = "POST /upload HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 5\r\n\r\nhello".getBytes(StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+
+        byte[] built = builder.buildRequest(req, resolver);
+
+        assertThat(built).isEqualTo(req.exactHttpRequest.rawRequestBytes);
+        built[0] = 'X';
+        assertThat(req.exactHttpRequest.rawRequestBytes[0]).isEqualTo((byte) 'P');
+    }
+
+    @Test
+    void nonPristineExactRequestFallsBackToSemanticBuild() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "http://example.com/api";
+        req.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = "hello";
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = "POST /stale HTTP/1.1\r\nHost: stale.example\r\n\r\nstale".getBytes(StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = false;
+
+        String built = new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
+
+        assertThat(built).contains("POST /api HTTP/1.1");
+        assertThat(built).doesNotContain("Host: stale.example");
+        assertThat(built.endsWith("\r\n\r\nhello") || built.endsWith("\n\nhello")).isTrue();
+    }
 }

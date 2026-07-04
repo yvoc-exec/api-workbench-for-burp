@@ -227,32 +227,7 @@ public class WorkspaceState {
         if (src == null) {
             return null;
         }
-        ApiRequest copy = new ApiRequest();
-        copy.id = src.id;
-        copy.name = src.name;
-        copy.path = src.path;
-        copy.sourceCollection = src.sourceCollection;
-        copy.method = src.method;
-        copy.url = src.url;
-        copy.description = src.description;
-        copy.editorMaterialized = src.editorMaterialized;
-        copy.buildMode = src.buildMode;
-        copy.authOverrideMode = src.authOverrideMode;
-        copy.authInherited = src.authInherited;
-        copy.authExplicitlyDisabled = src.authExplicitlyDisabled;
-        copy.authSource = src.authSource;
-        copy.auth = copyAuth(src.auth);
-        copy.explicitAuth = copyAuth(src.explicitAuth);
-        copy.headers = copyHeaders(src.headers);
-        copy.body = copyBody(src.body);
-        copy.variables = copyVariables(src.variables);
-        copy.scriptBlocks = copyScriptBlocks(src.scriptBlocks);
-        copy.preRequestScripts = copyRequestScripts(src.preRequestScripts);
-        copy.postResponseScripts = copyRequestScripts(src.postResponseScripts);
-        copy.suppressedAutoHeaders = src.suppressedAutoHeaders != null ? new java.util.LinkedHashSet<>(src.suppressedAutoHeaders) : new java.util.LinkedHashSet<>();
-        copy.sequenceOrder = src.sequenceOrder;
-        copy.disabled = src.disabled;
-        return copy;
+        return src.applyTo(new ApiRequest());
     }
 
     private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> src) {

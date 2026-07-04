@@ -424,6 +424,34 @@ class RequestEditorExactTransportModeTest {
         assertThat(scripts(built.preRequestScripts)).isEqualTo("[js:console.log('pre');]");
     }
 
+    @Test
+    void binaryExactPlaceholderDoesNotInvalidateUntouchedSnapshot() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = null;
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = new byte[]{
+                'P','O','S','T',' ','/','u','p','l','o','a','d',' ','H','T','T','P','/','1','.','1','\r','\n',
+                'H','o','s','t',':',' ','e','x','a','m','p','l','e','.','c','o','m','\r','\n','\r','\n',
+                0x00,(byte) 0xFF,'A'
+        };
+        req.exactHttpRequest.binaryBody = true;
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+        panel.loadRequest(req);
+
+        assertThat(panel.getBodyRawAreaForTests().getText()).contains("Binary exact body preserved");
+
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.exactHttpRequest).isNotNull();
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+        assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
+        assertThat(built.body.raw).isNull();
+    }
+
     private static RequestEditorPanel panel() {
         RequestEditorPanel panel = new RequestEditorPanel();
         panel.setRequestBuilder(new RequestBuilder(null));
