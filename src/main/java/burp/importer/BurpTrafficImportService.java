@@ -1,5 +1,6 @@
 package burp.importer;
 
+import burp.history.HistoryBodyTruncator;
 import burp.history.HistoryEntry;
 import burp.history.HistoryHeader;
 import burp.history.HistoryRequestSnapshot;
@@ -8,17 +9,17 @@ import burp.history.HistorySource;
 import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.HistoryRawHttpMessageParser;
+import burp.parser.HistoryRawHttpMessageParser.ParsedRawHttpMessage;
 import burp.ui.tree.RequestTreeNamingPolicy;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-
-import burp.parser.HistoryRawHttpMessageParser.ParsedRawHttpMessage;
 
 public class BurpTrafficImportService {
     private final Clock clock;
@@ -37,15 +38,12 @@ public class BurpTrafficImportService {
             return result;
         }
         List<ApiRequest> convertedRequests = new ArrayList<>();
-        List<HistoryEntry> convertedHistory = new ArrayList<>();
+        List<HistoryEntry> convertedHistoryByRequest = new ArrayList<>();
         for (BurpTrafficSelection selection : selections) {
             try {
                 ApiRequest request = convertRequest(selection);
                 convertedRequests.add(request);
-                HistoryEntry historyEntry = convertHistory(selection, request);
-                if (historyEntry != null) {
-                    convertedHistory.add(historyEntry);
-                }
+                convertedHistoryByRequest.add(convertHistory(selection, request));
             } catch (ConversionException e) {
                 result.failures.add(new BurpTrafficConversionResult.Failure(
                         selection != null ? selection.encounterIndex : -1,
@@ -57,17 +55,17 @@ public class BurpTrafficImportService {
             return result;
         }
         result.requests.addAll(convertedRequests);
-        result.historyEntries.addAll(convertedHistory);
+        result.historyEntries.addAll(convertedHistoryByRequest);
         return result;
     }
 
     public ApiRequest convertRequest(BurpTrafficSelection selection) {
         if (selection == null || selection.rawRequestBytes == null || selection.rawRequestBytes.length == 0) {
-            throw new ConversionException(selection, "MISSING_RAW_REQUEST", "Traffic import requires a raw HTTP request.");
+            throw new ConversionException("MISSING_RAW_REQUEST", "Traffic import requires a raw HTTP request.");
         }
         ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(selection.rawRequestBytes, null);
         if (!parsed.isTrustedRequest()) {
-            throw new ConversionException(selection, "MALFORMED_HTTP_REQUEST", parsed.parseWarning().isBlank()
+            throw new ConversionException("MALFORMED_HTTP_REQUEST", parsed.parseWarning().isBlank()
                     ? "Traffic import request is malformed."
                     : parsed.parseWarning());
         }
@@ -75,11 +73,13 @@ public class BurpTrafficImportService {
         ApiRequest request = new ApiRequest();
         request.id = UUID.randomUUID().toString();
         request.method = !parsed.method().isBlank() ? parsed.method() : fallbackMethod(selection);
-        request.url = buildAbsoluteUrl(selection, parsed.target());
+        request.url = buildAbsoluteUrl(selection, parsed.target(), request.method);
         request.name = suggestedName(selection, request.method, parsed.target());
         request.headers = new ArrayList<>();
         for (HistoryHeader header : parsed.headers()) {
-            request.headers.add(new ApiRequest.Header(header.name, header.value, false));
+            if (header != null) {
+                request.headers.add(new ApiRequest.Header(header.name, header.value, false));
+            }
         }
         request.body = buildBody(parsed.bodyBytes());
         request.editorMaterialized = true;
@@ -108,15 +108,43 @@ public class BurpTrafficImportService {
         entry.requestName = request.name;
         entry.requestSnapshot = HistoryRequestSnapshot.from(request);
         entry.requestSnapshot.rawRequestSent = selection.rawRequestBytes.clone();
-        entry.requestSnapshot.rawRequestSentText = new String(selection.rawRequestBytes, StandardCharsets.UTF_8);
+        String rawRequestText = new String(selection.rawRequestBytes, StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText = Arrays.equals(selection.rawRequestBytes,
+                rawRequestText.getBytes(StandardCharsets.UTF_8)) ? rawRequestText : null;
+        entry.requestSnapshot.originalRawBodyLength = parsedBodyLength(selection.rawRequestBytes);
+        entry.requestSnapshot.storedRawBodyLength = entry.requestSnapshot.originalRawBodyLength;
+        byte[] rawRequestBody = bodyBytes(selection.rawRequestBytes);
+        entry.requestSnapshot.fullRawBodySha256 = rawRequestBody.length > 0
+                ? HistoryBodyTruncator.sha256Hex(rawRequestBody)
+                : "";
         entry.requestSizeBytes = selection.rawRequestBytes.length;
         entry.requestSent = false;
         entry.preflightStatus = "RECORDED_ONLY";
-        entry.metadataSummaryText = "Source context: " + safeContext(selection.sourceContext);
+        entry.metadataSummaryText = "Source context: " + safeContext(selection.sourceContext)
+                + "\nRequest representation: EXACT_RAW"
+                + "\nResponse representation: STORED_RAW_COMPONENTS";
+
+        HistoryResponseSnapshot snapshot = parseResponse(selection.rawResponseBytes);
+        entry.responseSnapshot = snapshot;
+        entry.responseSizeBytes = selection.rawResponseBytes.length;
+        entry.statusCode = snapshot.statusCode;
+        entry.ensureDefaults();
+        return entry;
+    }
+
+    private HistoryResponseSnapshot parseResponse(byte[] rawResponseBytes) {
         HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
-        List<String> lines = splitLines(new String(selection.rawResponseBytes, StandardCharsets.UTF_8));
-        if (!lines.isEmpty()) {
-            String[] parts = lines.get(0).trim().split("\\s+", 3);
+        int boundary = indexOf(rawResponseBytes, new byte[]{'\r', '\n', '\r', '\n'});
+        int separatorLength = 4;
+        if (boundary < 0) {
+            boundary = indexOf(rawResponseBytes, new byte[]{'\n', '\n'});
+            separatorLength = 2;
+        }
+        int headerLength = boundary >= 0 ? boundary : rawResponseBytes.length;
+        String headerText = new String(rawResponseBytes, 0, headerLength, StandardCharsets.ISO_8859_1);
+        List<String> headerLines = splitLines(headerText);
+        if (!headerLines.isEmpty()) {
+            String[] parts = headerLines.get(0).trim().split("\\s+", 3);
             if (parts.length >= 2) {
                 try {
                     snapshot.statusCode = Integer.parseInt(parts[1]);
@@ -128,46 +156,40 @@ public class BurpTrafficImportService {
                 }
             }
         }
-        int boundary = indexOf(selection.rawResponseBytes, new byte[]{'\r', '\n', '\r', '\n'});
-        int sepLength = 4;
-        if (boundary < 0) {
-            boundary = indexOf(selection.rawResponseBytes, new byte[]{'\n', '\n'});
-            sepLength = 2;
+        for (int i = 1; i < headerLines.size(); i++) {
+            String line = headerLines.get(i);
+            int colon = line.indexOf(':');
+            if (colon <= 0) {
+                continue;
+            }
+            String name = line.substring(0, colon);
+            String value = trimOptionalWhitespace(line.substring(colon + 1));
+            snapshot.headers.add(new HistoryHeader(name, value, false));
+            if ("content-type".equalsIgnoreCase(name)) {
+                snapshot.mimeType = value;
+            }
         }
         if (boundary >= 0) {
-            String headerText = new String(selection.rawResponseBytes, 0, boundary, StandardCharsets.UTF_8);
-            List<String> headerLines = splitLines(headerText);
-            for (int i = 1; i < headerLines.size(); i++) {
-                String line = headerLines.get(i);
-                int colon = line.indexOf(':');
-                if (colon <= 0) {
-                    continue;
-                }
-                snapshot.headers.add(new HistoryHeader(line.substring(0, colon), line.substring(colon + 1).trim(), false));
-            }
-            int bodyOffset = boundary + sepLength;
-            int bodyLength = selection.rawResponseBytes.length - bodyOffset;
-            if (bodyLength > 0) {
-                snapshot.body = new byte[bodyLength];
-                System.arraycopy(selection.rawResponseBytes, bodyOffset, snapshot.body, 0, bodyLength);
+            int bodyOffset = boundary + separatorLength;
+            if (bodyOffset < rawResponseBytes.length) {
+                snapshot.body = Arrays.copyOfRange(rawResponseBytes, bodyOffset, rawResponseBytes.length);
             }
         }
         snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
         snapshot.storedBodyLength = snapshot.originalBodyLength;
         snapshot.fullBodySha256 = snapshot.body != null && snapshot.body.length > 0
-                ? burp.history.HistoryBodyTruncator.sha256Hex(snapshot.body)
+                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
                 : "";
-        entry.responseSnapshot = snapshot;
-        entry.responseSizeBytes = selection.rawResponseBytes.length;
-        entry.statusCode = snapshot.statusCode;
-        return entry;
+        snapshot.bodyTruncated = false;
+        snapshot.truncationReason = "";
+        return snapshot;
     }
 
     private ExactHttpRequestSnapshot exactSnapshot(BurpTrafficSelection selection, ApiRequest request) {
         ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
         snapshot.rawRequestBytes = selection.rawRequestBytes.clone();
         snapshot.serviceHost = selection.serviceHost;
-        snapshot.servicePort = selection.servicePort;
+        snapshot.servicePort = normalizedPort(selection);
         snapshot.secure = selection.secure;
         snapshot.pristine = true;
         snapshot.binaryBody = request.body != null
@@ -187,7 +209,7 @@ public class BurpTrafficImportService {
         ApiRequest.Body body = new ApiRequest.Body();
         body.mode = "raw";
         String asText = new String(bodyBytes, StandardCharsets.UTF_8);
-        if (java.util.Arrays.equals(bodyBytes, asText.getBytes(StandardCharsets.UTF_8))) {
+        if (Arrays.equals(bodyBytes, asText.getBytes(StandardCharsets.UTF_8))) {
             body.raw = asText;
         } else {
             body.raw = null;
@@ -237,21 +259,22 @@ public class BurpTrafficImportService {
         return value.isBlank() ? "/" : value;
     }
 
-    private String buildAbsoluteUrl(BurpTrafficSelection selection, String target) {
+    private String buildAbsoluteUrl(BurpTrafficSelection selection, String target, String method) {
         if (selection == null || selection.serviceHost == null || selection.serviceHost.isBlank()) {
-            throw new ConversionException(selection, "MISSING_SERVICE", "Traffic import requires a host.");
+            throw new ConversionException("MISSING_SERVICE", "Traffic import requires a host.");
         }
         String scheme = selection.secure ? "https" : "http";
         String host = selection.serviceHost.contains(":") && !selection.serviceHost.startsWith("[")
                 ? "[" + selection.serviceHost + "]"
                 : selection.serviceHost;
-        int port = selection.servicePort > 0 ? selection.servicePort : (selection.secure ? 443 : 80);
+        int port = normalizedPort(selection);
         boolean defaultPort = (selection.secure && port == 443) || (!selection.secure && port == 80);
+        String authority = scheme + "://" + host + (defaultPort ? "" : ":" + port);
         if (target == null || target.isBlank()) {
             target = "/";
         }
         if ("*".equals(target)) {
-            return scheme + "://" + host + (defaultPort ? "" : ":" + port) + "/*";
+            return authority + "/*";
         }
         if (target.startsWith("http://") || target.startsWith("https://")) {
             try {
@@ -263,26 +286,41 @@ public class BurpTrafficImportService {
                 if (uri.getRawQuery() != null && !uri.getRawQuery().isBlank()) {
                     path += "?" + uri.getRawQuery();
                 }
-                return scheme + "://" + host + (defaultPort ? "" : ":" + port) + path;
+                return authority + path;
             } catch (Exception e) {
-                throw new ConversionException(selection, "INVALID_REQUEST_TARGET", "Traffic import request target is invalid.");
+                throw new ConversionException("INVALID_REQUEST_TARGET", "Traffic import request target is invalid.");
             }
         }
         if (target.startsWith("/")) {
-            return scheme + "://" + host + (defaultPort ? "" : ":" + port) + target;
+            return authority + target;
         }
-        if ("CONNECT".equalsIgnoreCase(fallbackMethod(selection))) {
-            return scheme + "://" + host + (defaultPort ? "" : ":" + port) + "/";
+        if ("CONNECT".equalsIgnoreCase(method)) {
+            return authority + "/";
         }
-        return scheme + "://" + host + (defaultPort ? "" : ":" + port) + "/" + target;
+        return authority + "/" + target;
+    }
+
+    private int normalizedPort(BurpTrafficSelection selection) {
+        return selection.servicePort > 0 ? selection.servicePort : (selection.secure ? 443 : 80);
     }
 
     private boolean hasBody(byte[] rawRequestBytes) {
-        int crlfBoundary = indexOf(rawRequestBytes, new byte[]{'\r', '\n', '\r', '\n'});
-        int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(rawRequestBytes, new byte[]{'\n', '\n'});
+        return bodyBytes(rawRequestBytes).length > 0;
+    }
+
+    private long parsedBodyLength(byte[] rawRequestBytes) {
+        return bodyBytes(rawRequestBytes).length;
+    }
+
+    private byte[] bodyBytes(byte[] messageBytes) {
+        int crlfBoundary = indexOf(messageBytes, new byte[]{'\r', '\n', '\r', '\n'});
+        int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(messageBytes, new byte[]{'\n', '\n'});
         int boundary = crlfBoundary >= 0 ? crlfBoundary : lfBoundary;
-        int sepLength = crlfBoundary >= 0 ? 4 : (lfBoundary >= 0 ? 2 : 0);
-        return boundary >= 0 && rawRequestBytes.length > boundary + sepLength;
+        int separatorLength = crlfBoundary >= 0 ? 4 : (lfBoundary >= 0 ? 2 : 0);
+        if (boundary < 0 || boundary + separatorLength >= messageBytes.length) {
+            return new byte[0];
+        }
+        return Arrays.copyOfRange(messageBytes, boundary + separatorLength, messageBytes.length);
     }
 
     private static String safeContext(String sourceContext) {
@@ -318,10 +356,25 @@ public class BurpTrafficImportService {
         return lines;
     }
 
+    private static String trimOptionalWhitespace(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        int start = 0;
+        int end = value.length();
+        while (start < end && (value.charAt(start) == ' ' || value.charAt(start) == '\t')) {
+            start++;
+        }
+        while (end > start && (value.charAt(end - 1) == ' ' || value.charAt(end - 1) == '\t')) {
+            end--;
+        }
+        return value.substring(start, end);
+    }
+
     private static final class ConversionException extends RuntimeException {
         private final String reasonCode;
 
-        private ConversionException(BurpTrafficSelection selection, String reasonCode, String safeMessage) {
+        private ConversionException(String reasonCode, String safeMessage) {
             super(safeMessage != null ? safeMessage : "Traffic import failed.");
             this.reasonCode = reasonCode != null ? reasonCode : "";
         }
