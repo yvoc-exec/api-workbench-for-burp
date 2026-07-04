@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 public class WorkspaceState {
-    public int version = 1;
+    public static final int CURRENT_VERSION = 2;
+
+    public int version = CURRENT_VERSION;
     public List<ApiCollection> collections = new ArrayList<>();
     public List<EnvironmentProfile> environments = new ArrayList<>();
     public String activeEnvironmentId;
@@ -76,7 +78,7 @@ public class WorkspaceState {
         if (source == null) {
             return copy;
         }
-        copy.version = source.version > 0 ? source.version : 1;
+        copy.version = source.version > 0 ? source.version : CURRENT_VERSION;
         copy.collections = copyCollections(source.collections);
         copy.environments = copyEnvironments(source.environments);
         copy.activeEnvironmentId = source.activeEnvironmentId;

@@ -219,9 +219,17 @@ public class HistoryPanel extends JPanel {
         String entryId = selected.id;
         String notes = detailPanel.getAnalystNotesText();
         java.util.Collection<String> tags = HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText());
-        historyStore.updateAnalystMetadata(entryId, notes, tags);
-        historyStore.setPinned(entryId, detailPanel.getPinnedCheckBox().isSelected());
-        refreshFromStore(entryId);
+        HistoryEntry updated = historyStore.updateEvidenceMetadata(
+                entryId,
+                detailPanel.getPinnedCheckBox().isSelected(),
+                notes,
+                tags
+        );
+        if (updated != null) {
+            refreshFromStore(updated.id);
+        } else {
+            refreshFromStore();
+        }
         updateUsageBanner();
         notifyWorkspaceChanged();
     }

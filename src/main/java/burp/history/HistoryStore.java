@@ -151,6 +151,22 @@ public class HistoryStore {
         return refreshed != null ? refreshed : HistoryEntry.copyOf(entry);
     }
 
+    public synchronized HistoryEntry updateEvidenceMetadata(String id,
+                                                            boolean pinned,
+                                                            String notes,
+                                                            Collection<String> tags) {
+        HistoryEntry entry = findStoredEntry(id);
+        if (entry == null) {
+            return null;
+        }
+        entry.pinned = pinned;
+        entry.analystNotes = notes != null ? HistorySanitizer.safeMultiline(notes) : "";
+        entry.tags = HistoryBodyTruncator.normalizeTags(tags);
+        normalizeAndRecalculate();
+        HistoryEntry retained = findStoredEntry(id);
+        return retained != null ? HistoryEntry.copyOf(retained) : null;
+    }
+
     public synchronized int clearUnpinned() {
         final int[] removed = {0};
         entries.removeIf(entry -> {

@@ -27,6 +27,7 @@ public final class WorkspaceStateJson {
 
     public static String toJson(WorkspaceState state) {
         WorkspaceState snapshot = WorkspaceState.copyOf(state);
+        snapshot = WorkspaceStateMigrator.migrate(snapshot);
         normalize(snapshot);
         return GSON.toJson(snapshot);
     }
@@ -155,8 +156,8 @@ public final class WorkspaceStateJson {
                 }
             }
         }
-        if (out.version <= 0) {
-            out.version = 1;
+        if (out.version < WorkspaceState.CURRENT_VERSION) {
+            out.version = WorkspaceState.CURRENT_VERSION;
         }
         return out;
     }

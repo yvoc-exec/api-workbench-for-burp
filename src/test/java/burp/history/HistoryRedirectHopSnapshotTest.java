@@ -7,7 +7,6 @@ import burp.testsupport.HistoryTestFixtures;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,96 +14,125 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HistoryRedirectHopSnapshotTest {
 
     @Test
-    void redirectHopStoresOnlyActualBody() {
-        RunnerResult parent = parent();
-        RedirectHop hop = redirectHop(
-                "GET /redirect HTTP/1.1\r\nHost: api.example.test\r\nX-Test: one\r\n\r\nactual-body",
-                true);
+    void malformedRequestLineKeepsRawEvidenceButNoParsedHeadersOrBody() {
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), redirectHop(
+                "BROKEN REQUEST\r\nHost: api.example.test\r\n\r\nbody",
+                "POST",
+                true
+        ));
 
-        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, hop);
-
-        assertThat(entry.requestSnapshot.bodyAsAuthored).isEqualTo("actual-body".getBytes(StandardCharsets.UTF_8));
-        assertThat(entry.requestSnapshot.displayBodyText()).isEqualTo("actual-body");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("GET /redirect HTTP/1.1");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
+        assertThat(entry.requestSnapshot.method).isEqualTo("POST");
+        assertThat(entry.requestSnapshot.headersAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.rawRequestSentText).isEqualTo("BROKEN REQUEST\r\nHost: api.example.test\r\n\r\nbody");
+        assertThat(entry.requestSnapshot.parseWarning).isEqualTo("MALFORMED_HTTP_REQUEST_LINE");
     }
 
     @Test
-    void duplicateHeadersAndOrderPreserved() {
-        RunnerResult parent = parent();
-        RedirectHop hop = redirectHop(
-                "POST /redirect HTTP/1.1\r\nHost: api.example.test\r\nX-Trace: one\r\nX-Trace: two\r\nAccept: text/plain\r\n\r\nbody",
-                true);
+    void malformedHeaderLineDoesNotExposePartialParsedEvidence() {
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), redirectHop(
+                "GET /redirect HTTP/1.1\r\nHost api.example.test\r\nX-Trace: one\r\n\r\nbody",
+                "GET",
+                true
+        ));
 
-        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, hop);
+        assertThat(entry.requestSnapshot.headersAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.parseWarning).isEqualTo("MALFORMED_HTTP_HEADER");
+        assertThat(entry.requestSnapshot.rawRequestSentText).contains("X-Trace: one");
+    }
+
+    @Test
+    void missingSeparatorDoesNotExposeParsedBody() {
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), redirectHop(
+                "GET /redirect HTTP/1.1\r\nHost: api.example.test\r\nbody-without-separator",
+                "GET",
+                true
+        ));
+
+        assertThat(entry.requestSnapshot.headersAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEmpty();
+        assertThat(entry.requestSnapshot.parseWarning).isEqualTo("MISSING_HEADER_BODY_SEPARATOR");
+        assertThat(entry.requestSnapshot.rawRequestSentText).contains("body-without-separator");
+    }
+
+    @Test
+    void rawBytesTakePrecedenceOverConflictingRawText() {
+        RedirectHop hop = redirectHop(
+                "POST /redirect HTTP/1.1\r\nHost: api.example.test\r\n\r\nbody",
+                "GET",
+                true
+        );
+        hop.rawRequestText = "DELETE /evil HTTP/1.1\r\nHost: attacker.example.test\r\n\r\nnope";
+
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), hop);
+
+        assertThat(entry.requestSnapshot.method).isEqualTo("POST");
+        assertThat(entry.requestSnapshot.rawRequestSentText).contains("POST /redirect HTTP/1.1");
+        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("DELETE /evil");
+        assertThat(entry.requestSnapshot.headersAsAuthored).extracting(header -> header.name + "=" + header.value)
+                .containsExactly("Host=api.example.test");
+    }
+
+    @Test
+    void validRequestStillPreservesDuplicateHeaderOrder() {
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), redirectHop(
+                "POST /redirect HTTP/1.1\r\nHost: api.example.test\r\nX-Trace: one\r\nX-Trace: two\r\nAccept: text/plain\r\n\r\nbody",
+                "POST",
+                true
+        ));
 
         assertThat(entry.requestSnapshot.headersAsAuthored).extracting(header -> header.name + "=" + header.value)
                 .containsExactly("Host=api.example.test", "X-Trace=one", "X-Trace=two", "Accept=text/plain");
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEqualTo("body".getBytes(StandardCharsets.UTF_8));
     }
 
     @Test
-    void collectionIdAndNameAreDistinct() {
+    void validCustomHttpMethodStillParses() {
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), redirectHop(
+                "PURGE-CACHE /redirect HTTP/1.1\r\nHost: api.example.test\r\n\r\nbody",
+                "GET",
+                true
+        ));
+
+        assertThat(entry.requestSnapshot.method).isEqualTo("PURGE-CACHE");
+        assertThat(entry.requestSnapshot.parseWarning).isBlank();
+    }
+
+    @Test
+    void malformedRawEvidenceStillReceivesLimit() {
+        RedirectHop hop = redirectHop(
+                "BROKEN-EVIDENCE-SHOULD-BE-TRUNCATED",
+                "POST",
+                false
+        );
+
+        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent(), hop);
+        HistoryBodyTruncator.apply(entry, new HistoryRetentionPolicy(100, 10_000, 8, 1_000, true));
+
+        assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
+        assertThat(entry.requestSnapshot.rawTruncationReason).isEqualTo(HistoryBodyTruncator.RAW_REQUEST_EVIDENCE_LIMIT_REASON);
+        assertThat(entry.requestSnapshot.originalRawBodyLength)
+                .isEqualTo("BROKEN-EVIDENCE-SHOULD-BE-TRUNCATED".getBytes(StandardCharsets.UTF_8).length);
+        assertThat(entry.requestSnapshot.rawRequestSent).hasSize(8);
+        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("TRUNCATED");
+    }
+
+    @Test
+    void collectionIdAndNameRemainDistinct() {
         RunnerResult parent = parent();
         parent.collectionId = "col-123";
         parent.collectionName = "Collection Name";
 
         HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, redirectHop(
                 "PUT /redirect HTTP/1.1\r\nHost: api.example.test\r\n\r\nbody",
-                true));
+                "PUT",
+                true
+        ));
 
         assertThat(entry.collectionId).isEqualTo("col-123");
         assertThat(entry.collectionName).isEqualTo("Collection Name");
-        assertThat(entry.collectionId).isNotEqualTo(entry.collectionName);
         assertThat(entry.requestSnapshot.buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
-    }
-
-    @Test
-    void malformedRawRequestKeepsRawEvidenceAndParseWarning() {
-        RunnerResult parent = parent();
-        RedirectHop hop = new RedirectHop();
-        hop.sourceUrl = "https://api.example.test/malformed";
-        hop.sourceMethod = "POST";
-        hop.rawRequestBytes = "BROKEN".getBytes(StandardCharsets.UTF_8);
-        hop.rawRequestText = "BROKEN";
-        hop.followed = false;
-
-        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, hop);
-
-        assertThat(entry.requestSnapshot.parseWarning).isNotBlank();
-        assertThat(entry.requestSnapshot.headersAsAuthored).isEmpty();
-        assertThat(entry.requestSnapshot.bodyAsAuthored).isEmpty();
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("BROKEN");
-    }
-
-    @Test
-    void redirectHopRequestLineAndMethodAreParsed() {
-        RunnerResult parent = parent();
-        RedirectHop hop = redirectHop(
-                "PATCH /redirect HTTP/1.1\r\nHost: api.example.test\r\n\r\nbody",
-                true);
-
-        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, hop);
-
-        assertThat(entry.requestSnapshot.method).isEqualTo("PATCH");
-        assertThat(entry.requestSnapshot.urlTemplate).isEqualTo("https://api.example.test/redirect");
-        assertThat(entry.requestSnapshot.resolvedUrl).isEqualTo("https://api.example.test/redirect");
-    }
-
-    @Test
-    void redirectHopBodyTruncationPreservesHeaders() {
-        RunnerResult parent = parent();
-        RedirectHop hop = redirectHop(
-                "POST /redirect HTTP/1.1\r\nHost: api.example.test\r\nX-Test: one\r\n\r\nabcdefghij",
-                true);
-
-        HistoryEntry entry = HistoryEntry.fromRedirectHop(parent, hop);
-        HistoryBodyTruncator.apply(entry, new HistoryRetentionPolicy(100, 1_000, 4, 1_000, true));
-
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("X-Test: one");
-        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("efghij");
-        assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
-        assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
     }
 
     private static RunnerResult parent() {
@@ -121,11 +149,11 @@ class HistoryRedirectHopSnapshotTest {
         return result;
     }
 
-    private static RedirectHop redirectHop(String rawRequest, boolean followed) {
+    private static RedirectHop redirectHop(String rawRequest, String sourceMethod, boolean followed) {
         RedirectHop hop = new RedirectHop();
         hop.hopNumber = 1;
         hop.sourceUrl = "https://api.example.test/redirect";
-        hop.sourceMethod = "GET";
+        hop.sourceMethod = sourceMethod;
         hop.statusCode = 302;
         hop.location = "https://api.example.test/next";
         hop.targetUrl = "https://api.example.test/next";

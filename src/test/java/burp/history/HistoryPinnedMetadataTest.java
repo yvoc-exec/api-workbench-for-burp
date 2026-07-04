@@ -128,4 +128,101 @@ class HistoryPinnedMetadataTest {
         assertThat(reread.analystNotes).isEqualTo("Reviewed");
         assertThat(reread.tags).containsExactly("Auth", "Evidence");
     }
+
+    @Test
+    void atomicEvidenceUpdatePinsBeforeRetention() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "atomic-pin");
+        long baseSize = store.getById(entry.id).estimatedStoredBytes();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, baseSize + 32, 1_000_000, 1_000_000, true));
+
+        HistoryEntry updated = store.updateEvidenceMetadata(
+                entry.id,
+                true,
+                "N".repeat(512),
+                List.of(" Auth ", "auth", "Evidence")
+        );
+
+        assertThat(updated).isNotNull();
+        assertThat(updated.pinned).isTrue();
+        assertThat(updated.analystNotes).hasSize(512);
+        assertThat(updated.tags).containsExactly("Auth", "Evidence");
+        assertThat(store.getById(entry.id)).isNotNull();
+        assertThat(store.getRetentionStats().overBudget()).isTrue();
+    }
+
+    @Test
+    void atomicEvidenceUpdateReportsOverBudgetWhenPinnedEntryExceedsBudget() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "atomic-over-budget");
+        long baseSize = store.getById(entry.id).estimatedStoredBytes();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, baseSize + 8, 1_000_000, 1_000_000, true));
+
+        HistoryEntry updated = store.updateEvidenceMetadata(entry.id, true, "Reviewed-" + "X".repeat(256), List.of("Evidence"));
+
+        assertThat(updated).isNotNull();
+        assertThat(updated.pinned).isTrue();
+        assertThat(store.getRetentionStats().overBudget()).isTrue();
+        assertThat(store.snapshot()).extracting(value -> value.id).containsExactly(entry.id);
+    }
+
+    @Test
+    void atomicEvidenceUpdateEvictsEligibleUnpinnedEntry() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "atomic-evict");
+        long baseSize = store.getById(entry.id).estimatedStoredBytes();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(10, baseSize + 16, 1_000_000, 1_000_000, true));
+
+        HistoryEntry updated = store.updateEvidenceMetadata(entry.id, false, "Z".repeat(512), List.of("Evidence"));
+
+        assertThat(updated).isNull();
+        assertThat(store.getById(entry.id)).isNull();
+        assertThat(store.getRetentionStats().entryCount()).isZero();
+        assertThat(store.getRetentionStats().overBudget()).isFalse();
+    }
+
+    @Test
+    void atomicEvidenceUpdateNormalizesTags() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "atomic-tags");
+
+        HistoryEntry updated = store.updateEvidenceMetadata(entry.id, false, "Reviewed", List.of(" Auth ", "auth", " Evidence ", "", "evidence"));
+
+        assertThat(updated.tags).containsExactly("Auth", "Evidence");
+        assertThat(store.getById(entry.id).tags).containsExactly("Auth", "Evidence");
+    }
+
+    @Test
+    void atomicEvidenceUpdateReturnsDefensiveCopy() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "atomic-defensive");
+
+        HistoryEntry updated = store.updateEvidenceMetadata(entry.id, true, "Reviewed", List.of("Auth"));
+        updated.tags.add("Mutated");
+        updated.analystNotes = "Mutated";
+
+        HistoryEntry reread = store.getById(entry.id);
+        assertThat(reread.tags).containsExactly("Auth");
+        assertThat(reread.analystNotes).isEqualTo("Reviewed");
+    }
+
+    @Test
+    void legacyPinAndMetadataMethodsRemainCompatible() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = storedEntry(store, "legacy-compatible");
+
+        assertThat(store.updateAnalystMetadata(entry.id, "Reviewed", List.of("Auth", "auth"))).isNotNull();
+        assertThat(store.setPinned(entry.id, true)).isTrue();
+
+        HistoryEntry reread = store.getById(entry.id);
+        assertThat(reread.pinned).isTrue();
+        assertThat(reread.analystNotes).isEqualTo("Reviewed");
+        assertThat(reread.tags).containsExactly("Auth");
+    }
+
+    private static HistoryEntry storedEntry(HistoryStore store, String id) {
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                id, Instant.parse("2026-06-15T02:00:00Z"));
+        return store.addEntry(entry);
+    }
 }

@@ -16,7 +16,7 @@ import java.util.Set;
  * single place for future schema migrations.</p>
  */
 public final class WorkspaceStateMigrator {
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = WorkspaceState.CURRENT_VERSION;
 
     private WorkspaceStateMigrator() {
     }
