@@ -2,6 +2,9 @@ package burp;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
+import burp.parser.ParserRegistry;
+import burp.scripts.capabilities.ScriptTrustReviewModel;
+import burp.ui.ScriptTrustReviewDialog;
 import burp.ui.contextmenu.ApiWorkbenchContextMenuProvider;
 import burp.ui.history.HistoryEvidenceBundleUiInstaller;
 import burp.ui.traffic.BurpTrafficWorkflowCoordinator;
@@ -11,8 +14,11 @@ import burp.utils.WorkspaceStateService;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import java.awt.GraphicsEnvironment;
+import java.awt.Window;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.InvocationTargetException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * API Workbench for Burp Suite.
@@ -49,6 +55,7 @@ public class BurpExtender implements BurpExtension {
         }
 
         api.extension().registerUnloadingHandler(() -> {
+            ParserRegistry.clearScriptTrustReviewHandler();
             closeContextMenuProvider();
             if (importer != null) {
                 importer.cleanup();
@@ -74,6 +81,7 @@ public class BurpExtender implements BurpExtension {
                 throw new IllegalStateException("API Workbench main panel is null.");
             }
 
+            installScriptTrustReviewHandler(mainPanel);
             api.logging().logToOutput("Registering API Workbench suite tab...");
             api.userInterface().registerSuiteTab("API Workbench", mainPanel);
 
@@ -84,6 +92,7 @@ public class BurpExtender implements BurpExtension {
             registerContextMenuProvider(api);
             api.logging().logToOutput("API Workbench suite tab registered successfully.");
         } catch (Throwable t) {
+            ParserRegistry.clearScriptTrustReviewHandler();
             closeContextMenuProvider();
             api.logging().logToError("API Workbench UI initialization failed: " + t);
             StringWriter traceWriter = new StringWriter();
@@ -95,6 +104,33 @@ public class BurpExtender implements BurpExtension {
                 }
             }
         }
+    }
+
+    private void installScriptTrustReviewHandler(JPanel mainPanel) {
+        ParserRegistry.setScriptTrustReviewHandler(model -> {
+            if (model == null || model.totalScriptCount() == 0) {
+                return ScriptTrustReviewModel.Decision.KEEP_ALL_DISABLED;
+            }
+            AtomicReference<ScriptTrustReviewModel.Decision> decision = new AtomicReference<>(
+                    ScriptTrustReviewModel.Decision.KEEP_ALL_DISABLED);
+            Runnable review = () -> {
+                Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+                decision.set(new ScriptTrustReviewDialog(owner, model).showDialog());
+            };
+            if (SwingUtilities.isEventDispatchThread()) {
+                review.run();
+            } else {
+                try {
+                    SwingUtilities.invokeAndWait(review);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return ScriptTrustReviewModel.Decision.CANCEL_IMPORT;
+                } catch (InvocationTargetException failure) {
+                    return ScriptTrustReviewModel.Decision.CANCEL_IMPORT;
+                }
+            }
+            return decision.get();
+        });
     }
 
     synchronized boolean registerContextMenuProvider(MontoyaApi api) {
