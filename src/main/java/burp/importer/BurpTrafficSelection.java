@@ -30,4 +30,17 @@ public final class BurpTrafficSelection {
         this.fallbackMethod = fallbackMethod;
         this.encounterIndex = encounterIndex;
     }
+
+    public BurpTrafficSelection copy() {
+        return new BurpTrafficSelection(
+                rawRequestBytes,
+                rawResponseBytes,
+                serviceHost,
+                servicePort,
+                secure,
+                sourceContext,
+                suggestedDisplayName,
+                fallbackMethod,
+                encounterIndex);
+    }
 }
