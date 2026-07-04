@@ -98,7 +98,10 @@ class HistoryEvidenceBundleServiceTest {
         assertThat(manifest.get("entryCount").getAsInt()).isEqualTo(1);
 
         JsonObject manifestEntry = manifest.getAsJsonArray("entries").get(0).getAsJsonObject();
-        assertThat(manifestEntry.get("requestRepresentation").getAsString()).isEqualTo("EXACT_RAW");
+        assertThat(manifestEntry.get("requestRepresentation").getAsString())
+                .isEqualTo("EXACT_RAW_TRUNCATED");
+        assertThat(manifestEntry.get("responseRepresentation").getAsString())
+                .isEqualTo("RECONSTRUCTED_TRUNCATED");
         assertThat(manifestEntry.getAsJsonObject("requestTruncation").get("rawBodyTruncated").getAsBoolean()).isTrue();
         assertThat(manifestEntry.getAsJsonObject("responseTruncation").get("bodyTruncated").getAsBoolean()).isTrue();
         JsonObject fileDescriptors = manifestEntry.getAsJsonObject("files");
