@@ -3,6 +3,7 @@ package burp;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.ui.contextmenu.ApiWorkbenchContextMenuProvider;
+import burp.ui.history.HistoryEvidenceBundleUiInstaller;
 import burp.ui.traffic.BurpTrafficWorkflowCoordinator;
 import burp.utils.ScriptModeDetector;
 import burp.utils.WorkspaceStateService;
@@ -79,6 +80,7 @@ public class BurpExtender implements BurpExtension {
             api.logging().logToOutput("Restoring API Workbench workspace state...");
             importer.restoreWorkspaceStateAfterUiRegistration();
 
+            new HistoryEvidenceBundleUiInstaller().install(mainPanel);
             registerContextMenuProvider(api);
             api.logging().logToOutput("API Workbench suite tab registered successfully.");
         } catch (Throwable t) {
