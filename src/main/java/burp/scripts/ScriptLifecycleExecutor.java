@@ -1,14 +1,26 @@
 package burp.scripts;
 
 import burp.models.ApiRequest;
+import burp.scripts.capabilities.ScriptCapabilityAnalyzer;
+import burp.scripts.capabilities.ScriptCapabilityFinding;
+import burp.scripts.capabilities.ScriptCapabilityReport;
 
 import java.util.List;
 
 public class ScriptLifecycleExecutor {
+    public static final String UNSUPPORTED_SCRIPT_CAPABILITY = "UNSUPPORTED_SCRIPT_CAPABILITY";
+
     private final GraalJsSandboxEngine sandboxEngine;
+    private final ScriptCapabilityAnalyzer capabilityAnalyzer;
 
     public ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine) {
+        this(sandboxEngine, new ScriptCapabilityAnalyzer());
+    }
+
+    ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine,
+                            ScriptCapabilityAnalyzer capabilityAnalyzer) {
         this.sandboxEngine = sandboxEngine;
+        this.capabilityAnalyzer = capabilityAnalyzer != null ? capabilityAnalyzer : new ScriptCapabilityAnalyzer();
     }
 
     public ScriptExecutionResult execute(ScriptExecutionContext context, List<ScriptBlock> blocks) {
@@ -36,6 +48,32 @@ public class ScriptLifecycleExecutor {
             if (block == null || !block.enabled || block.source == null || block.source.isBlank()) {
                 continue;
             }
+            ScriptCapabilityReport capabilityReport = capabilityAnalyzer.analyzeAndAnnotate(block);
+            if (capabilityReport.hasUnsupportedCapabilities()) {
+                for (ScriptCapabilityFinding finding : capabilityReport.findings()) {
+                    if (finding == null || finding.supported()) {
+                        continue;
+                    }
+                    result.unsupportedCapabilities.add(new ScriptUnsupportedCapability(
+                            block.id,
+                            block.dialect,
+                            block.phase,
+                            block.scope,
+                            finding.apiName(),
+                            finding.safeMessage(),
+                            finding.riskLevel(),
+                            block.sourcePath));
+                }
+                context.error(
+                        UNSUPPORTED_SCRIPT_CAPABILITY + ": " + capabilityReport.unsupportedSummary(),
+                        block.id,
+                        block.sourceFormat);
+                if (context.scriptErrorsStopExecution) {
+                    break;
+                }
+                continue;
+            }
+
             VariableScopeStore.Snapshot blockCheckpoint = context.variableStore.checkpoint();
             ApiRequest blockRequestSnapshot = ScriptExecutionContext.copyRequest(context.request);
             int mutationCountBeforeBlock = result.variableMutations.size();
@@ -90,7 +128,8 @@ public class ScriptLifecycleExecutor {
             return "";
         }
         String id = block.id != null && !block.id.isBlank() ? block.id : null;
-        String name = block.metadata != null ? block.metadata.get("name") : null; name = name != null && !name.isBlank() ? name : null;
+        String name = block.metadata != null ? block.metadata.get("name") : null;
+        name = name != null && !name.isBlank() ? name : null;
         if (id == null && name == null) {
             return "";
         }
