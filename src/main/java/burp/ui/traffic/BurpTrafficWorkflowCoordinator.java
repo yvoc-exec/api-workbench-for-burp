@@ -20,6 +20,7 @@ import java.awt.Window;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -258,12 +259,20 @@ public final class BurpTrafficWorkflowCoordinator {
             after.selectedRequestName = first.name;
         }
         if (plan.queueInRunner) {
-            after.runnerQueuedRequestIdentityKeys = new ArrayList<>();
-            for (ApiRequest request : inserted) {
-                if (request != null && !request.disabled) {
-                    after.runnerQueuedRequestIdentityKeys.add(identityKey(destination.name, request));
+            LinkedHashSet<String> queued = new LinkedHashSet<>();
+            if (after.runnerQueuedRequestIdentityKeys != null) {
+                for (String existing : after.runnerQueuedRequestIdentityKeys) {
+                    if (existing != null && !existing.isBlank()) {
+                        queued.add(existing);
+                    }
                 }
             }
+            for (ApiRequest request : inserted) {
+                if (request != null && !request.disabled) {
+                    queued.add(identityKey(destination.name, request));
+                }
+            }
+            after.runnerQueuedRequestIdentityKeys = new ArrayList<>(queued);
             after.selectedTabIndex = 3;
         }
         return after;
