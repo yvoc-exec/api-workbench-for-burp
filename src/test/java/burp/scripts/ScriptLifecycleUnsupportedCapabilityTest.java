@@ -47,8 +47,8 @@ class ScriptLifecycleUnsupportedCapabilityTest {
         block.sourceFormat = "postman";
 
         UnsupportedScriptCapabilityException failure = catchThrowableOfType(
-                UnsupportedScriptCapabilityException.class,
-                () -> executor.execute(context, List.of(block)));
+                () -> executor.execute(context, List.of(block)),
+                UnsupportedScriptCapabilityException.class);
         ScriptExecutionResult result = failure.result();
 
         assertThat(failure).hasMessageContaining(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
