@@ -28,6 +28,7 @@ class ParserRegistryScriptTrustTest {
         Path collectionFile = writePostmanCollection();
         CollectionParser parser = new ParserRegistry().detectParser(collectionFile.toFile());
 
+        assertThat(parser).isInstanceOf(PostmanParser.class);
         ApiCollection collection = parser.parse(collectionFile.toFile());
 
         assertThat(collection.requests).hasSize(1);
