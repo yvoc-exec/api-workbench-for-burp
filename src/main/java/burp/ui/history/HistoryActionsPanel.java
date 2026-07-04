@@ -29,6 +29,7 @@ public class HistoryActionsPanel extends JPanel {
     private Runnable exportJsonAction;
     private Runnable exportCsvAction;
     private Runnable exportHarAction;
+    private Runnable exportEvidenceBundleAction;
     private Runnable deleteAction;
     private Runnable clearAction;
     private Runnable pinAction;
@@ -94,6 +95,10 @@ public class HistoryActionsPanel extends JPanel {
 
     public void setExportHarAction(Runnable exportHarAction) {
         this.exportHarAction = exportHarAction;
+    }
+
+    public void setExportEvidenceBundleAction(Runnable exportEvidenceBundleAction) {
+        this.exportEvidenceBundleAction = exportEvidenceBundleAction;
     }
 
     public void setDeleteAction(Runnable deleteAction) {
@@ -224,9 +229,13 @@ public class HistoryActionsPanel extends JPanel {
         csv.addActionListener(e -> trigger(exportCsvAction));
         JMenuItem har = new JMenuItem("Export HAR");
         har.addActionListener(e -> trigger(exportHarAction));
+        JMenuItem evidence = new JMenuItem("Export Evidence Bundle");
+        evidence.addActionListener(e -> trigger(exportEvidenceBundleAction));
         menu.add(json);
         menu.add(csv);
         menu.add(har);
+        menu.addSeparator();
+        menu.add(evidence);
         menu.show(exportButton, 0, exportButton.getHeight());
     }
 
