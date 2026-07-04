@@ -16,7 +16,7 @@ import java.util.function.Function;
 /**
  * Registry of all collection parsers. Auto-detects format and applies the
  * centralized file-import script trust policy before parsed collections leave
- * the registry.
+ * a registry-owned parser.
  */
 public class ParserRegistry {
     private static volatile Function<ScriptTrustReviewModel, ScriptTrustReviewModel.Decision> trustReviewHandler;
@@ -30,12 +30,12 @@ public class ParserRegistry {
 
     ParserRegistry(ScriptTrustImportService trustImportService) {
         this.trustImportService = trustImportService != null ? trustImportService : new ScriptTrustImportService();
-        parsers.add(wrap(new ApiWorkbenchCollectionParser()));
-        parsers.add(wrap(new PostmanParser()));
-        parsers.add(wrap(new BrunoParser()));
-        parsers.add(wrap(new OpenApiParser()));
-        parsers.add(wrap(new InsomniaParser()));
-        parsers.add(wrap(new HarParser()));
+        parsers.add(new TrustAwareApiWorkbenchCollectionParser());
+        parsers.add(new TrustAwarePostmanParser());
+        parsers.add(new TrustAwareBrunoParser());
+        parsers.add(new TrustAwareOpenApiParser());
+        parsers.add(new TrustAwareInsomniaParser());
+        parsers.add(new TrustAwareHarParser());
     }
 
     public static void setScriptTrustReviewHandler(
@@ -68,47 +68,68 @@ public class ParserRegistry {
         return exts.toArray(new String[0]);
     }
 
-    private CollectionParser wrap(CollectionParser delegate) {
-        return new CollectionParser() {
-            @Override
-            public boolean canParse(File file) {
-                return delegate.canParse(file);
-            }
+    private ApiCollection finalizeFileImport(ApiCollection collection) throws ScriptImportCancelledException {
+        if (collection == null) {
+            return null;
+        }
+        ScriptTrustReviewModel model = trustImportService.prepare(
+                List.of(collection),
+                ScriptImportOrigin.FILE_IMPORT);
+        if (model.totalScriptCount() == 0) {
+            return collection;
+        }
+        Function<ScriptTrustReviewModel, ScriptTrustReviewModel.Decision> handler = trustReviewHandler;
+        ScriptTrustReviewModel.Decision decision = handler != null
+                ? handler.apply(model)
+                : ScriptTrustReviewModel.Decision.KEEP_ALL_DISABLED;
+        model.setDecision(decision);
+        if (decision == ScriptTrustReviewModel.Decision.CANCEL_IMPORT) {
+            throw new ScriptImportCancelledException("Collection import cancelled during script trust review.");
+        }
+        trustImportService.applyDecision(List.of(collection), model);
+        return collection;
+    }
 
-            @Override
-            public ApiCollection parse(File file) throws Exception {
-                ApiCollection collection = delegate.parse(file);
-                if (collection == null) {
-                    return null;
-                }
-                ScriptTrustReviewModel model = trustImportService.prepare(
-                        List.of(collection),
-                        ScriptImportOrigin.FILE_IMPORT);
-                if (model.totalScriptCount() == 0) {
-                    return collection;
-                }
-                Function<ScriptTrustReviewModel, ScriptTrustReviewModel.Decision> handler = trustReviewHandler;
-                ScriptTrustReviewModel.Decision decision = handler != null
-                        ? handler.apply(model)
-                        : ScriptTrustReviewModel.Decision.KEEP_ALL_DISABLED;
-                model.setDecision(decision);
-                if (decision == ScriptTrustReviewModel.Decision.CANCEL_IMPORT) {
-                    throw new ScriptImportCancelledException("Collection import cancelled during script trust review.");
-                }
-                trustImportService.applyDecision(List.of(collection), model);
-                return collection;
-            }
+    private final class TrustAwareApiWorkbenchCollectionParser extends ApiWorkbenchCollectionParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
+    }
 
-            @Override
-            public String getFormatName() {
-                return delegate.getFormatName();
-            }
+    private final class TrustAwarePostmanParser extends PostmanParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
+    }
 
-            @Override
-            public String[] getSupportedExtensions() {
-                return delegate.getSupportedExtensions();
-            }
-        };
+    private final class TrustAwareBrunoParser extends BrunoParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
+    }
+
+    private final class TrustAwareOpenApiParser extends OpenApiParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
+    }
+
+    private final class TrustAwareInsomniaParser extends InsomniaParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
+    }
+
+    private final class TrustAwareHarParser extends HarParser {
+        @Override
+        public ApiCollection parse(File file) throws Exception {
+            return finalizeFileImport(super.parse(file));
+        }
     }
 
     public static final class ScriptImportCancelledException extends Exception {
