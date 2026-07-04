@@ -69,7 +69,10 @@ public class ScriptLifecycleExecutor {
                         UNSUPPORTED_SCRIPT_CAPABILITY + ": " + capabilityReport.unsupportedSummary(),
                         block.id,
                         block.sourceFormat);
-                break;
+                result.mutatedRequest = context.request;
+                result.effectiveVariables.clear();
+                result.effectiveVariables.putAll(context.variableStore.effectiveVariablesSnapshot());
+                throw new UnsupportedScriptCapabilityException(result);
             }
 
             VariableScopeStore.Snapshot blockCheckpoint = context.variableStore.checkpoint();
