@@ -82,7 +82,7 @@ class BurpTrafficWorkflowCoordinatorTest {
 
         assertThat(before.collections).hasSize(1);
         assertThat(after.collections).hasSize(2);
-        assertThat(after.collections.get(1).name).isEqualTo("Existing Collection (2)");
+        assertThat(after.collections.get(1).name).isEqualTo("Existing Collection 2");
         assertThat(after.collections.get(1).requests).singleElement()
                 .extracting(request -> request.id)
                 .isEqualTo("new-id");
