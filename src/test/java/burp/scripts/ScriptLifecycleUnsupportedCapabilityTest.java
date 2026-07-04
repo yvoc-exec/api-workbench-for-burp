@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -17,7 +18,7 @@ import static org.mockito.Mockito.when;
 
 class ScriptLifecycleUnsupportedCapabilityTest {
     @Test
-    void unsupportedCapabilityIsReportedAndNeverPassedToSandbox() throws Exception {
+    void unsupportedCapabilityIsReportedAndFailsClosedBeforeSandbox() throws Exception {
         GraalJsSandboxEngine engine = mock(GraalJsSandboxEngine.class);
         when(engine.getEngineName()).thenReturn("MockSandbox");
         ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
@@ -28,25 +29,30 @@ class ScriptLifecycleUnsupportedCapabilityTest {
         request.id = "request-id";
         request.name = "Request";
         request.method = "GET";
-        request.url = "https://example.test/original";
+        request.url = "https://example.invalid/original";
         ScriptExecutionContext context = new ScriptExecutionContext(
                 collection,
                 request,
                 null,
                 ExecutionSource.WORKBENCH_SEND,
                 1);
-        context.scriptErrorsStopExecution = true;
+        context.scriptErrorsStopExecution = false;
 
         ScriptBlock block = ScriptBlock.of(
-                "pm.sendRequest('https://example.test/side-effect');",
+                "pm.sendRequest('https://example.invalid/blocked');",
                 ScriptDialect.POSTMAN,
                 ScriptPhase.PRE_REQUEST,
                 ScriptScope.REQUEST);
         block.id = "blocked-script";
         block.sourceFormat = "postman";
 
-        ScriptExecutionResult result = executor.execute(context, List.of(block));
+        UnsupportedScriptCapabilityException failure = catchThrowableOfType(
+                UnsupportedScriptCapabilityException.class,
+                () -> executor.execute(context, List.of(block)));
+        ScriptExecutionResult result = failure.result();
 
+        assertThat(failure).hasMessageContaining(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
+                .hasMessageContaining("sendRequest");
         assertThat(result.success).isFalse();
         assertThat(result.hasUnsupportedCapabilities()).isTrue();
         assertThat(result.unsupportedCapabilities).singleElement().satisfies(issue -> {
@@ -58,7 +64,7 @@ class ScriptLifecycleUnsupportedCapabilityTest {
                 assertThat(error)
                         .contains(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
                         .contains("sendRequest"));
-        assertThat(result.mutatedRequest.url).isEqualTo("https://example.test/original");
+        assertThat(result.mutatedRequest.url).isEqualTo("https://example.invalid/original");
         verify(engine, never()).execute(anyString(), anyMap(), any(Runnable.class));
     }
 }
