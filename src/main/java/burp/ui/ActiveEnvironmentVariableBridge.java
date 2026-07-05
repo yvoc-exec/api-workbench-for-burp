@@ -30,7 +30,20 @@ public final class ActiveEnvironmentVariableBridge {
         if (editor == null) {
             return;
         }
-        editor.setVariableActionBridge(new Bridge(panel, editor));
+        editor.setVariableActionBridge(createBridge(panel, editor));
+    }
+
+    static RequestEditorPanel.VariableActionBridge createForTests(ImporterPanel panel) {
+        if (panel == null || panel.getRequestEditorForTests() == null) {
+            return null;
+        }
+        return createBridge(panel, panel.getRequestEditorForTests());
+    }
+
+    private static RequestEditorPanel.VariableActionBridge createBridge(
+            ImporterPanel panel,
+            RequestEditorPanel editor) {
+        return new Bridge(panel, editor);
     }
 
     private static final class Bridge implements RequestEditorPanel.VariableActionBridge {
