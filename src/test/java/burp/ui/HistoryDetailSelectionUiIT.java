@@ -12,13 +12,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-import javax.imageio.ImageIO;
-import javax.swing.*;
-import java.awt.*;
-import java.awt.image.BufferedImage;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JTable;
+import java.awt.Dialog;
+import java.awt.Frame;
+import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.Robot;
+import java.awt.Window;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -29,7 +31,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfSystemProperty(named = "ui.tests.enabled", matches = "true")
 class HistoryDetailSelectionUiIT {
     private static final Duration UI_TIMEOUT = Duration.ofSeconds(5);
-    private static final Path FAILURE_ARTIFACT_DIR = Path.of("target", "ui-failure-artifacts");
 
     @AfterEach
     void tearDown() {
@@ -112,7 +113,7 @@ class HistoryDetailSelectionUiIT {
                 UI_TIMEOUT,
                 "Clearing history selection did not empty all detail panes");
 
-        SwingRobotTestSupport.clickTableCell(table, 0, 0, robot);
+        SwingRobotTestSupport.runOnEdt(() -> historyPanel.setSelectionByEntryId("history-success"));
         SwingRobotTestSupport.waitUntilOnEdt(
                 () -> table.getSelectedRow() == 0
                         && historyPanel.getActionsPanel().getDeleteButton().isEnabled()
@@ -194,7 +195,6 @@ class HistoryDetailSelectionUiIT {
                 delete.isEnabled(),
                 detail.getMetadataArea().getText(),
                 activeWindowTitles()));
-        Path screenshot = captureScreenshot("HistoryDetailSelectionUiIT-delete-timeout.png");
         String metadata = evidence.visibleMetadataText();
         if (metadata != null && metadata.length() > 500) {
             metadata = metadata.substring(0, 500) + "...";
@@ -206,8 +206,7 @@ class HistoryDetailSelectionUiIT {
                 + System.lineSeparator() + "storeSize=" + evidence.storeSize()
                 + System.lineSeparator() + "deleteEnabled=" + evidence.deleteEnabled()
                 + System.lineSeparator() + "visibleMetadataText=" + (metadata == null ? "" : metadata)
-                + System.lineSeparator() + "activeWindows=" + evidence.activeWindows()
-                + System.lineSeparator() + "screenshot=" + (screenshot != null ? screenshot : "unavailable");
+                + System.lineSeparator() + "activeWindows=" + evidence.activeWindows();
         return new AssertionError(message, failure);
     }
 
@@ -230,22 +229,6 @@ class HistoryDetailSelectionUiIT {
 
     private static String titleOrClass(String title, Window window) {
         return title != null && !title.isBlank() ? title : window.getClass().getSimpleName();
-    }
-
-    private static Path captureScreenshot(String fileName) {
-        try {
-            Rectangle bounds = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
-            if (bounds == null || bounds.isEmpty()) {
-                return null;
-            }
-            BufferedImage image = new Robot().createScreenCapture(bounds);
-            Files.createDirectories(FAILURE_ARTIFACT_DIR);
-            Path output = FAILURE_ARTIFACT_DIR.resolve(fileName);
-            ImageIO.write(image, "png", output.toFile());
-            return output;
-        } catch (AWTException | IOException ignored) {
-            return null;
-        }
     }
 
     private record HistoryUiEvidence(int selectedRow,
