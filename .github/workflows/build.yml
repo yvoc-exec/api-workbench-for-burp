@@ -261,15 +261,38 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
-          - name: auth-utils-exporter
-            targetClasses: burp.auth.*,burp.utils.*,burp.exporter.*
+          - name: auth
+            targetClasses: burp.auth.*
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx1024m
+            mutationUnitSize: '50'
+          - name: utils
+            targetClasses: burp.utils.*
+            qualityGroup: auth-utils-exporter
             jvmArgs: -Xmx1536m
             mutationUnitSize: '50'
-          - name: history-parser-runner
-            targetClasses: burp.history.*,burp.parser.*,burp.runner.*
+          - name: exporter
+            targetClasses: burp.exporter.*
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx1024m
+            mutationUnitSize: '50'
+          - name: history
+            targetClasses: burp.history.*
+            qualityGroup: history-parser-runner
+            jvmArgs: -Xmx1536m
+            mutationUnitSize: '50'
+          - name: parser
+            targetClasses: burp.parser.*
+            qualityGroup: history-parser-runner
             jvmArgs: -Xmx2048m
+            mutationUnitSize: '50'
+          - name: runner
+            targetClasses: burp.runner.*
+            qualityGroup: history-parser-runner
+            jvmArgs: -Xmx1536m
             mutationUnitSize: '50'
     steps:
       - uses: actions/checkout@v7.0.0
@@ -280,7 +303,12 @@ jobs:
           java-version: '17'
           cache: maven
       - name: Show mutation shard target classes
-        run: 'echo "PIT target classes: ${{ matrix.targetClasses }}"'
+        run: |
+          echo "Shard name: ${{ matrix.name }}"
+          echo "Quality group: ${{ matrix.qualityGroup }}"
+          echo "Target classes: ${{ matrix.targetClasses }}"
+          echo "JVM arguments: ${{ matrix.jvmArgs }}"
+          echo "Mutation unit size: ${{ matrix.mutationUnitSize }}"
       - name: Run PIT mutation coverage
         run: >-
           mvn -B test-compile -Pmutation-tests org.pitest:pitest-maven:mutationCoverage
@@ -289,7 +317,7 @@ jobs:
           -DjvmArgs=${{ matrix.jvmArgs }}
           -DmutationUnitSize=${{ matrix.mutationUnitSize }}
           -DreportsDirectory=target/pit-${{ matrix.name }}
-          -DmutationThreshold=54
+          -DmutationThreshold=0
       - name: Upload PIT and test reports
         if: always()
         uses: actions/upload-artifact@v7.0.1
@@ -303,6 +331,52 @@ jobs:
             target/*.dump
             target/*.dumpstream
 
+  mutation-tests-gate:
+    name: Mutation aggregate quality gate (Ubuntu, JDK 17)
+    if: always() && needs.resolve-mode.outputs.run_full == 'true'
+    needs:
+      - resolve-mode
+      - mutation-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Download mutation test reports
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-tests-*-reports-ubuntu-java17
+          path: target/pit-artifacts
+          merge-multiple: true
+      - name: Run mutation aggregate quality gate
+        if: always()
+        run: |
+          python3 scripts/ci/check_pit_reports.py \
+            --reports-root target/pit-artifacts \
+            --threshold 54 \
+            --group auth-utils-exporter=auth,utils,exporter \
+            --group history-parser-runner=history,parser,runner \
+            --output-json target/pit-aggregate-summary.json \
+            --output-text target/pit-aggregate-summary.txt
+      - name: Verify mutation matrix completed successfully
+        if: always()
+        run: |
+          result="${{ needs.mutation-tests.result }}"
+          if [ "$result" != "success" ]; then
+            echo "mutation-tests result was $result"
+            exit 1
+          fi
+      - name: Upload mutation aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutation-tests-aggregate-gate-ubuntu-java17
+          if-no-files-found: warn
+          path: |
+            target/pit-aggregate-summary.json
+            target/pit-aggregate-summary.txt
+            target/pit-artifacts/**
+
   package-jar:
     name: Package canonical validated shaded JAR (Ubuntu, JDK 17)
     if: >-
@@ -312,7 +386,8 @@ jobs:
       needs.ui-tests.result == 'success' &&
       needs.static-analysis.result == 'success' &&
       needs.performance-tests.result == 'success' &&
-      needs.mutation-tests.result == 'success'
+      needs.mutation-tests.result == 'success' &&
+      needs.mutation-tests-gate.result == 'success'
     needs:
       - resolve-mode
       - core-tests
@@ -321,6 +396,7 @@ jobs:
       - static-analysis
       - performance-tests
       - mutation-tests
+      - mutation-tests-gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
