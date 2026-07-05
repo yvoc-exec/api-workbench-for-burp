@@ -25,7 +25,7 @@ public class UnifiedScriptRuntime {
     UnifiedScriptRuntime(MontoyaApi api, burp.utils.ScriptMode scriptMode, long timeoutMillis) {
         this.api = api;
         this.scriptMode = scriptMode != null ? scriptMode : burp.utils.ScriptMode.DISABLED;
-        this.sandboxEngine = new GraalJsSandboxEngine(timeoutMillis);
+        this.sandboxEngine = new ReentrantGraalJsSandboxEngine(timeoutMillis);
         this.lifecycleExecutor = new ScriptLifecycleExecutor(sandboxEngine);
     }
 
