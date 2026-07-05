@@ -14,7 +14,6 @@ import burp.ui.history.HistoryPanel;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
-import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.List;
@@ -48,18 +47,19 @@ class HistorySendToRepeaterActionTest {
     @Test
     void sendToRepeaterFromHistoryDoesNotCreateHistoryReplaysWhenOriginalRequestMissing() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
+        doReturn("History Replay")
+                .when(bundle.importer)
+                .generateRepeaterTabName(ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
+
         bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
         bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
         bundle.panel.setActiveEnvironmentId(HistoryTestFixtures.ENVIRONMENT_ID);
         ImporterPanelTestSupport.setField(bundle.panel, "historyLoadResultNotifier", new NoOpNotifier());
+        ImporterPanelTestSupport.awaitEdt();
 
         List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
         ApiCollection liveCollection = loadedCollections.get(0);
         liveCollection.requests.remove(0);
-
-        doReturn("History Replay")
-                .when(bundle.importer)
-                .generateRepeaterTabName(ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
 
         ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
