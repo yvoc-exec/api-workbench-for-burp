@@ -1,0 +1,15 @@
+name: One-shot Full Validation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-full-validation.yml
+
+jobs:
+  full-validation:
+    uses: ./.github/workflows/build.yml
+    with:
+      mode: full
+    secrets: inherit
