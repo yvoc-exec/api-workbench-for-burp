@@ -20,6 +20,7 @@ import org.mockito.Mockito;
 
 import javax.swing.JProgressBar;
 import javax.swing.JSpinner;
+import javax.swing.SwingUtilities;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
@@ -51,15 +52,16 @@ class ImporterPanelRunnerHeadlessLifecycleTest {
         ApiRequest first = request("One");
         ApiRequest second = request("Two");
         ApiCollection collection = collection("Paused", first, second);
-        panel.restoreWorkspaceCollections(List.of(collection));
-        panel.queueRunnerRequestsForTests(List.of(first, second));
-
-        ImporterPanelTestSupport.invokeVoid(
-                panel,
-                "startRunnerExecution",
-                new Class<?>[]{List.class, boolean.class},
-                List.of(first, second),
-                true);
+        SwingUtilities.invokeAndWait(() -> {
+            panel.restoreWorkspaceCollections(List.of(collection));
+            panel.queueRunnerRequestsForTests(List.of(first, second));
+            ImporterPanelTestSupport.invokeVoid(
+                    panel,
+                    "startRunnerExecution",
+                    new Class<?>[]{List.class, boolean.class},
+                    List.of(first, second),
+                    true);
+        });
 
         assertThat(firstResult.await(5, TimeUnit.SECONDS)).isTrue();
         ImporterPanelTestSupport.awaitCondition(
@@ -70,7 +72,8 @@ class ImporterPanelRunnerHeadlessLifecycleTest {
                         && panel.getResumeRunnerButtonForTests().isEnabled(),
                 Duration.ofSeconds(5));
 
-        panel.getCancelRunnerButtonForTests().doClick();
+        SwingUtilities.invokeAndWait(
+                () -> panel.getCancelRunnerButtonForTests().doClick());
 
         assertThat(terminal.await(10, TimeUnit.SECONDS)).isTrue();
         awaitCancelledAndIdle(panel, runner);
@@ -97,31 +100,33 @@ class ImporterPanelRunnerHeadlessLifecycleTest {
         ApiRequest first = request("One");
         ApiRequest second = request("Two");
         ApiCollection collection = collection("Delay", first, second);
-        panel.restoreWorkspaceCollections(List.of(collection));
-        panel.queueRunnerRequestsForTests(List.of(first, second));
-        JSpinner delaySpinner = ImporterPanelTestSupport.getField(panel, "runnerDelaySpinner");
-        delaySpinner.setValue(5_000);
-
-        ImporterPanelTestSupport.invokeVoid(
-                panel,
-                "startRunnerExecution",
-                new Class<?>[]{List.class, boolean.class},
-                List.of(first, second),
-                false);
+        SwingUtilities.invokeAndWait(() -> {
+            panel.restoreWorkspaceCollections(List.of(collection));
+            panel.queueRunnerRequestsForTests(List.of(first, second));
+            JSpinner delaySpinner = ImporterPanelTestSupport.getField(
+                    panel,
+                    "runnerDelaySpinner");
+            delaySpinner.setValue(5_000);
+            ImporterPanelTestSupport.invokeVoid(
+                    panel,
+                    "startRunnerExecution",
+                    new Class<?>[]{List.class, boolean.class},
+                    List.of(first, second),
+                    false);
+        });
 
         assertThat(firstResult.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(runner.getResults()).hasSize(1);
-        panel.getCancelRunnerButtonForTests().doClick();
+        SwingUtilities.invokeAndWait(
+                () -> panel.getCancelRunnerButtonForTests().doClick());
 
         assertThat(terminal.await(10, TimeUnit.SECONDS)).isTrue();
         awaitCancelledAndIdle(panel, runner);
         RunnerTerminationResult termination = runner.getLastTerminationResult();
         assertThat(termination.completedCount).isEqualTo(1);
         assertThat(termination.totalQueuedCount).isEqualTo(2);
-        assertThat(runner.getResults())
-                .singleElement()
-                .extracting(result -> result.requestName)
-                .isEqualTo("One");
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
         JProgressBar progress = ImporterPanelTestSupport.getField(panel, "runnerProgress");
         assertThat(progress.getString()).contains("1/2");
     }
