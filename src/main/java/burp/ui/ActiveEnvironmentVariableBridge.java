@@ -5,6 +5,8 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.utils.RuntimeResolverFactory;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +17,8 @@ import java.util.Objects;
  * request editor's confirmed variable edit/create workflow.
  */
 public final class ActiveEnvironmentVariableBridge {
+    private static final VarHandle ENVIRONMENT_PROFILES = environmentProfilesHandle();
+
     private ActiveEnvironmentVariableBridge() {
     }
 
@@ -40,7 +44,7 @@ public final class ActiveEnvironmentVariableBridge {
 
         @Override
         public RequestEditorPanel.VariableHoverInfo inspect(String key) {
-            EnvironmentProfile active = activeEnvironmentSnapshot();
+            EnvironmentProfile active = activeEnvironment();
             ApiCollection collection = editor.getCurrentCollection();
             ApiRequest request = editor.getCurrentRequest();
             Map<String, String> runtimeOverlay = active == null
@@ -78,12 +82,12 @@ public final class ActiveEnvironmentVariableBridge {
 
         @Override
         public boolean hasActiveEnvironment() {
-            return activeEnvironmentSnapshot() != null;
+            return activeEnvironment() != null;
         }
 
         @Override
         public String activeEnvironmentName() {
-            EnvironmentProfile active = activeEnvironmentSnapshot();
+            EnvironmentProfile active = activeEnvironment();
             return active != null ? active.displayName() : null;
         }
 
@@ -98,22 +102,23 @@ public final class ActiveEnvironmentVariableBridge {
                 return false;
             }
 
-            List<EnvironmentProfile> profiles = panel.getEnvironmentProfilesSnapshot();
-            EnvironmentProfile active = findEnvironment(profiles, activeId);
+            panel.setActiveEnvironmentId(activeId);
+            EnvironmentProfile active = activeEnvironment();
             if (active == null) {
                 return false;
             }
 
             active.ensureDefaults();
             String normalizedValue = value != null ? value : "";
-            if (persist) {
-                active.variables.put(key, normalizedValue);
-                active.runtimeVariables.remove(key);
-            } else {
-                active.runtimeVariables.put(key, normalizedValue);
+            synchronized (active) {
+                if (persist) {
+                    active.variables.put(key, normalizedValue);
+                    active.runtimeVariables.remove(key);
+                } else {
+                    active.runtimeVariables.put(key, normalizedValue);
+                }
             }
 
-            panel.replaceEnvironmentProfiles(profiles);
             panel.setActiveEnvironmentId(activeId);
             return true;
         }
@@ -126,20 +131,39 @@ public final class ActiveEnvironmentVariableBridge {
             }
         }
 
-        private EnvironmentProfile activeEnvironmentSnapshot() {
-            return findEnvironment(panel.getEnvironmentProfilesSnapshot(), panel.getActiveEnvironmentId());
-        }
-
-        private static EnvironmentProfile findEnvironment(List<EnvironmentProfile> profiles, String id) {
-            if (profiles == null || id == null) {
+        private EnvironmentProfile activeEnvironment() {
+            String activeId = panel.getActiveEnvironmentId();
+            if (activeId == null) {
                 return null;
             }
-            for (EnvironmentProfile profile : profiles) {
-                if (profile != null && Objects.equals(id, profile.id)) {
+            for (EnvironmentProfile profile : environmentProfiles(panel)) {
+                if (profile != null && Objects.equals(activeId, profile.id)) {
                     return profile;
                 }
             }
             return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<EnvironmentProfile> environmentProfiles(ImporterPanel panel) {
+        Object value = ENVIRONMENT_PROFILES.get(panel);
+        return value instanceof List<?> list
+                ? (List<EnvironmentProfile>) list
+                : Collections.emptyList();
+    }
+
+    private static VarHandle environmentProfilesHandle() {
+        try {
+            MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(
+                    ImporterPanel.class,
+                    MethodHandles.lookup());
+            return lookup.findVarHandle(
+                    ImporterPanel.class,
+                    "environmentProfiles",
+                    List.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
         }
     }
 }
