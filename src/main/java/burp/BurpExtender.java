@@ -4,6 +4,7 @@ import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.parser.ParserRegistry;
 import burp.scripts.capabilities.ScriptTrustReviewModel;
+import burp.ui.ActiveEnvironmentVariableBridge;
 import burp.ui.ScriptTrustReviewDialog;
 import burp.ui.contextmenu.ApiWorkbenchContextMenuProvider;
 import burp.ui.history.HistoryEvidenceBundleUiInstaller;
@@ -74,6 +75,7 @@ public class BurpExtender implements BurpExtension {
 
             api.logging().logToOutput("Creating UniversalImporter...");
             importer = new UniversalImporter(api, scriptResult.mode, workspaceStateService);
+            ActiveEnvironmentVariableBridge.install(importer.getUI());
 
             api.logging().logToOutput("Getting API Workbench main panel...");
             JPanel mainPanel = importer.getMainPanel();
