@@ -1,4 +1,4 @@
-name: Clean One-shot Full Validation Workflow
+name: Finalize One-shot Workflow Cleanup
 
 on:
   push:
@@ -14,13 +14,13 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Remove one-shot full validation workflow
+      - name: Remove this cleanup workflow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          path='.github/workflows/one-shot-full-validation.yml'
+          path='.github/workflows/cleanup-one-shot-full-validation.yml'
           sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=main" --jq .sha)"
           gh api --method DELETE "repos/$GITHUB_REPOSITORY/contents/$path" \
-            -f message='ci: remove one-shot full validation workflow' \
+            -f message='ci: remove one-shot workflow cleanup' \
             -f sha="$sha" \
             -f branch='main'
