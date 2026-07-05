@@ -5,7 +5,6 @@ import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -14,6 +13,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -25,6 +26,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     public static final long MAX_TIMEOUT_MILLIS = 60_000L;
 
     private static final AtomicInteger THREAD_ID = new AtomicInteger();
+    private static final AtomicInteger TIMEOUT_THREAD_ID = new AtomicInteger();
 
     private final boolean graalAvailable;
     private final boolean nashornFallbackAvailable;
@@ -33,6 +35,9 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     private final String graalFailure;
     private final String nashornFailure;
     private final ExecutorService executor;
+    private final boolean ownsExecutor;
+    private final ScheduledExecutorService timeoutScheduler;
+    private final ThreadLocal<Integer> executionDepth = ThreadLocal.withInitial(() -> 0);
     private final Set<ActiveExecution> activeExecutions = ConcurrentHashMap.newKeySet();
     private volatile long timeoutMillis;
 
@@ -41,8 +46,19 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     }
 
     GraalJsSandboxEngine(long timeoutMillis) {
+        this(timeoutMillis, null);
+    }
+
+    GraalJsSandboxEngine(long timeoutMillis, ExecutorService executor) {
         this.timeoutMillis = normalizeTimeout(timeoutMillis);
-        this.executor = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), daemonThreadFactory());
+        this.ownsExecutor = executor == null;
+        this.executor = executor != null
+                ? executor
+                : Executors.newFixedThreadPool(
+                        Math.max(2, Runtime.getRuntime().availableProcessors() / 2),
+                        daemonThreadFactory("api-workbench-script-", THREAD_ID));
+        this.timeoutScheduler = Executors.newSingleThreadScheduledExecutor(
+                daemonThreadFactory("api-workbench-script-timeout-", TIMEOUT_THREAD_ID));
         ProbeOutcome graalProbe = probeGraalJs();
         this.graalAvailable = graalProbe.available;
         this.graalFailure = graalProbe.failure;
@@ -96,25 +112,32 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return execute(source, bindings, beforeContextClose, timeoutMillis);
     }
 
-    public Object execute(String source, Map<String, Object> bindings, Runnable beforeContextClose, long timeoutMillis) throws Exception {
+    public Object execute(String source,
+                          Map<String, Object> bindings,
+                          Runnable beforeContextClose,
+                          long timeoutMillis) throws Exception {
         if (source == null || source.isBlank()) {
             return null;
         }
         long effectiveTimeout = normalizeTimeout(timeoutMillis);
+        if (executionDepth.get() > 0) {
+            return executeInline(source, bindings, beforeContextClose, effectiveTimeout);
+        }
+        return executeSubmitted(source, bindings, beforeContextClose, effectiveTimeout);
+    }
+
+    private Object executeSubmitted(String source,
+                                    Map<String, Object> bindings,
+                                    Runnable beforeContextClose,
+                                    long effectiveTimeout) throws Exception {
         ActiveExecution active = new ActiveExecution(effectiveTimeout);
-        Future<Object> future = executor.submit(() -> {
-            active.worker = Thread.currentThread();
-            try {
-                if (graalAvailable) {
-                    return executeWithGraal(source, bindings, active, beforeContextClose);
-                }
-                throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
-            } finally {
-                active.worker = null;
-            }
-        });
-        active.future = future;
         activeExecutions.add(active);
+        Future<Object> future = executor.submit(
+                () -> executeActive(source, bindings, active, beforeContextClose));
+        active.future = future;
+        if (active.cancelled) {
+            future.cancel(true);
+        }
         try {
             return future.get(effectiveTimeout, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
@@ -131,21 +154,78 @@ public class GraalJsSandboxEngine implements AutoCloseable {
             Thread.currentThread().interrupt();
             throw new ScriptCancelledException();
         } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
+            throw translateExecutionFailure(active, effectiveTimeout, e.getCause());
+        } finally {
+            active.completed = true;
+            activeExecutions.remove(active);
+            closeActiveContext(active);
+        }
+    }
+
+    private Object executeInline(String source,
+                                 Map<String, Object> bindings,
+                                 Runnable beforeContextClose,
+                                 long effectiveTimeout) throws Exception {
+        ActiveExecution active = new ActiveExecution(effectiveTimeout);
+        activeExecutions.add(active);
+        ScheduledFuture<?> timeoutTask = timeoutScheduler.schedule(() -> {
+            if (active.completed || active.cancelled) {
+                return;
+            }
+            active.timedOut = true;
+            closeActiveContext(active);
+        }, effectiveTimeout, TimeUnit.MILLISECONDS);
+        try {
+            return executeActive(source, bindings, active, beforeContextClose);
+        } finally {
+            active.completed = true;
+            timeoutTask.cancel(false);
+            activeExecutions.remove(active);
+            closeActiveContext(active);
+        }
+    }
+
+    private Object executeActive(String source,
+                                 Map<String, Object> bindings,
+                                 ActiveExecution active,
+                                 Runnable beforeContextClose) throws Exception {
+        active.worker = Thread.currentThread();
+        int previousDepth = executionDepth.get();
+        executionDepth.set(previousDepth + 1);
+        try {
             if (active.cancelled) {
                 throw new ScriptCancelledException();
             }
             if (active.timedOut) {
-                throw new ScriptTimedOutException(effectiveTimeout);
+                throw new ScriptTimedOutException(active.timeoutMillis);
             }
-            if (cause instanceof Exception exception) {
-                throw exception;
+            if (graalAvailable) {
+                return executeWithGraal(source, bindings, active, beforeContextClose);
             }
-            throw new Exception(cause);
+            throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
         } finally {
-            activeExecutions.remove(active);
-            closeActiveContext(active);
+            if (previousDepth == 0) {
+                executionDepth.remove();
+            } else {
+                executionDepth.set(previousDepth);
+            }
+            active.worker = null;
         }
+    }
+
+    private Exception translateExecutionFailure(ActiveExecution active,
+                                                long effectiveTimeout,
+                                                Throwable cause) {
+        if (active.cancelled) {
+            return new ScriptCancelledException();
+        }
+        if (active.timedOut) {
+            return new ScriptTimedOutException(effectiveTimeout);
+        }
+        if (cause instanceof Exception exception) {
+            return exception;
+        }
+        return new Exception(cause);
     }
 
     private Object executeWithGraal(String source,
@@ -154,6 +234,14 @@ public class GraalJsSandboxEngine implements AutoCloseable {
                                     Runnable beforeContextClose) throws Exception {
         Context context = createGraalContext();
         active.context = context;
+        if (active.cancelled) {
+            closeActiveContext(active);
+            throw new ScriptCancelledException();
+        }
+        if (active.timedOut) {
+            closeActiveContext(active);
+            throw new ScriptTimedOutException(active.timeoutMillis);
+        }
         try {
             if (bindings != null) {
                 Value jsBindings = context.getBindings("js");
@@ -207,7 +295,8 @@ public class GraalJsSandboxEngine implements AutoCloseable {
             }
             Value result = context.eval("js", "1 + 1");
             if (!isProbeSuccess(result)) {
-                return ProbeOutcome.unavailable("GraalJS probe returned unexpected result: " + describeValue(result));
+                return ProbeOutcome.unavailable(
+                        "GraalJS probe returned unexpected result: " + describeValue(result));
             }
             return ProbeOutcome.available();
         } catch (Throwable t) {
@@ -269,24 +358,6 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return sb.toString();
     }
 
-    private static final class ProbeOutcome {
-        final boolean available;
-        final String failure;
-
-        private ProbeOutcome(boolean available, String failure) {
-            this.available = available;
-            this.failure = failure;
-        }
-
-        static ProbeOutcome available() {
-            return new ProbeOutcome(true, null);
-        }
-
-        static ProbeOutcome unavailable(String failure) {
-            return new ProbeOutcome(false, failure);
-        }
-    }
-
     private String extractMessage(PolyglotException exception) {
         if (exception == null) {
             return "Unknown GraalJS error";
@@ -315,7 +386,10 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     @Override
     public void close() {
         cancelActiveExecutions();
-        executor.shutdownNow();
+        timeoutScheduler.shutdownNow();
+        if (ownsExecutor) {
+            executor.shutdownNow();
+        }
     }
 
     private static long normalizeTimeout(long configuredTimeout) {
@@ -325,9 +399,9 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return Math.max(MIN_TIMEOUT_MILLIS, Math.min(MAX_TIMEOUT_MILLIS, configuredTimeout));
     }
 
-    private static ThreadFactory daemonThreadFactory() {
+    private static ThreadFactory daemonThreadFactory(String prefix, AtomicInteger counter) {
         return runnable -> {
-            Thread thread = new Thread(runnable, "api-workbench-script-" + THREAD_ID.incrementAndGet());
+            Thread thread = new Thread(runnable, prefix + counter.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         };
@@ -343,6 +417,24 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         }
     }
 
+    private static final class ProbeOutcome {
+        final boolean available;
+        final String failure;
+
+        private ProbeOutcome(boolean available, String failure) {
+            this.available = available;
+            this.failure = failure;
+        }
+
+        static ProbeOutcome available() {
+            return new ProbeOutcome(true, null);
+        }
+
+        static ProbeOutcome unavailable(String failure) {
+            return new ProbeOutcome(false, failure);
+        }
+    }
+
     private static final class ActiveExecution {
         final long timeoutMillis;
         volatile Context context;
@@ -350,6 +442,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         volatile Thread worker;
         volatile boolean timedOut;
         volatile boolean cancelled;
+        volatile boolean completed;
 
         ActiveExecution(long timeoutMillis) {
             this.timeoutMillis = timeoutMillis;
