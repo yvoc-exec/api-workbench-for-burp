@@ -31,14 +31,14 @@ class ReentrantGraalJsSandboxEngineTest {
         });
     }
 
-    static final class NestedBridge {
+    public static final class NestedBridge {
         private final ReentrantGraalJsSandboxEngine engine;
         private final AtomicInteger executions;
         private final int terminalLevel;
 
-        NestedBridge(ReentrantGraalJsSandboxEngine engine,
-                     AtomicInteger executions,
-                     int terminalLevel) {
+        public NestedBridge(ReentrantGraalJsSandboxEngine engine,
+                            AtomicInteger executions,
+                            int terminalLevel) {
             this.engine = engine;
             this.executions = executions;
             this.terminalLevel = terminalLevel;
