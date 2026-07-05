@@ -117,13 +117,15 @@ class HistoryDetailSelectionUiIT {
         SwingRobotTestSupport.waitUntilOnEdt(
                 () -> table.getSelectedRow() == 0
                         && historyPanel.getActionsPanel().getDeleteButton().isEnabled()
-                        && detail.getMetadataArea().getText().contains("history-success"),
+                        && historyPanel.getSelectedEntry() != null
+                        && "history-success".equals(historyPanel.getSelectedEntry().id)
+                        && detail.getMetadataArea().getText().contains("Request Name: Login"),
                 UI_TIMEOUT,
                 "History selection did not become delete-ready before clicking Delete Selected");
         JButton delete = historyPanel.getActionsPanel().getDeleteButton();
         SwingRobotTestSupport.click(delete, robot);
         waitForHistoryDeletion(table, historyPanel, detail, delete);
-        assertThat(detail.getMetadataArea().getText()).doesNotContain("history-success");
+        assertThat(historyPanel.getHistoryStore().getById("history-success")).isNull();
 
         SwingRobotTestSupport.runOnEdt(() -> historyPanel.getHistoryStore().setRetentionPolicy(new HistoryRetentionPolicy(1)));
         HistoryEntry newest = HistoryTestFixtures.copyEntry(
