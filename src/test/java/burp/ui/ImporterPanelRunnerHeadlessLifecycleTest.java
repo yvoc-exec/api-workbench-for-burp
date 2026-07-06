@@ -45,41 +45,92 @@ class ImporterPanelRunnerHeadlessLifecycleTest {
         runner.setMaxRetries(0);
         ImporterPanel panel = panel(api, runner);
 
-        CountDownLatch firstResult = new CountDownLatch(1);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch requestComplete = new CountDownLatch(1);
         CountDownLatch terminal = new CountDownLatch(1);
-        installLifecycleLatch(runner, firstResult, terminal);
+        AtomicInteger terminalCallbacks = new AtomicInteger();
+        runner.addListener(new CollectionRunner.RunnerListener() {
+            @Override
+            public void onStart(String collectionName, int totalRequests) {
+                started.countDown();
+            }
+
+            @Override
+            public void onSkip(String requestName, String reason) {
+            }
+
+            @Override
+            public void onRequestComplete(RunnerResult result) {
+                requestComplete.countDown();
+            }
+
+            @Override
+            public void onComplete(List<RunnerResult> results) {
+            }
+
+            @Override
+            public void onError(String message) {
+            }
+
+            @Override
+            public void onTerminal(
+                    RunnerTerminationResult termination,
+                    List<RunnerResult> results) {
+                terminalCallbacks.incrementAndGet();
+                terminal.countDown();
+            }
+        });
 
         ApiRequest first = request("One");
         ApiRequest second = request("Two");
         ApiCollection collection = collection("Paused", first, second);
-        SwingUtilities.invokeAndWait(() -> {
-            panel.restoreWorkspaceCollections(List.of(collection));
-            panel.queueRunnerRequestsForTests(List.of(first, second));
-            ImporterPanelTestSupport.invokeVoid(
-                    panel,
-                    "startRunnerExecution",
-                    new Class<?>[]{List.class, boolean.class},
-                    List.of(first, second),
-                    true);
-        });
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                panel.restoreWorkspaceCollections(List.of(collection));
+                panel.queueRunnerRequestsForTests(List.of(first, second));
+                ImporterPanelTestSupport.invokeVoid(
+                        panel,
+                        "startRunnerExecution",
+                        new Class<?>[]{List.class, boolean.class},
+                        List.of(first, second),
+                        true);
+            });
 
-        assertThat(firstResult.await(5, TimeUnit.SECONDS)).isTrue();
-        ImporterPanelTestSupport.awaitCondition(
-                () -> runner.isRunning()
-                        && runner.isPaused()
-                        && panel.getCancelRunnerButtonForTests().isEnabled()
-                        && !panel.getPauseRunnerButtonForTests().isEnabled()
-                        && panel.getResumeRunnerButtonForTests().isEnabled(),
-                Duration.ofSeconds(5));
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            ImporterPanelTestSupport.awaitCondition(
+                    () -> runner.isRunning()
+                            && runner.isPaused()
+                            && panel.getCancelRunnerButtonForTests().isEnabled()
+                            && !panel.getPauseRunnerButtonForTests().isEnabled()
+                            && panel.getResumeRunnerButtonForTests().isEnabled(),
+                    Duration.ofSeconds(5));
 
-        SwingUtilities.invokeAndWait(
-                () -> panel.getCancelRunnerButtonForTests().doClick());
+            assertThat(calls.get()).isZero();
+            assertThat(runner.getResults()).isEmpty();
+            assertThat(requestComplete.getCount()).isEqualTo(1);
 
-        assertThat(terminal.await(10, TimeUnit.SECONDS)).isTrue();
-        awaitCancelledAndIdle(panel, runner);
-        assertThat(calls.get()).isEqualTo(1);
-        assertThat(runner.getLastTerminationResult().type)
-                .isEqualTo(RunnerTerminationType.CANCELLED);
+            SwingUtilities.invokeAndWait(
+                    () -> panel.getCancelRunnerButtonForTests().doClick());
+
+            assertThat(terminal.await(10, TimeUnit.SECONDS)).isTrue();
+            awaitCancelledAndIdle(panel, runner);
+            assertThat(runner.getLastTerminationResult().type)
+                    .isEqualTo(RunnerTerminationType.CANCELLED);
+            assertThat(calls.get()).isZero();
+            assertThat(runner.getResults()).isEmpty();
+            assertThat(requestComplete.getCount()).isEqualTo(1);
+            assertThat(terminalCallbacks.get()).isEqualTo(1);
+            assertThat(ImporterPanelTestSupport.<javax.swing.JTextArea>getField(panel, "runnerLog").getText())
+                    .doesNotContain("Internal runner error");
+        } finally {
+            if (runner.isRunning()) {
+                runner.cancel();
+                terminal.await(10, TimeUnit.SECONDS);
+                ImporterPanelTestSupport.awaitCondition(
+                        () -> !runner.isRunning(),
+                        Duration.ofSeconds(10));
+            }
+        }
     }
 
     @Test

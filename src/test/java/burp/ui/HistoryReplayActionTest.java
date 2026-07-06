@@ -45,7 +45,7 @@ class HistoryReplayActionTest {
     void replayFromHistoryUsesTemplateRequestAndCreatesNewHistoryRow() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
         ApiCollection collection = HistoryTestFixtures.sampleCollection();
-        bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+        EnvironmentProfile activeEnvironment = HistoryTestFixtures.sampleEnvironment();
 
         HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
         entry.requestSnapshot.authoredRequest.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
@@ -70,7 +70,7 @@ class HistoryReplayActionTest {
                 anyMap(),
                 any(),
                 any(),
-                any(EnvironmentProfile.class),
+                org.mockito.ArgumentMatchers.nullable(EnvironmentProfile.class),
                 eq(burp.scripts.ExecutionSource.HISTORY_REPLAY),
                 any(RedirectPolicy.class)))
                 .thenAnswer(invocation -> {
@@ -79,9 +79,22 @@ class HistoryReplayActionTest {
                     return sendResult;
                 });
 
-        EnvironmentProfile activeEnvironment = HistoryTestFixtures.sampleEnvironment();
-        bundle.panel.replaceEnvironmentProfiles(List.of(activeEnvironment));
-        bundle.panel.setActiveEnvironmentId(activeEnvironment.id);
+        SwingUtilities.invokeAndWait(() -> {
+            bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(collection)));
+            bundle.panel.replaceEnvironmentProfiles(List.of(activeEnvironment));
+            bundle.panel.setActiveEnvironmentId(activeEnvironment.id);
+        });
+        ImporterPanelTestSupport.awaitEdt();
+
+        assertThat(bundle.panel.getActiveEnvironmentId()).isEqualTo(activeEnvironment.id);
+        assertThat(bundle.panel.getEnvironmentProfilesSnapshot())
+                .extracting(profile -> profile.id)
+                .contains(activeEnvironment.id);
+        @SuppressWarnings("unchecked")
+        List<EnvironmentProfile> authoritativeProfiles =
+                ImporterPanelTestSupport.getField(bundle.panel, "environmentProfiles");
+        assertThat(authoritativeProfiles).hasSize(1);
+        assertThat(authoritativeProfiles.get(0)).isSameAs(activeEnvironment);
 
         DiagnosticStore.getInstance().setCaptureEnabled(true);
 

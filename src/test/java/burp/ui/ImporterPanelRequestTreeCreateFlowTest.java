@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
@@ -1241,12 +1242,14 @@ class ImporterPanelRequestTreeCreateFlowTest {
         });
 
         UniversalImporter importer = importer(panel);
-        AtomicReference<String> rawRequestText = new AtomicReference<>();
+        AtomicReference<BlockingWorkbenchSend> currentSend = new AtomicReference<>();
         Mockito.doAnswer(invocation -> {
+            BlockingWorkbenchSend send = currentSend.get();
+            assertThat(send).isNotNull();
             ApiRequest requestArg = invocation.getArgument(0);
             @SuppressWarnings("unchecked")
             Map<String, String> runtimeOverlay = invocation.getArgument(3);
-            return buildWorkbenchSendResult(panel, requestArg, runtimeOverlay, new AtomicInteger(), rawRequestText);
+            return send.respond(panel, requestArg, runtimeOverlay);
         }).when(importer).sendSingleRequestWithBuiltRequest(
                 Mockito.any(ApiRequest.class),
                 Mockito.any(ApiCollection.class),
@@ -1259,56 +1262,42 @@ class ImporterPanelRequestTreeCreateFlowTest {
                 Mockito.any(RedirectPolicy.class)
         );
 
-        invokeOnEdt(panel, "executeWorkbenchSend");
-        awaitCondition("exact workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
-        awaitCondition("exact workbench send invocation", () -> rawRequestText.get() != null);
-        awaitCondition("exact workbench send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
-        drainEdt();
+        String rawRequestText = executeBlockedWorkbenchSend(panel, currentSend, "exact workbench send");
 
-        assertThat(rawRequestText.get()).contains("Host: alt.example.test");
-        assertThat(rawRequestText.get()).contains("Authorization: Bearer first");
-        assertThat(rawRequestText.get()).contains("Authorization: Bearer second");
-        assertThat(rawRequestText.get()).contains("Connection: close");
-        assertThat(rawRequestText.get()).contains("Proxy-Connection: keep-alive");
-        assertThat(rawRequestText.get()).doesNotContain("Host: api.example.test");
-        assertThat(rawRequestText.get()).doesNotContain("Accept: application/json, text/plain, */*");
-        assertThat(rawRequestText.get()).doesNotContain("User-Agent: BurpExtensionRuntime");
-        assertThat(rawRequestText.get()).doesNotContain("Cache-Control: no-cache");
+        assertThat(rawRequestText).contains("Host: alt.example.test");
+        assertThat(rawRequestText).contains("Authorization: Bearer first");
+        assertThat(rawRequestText).contains("Authorization: Bearer second");
+        assertThat(rawRequestText).contains("Connection: close");
+        assertThat(rawRequestText).contains("Proxy-Connection: keep-alive");
+        assertThat(rawRequestText).doesNotContain("Host: api.example.test");
+        assertThat(rawRequestText).doesNotContain("Accept: application/json, text/plain, */*");
+        assertThat(rawRequestText).doesNotContain("User-Agent: BurpExtensionRuntime");
+        assertThat(rawRequestText).doesNotContain("Cache-Control: no-cache");
         String previewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
-        assertThat(rawRequestText.get()).isEqualTo(previewRaw);
+        assertThat(rawRequestText).isEqualTo(previewRaw);
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
 
         edt(() -> toggleExactTransport(requestEditor(panel)));
-        rawRequestText.set(null);
-        invokeOnEdt(panel, "executeWorkbenchSend");
-        awaitCondition("normalized workbench send started", () -> !requestEditorUnchecked(panel).isSendEnabled());
-        awaitCondition("normalized workbench send invocation", () -> rawRequestText.get() != null);
-        awaitCondition("normalized workbench send completion", () -> requestEditorUnchecked(panel).isSendEnabled());
-        drainEdt();
+        rawRequestText = executeBlockedWorkbenchSend(panel, currentSend, "normalized workbench send");
 
         String normalizedPreviewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
-        assertThat(rawRequestText.get()).isEqualTo(normalizedPreviewRaw);
-        assertThat(rawRequestText.get()).contains("Host: api.example.test");
-        assertThat(rawRequestText.get()).doesNotContain("Host: alt.example.test");
-        assertThat(rawRequestText.get()).doesNotContain("Content-Length: 321");
-        assertThat(rawRequestText.get()).doesNotContain("Transfer-Encoding: gzip");
-        assertThat(rawRequestText.get()).doesNotContain("Proxy-Connection: keep-alive");
+        assertThat(rawRequestText).isEqualTo(normalizedPreviewRaw);
+        assertThat(rawRequestText).contains("Host: api.example.test");
+        assertThat(rawRequestText).doesNotContain("Host: alt.example.test");
+        assertThat(rawRequestText).doesNotContain("Content-Length: 321");
+        assertThat(rawRequestText).doesNotContain("Transfer-Encoding: gzip");
+        assertThat(rawRequestText).doesNotContain("Proxy-Connection: keep-alive");
         assertThat(requestEditor(panel).getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
 
         edt(() -> toggleExactTransport(requestEditor(panel)));
-        rawRequestText.set(null);
-        invokeOnEdt(panel, "executeWorkbenchSend");
-        awaitCondition("exact workbench resend started", () -> !requestEditorUnchecked(panel).isSendEnabled());
-        awaitCondition("exact workbench resend invocation", () -> rawRequestText.get() != null);
-        awaitCondition("exact workbench resend completion", () -> requestEditorUnchecked(panel).isSendEnabled());
-        drainEdt();
+        rawRequestText = executeBlockedWorkbenchSend(panel, currentSend, "exact workbench resend");
 
         String exactPreviewRaw = new String(new RequestBuilder(null).buildRequest(requestEditor(panel).buildRequestFromUI(), new VariableResolver()), StandardCharsets.UTF_8);
-        assertThat(rawRequestText.get()).isEqualTo(exactPreviewRaw);
-        assertThat(rawRequestText.get()).contains("Host: alt.example.test");
-        assertThat(rawRequestText.get()).contains("Authorization: Bearer first");
-        assertThat(rawRequestText.get()).contains("Authorization: Bearer second");
-        assertThat(rawRequestText.get()).contains("Proxy-Connection: keep-alive");
+        assertThat(rawRequestText).isEqualTo(exactPreviewRaw);
+        assertThat(rawRequestText).contains("Host: alt.example.test");
+        assertThat(rawRequestText).contains("Authorization: Bearer first");
+        assertThat(rawRequestText).contains("Authorization: Bearer second");
+        assertThat(rawRequestText).contains("Proxy-Connection: keep-alive");
     }
 
     @Test
@@ -1624,6 +1613,80 @@ class ImporterPanelRequestTreeCreateFlowTest {
             }
         }
         return Collections.emptyMap();
+    }
+
+    private static String executeBlockedWorkbenchSend(ImporterPanel panel,
+                                                       AtomicReference<BlockingWorkbenchSend> currentSend,
+                                                       String description) throws Exception {
+        BlockingWorkbenchSend send = new BlockingWorkbenchSend(description);
+        currentSend.set(send);
+        try {
+            invokeOnEdt(panel, "executeWorkbenchSend");
+            send.awaitInvocationStarted();
+            drainEdt();
+            assertThat(requestEditor(panel).isSendEnabled()).as(description + " disables Send").isFalse();
+            send.release();
+            String rawRequestText = send.awaitRawRequestText();
+            awaitCondition(description + " completion", () -> requestEditorUnchecked(panel).isSendEnabled());
+            drainEdt();
+            return rawRequestText;
+        } finally {
+            send.release();
+            currentSend.compareAndSet(send, null);
+        }
+    }
+
+    private static final class BlockingWorkbenchSend {
+        private final String description;
+        private final CountDownLatch invocationStarted = new CountDownLatch(1);
+        private final CountDownLatch allowCompletion = new CountDownLatch(1);
+        private final CountDownLatch rawCaptured = new CountDownLatch(1);
+        private final AtomicReference<String> rawRequestText = new AtomicReference<>();
+
+        private BlockingWorkbenchSend(String description) {
+            this.description = description;
+        }
+
+        private UniversalImporter.SingleSendResult respond(ImporterPanel panel,
+                                                          ApiRequest requestArg,
+                                                          Map<String, String> runtimeOverlay) throws Exception {
+            try {
+                UniversalImporter.SingleSendResult result = buildWorkbenchSendResult(
+                        panel, requestArg, runtimeOverlay, new AtomicInteger(), rawRequestText);
+                rawCaptured.countDown();
+                invocationStarted.countDown();
+                if (!allowCompletion.await(2, TimeUnit.SECONDS)) {
+                    throw new AssertionError(description + " was not released");
+                }
+                return result;
+            } catch (Exception e) {
+                rawCaptured.countDown();
+                invocationStarted.countDown();
+                throw e;
+            } catch (Error e) {
+                rawCaptured.countDown();
+                invocationStarted.countDown();
+                throw e;
+            }
+        }
+
+        private void awaitInvocationStarted() throws Exception {
+            assertThat(invocationStarted.await(2, TimeUnit.SECONDS))
+                    .as(description + " invocation started")
+                    .isTrue();
+        }
+
+        private String awaitRawRequestText() throws Exception {
+            assertThat(rawCaptured.await(2, TimeUnit.SECONDS))
+                    .as(description + " raw request captured")
+                    .isTrue();
+            assertThat(rawRequestText.get()).as(description + " raw request text").isNotNull();
+            return rawRequestText.get();
+        }
+
+        private void release() {
+            allowCompletion.countDown();
+        }
     }
 
     private static UniversalImporter.SingleSendResult buildWorkbenchSendResult(ImporterPanel panel,

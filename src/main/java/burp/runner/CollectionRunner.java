@@ -230,7 +230,7 @@ public class CollectionRunner {
         final RunnerStopConditions activeStopConditions = copyStopConditions(ensureStopConditions());
         synchronized (pauseLock) {
             pauseRequested = startPaused;
-            singleStepRequested = startPaused;
+            singleStepRequested = false;
         }
         lastTerminationResult = null;
         results.clear();

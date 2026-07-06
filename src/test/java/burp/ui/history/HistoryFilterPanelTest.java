@@ -9,12 +9,18 @@ import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
+import javax.swing.event.TableModelListener;
+import javax.swing.table.TableModel;
 import java.awt.*;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -188,18 +194,28 @@ class HistoryFilterPanelTest {
                 "history-workbench", Instant.parse("2026-06-15T01:00:00Z"));
         HistoryEntry second = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleRunnerEntry(),
                 "history-runner", Instant.parse("2026-06-15T01:01:00Z"));
+        first.id = "history-filter-control";
+        first.analystNotes = "control-only-token-alpha";
+        second.id = "history-filter-target";
+        second.analystNotes = "target-only-live-filter-token-beta";
         store.addAll(List.of(first, second));
 
-        HistoryPanel panel = new HistoryPanel(store, new burp.history.HistoryExportService(), new burp.history.HistoryDiffService(), new HistoryLoadResultNotifier());
-        assertThat(panel.getHistoryTable().getRowCount()).isEqualTo(2);
+        AtomicReference<HistoryPanel> panelRef = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> panelRef.set(new HistoryPanel(
+                store,
+                new burp.history.HistoryExportService(),
+                new burp.history.HistoryDiffService(),
+                new HistoryLoadResultNotifier())));
+        HistoryPanel panel = panelRef.get();
+        assertThat(panel).as("HistoryPanel should be initialized on EDT").isNotNull();
+        assertThat(rowCountOnEdt(panel)).isEqualTo(2);
 
-        setText(panel.getFilterPanel(), "freeTextField", "500");
-        awaitRowCount(panel, 1);
-        assertThat(panel.getHistoryTable().getRowCount()).isEqualTo(1);
+        setFilterAndAwaitRowCount(panel, "target-only-live-filter-token-beta", 1);
+        assertThat(visibleEntryIdsOnEdt(panel)).containsExactly("history-filter-target");
 
-        setText(panel.getFilterPanel(), "freeTextField", "");
-        awaitRowCount(panel, 2);
-        assertThat(panel.getHistoryTable().getRowCount()).isEqualTo(2);
+        setFilterAndAwaitRowCount(panel, "", 2);
+        assertThat(visibleEntryIdsOnEdt(panel))
+                .containsExactlyInAnyOrder("history-filter-control", "history-filter-target");
     }
 
     private static void clickClear(HistoryFilterPanel panel) throws Exception {
@@ -215,8 +231,99 @@ class HistoryFilterPanelTest {
         SwingUtilities.invokeAndWait(() -> field.setText(text));
     }
 
-    private static void awaitRowCount(HistoryPanel panel, int expected) throws Exception {
-        awaitCondition(() -> panel.getHistoryTable().getRowCount() == expected, DEBOUNCE_WAIT);
+    private static void setFilterAndAwaitRowCount(
+            HistoryPanel panel,
+            String text,
+            int expectedRowCount) throws Exception {
+        CountDownLatch rowCountReached = new CountDownLatch(1);
+        AtomicReference<TableModel> modelRef = new AtomicReference<>();
+        TableModelListener listener = event -> {
+            if (panel.getHistoryTable().getRowCount() == expectedRowCount) {
+                rowCountReached.countDown();
+            }
+        };
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                TableModel model = panel.getHistoryTable().getModel();
+                modelRef.set(model);
+                model.addTableModelListener(listener);
+                textField(panel.getFilterPanel(), "freeTextField").setText(text);
+                if (panel.getHistoryTable().getRowCount() == expectedRowCount) {
+                    rowCountReached.countDown();
+                }
+            });
+
+            if (!rowCountReached.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("Timed out waiting for history row count "
+                        + expectedRowCount
+                        + "; actual=" + rowCountOnEdt(panel)
+                        + "; filterText='" + text + "'"
+                        + "; criteriaFreeText='" + criteriaFreeTextOnEdt(panel) + "'"
+                        + "; visibleEntryIds=" + visibleEntryIdsOnEdt(panel));
+            }
+            assertThat(rowCountOnEdt(panel)).isEqualTo(expectedRowCount);
+        } finally {
+            TableModel model = modelRef.get();
+            if (model != null) {
+                SwingUtilities.invokeAndWait(() -> model.removeTableModelListener(listener));
+            }
+        }
+    }
+
+    private static int rowCountOnEdt(HistoryPanel panel) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            return panel.getHistoryTable().getRowCount();
+        }
+        AtomicInteger rowCount = new AtomicInteger();
+        try {
+            SwingUtilities.invokeAndWait(
+                    () -> rowCount.set(panel.getHistoryTable().getRowCount()));
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "Unable to read history row count on EDT",
+                    failure);
+        }
+        return rowCount.get();
+    }
+
+    private static List<String> visibleEntryIdsOnEdt(HistoryPanel panel) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            return visibleEntryIds(panel);
+        }
+        AtomicReference<List<String>> ids = new AtomicReference<>();
+        try {
+            SwingUtilities.invokeAndWait(() -> ids.set(visibleEntryIds(panel)));
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "Unable to read visible history entry IDs on EDT",
+                    failure);
+        }
+        return ids.get();
+    }
+
+    private static List<String> visibleEntryIds(HistoryPanel panel) {
+        HistoryTableModel model = (HistoryTableModel) panel.getHistoryTable().getModel();
+        List<String> ids = new ArrayList<>();
+        for (HistoryEntry entry : model.getEntries()) {
+            ids.add(entry.id);
+        }
+        return ids;
+    }
+
+    private static String criteriaFreeTextOnEdt(HistoryPanel panel) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            return panel.getFilterPanel().getCriteria().freeText;
+        }
+        AtomicReference<String> freeText = new AtomicReference<>();
+        try {
+            SwingUtilities.invokeAndWait(
+                    () -> freeText.set(panel.getFilterPanel().getCriteria().freeText));
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "Unable to read filter criteria on EDT",
+                    failure);
+        }
+        return freeText.get();
     }
 
     private static void pauseBeyondDebounce() throws Exception {

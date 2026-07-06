@@ -73,20 +73,25 @@ class CollectionRunnerTerminationTest {
 
     @Test
     void cancelWhilePausedBeforeAnyRequestExecutesEmitsCancelledOnce() throws Exception {
-        CollectionRunner runner = newRunner(exec -> {
-            exec.success = true;
-            exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
-            exec.requestHeaders = "GET /cancel HTTP/1.1\r\nHost: example.com\r\n\r\n";
-            exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
-        });
+        AtomicInteger executions = new AtomicInteger();
+        CountDownLatch started = new CountDownLatch(1);
+        CollectionRunner runner = runnerCountingExecutions(executions);
         RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
         runner.addListener(listener);
+        runner.addListener(startLatchListener(started, null));
 
         ApiCollection collection = collection("Cancel", request("One", 1));
         runner.runCollections(List.of(collection), collection.requests, true);
+        assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(runner.isRunning()).isTrue();
+        assertThat(runner.isPaused()).isTrue();
+        assertThat(executions.get()).isZero();
+
         runner.cancel();
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        waitUntil(() -> listener.terminalResults.size() == 1, 2000);
 
+        assertThat(executions.get()).isZero();
         assertThat(listener.completedRuns).isEmpty();
         assertThat(listener.terminalResults).hasSize(1);
         assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
@@ -94,6 +99,41 @@ class CollectionRunnerTerminationTest {
         assertThat(listener.errors).hasSize(1);
         assertThat(runner.getResults()).isEmpty();
         assertThat(lastRunnerDiagnostic().severity).isEqualTo(DiagnosticSeverity.WARNING);
+    }
+
+    @Test
+    void startPausedRequiresExplicitStepBeforeFirstRequest() throws Exception {
+        AtomicInteger executions = new AtomicInteger();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch firstCompleted = new CountDownLatch(1);
+        CollectionRunner runner = runnerCountingExecutions(executions);
+        RunnerScriptTestFixtures.RecordingRunnerListener listener = new RunnerScriptTestFixtures.RecordingRunnerListener();
+        runner.addListener(listener);
+        runner.addListener(startLatchListener(started, firstCompleted));
+
+        ApiCollection collection = collection("Step", request("One", 1), request("Two", 2));
+        runner.runCollections(List.of(collection), collection.requests, true);
+        assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(executions.get()).isZero();
+        assertThat(runner.isPaused()).isTrue();
+
+        runner.runNextOnly();
+        assertThat(firstCompleted.await(2, TimeUnit.SECONDS)).isTrue();
+        waitUntil(() -> runner.isPaused() && executions.get() == 1, 2000);
+        assertThat(executions.get()).isEqualTo(1);
+        assertThat(listener.requestResults).hasSize(1);
+        assertThat(listener.requestResults.get(0).requestName).isEqualTo("One");
+
+        runner.cancel();
+        RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+        waitUntil(() -> listener.terminalResults.size() == 1, 2000);
+
+        assertThat(executions.get()).isEqualTo(1);
+        assertThat(listener.terminalResults).hasSize(1);
+        assertThat(listener.terminalResults.get(0).type).isEqualTo(RunnerTerminationType.CANCELLED);
+        assertThat(listener.completedRuns).isEmpty();
+        assertThat(runner.getResults()).hasSize(1);
+        assertThat(runner.getResults().get(0).requestName).isEqualTo("One");
     }
 
     @Test
@@ -417,6 +457,41 @@ class CollectionRunnerTerminationTest {
         runner.setDelayMs(0);
         runner.setMaxRetries(0);
         return runner;
+    }
+
+    private static CollectionRunner runnerCountingExecutions(AtomicInteger executions) {
+        MontoyaApi api = Mockito.mock(MontoyaApi.class, Mockito.RETURNS_DEEP_STUBS);
+        SharedRequestPipeline pipeline = new SharedRequestPipeline(api, null, null, null) {
+            @Override
+            public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                int call = executions.incrementAndGet();
+                ExecutionResult exec = new ExecutionResult();
+                exec.success = true;
+                exec.response = RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain");
+                exec.requestHeaders = "GET /" + call + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                return exec;
+            }
+        };
+        CollectionRunner runner = new CollectionRunner(api, pipeline, null);
+        runner.setDelayMs(0);
+        runner.setMaxRetries(0);
+        return runner;
+    }
+
+    private static CollectionRunner.RunnerListener startLatchListener(CountDownLatch started,
+                                                                     CountDownLatch requestCompleted) {
+        return new CollectionRunner.RunnerListener() {
+            @Override public void onStart(String collectionName, int totalRequests) { started.countDown(); }
+            @Override public void onSkip(String requestName, String reason) { }
+            @Override public void onRequestComplete(RunnerResult result) {
+                if (requestCompleted != null) {
+                    requestCompleted.countDown();
+                }
+            }
+            @Override public void onComplete(List<RunnerResult> results) { }
+            @Override public void onError(String message) { }
+        };
     }
 
     private static RunnerStopConditions stopOnError() {

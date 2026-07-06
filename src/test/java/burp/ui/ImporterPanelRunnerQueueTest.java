@@ -431,15 +431,17 @@ class ImporterPanelRunnerQueueTest {
         runner.setMaxRetries(0);
         ImporterPanel panel = newPanel(runner);
         CountDownLatch startedDelivered = new CountDownLatch(1);
-        CountDownLatch firstResultDelivered = new CountDownLatch(1);
+        CountDownLatch requestCompleteDelivered = new CountDownLatch(1);
         CountDownLatch terminalDelivered = new CountDownLatch(1);
+        AtomicInteger requestCompleteCallbacks = new AtomicInteger();
         runner.addListener(new CollectionRunner.RunnerListener() {
             @Override public void onStart(String collectionName, int totalRequests) {
                 startedDelivered.countDown();
             }
             @Override public void onSkip(String requestName, String reason) { }
             @Override public void onRequestComplete(RunnerResult result) {
-                firstResultDelivered.countDown();
+                requestCompleteCallbacks.incrementAndGet();
+                requestCompleteDelivered.countDown();
             }
             @Override public void onComplete(List<RunnerResult> results) { }
             @Override public void onError(String message) { }
@@ -453,29 +455,50 @@ class ImporterPanelRunnerQueueTest {
         edt(() -> panel.restoreWorkspaceCollections(List.of(collection)));
         drainEdt();
         invokeOnEdt(panel, "queueRunnerRequests", new Class<?>[]{List.class}, List.of(first, second));
-        SwingUtilities.invokeLater(() -> {
-            try {
-                invokePrivateArgs(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+        try {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    invokePrivateArgs(panel, "startRunner", new Class<?>[]{boolean.class, boolean.class}, false, true);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            waitUntil(() -> findRunnerPreviewDialog() != null, 5000);
+            JDialog preview = findRunnerPreviewDialog();
+            assertThat(preview).isNotNull();
+            JButton startButton = findButtonInDialog(preview, "Start Runner");
+            assertThat(startButton).isNotNull();
+            edt(startButton::doClick);
+            assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
+            waitUntil(() -> runner.isRunning()
+                    && runner.isPaused()
+                    && buttonEnabled(panel, "cancelRunnerBtn")
+                    && !buttonEnabled(panel, "pauseRunnerBtn")
+                    && buttonEnabled(panel, "resumeRunnerBtn"), 5000);
+            assertThat(calls.get()).isZero();
+            assertThat(runner.getResults()).isEmpty();
+            assertThat(requestCompleteCallbacks.get()).isZero();
+            assertThat(requestCompleteDelivered.getCount()).isEqualTo(1);
+            edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
+            awaitRunnerTerminalUi(panel, runner, terminalDelivered, RunnerTerminationType.CANCELLED, () -> {
+                assertThat(calls.get()).isZero();
+                assertThat(runner.getResults()).isEmpty();
+                assertThat(requestCompleteCallbacks.get()).isZero();
+                assertThat(requestCompleteDelivered.getCount()).isEqualTo(1);
+                assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).containsIgnoringCase("cancelled");
+                assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
+            });
+        } finally {
+            JDialog preview = findRunnerPreviewDialog();
+            if (preview != null) {
+                edt(preview::dispose);
             }
-        });
-        waitUntil(() -> findRunnerPreviewDialog() != null, 5000);
-        JDialog preview = findRunnerPreviewDialog();
-        assertThat(preview).isNotNull();
-        JButton startButton = findButtonInDialog(preview, "Start Runner");
-        assertThat(startButton).isNotNull();
-        edt(startButton::doClick);
-        assertThat(startedDelivered.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(firstResultDelivered.await(5, TimeUnit.SECONDS)).isTrue();
-        waitUntil(() -> buttonEnabled(panel, "cancelRunnerBtn")
-                && !buttonEnabled(panel, "pauseRunnerBtn")
-                && buttonEnabled(panel, "resumeRunnerBtn"), 5000);
-        edt(() -> ((JButton) privateField(panel, "cancelRunnerBtn")).doClick());
-        awaitRunnerTerminalUi(panel, runner, terminalDelivered, RunnerTerminationType.CANCELLED, () -> {
-            assertThat(((JProgressBar) privateField(panel, "runnerProgress")).getString()).containsIgnoringCase("cancelled");
-            assertThat(runnerLog(panel).getText()).doesNotContain("Internal runner error");
-        });
+            if (runner.isRunning()) {
+                runner.cancel();
+                terminalDelivered.await(10, TimeUnit.SECONDS);
+                drainEdt();
+            }
+        }
     }
 
     @Test
