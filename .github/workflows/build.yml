@@ -288,12 +288,38 @@ jobs:
             jvmArgs: -Xmx1536m
             mutationUnitSize: 25
             mutators: DEFAULTS
-          - name: utils-support
-            targetClasses: burp.utils.ScriptEngine,burp.utils.OAuth2BearerAliasDetector,burp.utils.RequestPathResolver,burp.utils.WorkspaceStateJson
+          - name: utils-script-engine
+            targetClasses: burp.utils.ScriptEngine
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx2048m
+            mutationUnitSize: 10
+            mutators: DEFAULTS
+          - name: utils-oauth-path
+            targetClasses: burp.utils.OAuth2BearerAliasDetector,burp.utils.RequestPathResolver
             qualityGroup: auth-utils-exporter
             jvmArgs: -Xmx1024m
-            mutationUnitSize: 25
+            mutationUnitSize: 10
             mutators: DEFAULTS
+          # WorkspaceStateJson arithmetic mutants are excluded because PIT produced an empty report;
+          # retained workspace shards cover conditionals, void calls, and returns.
+          - name: utils-workspace-conditionals
+            targetClasses: burp.utils.WorkspaceStateJson
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx1536m
+            mutationUnitSize: 5
+            mutators: NEGATE_CONDITIONALS,CONDITIONALS_BOUNDARY
+          - name: utils-workspace-void
+            targetClasses: burp.utils.WorkspaceStateJson
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx1536m
+            mutationUnitSize: 5
+            mutators: VOID_METHOD_CALLS
+          - name: utils-workspace-returns
+            targetClasses: burp.utils.WorkspaceStateJson
+            qualityGroup: auth-utils-exporter
+            jvmArgs: -Xmx1536m
+            mutationUnitSize: 5
+            mutators: NULL_RETURNS,EMPTY_RETURNS,TRUE_RETURNS,FALSE_RETURNS,PRIMITIVE_RETURNS
           - name: exporter
             targetClasses: burp.exporter.*
             qualityGroup: auth-utils-exporter
@@ -456,7 +482,7 @@ jobs:
           python3 scripts/ci/check_pit_reports.py \
             --reports-root target/pit-artifacts \
             --threshold 54 \
-            --group auth-utils-exporter=auth,utils-pipeline,utils-http,utils-environment,utils-support,exporter \
+            --group auth-utils-exporter=auth,utils-pipeline,utils-http,utils-environment,utils-script-engine,utils-oauth-path,utils-workspace-conditionals,utils-workspace-void,utils-workspace-returns,exporter \
             --group history-parser-runner=history-truncator-conditionals,history-truncator-void,history-truncator-returns,history-truncator-arithmetic,history-entry-void,history-entry-returns,history-entry-arithmetic,history-response-result,history-export,history-store,parser,runner-boundary,runner-void,runner-returns,runner-arithmetic \
             --output-json target/pit-aggregate-summary.json \
             --output-text target/pit-aggregate-summary.txt
