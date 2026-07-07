@@ -1,5 +1,0 @@
-﻿filename: api-workbench-for-burp-b1213f4-local-validated.jar
-SHA256: 5AA303C65B5209CF9E26E13BA9403271717A9C1B0885A585806FEE88FC5074B4
-file size bytes: 41991868
-generated timestamp: 2026-07-08T04:30:05.5980706+08:00
-source commit SHA: b1213f4d764b88bb738aa6421d8cb219dc1aa209

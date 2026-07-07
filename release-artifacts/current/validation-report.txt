@@ -1,0 +1,23 @@
+﻿repository path: <WORKSPACE>
+branch: main
+source HEAD SHA used for build: c8cd60a444f7806fe9ed565c2e186b844e4c5d3e
+origin/main SHA before build: c8cd60a444f7806fe9ed565c2e186b844e4c5d3e
+working tree state before build: clean
+Java version:
+openjdk version "17.0.19" 2026-04-21
+OpenJDK Runtime Environment Temurin-17.0.19+10 (build 17.0.19+10)
+OpenJDK 64-Bit Server VM Temurin-17.0.19+10 (build 17.0.19+10, mixed mode, sharing)
+Maven version:
+Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937)
+Maven home: <WORKSPACE>\.tools\maven\apache-maven-3.9.9
+Java version: 17.0.19, vendor: Eclipse Adoptium, runtime: <WORKSPACE>\.tools\jdk17\jdk-17.0.19+10
+validation command: mvn -B clean verify
+validation result: BUILD SUCCESS
+total tests: 1496 run, 0 failures, 0 errors, 0 skipped
+JaCoCo result: All coverage checks have been met.
+selected JAR source path: <WORKSPACE>\target\api-workbench-for-burp-2.0.0-jar-with-dependencies.jar
+committed JAR path: release-artifacts\current\api-workbench-for-burp-local-validated.jar
+committed JAR size: 41991868
+SHA256: 8BC8E841528614AB87C18A850DDEF136325B3A4441A5678252312C665E2C6D8C
+artifact policy: this current folder replaces the previous release artifact in the repository tree
+note: GitHub Actions was not used because workflow jobs were blocked by account billing/spending-limit enforcement.
