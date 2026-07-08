@@ -28,20 +28,20 @@ public class ScriptAdHocRequest {
         if (value instanceof Map<?, ?> map) {
             return fromMap(map);
         }
-        if (value instanceof org.graalvm.polyglot.Value polyValue) {
-            if (polyValue.hasMembers()) {
+        if (SandboxedJavaScriptEngine.isRuntimeValue(value)) {
+            if (SandboxedJavaScriptEngine.hasRuntimeMembers(value)) {
                 Map<String, Object> map = new LinkedHashMap<>();
-                for (String key : polyValue.getMemberKeys()) {
-                    try {
-                        map.put(key, polyValue.getMember(key));
-                    } catch (Exception ignored) {
+                for (String key : SandboxedJavaScriptEngine.runtimeMemberKeys(value)) {
+                    Object member = SandboxedJavaScriptEngine.runtimeMember(value, key);
+                    if (member != null) {
+                        map.put(key, member);
                     }
                 }
                 return fromMap(map);
             }
-            if (polyValue.isString()) {
+            if (SandboxedJavaScriptEngine.isRuntimeString(value)) {
                 ScriptAdHocRequest request = new ScriptAdHocRequest();
-                request.url = polyValue.asString();
+                request.url = SandboxedJavaScriptEngine.runtimeString(value);
                 return request;
             }
         }

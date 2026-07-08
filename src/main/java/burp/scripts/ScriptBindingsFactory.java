@@ -167,19 +167,20 @@ public final class ScriptBindingsFactory {
                 }
                 return parseBooleanOverride(map.get("persist"));
             }
-            if (options instanceof org.graalvm.polyglot.Value value) {
-                if (!value.hasMembers() || !value.hasMember("persist")) {
+            if (SandboxedJavaScriptEngine.isRuntimeValue(options)) {
+                if (!SandboxedJavaScriptEngine.hasRuntimeMembers(options)) {
                     return null;
                 }
-                org.graalvm.polyglot.Value persist = value.getMember("persist");
-                if (persist == null || persist.isNull()) {
+                Object persist = SandboxedJavaScriptEngine.runtimeMember(options, "persist");
+                if (SandboxedJavaScriptEngine.isRuntimeNull(persist)) {
                     return null;
                 }
-                if (persist.isBoolean()) {
-                    return persist.asBoolean();
+                Boolean runtimeBoolean = SandboxedJavaScriptEngine.runtimeBoolean(persist);
+                if (runtimeBoolean != null) {
+                    return runtimeBoolean;
                 }
-                if (persist.isString()) {
-                    return parseBooleanOverride(persist.asString());
+                if (SandboxedJavaScriptEngine.isRuntimeString(persist)) {
+                    return parseBooleanOverride(SandboxedJavaScriptEngine.runtimeString(persist));
                 }
                 return null;
             }
@@ -745,30 +746,7 @@ public final class ScriptBindingsFactory {
         }
 
         private Object unwrap(Object value) {
-            if (value instanceof org.graalvm.polyglot.Value polyValue) {
-                try {
-                    if (polyValue.isNull()) {
-                        return null;
-                    }
-                    if (polyValue.isBoolean()) {
-                        return polyValue.asBoolean();
-                    }
-                    if (polyValue.isNumber()) {
-                        try {
-                            return polyValue.as(Object.class);
-                        } catch (Exception ignored) {
-                            return polyValue.asDouble();
-                        }
-                    }
-                    if (polyValue.isString()) {
-                        return polyValue.asString();
-                    }
-                    return polyValue.as(Object.class);
-                } catch (Exception ignored) {
-                    return polyValue.toString();
-                }
-            }
-            return value;
+            return SandboxedJavaScriptEngine.unwrapRuntimeValue(value);
         }
 
         private boolean hasHeader(String name) {
@@ -897,11 +875,8 @@ public final class ScriptBindingsFactory {
                 runnable.run();
                 return;
             }
-            if (fn instanceof org.graalvm.polyglot.Value value) {
-                if (value.canExecute()) {
-                    value.execute();
-                    return;
-                }
+            if (SandboxedJavaScriptEngine.executeRuntimeCallback(fn)) {
+                return;
             }
             Throwable lastError = null;
             for (String methodName : java.util.List.of("execute", "call", "apply", "invoke", "run")) {

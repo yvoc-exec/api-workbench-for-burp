@@ -5,6 +5,7 @@ import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -98,6 +99,125 @@ public class SandboxedJavaScriptEngine implements AutoCloseable {
 
     public String getLegacyFallbackFailure() {
         return legacyFallbackFailure;
+    }
+
+    public static boolean isRuntimeValue(Object value) {
+        return value instanceof Value;
+    }
+
+    public static boolean hasRuntimeMembers(Object value) {
+        try {
+            return value instanceof Value runtimeValue && runtimeValue.hasMembers();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static Iterable<String> runtimeMemberKeys(Object value) {
+        try {
+            return value instanceof Value runtimeValue && runtimeValue.hasMembers()
+                    ? runtimeValue.getMemberKeys()
+                    : List.of();
+        } catch (Throwable ignored) {
+            return List.of();
+        }
+    }
+
+    public static Object runtimeMember(Object value, String key) {
+        if (key == null || key.isBlank()) {
+            return null;
+        }
+        try {
+            return value instanceof Value runtimeValue && runtimeValue.hasMembers()
+                    ? runtimeValue.getMember(key)
+                    : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    public static boolean isRuntimeString(Object value) {
+        try {
+            return value instanceof Value runtimeValue ? runtimeValue.isString() : value instanceof String;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static String runtimeString(Object value) {
+        try {
+            if (value instanceof Value runtimeValue) {
+                return runtimeValue.isString() ? runtimeValue.asString() : null;
+            }
+            return value != null ? value.toString() : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    public static boolean isRuntimeNull(Object value) {
+        try {
+            return value instanceof Value runtimeValue ? runtimeValue.isNull() : value == null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static boolean isRuntimeBoolean(Object value) {
+        try {
+            return value instanceof Value runtimeValue ? runtimeValue.isBoolean() : value instanceof Boolean;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static Boolean runtimeBoolean(Object value) {
+        try {
+            if (value instanceof Value runtimeValue) {
+                return runtimeValue.isBoolean() ? runtimeValue.asBoolean() : null;
+            }
+            return value instanceof Boolean bool ? bool : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    static boolean executeRuntimeCallback(Object value) throws Throwable {
+        if (!(value instanceof Value runtimeValue)) {
+            return false;
+        }
+        if (!runtimeValue.canExecute()) {
+            return false;
+        }
+        runtimeValue.execute();
+        return true;
+    }
+
+    static Object unwrapRuntimeValue(Object value) {
+        if (!(value instanceof Value runtimeValue)) {
+            return value;
+        }
+        try {
+            if (runtimeValue.isNull()) {
+                return null;
+            }
+            if (runtimeValue.isBoolean()) {
+                return runtimeValue.asBoolean();
+            }
+            if (runtimeValue.isNumber()) {
+                try {
+                    return runtimeValue.as(Object.class);
+                } catch (Exception ignored) {
+                    return runtimeValue.asDouble();
+                }
+            }
+            if (runtimeValue.isString()) {
+                return runtimeValue.asString();
+            }
+            return runtimeValue.as(Object.class);
+        } catch (Exception ignored) {
+            return runtimeValue.toString();
+        }
     }
 
     public Object execute(String source, Map<String, Object> bindings) throws Exception {

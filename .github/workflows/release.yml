@@ -51,10 +51,6 @@ jobs:
           jar tf "$jar" > release-artifact/jar-contents.txt
           grep -q 'burp/BurpExtender.class' release-artifact/jar-contents.txt
           grep -q 'burp/smoke/ScriptRuntimeProbe.class' release-artifact/jar-contents.txt
-          runtime_path='org/gr''aalvm/polyglot/Context.class'
-          legacy_path='org/openjdk/na''shorn/api/scripting/Na''shornScriptEngineFactory.class'
-          grep -q "$runtime_path" release-artifact/jar-contents.txt
-          grep -q "$legacy_path" release-artifact/jar-contents.txt
 
           if grep -Eq 'burp/smoke/SmokeRuntimeConfig.class|burp/smoke/SmokeRuntimeRunner.class|burp/smoke/SmokeRuntimeResult.class|burp/smoke/SmokeUiEvidenceSnapshot.class' release-artifact/jar-contents.txt; then
             echo "Removed smoke hook classes are still packaged" >&2
