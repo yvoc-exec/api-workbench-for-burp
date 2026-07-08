@@ -1,17 +1,18 @@
 API Workbench for Burp - Local Validation Report
 
 Branch: main
-Starting SHA: a01174eeb19d6691cfabaf53d1274dc26a7df482
+Starting SHA before privacy cleanup: 219f0f748bf34f05ca43e10ed37341640e25cc92
+Sanitized history HEAD before final metadata commit: 3cd2f82ea78e550587d96bfaa432929509ed7b84
 Ending SHA / Commit SHA: final git HEAD after commit/push (commit hash cannot be embedded self-referentially in this tracked report)
-Java version: OpenJDK 17.0.19 (Eclipse Temurin; local .codex-tools/tools/jdk)
+Java version: OpenJDK 17.0.19 (Eclipse Temurin; local ignored JDK cache)
 Maven version: Apache Maven 3.9.9
-Full validation command: mvn -B clean verify (via .codex-tools/tools/maven/bin/mvn.cmd with JAVA_HOME=.codex-tools/tools/jdk)
+Full validation command: mvn -B clean verify (via local ignored Maven cache with JAVA_HOME set to local ignored JDK cache)
 Validation result: PASS
 Test count: 1517 run, 0 failures, 0 errors, 0 skipped
 JaCoCo result: PASS - All coverage checks have been met.
 Artifact path: release-artifacts/current/api-workbench-for-burp-local-validated.jar
-Artifact size: 42009699 bytes
-Artifact SHA256: A4E561F8BF581F6037A273BE9DB536A8F74BF567409F7E459A1204FE742774E4
+Artifact size: 42009687 bytes
+Artifact SHA256: C3659134CCC9E390C7B906D7A7EC3B8CEC7C144CFFC9C2367938C45CA15AFF4A
 
 BApp hardening items addressed:
 - OAuth2 Burp networking fallback patched: production token requests with non-null MontoyaApi use Burp/Montoya networking and fail clearly; Java HttpClient is isolated to api == null test/no-Burp harnesses.
@@ -21,6 +22,8 @@ BApp hardening items addressed:
 - Manual QA fixture cleanup: repo-local manual QA fixture was removed from the public repository; deterministic local smoke validation remains a maintainer-side release practice.
 - Public release docs updated: README.md, SECURITY.md, and CHANGELOG.md. Internal BApp draft and repo-local manual QA fixture were removed from the public repository.
 - LICENSE status: LICENSE exists and is MIT.
+- Privacy cleanup updated Maven groupId to com.yvocexec and license holder to yvoc-exec.
+- Previous artifact hash was stale after Maven metadata cleanup; validated artifact and checksum were regenerated.
 
 Search gates:
 - OAuth2 fallback search: HttpClient remains only in sendTokenRequestViaJdkForTestsOnly used when api == null; isMissingMontoyaFactory removed; no api != null fallback to JDK.
@@ -28,9 +31,12 @@ Search gates:
 - Script overclaim search: no unsupported full parity / translated script claims in checked docs.
 - Public release cleanup search: internal submission draft and repo-local manual QA fixture references removed.
 - Runtime disclosure search: docs/main code search gate did not reintroduce Script engine: GraalJS, GraalJS available, or Nashorn operator-facing strings.
+- Current-file privacy search: no personal identity, old attribution, old groupId, or local Windows workspace path matches.
+- Full-history privacy search: no personal identity, old attribution, old groupId, or local Windows workspace path matches after rewrite.
+- Author/committer privacy search: all reachable commits rewritten to yvoc-exec <noreply@github.com>.
+- Generated/local tracking search: no target, .tools, .codex-tools, surefire-reports, or baseline-clean log artifacts are tracked.
 
 Notes:
-- Focused validation before full verify: mvn -B "-Dtest=ClientCredentialsHandlerTest,GrantHandlerRequestCompositionTest,OAuth2GrantHandlerIntegrationTest,OAuth2ManagerTest,ImporterPanelOAuth2AcquireTest,ImporterPanelOAuth2PopulateTest,ScriptSandboxSecurityTest,ScriptLifecycleUnsupportedCapabilityTest,ScriptSandboxTimeoutTest,ScriptRuntimeCleanupTest,CollectionRunnerScriptCancellationTest,CollectionRunnerPreflightTest,TargetChangePreflightTest,PostmanParserTest,OpenApiParserTest,WorkspaceStateJsonTest,HistoryStoreTest,DiagnosticStoreConcurrencyTest,DialogParentResolverTest" test => PASS (177 run, 0 failures, 0 errors, 0 skipped).
 - Failsafe integration-test phase is configured as skipped in this project build.
-- This commit is docs/repo-publication cleanup only; previous full validation/artifact remains unchanged.
-- Manual Burp UI smoke, hosted GitHub Actions, screenshots, and PortSwigger submission remain manual follow-up.
+- Hosted GitHub Actions were not manually dispatched by this cleanup.
+- Manual Burp UI smoke, screenshots, and PortSwigger submission remain separate release activities.

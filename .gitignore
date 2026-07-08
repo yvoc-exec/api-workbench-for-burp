@@ -1,7 +1,12 @@
 target/
+.tools/
+.codex-tools/
 *.iml
 .idea/
 *.class
+*.log
+*.tmp
 *.jar
 !target/*-jar-with-dependencies.jar
 .DS_Store
+Thumbs.db
