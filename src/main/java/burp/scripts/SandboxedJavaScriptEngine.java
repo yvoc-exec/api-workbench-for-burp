@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class GraalJsSandboxEngine implements AutoCloseable {
+public class SandboxedJavaScriptEngine implements AutoCloseable {
     public static final long DEFAULT_TIMEOUT_MILLIS = 5_000L;
     public static final long MIN_TIMEOUT_MILLIS = 100L;
     public static final long MAX_TIMEOUT_MILLIS = 60_000L;
@@ -28,12 +28,12 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     private static final AtomicInteger THREAD_ID = new AtomicInteger();
     private static final AtomicInteger TIMEOUT_THREAD_ID = new AtomicInteger();
 
-    private final boolean graalAvailable;
-    private final boolean nashornFallbackAvailable;
+    private final boolean runtimeAvailable;
+    private final boolean legacyFallbackAvailable;
     private final String engineName;
     private final String initializationFailure;
-    private final String graalFailure;
-    private final String nashornFailure;
+    private final String runtimeFailure;
+    private final String legacyFallbackFailure;
     private final ExecutorService executor;
     private final boolean ownsExecutor;
     private final ScheduledExecutorService timeoutScheduler;
@@ -41,15 +41,15 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     private final Set<ActiveExecution> activeExecutions = ConcurrentHashMap.newKeySet();
     private volatile long timeoutMillis;
 
-    public GraalJsSandboxEngine() {
+    public SandboxedJavaScriptEngine() {
         this(DEFAULT_TIMEOUT_MILLIS);
     }
 
-    GraalJsSandboxEngine(long timeoutMillis) {
+    SandboxedJavaScriptEngine(long timeoutMillis) {
         this(timeoutMillis, null);
     }
 
-    GraalJsSandboxEngine(long timeoutMillis, ExecutorService executor) {
+    SandboxedJavaScriptEngine(long timeoutMillis, ExecutorService executor) {
         this.timeoutMillis = normalizeTimeout(timeoutMillis);
         this.ownsExecutor = executor == null;
         this.executor = executor != null
@@ -59,13 +59,13 @@ public class GraalJsSandboxEngine implements AutoCloseable {
                         daemonThreadFactory("api-workbench-script-", THREAD_ID));
         this.timeoutScheduler = Executors.newSingleThreadScheduledExecutor(
                 daemonThreadFactory("api-workbench-script-timeout-", TIMEOUT_THREAD_ID));
-        ProbeOutcome graalProbe = probeGraalJs();
-        this.graalAvailable = graalProbe.available;
-        this.graalFailure = graalProbe.failure;
-        this.nashornFallbackAvailable = false;
-        this.nashornFailure = "Nashorn fallback disabled because bounded termination cannot be guaranteed.";
-        this.engineName = graalAvailable ? "GraalJS" : "Unavailable";
-        this.initializationFailure = graalAvailable ? null : buildInitializationFailure(graalFailure, nashornFailure);
+        ProbeOutcome runtimeProbe = probeRuntime();
+        this.runtimeAvailable = runtimeProbe.available;
+        this.runtimeFailure = runtimeProbe.failure;
+        this.legacyFallbackAvailable = false;
+        this.legacyFallbackFailure = "Legacy JavaScript fallback disabled because bounded termination cannot be guaranteed.";
+        this.engineName = runtimeAvailable ? "Sandboxed JavaScript" : "Unavailable";
+        this.initializationFailure = runtimeAvailable ? null : buildInitializationFailure(runtimeFailure, legacyFallbackFailure);
     }
 
     void setTimeoutMillisForTests(long timeoutMillis) {
@@ -73,14 +73,14 @@ public class GraalJsSandboxEngine implements AutoCloseable {
     }
 
     public boolean isAvailable() {
-        return graalAvailable;
+        return runtimeAvailable;
     }
 
-    public boolean isGraalAvailable() {
-        return graalAvailable;
+    public boolean isRuntimeAvailable() {
+        return runtimeAvailable;
     }
 
-    public boolean isNashornFallbackAvailable() {
+    public boolean isLegacyFallbackAvailable() {
         return false;
     }
 
@@ -92,12 +92,12 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return initializationFailure;
     }
 
-    public String getGraalFailure() {
-        return graalFailure;
+    public String getRuntimeFailure() {
+        return runtimeFailure;
     }
 
-    public String getNashornFailure() {
-        return nashornFailure;
+    public String getLegacyFallbackFailure() {
+        return legacyFallbackFailure;
     }
 
     public Object execute(String source, Map<String, Object> bindings) throws Exception {
@@ -199,10 +199,10 @@ public class GraalJsSandboxEngine implements AutoCloseable {
             if (active.timedOut) {
                 throw new ScriptTimedOutException(active.timeoutMillis);
             }
-            if (graalAvailable) {
-                return executeWithGraal(source, bindings, active, beforeContextClose);
+            if (runtimeAvailable) {
+                return executeWithJavaScriptRuntime(source, bindings, active, beforeContextClose);
             }
-            throw new IllegalStateException(buildInitializationFailure(graalFailure, nashornFailure));
+            throw new IllegalStateException(buildInitializationFailure(runtimeFailure, legacyFallbackFailure));
         } finally {
             if (previousDepth == 0) {
                 executionDepth.remove();
@@ -228,11 +228,11 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return new Exception(cause);
     }
 
-    private Object executeWithGraal(String source,
-                                    Map<String, Object> bindings,
-                                    ActiveExecution active,
-                                    Runnable beforeContextClose) throws Exception {
-        Context context = createGraalContext();
+    private Object executeWithJavaScriptRuntime(String source,
+                                                Map<String, Object> bindings,
+                                                ActiveExecution active,
+                                                Runnable beforeContextClose) throws Exception {
+        Context context = createJavaScriptContext();
         active.context = context;
         if (active.cancelled) {
             closeActiveContext(active);
@@ -275,7 +275,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         }
     }
 
-    private Context createGraalContext() {
+    private Context createJavaScriptContext() {
         return Context.newBuilder("js")
                 .allowHostAccess(HostAccess.newBuilder(HostAccess.NONE)
                         .allowAccessAnnotatedBy(HostAccess.Export.class)
@@ -288,19 +288,19 @@ public class GraalJsSandboxEngine implements AutoCloseable {
                 .build();
     }
 
-    private ProbeOutcome probeGraalJs() {
-        try (Context context = createGraalContext()) {
+    private ProbeOutcome probeRuntime() {
+        try (Context context = createJavaScriptContext()) {
             if (context.getEngine() == null) {
-                return ProbeOutcome.unavailable("GraalJS engine could not be initialized.");
+                return ProbeOutcome.unavailable("JavaScript runtime could not be initialized.");
             }
             Value result = context.eval("js", "1 + 1");
             if (!isProbeSuccess(result)) {
                 return ProbeOutcome.unavailable(
-                        "GraalJS probe returned unexpected result: " + describeValue(result));
+                        "JavaScript runtime probe returned unexpected result: " + describeValue(result));
             }
             return ProbeOutcome.available();
         } catch (Throwable t) {
-            return ProbeOutcome.unavailable("GraalJS initialization failed: " + describeThrowable(t));
+            return ProbeOutcome.unavailable("JavaScript runtime initialization failed: " + describeThrowable(t));
         }
     }
 
@@ -341,16 +341,16 @@ public class GraalJsSandboxEngine implements AutoCloseable {
         return message;
     }
 
-    private String buildInitializationFailure(String graalFailure, String nashornFailure) {
+    private String buildInitializationFailure(String runtimeFailure, String legacyFallbackFailure) {
         StringBuilder sb = new StringBuilder();
-        if (graalFailure != null && !graalFailure.isBlank()) {
-            sb.append("GraalJS unavailable: ").append(graalFailure.trim());
+        if (runtimeFailure != null && !runtimeFailure.isBlank()) {
+            sb.append("JavaScript runtime unavailable: ").append(runtimeFailure.trim());
         }
-        if (nashornFailure != null && !nashornFailure.isBlank()) {
+        if (legacyFallbackFailure != null && !legacyFallbackFailure.isBlank()) {
             if (sb.length() > 0) {
                 sb.append("; ");
             }
-            sb.append("Nashorn fallback unavailable: ").append(nashornFailure.trim());
+            sb.append("Legacy JavaScript fallback unavailable: ").append(legacyFallbackFailure.trim());
         }
         if (sb.length() == 0) {
             sb.append("No JavaScript runtime available");
@@ -360,7 +360,7 @@ public class GraalJsSandboxEngine implements AutoCloseable {
 
     private String extractMessage(PolyglotException exception) {
         if (exception == null) {
-            return "Unknown GraalJS error";
+            return "Unknown JavaScript runtime error";
         }
         String message = exception.getMessage();
         return message != null && !message.isBlank()

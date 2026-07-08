@@ -67,7 +67,7 @@ class ScriptRuntimeCleanupTest {
     @Test
     void scriptModeProbeClosesTemporaryEngine() throws Exception {
         String source = Files.readString(Path.of("src/main/java/burp/utils/ScriptModeDetector.java"));
-        assertThat(source).contains("try (burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine())");
+        assertThat(source).contains("try (burp.scripts.SandboxedJavaScriptEngine engine = new burp.scripts.SandboxedJavaScriptEngine())");
         String first = ScriptModeDetector.probeJavaScriptRuntime();
         String second = ScriptModeDetector.probeJavaScriptRuntime();
         assertThat(second).isEqualTo(first);

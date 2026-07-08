@@ -41,7 +41,7 @@ public class BurpExtender implements BurpExtension {
         api.logging().logToOutput("  Supports: Postman, Bruno, OpenAPI, Insomnia, HAR");
         api.logging().logToOutput("  Features: Import + Collection Runner + Workbench");
         api.logging().logToOutput("  Java: " + scriptResult.javaVersion + " | Script: " + scriptResult.mode.label);
-        api.logging().logToOutput("  Script engine: " + (scriptResult.engineName != null ? scriptResult.engineName : "Unavailable"));
+        api.logging().logToOutput("  Script runtime: " + (scriptResult.engineName != null ? scriptResult.engineName : "Unavailable"));
         if (scriptResult.reason != null) {
             api.logging().logToOutput("  Script reason: " + scriptResult.reason);
         }

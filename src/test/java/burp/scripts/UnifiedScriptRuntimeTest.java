@@ -267,7 +267,7 @@ class UnifiedScriptRuntimeTest {
         assertThat(result.logs).hasSize(1);
         assertThat(result.logs.get(0).level).isEqualTo("error");
         assertThat(result.logs.get(0).message).contains("bad thing");
-        assertThat(result.engineName).isIn("GraalJS", "Nashorn fallback", "Unavailable");
+        assertThat(result.engineName).isIn("Sandboxed JavaScript", "Legacy JavaScript fallback", "Unavailable");
     }
 
     @Test
@@ -331,12 +331,12 @@ class UnifiedScriptRuntimeTest {
     }
 
     @Test
-    void graalSandboxEngineExecutesSimpleScriptAndBlocksHostClassAccess() throws Exception {
-        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+    void scriptSandboxEngineExecutesSimpleScriptAndBlocksHostClassAccess() throws Exception {
+        SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine();
 
-        assertThat(engine.isGraalAvailable()).isTrue();
-        assertThat(engine.isNashornFallbackAvailable()).isFalse();
-        assertThat(engine.getEngineName()).isEqualTo("GraalJS");
+        assertThat(engine.isRuntimeAvailable()).isTrue();
+        assertThat(engine.isLegacyFallbackAvailable()).isFalse();
+        assertThat(engine.getEngineName()).isEqualTo("Sandboxed JavaScript");
         assertThat(engine.getInitializationFailure()).isNull();
         Object value = engine.execute("1 + 1", Map.of());
         assertThat(value).isNotNull();

@@ -7,7 +7,7 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RedirectPolicy;
 import burp.scripts.ExecutionSource;
-import burp.scripts.GraalJsSandboxEngine;
+import burp.scripts.SandboxedJavaScriptEngine;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptExecutionContext;
@@ -182,7 +182,7 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
         );
         context.scriptErrorsStopExecution = true;
 
-        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+        SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine();
         ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
         try {
             ScriptExecutionResult result = executor.execute(context, List.of(
@@ -227,7 +227,7 @@ class ScriptSuccessfulMutationCommitAfterErrorTest {
         );
         context.scriptErrorsStopExecution = true;
 
-        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+        SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine();
         ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
         ScriptExecutionResult scriptResult;
         try {

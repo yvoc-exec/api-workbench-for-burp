@@ -25,7 +25,7 @@ public class HistoryDiffService {
         appendField(sb, "Duration", left != null ? left.durationMillis + "ms" : "", right != null ? right.durationMillis + "ms" : "");
         appendField(sb, "Size", left != null ? left.historySizeLabel() : "", right != null ? right.historySizeLabel() : "");
         appendField(sb, "Execution Source", value(left != null ? left.executionSource : null), value(right != null ? right.executionSource : null));
-        appendField(sb, "Script Engine", value(left != null ? left.scriptEngineName : null), value(right != null ? right.scriptEngineName : null));
+        appendField(sb, "Script Runtime", value(left != null ? left.scriptEngineName : null), value(right != null ? right.scriptEngineName : null));
         appendField(sb, "Flow Control", value(left != null && left.scriptFlowControl != null ? left.scriptFlowControl.name() : null), value(right != null && right.scriptFlowControl != null ? right.scriptFlowControl.name() : null));
 
         sb.append("\n=== Request ===\n");

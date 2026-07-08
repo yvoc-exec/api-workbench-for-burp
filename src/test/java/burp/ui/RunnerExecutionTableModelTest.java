@@ -49,7 +49,7 @@ class RunnerExecutionTableModelTest {
         result.folderPath = "Auth";
         result.requestUrl = "https://api.example.test/login";
         result.responseTimeMs = 42L;
-        result.scriptEngineName = "GraalJS";
+        result.scriptEngineName = "Sandboxed JavaScript";
 
         model.addResult(result);
 

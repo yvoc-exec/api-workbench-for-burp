@@ -98,7 +98,7 @@ Java 17 or later is required.
 | Limited | Runtime probing failed | Legacy post-response regex extraction is available; JavaScript script execution is reduced |
 | Disabled | Java is below the supported runtime requirement | JavaScript scripting is unavailable |
 
-The primary runtime is GraalJS. Nashorn is a compatibility fallback, not the main architecture. GraalJS blocks general host-class lookup, direct I/O, and thread creation; scripts only see annotated binding APIs. The direct Nashorn-factory fallback uses a deny-all class filter.
+API Workbench uses a bundled sandboxed JavaScript runtime. The runtime blocks general host-class lookup, direct I/O, and thread creation; scripts only see the binding APIs exposed by API Workbench.
 
 Supported dialects:
 
@@ -282,7 +282,7 @@ The main source lives under `src/main/java/burp/`. Tests live under `src/test/ja
 
 Key current components:
 
-- `UnifiedScriptRuntime`, `GraalJsSandboxEngine`, `ScriptLifecycleExecutor`, and `ScriptBindingsFactory` are the primary script-runtime components.
+- `UnifiedScriptRuntime`, `SandboxedJavaScriptEngine`, `ScriptLifecycleExecutor`, and `ScriptBindingsFactory` are the primary script-runtime components.
 - `ScriptEngine` is the legacy compatibility adapter.
 - `RunnerExecutionTableModel` backs the current runner execution table.
 - `History*` classes back the History tab, and `Diagnostic*` classes back Diagnostics.
@@ -382,7 +382,7 @@ burp/
 |   `-- CollectionRunner.java
 |-- scripts/
 |   |-- ExecutionSource.java
-|   |-- GraalJsSandboxEngine.java
+|   |-- SandboxedJavaScriptEngine.java
 |   |-- ScriptAdHocRequest.java
 |   |-- ScriptAssertionResult.java
 |   |-- ScriptBindingsFactory.java

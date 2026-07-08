@@ -113,7 +113,7 @@ API Workbench for Burp v2.0.0
 Supports: Postman, Bruno, OpenAPI, Insomnia, HAR
 Features: Import + Collection Runner + Workbench
 Java: <version> | Script: <mode>
-Script engine: <engine name>
+Script runtime: <runtime status>
 Script reason: <reason, when present>
 Extension core initialized; scheduling API Workbench UI registration...
 API Workbench suite tab registered successfully.
@@ -127,7 +127,7 @@ Check the script mode line:
 | Limited | Runtime probing failed | Legacy post-response regex extraction remains available; JavaScript scripts are reduced |
 | Disabled | Java is below the supported requirement | JavaScript scripting is unavailable |
 
-The primary runtime is GraalJS. Nashorn is only a compatibility fallback.
+API Workbench uses a bundled sandboxed JavaScript runtime. Runtime implementation details are intentionally not surfaced in the operator UI.
 
 If the API Workbench tab does not appear:
 
@@ -445,7 +445,7 @@ Always run only trusted scripts. Scripts can mutate requests and runtime state, 
 - Full mode means a supported JavaScript runtime is available.
 - Limited mode means runtime probing failed and only legacy post-response regex extraction is available.
 - Disabled mode means Java is below the supported runtime requirement.
-- Nashorn is a compatibility fallback, not the main architecture.
+- Runtime implementation details are intentionally not surfaced in the operator UI.
 - Use Diagnostics capture when collecting runtime evidence.
 
 ### Other common issues

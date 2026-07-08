@@ -11,14 +11,14 @@ import java.util.List;
 public class ScriptLifecycleExecutor {
     public static final String UNSUPPORTED_SCRIPT_CAPABILITY = "UNSUPPORTED_SCRIPT_CAPABILITY";
 
-    private final GraalJsSandboxEngine sandboxEngine;
+    private final SandboxedJavaScriptEngine sandboxEngine;
     private final ScriptCapabilityAnalyzer capabilityAnalyzer;
 
-    public ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine) {
+    public ScriptLifecycleExecutor(SandboxedJavaScriptEngine sandboxEngine) {
         this(sandboxEngine, new ScriptCapabilityAnalyzer());
     }
 
-    ScriptLifecycleExecutor(GraalJsSandboxEngine sandboxEngine,
+    ScriptLifecycleExecutor(SandboxedJavaScriptEngine sandboxEngine,
                             ScriptCapabilityAnalyzer capabilityAnalyzer) {
         this.sandboxEngine = sandboxEngine;
         this.capabilityAnalyzer = capabilityAnalyzer != null ? capabilityAnalyzer : new ScriptCapabilityAnalyzer();
@@ -84,7 +84,7 @@ public class ScriptLifecycleExecutor {
                     ScriptBindingsFactory.applyRequestMutation(context);
                     context.variableStore.refreshRequestState();
                 });
-            } catch (GraalJsSandboxEngine.ScriptTimedOutException t) {
+            } catch (SandboxedJavaScriptEngine.ScriptTimedOutException t) {
                 restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);
@@ -93,7 +93,7 @@ public class ScriptLifecycleExecutor {
                 result.timeoutMillis = t.timeoutMillis;
                 context.error(t.getMessage() + scriptLabel(block), block.id, block.sourceFormat);
                 break;
-            } catch (GraalJsSandboxEngine.ScriptCancelledException t) {
+            } catch (SandboxedJavaScriptEngine.ScriptCancelledException t) {
                 restoreRequest(context, phaseRequestSnapshot);
                 context.variableStore.restore(phaseCheckpoint);
                 trimMutations(result, phaseMutationCount);

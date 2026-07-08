@@ -20,10 +20,10 @@ class ScriptSandboxTest {
             "Java.type('java.io.File')",
             "Java.type('java.lang.Thread')"
     })
-    void graalSandboxBlocksHostJvmAndFileAccess(String source) {
-        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+    void scriptSandboxBlocksHostJvmAndFileAccess(String source) {
+        SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine();
 
-        assertThat(engine.isGraalAvailable()).isTrue();
+        assertThat(engine.isRuntimeAvailable()).isTrue();
         assertThrows(Exception.class, () -> engine.execute(source, java.util.Map.of()));
     }
 

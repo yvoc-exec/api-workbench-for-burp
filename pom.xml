@@ -61,7 +61,7 @@
             <artifactId>commons-lang3</artifactId>
             <version>3.14.0</version>
         </dependency>
-        <!-- GraalJS runtime for script execution -->
+        <!-- JavaScript runtime for script execution -->
         <dependency>
             <groupId>org.graalvm.polyglot</groupId>
             <artifactId>polyglot</artifactId>
@@ -74,13 +74,13 @@
             <type>pom</type>
         </dependency>
 
-        <!-- Nashorn compatibility fallback -->
+        <!-- Legacy JavaScript compatibility fallback -->
         <dependency>
             <groupId>org.openjdk.nashorn</groupId>
             <artifactId>nashorn-core</artifactId>
             <version>15.4</version>
         </dependency>
-        <!-- ASM dependencies required by standalone Nashorn -->
+        <!-- ASM dependencies required by the legacy JavaScript fallback -->
         <dependency>
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm</artifactId>

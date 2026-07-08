@@ -65,7 +65,7 @@ class ScriptBindingsPersistenceOverrideTest {
     }
 
     @Test
-    void graalGuestFalseOverridesPersistentDefault() {
+    void guestFalseOverridesPersistentDefault() {
         ScriptExecutionResult result = runScript("""
                 awb.environment.set('token', 'value', { persist: false });
                 """, ScriptDialect.API_WORKBENCH);
@@ -73,7 +73,7 @@ class ScriptBindingsPersistenceOverrideTest {
     }
 
     @Test
-    void graalGuestTrueOverridesRuntimeDefault() {
+    void guestTrueOverridesRuntimeDefault() {
         ScriptExecutionResult result = runScript("""
                 bru.envScope.set('token', 'value', { persist: true });
                 """, ScriptDialect.BRUNO);

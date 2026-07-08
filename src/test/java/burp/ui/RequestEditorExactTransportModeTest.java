@@ -302,10 +302,10 @@ class RequestEditorExactTransportModeTest {
                 new ApiRequest.Script("python", "post_two()")
         ));
         req.scriptBlocks = new ArrayList<>(List.of(
-                scriptBlock("block-pre-1", ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/a", 3, Map.of("dialect", "js"), "source-a"),
-                scriptBlock("block-post-1", ScriptDialect.LEGACY_NASHORN, ScriptPhase.POST_RESPONSE, ScriptScope.COLLECTION, false, "folder/b", 4, Map.of("scope", "collection"), "source-b"),
-                scriptBlock("block-pre-2", ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/c", 5, Map.of("phase", "pre"), "source-c"),
-                scriptBlock("block-post-2", ScriptDialect.LEGACY_NASHORN, ScriptPhase.POST_RESPONSE, ScriptScope.REQUEST, true, "folder/d", 6, Map.of("phase", "post"), "source-d")
+                scriptBlock("block-pre-1", ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/a", 3, Map.of("dialect", "js"), "source-a"),
+                scriptBlock("block-post-1", ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.POST_RESPONSE, ScriptScope.COLLECTION, false, "folder/b", 4, Map.of("scope", "collection"), "source-b"),
+                scriptBlock("block-pre-2", ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, true, "folder/c", 5, Map.of("phase", "pre"), "source-c"),
+                scriptBlock("block-post-2", ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.POST_RESPONSE, ScriptScope.REQUEST, true, "folder/d", 6, Map.of("phase", "post"), "source-d")
         ));
         panel.loadRequest(req);
         String preBefore = scripts(req.preRequestScripts);
@@ -531,7 +531,7 @@ class RequestEditorExactTransportModeTest {
         req.authExplicitlyDisabled = true;
         req.preRequestScripts.add(new ApiRequest.Script("js", "pre();"));
         req.postResponseScripts.add(new ApiRequest.Script("js", "post();"));
-        ScriptBlock block = ScriptBlock.of("block();", ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST);
+        ScriptBlock block = ScriptBlock.of("block();", ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST);
         block.id = "block-id";
         block.sourcePath = "folder/rich";
         block.order = 7;

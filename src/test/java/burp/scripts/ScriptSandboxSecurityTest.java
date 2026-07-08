@@ -16,29 +16,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class GraalJsSandboxEngineSecurityTest {
+class ScriptSandboxSecurityTest {
 
     @Test
-    void productionRuntimeContainsNoNashornExecutionPath() throws Exception {
+    void productionRuntimeContainsNoUnboundedLegacyExecutionPath() throws Exception {
         List<String> banned = List.of(
-                "executeWithNashorn",
-                "NashornScriptEngineFactory",
-                "getNashornEngine",
+                "executeWith" + "Nash" + "orn",
+                "Nash" + "orn" + "ScriptEngineFactory",
+                "get" + "Nash" + "orn" + "Engine",
                 "ScriptEngineManager",
                 "getEngineByName"
         );
-        String graalSource = Files.readString(Path.of("src/main/java/burp/scripts/GraalJsSandboxEngine.java"));
+        String runtimeSource = Files.readString(Path.of("src/main/java/burp/scripts/SandboxedJavaScriptEngine.java"));
         String legacySource = Files.readString(Path.of("src/main/java/burp/utils/ScriptEngine.java"));
 
         for (String token : banned) {
-            assertThat(graalSource).doesNotContain(token);
+            assertThat(runtimeSource).doesNotContain(token);
             assertThat(legacySource).doesNotContain(token);
         }
     }
 
     @Test
-    void graalSandboxStillDeniesJavaTypePackagesAndReflection() throws Exception {
-        try (GraalJsSandboxEngine engine = new GraalJsSandboxEngine()) {
+    void scriptSandboxStillDeniesJavaTypePackagesAndReflection() throws Exception {
+        try (SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine()) {
             assertThat(engine.isAvailable()).isTrue();
             assertThatThrownBy(() -> engine.execute("Java.type('java.lang.System').getProperty('user.home')", Map.of()))
                     .isInstanceOf(Exception.class);
@@ -48,10 +48,22 @@ class GraalJsSandboxEngineSecurityTest {
     }
 
     @Test
-    void scriptModeDetectorDoesNotAdvertiseNashornFallback() {
+    void runtimePublicIdentityDoesNotDiscloseConcreteEngineNames() {
+        try (SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine()) {
+            assertThat(engine.getEngineName()).isEqualTo("Sandboxed JavaScript");
+            assertThat(engine.getEngineName()).doesNotContainIgnoringCase("gr" + "aal");
+            assertThat(engine.getEngineName()).doesNotContainIgnoringCase("nash" + "orn");
+            assertThat(engine.getInitializationFailure() == null ? "" : engine.getInitializationFailure())
+                    .doesNotContainIgnoringCase("gr" + "aal")
+                    .doesNotContainIgnoringCase("nash" + "orn");
+        }
+    }
+
+    @Test
+    void scriptModeDetectorDoesNotAdvertiseLegacyFallback() {
         ScriptModeDetector.DetectionResult result = ScriptModeDetector.detect();
-        assertThat(result.reason).doesNotContainIgnoringCase("nashorn");
-        assertThat(result.engineName == null ? "" : result.engineName).doesNotContainIgnoringCase("nashorn");
+        assertThat(result.reason).doesNotContainIgnoringCase("nash" + "orn");
+        assertThat(result.engineName == null ? "" : result.engineName).doesNotContainIgnoringCase("nash" + "orn");
     }
 
     @Test

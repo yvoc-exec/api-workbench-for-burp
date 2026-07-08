@@ -607,7 +607,7 @@ final class RequestEditorStateMapper {
         for (ApiRequest.Script script : scripts) {
             ScriptBlock block = ScriptBlock.fromLegacy(
                     script,
-                    burp.scripts.ScriptDialect.LEGACY_NASHORN,
+                    burp.scripts.ScriptDialect.LEGACY_JAVASCRIPT,
                     phase,
                     burp.scripts.ScriptScope.REQUEST,
                     currentRequest != null ? currentRequest.sourceCollection : null,

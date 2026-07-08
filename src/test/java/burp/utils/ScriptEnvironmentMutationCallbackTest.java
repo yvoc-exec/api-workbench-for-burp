@@ -386,7 +386,7 @@ class ScriptEnvironmentMutationCallbackTest {
         MontoyaApi api = mock(MontoyaApi.class, RETURNS_DEEP_STUBS);
         UnifiedScriptRuntime runtime = mock(UnifiedScriptRuntime.class);
         when(runtime.isEnabled()).thenReturn(true);
-        when(runtime.getEngineName()).thenReturn("GraalJS");
+        when(runtime.getEngineName()).thenReturn("Sandboxed JavaScript");
         when(runtime.executePreRequest(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(runtimeResult);
         ApiCollection collection = collection();
@@ -399,7 +399,7 @@ class ScriptEnvironmentMutationCallbackTest {
     private static ScriptExecutionResult result(ScriptVariableMutation... mutations) {
         ScriptExecutionResult result = new ScriptExecutionResult();
         result.success = true;
-        result.engineName = "GraalJS";
+        result.engineName = "Sandboxed JavaScript";
         result.effectiveVariables.put("token", "value");
         if (mutations != null) {
             result.variableMutations.addAll(List.of(mutations));

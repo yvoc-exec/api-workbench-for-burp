@@ -10,7 +10,7 @@
 6. [Variable Resolution Engine](#6-variable-resolution-engine)
 7. [Environment and OAuth2](#7-environment-and-oauth2)
 8. [Collection Runner](#8-collection-runner)
-9. [Script Engine](#9-script-engine)
+9. [Script Runtime](#9-script-runtime)
 10. [History Subsystem](#10-history-subsystem)
 11. [Diagnostics Subsystem](#11-diagnostics-subsystem)
 12. [State Synchronization](#12-state-synchronization)
@@ -31,8 +31,8 @@ API Workbench is a Burp-native API workspace for importing or creating collectio
 
 | Capability | Notes |
 | --- | --- |
-| GraalJS primary runtime | JavaScript scripts run on a supported GraalJS-backed sandbox when Java 17+ is available |
-| Nashorn fallback | Compatibility fallback for legacy paths; not the primary architecture |
+| Sandboxed JavaScript runtime | JavaScript scripts run on a supported sandboxed runtime when Java 17+ is available |
+| Legacy script compatibility | Legacy script paths remain bounded by the supported runtime behavior |
 | Dialects | Postman, Bruno, Insomnia, API Workbench native, and legacy compatibility |
 | History | Records Workbench and Runner executions, script output, assertions, extractions, and variable changes |
 | Diagnostics | Capture passive events and generate or copy sanitized reports |
@@ -60,7 +60,7 @@ The runner executes checked requests in order with retries, redirect handling, s
 
 OAuth2 configuration belongs to the active environment profile. Tokens are acquired, refreshed, and written back to configured environment outputs.
 
-### 2.6 Script Engine
+### 2.6 Script Runtime
 
 The runtime supports multiple script dialects and phases, mutates request state and variables, and records logs, warnings, errors, assertions, and extractions.
 
@@ -73,7 +73,7 @@ Root support infrastructure lives in the repository root, `config/`, `.github/wo
 **Primary runtime and execution components**
 
 - `burp.scripts.UnifiedScriptRuntime`
-- `burp.scripts.GraalJsSandboxEngine`
+- `burp.scripts.SandboxedJavaScriptEngine`
 - `burp.scripts.ScriptLifecycleExecutor`
 - `burp.scripts.ScriptBindingsFactory`
 - `burp.scripts.ScriptExecutionContext`
@@ -174,7 +174,7 @@ burp/
 |   `-- CollectionRunner.java
 |-- scripts/
 |   |-- ExecutionSource.java
-|   |-- GraalJsSandboxEngine.java
+|   |-- SandboxedJavaScriptEngine.java
 |   |-- ScriptAdHocRequest.java
 |   |-- ScriptAssertionResult.java
 |   |-- ScriptBindingsFactory.java
@@ -288,7 +288,7 @@ BurpExtender
     |-- EnvironmentProfile / OAuth2EnvironmentState / WorkspaceState
     |-- HistoryStore / HistoryPersistenceService / HistoryExportService
     |-- DiagnosticStore / DiagnosticEvent / DiagnosticSanitizer
-    |-- UnifiedScriptRuntime / ScriptLifecycleExecutor / ScriptBindingsFactory / GraalJsSandboxEngine
+    |-- UnifiedScriptRuntime / ScriptLifecycleExecutor / ScriptBindingsFactory / SandboxedJavaScriptEngine
     `-- RequestBuilder / SharedRequestPipeline / RuntimeResolverFactory
 
 ```
@@ -454,19 +454,19 @@ Skip, stop, next-request, and dependent-request control are Runner-oriented. Wor
 
 The current UI uses one Runner Execution Table and a shared detail viewer; there are not separate visible Results and Timeline tables in the current operator presentation.
 
-## 9. Script Engine
+## 9. Script Runtime
 
 ### 9.0 Script mode gating
 
 Java 17+ is required. Full mode means a supported runtime is available. Limited mode means runtime probing failed and only legacy post-response regex extraction is available. Disabled mode means the Java runtime is below the supported requirement.
 
-### 9.1 GraalJS primary runtime
+### 9.1 Sandboxed JavaScript runtime
 
-`GraalJsSandboxEngine` is the primary runtime path. It creates a fresh sandbox context per execution, blocks general host-class lookup, direct I/O, and thread creation, and exposes only the binding APIs that the extension intentionally provides. The GraalJS path does not grant unrestricted `Java.type()` access or full JVM control.
+`SandboxedJavaScriptEngine` creates a fresh sandbox context per execution, blocks general host-class lookup, direct I/O, and thread creation, and exposes only the binding APIs that the extension intentionally provides. The sandboxed JavaScript path does not grant unrestricted `Java.type()` access or full JVM control.
 
-### 9.2 Nashorn compatibility fallback
+### 9.2 Legacy script compatibility
 
-Nashorn is retained only for compatibility. The direct Nashorn-factory path uses a deny-all class filter.
+Legacy script paths remain bounded by the supported runtime behavior.
 
 ### 9.3 Bindings and dialects
 
@@ -506,8 +506,8 @@ Environment and OAuth2 mutations become visible to Workbench, Runner, and export
 
 ## 13. Security Considerations
 
-- GraalJS uses restricted host access and is not a full JVM shell.
-- Nashorn fallback is compatibility-only.
+- Sandboxed JavaScript uses restricted host access and is not a full JVM shell.
+- Legacy script compatibility remains bounded by supported runtime behavior.
 - Scripts, uploads, exports, and project files may contain secrets.
 - OAuth2 loopback callbacks use localhost and should be used only in controlled environments.
 - There is no execution timeout for scripts.
@@ -542,8 +542,8 @@ Add new script-binding behavior under `burp.scripts` runtime and binding classes
 
 ### 18.2 JavaScript runtime unavailable or limited
 
-- GraalJS is the primary path.
-- Nashorn is only a fallback.
+- Sandboxed JavaScript runtime is the supported path.
+- Legacy script compatibility remains bounded by supported runtime behavior.
 - Use Diagnostics to capture runtime evidence.
 
 ### 18.3 OAuth2 browser doesn't open
@@ -605,7 +605,7 @@ Add new script-binding behavior under `burp.scripts` runtime and binding classes
 ### Script runtime
 
 - `UnifiedScriptRuntime`
-- `GraalJsSandboxEngine`
+- `SandboxedJavaScriptEngine`
 - `ScriptLifecycleExecutor`
 - `ScriptBindingsFactory`
 - `ScriptExecutionContext`

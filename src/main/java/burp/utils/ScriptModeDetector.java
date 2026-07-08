@@ -29,11 +29,11 @@ public class ScriptModeDetector {
             return new DetectionResult(ScriptMode.DISABLED,
                 "Java " + version + " detected. Java 17+ is required for script execution.", version);
         }
-        try (burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine()) {
-            String probeReason = engine.isAvailable() ? null : engine.getGraalFailure();
+        try (burp.scripts.SandboxedJavaScriptEngine engine = new burp.scripts.SandboxedJavaScriptEngine()) {
+            String probeReason = engine.isAvailable() ? null : engine.getRuntimeFailure();
             if (probeReason == null) {
                 return new DetectionResult(ScriptMode.FULL_JS,
-                    "Java " + version + " with " + engine.getEngineName() + " available.", version, engine.getEngineName());
+                    "Java " + version + " with sandboxed JavaScript runtime available.", version, engine.getEngineName());
             }
             return new DetectionResult(ScriptMode.LIMITED,
                 "Java " + version + " detected. Bounded full JavaScript unavailable: " + probeReason, version,
@@ -65,13 +65,9 @@ public class ScriptModeDetector {
     }
 
     static String probeJavaScriptRuntime() {
-        try (burp.scripts.GraalJsSandboxEngine engine = new burp.scripts.GraalJsSandboxEngine()) {
-            return engine.isAvailable() ? null : engine.getGraalFailure();
+        try (burp.scripts.SandboxedJavaScriptEngine engine = new burp.scripts.SandboxedJavaScriptEngine()) {
+            return engine.isAvailable() ? null : engine.getRuntimeFailure();
         }
-    }
-
-    static String probeNashorn() {
-        return probeJavaScriptRuntime();
     }
 
     static String probeJavaScriptRuntimeLegacy() {

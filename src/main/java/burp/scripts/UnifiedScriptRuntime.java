@@ -14,18 +14,18 @@ import java.util.Map;
 
 public class UnifiedScriptRuntime {
     private final MontoyaApi api;
-    private final GraalJsSandboxEngine sandboxEngine;
+    private final SandboxedJavaScriptEngine sandboxEngine;
     private final ScriptLifecycleExecutor lifecycleExecutor;
     private final burp.utils.ScriptMode scriptMode;
 
     public UnifiedScriptRuntime(MontoyaApi api, burp.utils.ScriptMode scriptMode) {
-        this(api, scriptMode, GraalJsSandboxEngine.DEFAULT_TIMEOUT_MILLIS);
+        this(api, scriptMode, SandboxedJavaScriptEngine.DEFAULT_TIMEOUT_MILLIS);
     }
 
     UnifiedScriptRuntime(MontoyaApi api, burp.utils.ScriptMode scriptMode, long timeoutMillis) {
         this.api = api;
         this.scriptMode = scriptMode != null ? scriptMode : burp.utils.ScriptMode.DISABLED;
-        this.sandboxEngine = new ReentrantGraalJsSandboxEngine(timeoutMillis);
+        this.sandboxEngine = new ReentrantSandboxedJavaScriptEngine(timeoutMillis);
         this.lifecycleExecutor = new ScriptLifecycleExecutor(sandboxEngine);
     }
 
@@ -239,10 +239,10 @@ public class UnifiedScriptRuntime {
                 }
             } else {
                 if (phase == ScriptPhase.PRE_REQUEST && request.preRequestScripts != null) {
-                    blocks.addAll(legacyBlocks(request.preRequestScripts, ScriptDialect.LEGACY_NASHORN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, request));
+                    blocks.addAll(legacyBlocks(request.preRequestScripts, ScriptDialect.LEGACY_JAVASCRIPT, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, request));
                 }
                 if (phase == ScriptPhase.POST_RESPONSE && request.postResponseScripts != null) {
-                    blocks.addAll(legacyBlocks(request.postResponseScripts, ScriptDialect.LEGACY_NASHORN, phase, ScriptScope.REQUEST, request));
+                    blocks.addAll(legacyBlocks(request.postResponseScripts, ScriptDialect.LEGACY_JAVASCRIPT, phase, ScriptScope.REQUEST, request));
                 }
             }
         }
@@ -272,7 +272,7 @@ public class UnifiedScriptRuntime {
         ScriptBindingsFactory.NativeApi nativeApi = new ScriptBindingsFactory.NativeApi(context.api, context, requestBinding, responseBinding, executionBinding);
         ScriptBindingsFactory.ConsoleApi consoleApi = new ScriptBindingsFactory.ConsoleApi(context.api, context);
 
-        ScriptDialect dialect = block.dialect != null ? block.dialect : ScriptDialect.LEGACY_NASHORN;
+        ScriptDialect dialect = block.dialect != null ? block.dialect : ScriptDialect.LEGACY_JAVASCRIPT;
         switch (dialect) {
             case POSTMAN -> {
                 bindings.put("pm", postman);
@@ -294,7 +294,7 @@ public class UnifiedScriptRuntime {
                 bindings.put("awb", nativeApi);
                 bindings.put("console", consoleApi);
             }
-            case LEGACY_NASHORN -> {
+            case LEGACY_JAVASCRIPT -> {
                 bindings.put("pm", postman);
                 bindings.put("bru", bruno);
                 bindings.put("insomnia", insomnia);

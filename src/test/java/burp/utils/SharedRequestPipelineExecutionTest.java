@@ -59,7 +59,7 @@ class SharedRequestPipelineExecutionTest {
 
         ScriptExecutionResult scriptResult = new ScriptExecutionResult();
         scriptResult.success = true;
-        scriptResult.engineName = "GraalJS";
+        scriptResult.engineName = "Sandboxed JavaScript";
         ScriptVariableMutation mutation = new ScriptVariableMutation();
         mutation.key = "token";
         mutation.newValue = null;

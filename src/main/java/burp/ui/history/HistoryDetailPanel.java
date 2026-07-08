@@ -517,7 +517,7 @@ public class HistoryDetailPanel extends JPanel {
             return entry.scriptOutputSummaryText.trim();
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Script Engine: ").append(entry != null && entry.scriptEngineName != null ? entry.scriptEngineName : "").append('\n');
+        sb.append("Script Runtime: ").append(entry != null && entry.scriptEngineName != null ? entry.scriptEngineName : "").append('\n');
         sb.append("Script Mode: ").append(entry != null && entry.scriptMode != null ? entry.scriptMode : "").append('\n');
         sb.append("Script Dialect: ").append(entry != null && entry.scriptDialect != null ? entry.scriptDialect : "").append('\n');
         sb.append("Execution Source: ").append(entry != null && entry.executionSource != null ? entry.executionSource : "").append('\n');

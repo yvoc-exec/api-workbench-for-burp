@@ -1,6 +1,6 @@
 package burp.smoke;
 
-import burp.scripts.GraalJsSandboxEngine;
+import burp.scripts.SandboxedJavaScriptEngine;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -14,8 +14,8 @@ public final class ScriptRuntimeProbe {
     public static final class ProbeResult {
         public final int javaVersion;
         public final String engineName;
-        public final boolean graalAvailable;
-        public final boolean nashornFallbackAvailable;
+        public final boolean runtimeAvailable;
+        public final boolean legacyFallbackAvailable;
         public final String initializationFailure;
         public final Object evaluationResult;
         public final boolean success;
@@ -23,16 +23,16 @@ public final class ScriptRuntimeProbe {
 
         private ProbeResult(int javaVersion,
                             String engineName,
-                            boolean graalAvailable,
-                            boolean nashornFallbackAvailable,
+                            boolean runtimeAvailable,
+                            boolean legacyFallbackAvailable,
                             String initializationFailure,
                             Object evaluationResult,
                             boolean success,
                             int exitCode) {
             this.javaVersion = javaVersion;
             this.engineName = engineName;
-            this.graalAvailable = graalAvailable;
-            this.nashornFallbackAvailable = nashornFallbackAvailable;
+            this.runtimeAvailable = runtimeAvailable;
+            this.legacyFallbackAvailable = legacyFallbackAvailable;
             this.initializationFailure = initializationFailure;
             this.evaluationResult = evaluationResult;
             this.success = success;
@@ -45,7 +45,7 @@ public final class ScriptRuntimeProbe {
     }
 
     public static ProbeResult runProbe(boolean requireFull) {
-        GraalJsSandboxEngine engine = new GraalJsSandboxEngine();
+        SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine();
         Object result = null;
         boolean success = false;
         String failure = engine.getInitializationFailure();
@@ -55,9 +55,9 @@ public final class ScriptRuntimeProbe {
             if (!success && failure == null) {
                 failure = "JavaScript runtime probe did not evaluate 1 + 1 to 2.";
             }
-            if (success && requireFull && !"GraalJS".equals(engine.getEngineName())) {
+            if (success && requireFull && !engine.isRuntimeAvailable()) {
                 success = false;
-                failure = "GraalJS runtime required but engine is " + engine.getEngineName() + ".";
+                failure = "JavaScript runtime required but unavailable.";
             }
         } catch (Throwable t) {
             failure = failure != null ? failure : t.getMessage();
@@ -67,8 +67,8 @@ public final class ScriptRuntimeProbe {
         return new ProbeResult(
                 Runtime.version().feature(),
                 engine.getEngineName(),
-                engine.isGraalAvailable(),
-                engine.isNashornFallbackAvailable(),
+                engine.isRuntimeAvailable(),
+                engine.isLegacyFallbackAvailable(),
                 failure,
                 result,
                 success,
@@ -81,9 +81,9 @@ public final class ScriptRuntimeProbe {
         boolean requireFull = arguments.contains("--require-full");
         ProbeResult result = runProbe(requireFull);
         System.out.println("Java: " + result.javaVersion);
-        System.out.println("Script engine: " + result.engineName);
-        System.out.println("Graal available: " + result.graalAvailable);
-        System.out.println("Nashorn fallback available: " + result.nashornFallbackAvailable);
+        System.out.println("Script runtime: " + result.engineName);
+        System.out.println("Runtime available: " + result.runtimeAvailable);
+        System.out.println("Legacy fallback available: " + result.legacyFallbackAvailable);
         System.out.println("Evaluation result: " + result.evaluationResult);
         if (result.initializationFailure != null && !result.initializationFailure.isBlank()) {
             System.out.println("Initialization failure: " + result.initializationFailure);

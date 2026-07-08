@@ -20,6 +20,13 @@ class ScriptModeDetectorTest {
         assertThat(result.mode).isNotNull();
         assertThat(result.javaVersion).isGreaterThanOrEqualTo(8);
         assertThat(result.engineName).isNotNull();
+        if (result.mode == ScriptMode.FULL_JS) {
+            assertThat(result.reason).contains("sandboxed JavaScript runtime available");
+        }
+        assertThat(result.reason).doesNotContainIgnoringCase("gr" + "aal");
+        assertThat(result.reason).doesNotContainIgnoringCase("nash" + "orn");
+        assertThat(result.engineName).doesNotContainIgnoringCase("gr" + "aal");
+        assertThat(result.engineName).doesNotContainIgnoringCase("nash" + "orn");
     }
 
     @Test

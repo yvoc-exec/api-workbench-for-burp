@@ -10,12 +10,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
-public class ReentrantGraalJsSandboxEngineTest {
+public class ReentrantScriptSandboxEngineTest {
 
     @Test
     void nestedScriptCallsCompleteWithoutWaitingForParentExecutorWorkers() {
         assertTimeoutPreemptively(Duration.ofSeconds(4), () -> {
-            try (ReentrantGraalJsSandboxEngine engine = new ReentrantGraalJsSandboxEngine(3_000L)) {
+            try (ReentrantSandboxedJavaScriptEngine engine = new ReentrantSandboxedJavaScriptEngine(3_000L)) {
                 assertThat(engine.isAvailable()).isTrue();
                 AtomicInteger executions = new AtomicInteger();
                 NestedBridge bridge = new NestedBridge(engine, executions, 6);
@@ -32,11 +32,11 @@ public class ReentrantGraalJsSandboxEngineTest {
     }
 
     public static final class NestedBridge {
-        private final ReentrantGraalJsSandboxEngine engine;
+        private final ReentrantSandboxedJavaScriptEngine engine;
         private final AtomicInteger executions;
         private final int terminalLevel;
 
-        public NestedBridge(ReentrantGraalJsSandboxEngine engine,
+        public NestedBridge(ReentrantSandboxedJavaScriptEngine engine,
                             AtomicInteger executions,
                             int terminalLevel) {
             this.engine = engine;

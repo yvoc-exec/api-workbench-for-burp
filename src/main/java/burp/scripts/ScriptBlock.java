@@ -9,7 +9,7 @@ import java.util.UUID;
 
 public class ScriptBlock {
     public String id = UUID.randomUUID().toString();
-    public ScriptDialect dialect = ScriptDialect.LEGACY_NASHORN;
+    public ScriptDialect dialect = ScriptDialect.LEGACY_JAVASCRIPT;
     public ScriptPhase phase = ScriptPhase.PRE_REQUEST;
     public ScriptScope scope = ScriptScope.REQUEST;
     public String source;
@@ -40,7 +40,7 @@ public class ScriptBlock {
     public static ScriptBlock of(String source, ScriptDialect dialect, ScriptPhase phase, ScriptScope scope) {
         ScriptBlock block = new ScriptBlock();
         block.source = source;
-        block.dialect = dialect != null ? dialect : ScriptDialect.LEGACY_NASHORN;
+        block.dialect = dialect != null ? dialect : ScriptDialect.LEGACY_JAVASCRIPT;
         block.phase = phase != null ? phase : ScriptPhase.PRE_REQUEST;
         block.scope = scope != null ? scope : ScriptScope.REQUEST;
         return block;

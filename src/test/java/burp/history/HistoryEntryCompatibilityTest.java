@@ -31,7 +31,7 @@ class HistoryEntryCompatibilityTest {
         ApiRequest request = HistoryTestFixtures.sampleRequest();
         EnvironmentProfile environment = HistoryTestFixtures.sampleEnvironment();
         burp.utils.ExecutionResult execution = HistoryTestFixtures.sampleWorkbenchExecutionResult();
-        execution.scriptEngineName = "GraalJS";
+        execution.scriptEngineName = "Sandboxed JavaScript";
         execution.executionSource = ExecutionSource.WORKBENCH_SEND;
         execution.scriptFlowControl = ScriptFlowControl.CONTINUE;
         execution.resolvedUrl = "https://api.example.test/login";
@@ -70,7 +70,7 @@ class HistoryEntryCompatibilityTest {
         assertThat(entry.responseSnapshot.bodyAsText()).contains("{\"ok\":true}");
         assertThat(entry.finalResolvedUrl).isEqualTo(execution.resolvedUrl);
         assertThat(entry.host).isEqualTo("api.example.test");
-        assertThat(entry.scriptEngineName).isEqualTo("GraalJS");
+        assertThat(entry.scriptEngineName).isEqualTo("Sandboxed JavaScript");
         assertThat(entry.executionSource).isEqualTo("WORKBENCH_SEND");
         assertThat(entry.scriptLogs).hasSize(1);
         assertThat(entry.scriptWarnings).containsExactly("warn-one");

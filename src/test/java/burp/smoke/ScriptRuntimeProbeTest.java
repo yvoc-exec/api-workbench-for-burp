@@ -13,10 +13,15 @@ class ScriptRuntimeProbeTest {
         assertThat(result).isNotNull();
         assertThat(result.exitCode).isZero();
         assertThat(result.success).isTrue();
-        assertThat(result.engineName).isEqualTo("GraalJS");
+        assertThat(result.engineName).isEqualTo("Sandboxed JavaScript");
+        assertThat(result.engineName).doesNotContainIgnoringCase("gr" + "aal");
+        assertThat(result.engineName).doesNotContainIgnoringCase("nash" + "orn");
+        assertThat(result.initializationFailure == null ? "" : result.initializationFailure)
+                .doesNotContainIgnoringCase("gr" + "aal")
+                .doesNotContainIgnoringCase("nash" + "orn");
         assertThat(result.evaluationResult).isNotNull();
         assertThat(String.valueOf(result.evaluationResult)).isEqualTo("2");
         assertThat(result.initializationFailure).isNull();
-        assertThat(result.graalAvailable || result.nashornFallbackAvailable).isTrue();
+        assertThat(result.runtimeAvailable || result.legacyFallbackAvailable).isTrue();
     }
 }

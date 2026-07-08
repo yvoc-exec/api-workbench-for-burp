@@ -9,9 +9,9 @@ import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
 /**
- * Nashorn-based JavaScript execution engine for collection scripts.
- * Supports Postman (pm.*) and Bruno (bru.*) script APIs.
- * Respects ScriptMode: FULL_JS runs Nashorn, LIMITED uses regex fallback, DISABLED skips entirely.
+ * Legacy JavaScript script adapter for collection scripts.
+ * Supports Postman (pm.*) and Bruno (bru.*) compatibility APIs.
+ * Respects ScriptMode: FULL_JS uses the unified sandboxed runtime, LIMITED uses regex fallback, and DISABLED skips script execution.
  */
 public class ScriptEngine {
     private final MontoyaApi api;
@@ -40,7 +40,7 @@ public class ScriptEngine {
         }
         for (ApiRequest.Script script : request.preRequestScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
-            if (api != null) api.logging().logToOutput("Pre-request script execution is unavailable without the unified GraalJS runtime.");
+            if (api != null) api.logging().logToOutput("Pre-request script execution is unavailable without the unified JavaScript runtime.");
             return;
         }
     }
@@ -64,7 +64,7 @@ public class ScriptEngine {
         }
         for (ApiRequest.Script script : request.postResponseScripts) {
             if (script.exec == null || script.exec.trim().isEmpty()) continue;
-            if (api != null) api.logging().logToOutput("Post-response script execution is unavailable without the unified GraalJS runtime.");
+            if (api != null) api.logging().logToOutput("Post-response script execution is unavailable without the unified JavaScript runtime.");
             return;
         }
     }
@@ -164,7 +164,7 @@ public class ScriptEngine {
         return null;
     }
 
-    // Postman API bindings for Nashorn
+    // Postman API compatibility bindings
     public static class PostmanApi {
         private final VariableResolver resolver;
         private final Map<String, String> context;
@@ -454,7 +454,7 @@ public class ScriptEngine {
         public Map<String, String> getExtractedVars() { return extractedVars; }
     }
 
-    // Bruno API bindings for Nashorn
+    // Bruno API compatibility bindings
     public static class BrunoApi {
         private final VariableResolver resolver;
         private final Map<String, String> context;

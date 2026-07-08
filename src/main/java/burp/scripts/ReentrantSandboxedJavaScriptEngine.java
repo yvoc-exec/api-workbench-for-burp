@@ -7,12 +7,12 @@ import java.util.concurrent.ExecutorService;
  * Reentrant execution, timeout enforcement, and cancellation are implemented
  * by the base sandbox engine.
  */
-final class ReentrantGraalJsSandboxEngine extends GraalJsSandboxEngine {
-    ReentrantGraalJsSandboxEngine(long timeoutMillis) {
+final class ReentrantSandboxedJavaScriptEngine extends SandboxedJavaScriptEngine {
+    ReentrantSandboxedJavaScriptEngine(long timeoutMillis) {
         super(timeoutMillis);
     }
 
-    ReentrantGraalJsSandboxEngine(long timeoutMillis, ExecutorService executor) {
+    ReentrantSandboxedJavaScriptEngine(long timeoutMillis, ExecutorService executor) {
         super(timeoutMillis, executor);
     }
 }

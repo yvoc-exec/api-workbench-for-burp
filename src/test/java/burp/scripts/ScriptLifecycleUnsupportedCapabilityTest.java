@@ -19,7 +19,7 @@ import static org.mockito.Mockito.when;
 class ScriptLifecycleUnsupportedCapabilityTest {
     @Test
     void unsupportedCapabilityIsReportedAndFailsClosedBeforeSandbox() throws Exception {
-        GraalJsSandboxEngine engine = mock(GraalJsSandboxEngine.class);
+        SandboxedJavaScriptEngine engine = mock(SandboxedJavaScriptEngine.class);
         when(engine.getEngineName()).thenReturn("MockSandbox");
         ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
 

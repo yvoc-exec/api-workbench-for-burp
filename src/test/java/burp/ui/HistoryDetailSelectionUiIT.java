@@ -103,7 +103,7 @@ class HistoryDetailSelectionUiIT {
         waitForHistoryMetadata(detail, "History details did not update for the runner row",
                 "history-runner", "Result Classification");
         assertThat(detail.getAssertionsArea().getText()).contains("Assertions:");
-        assertThat(detail.getScriptArea().getText()).contains("Script Engine:");
+        assertThat(detail.getScriptArea().getText()).contains("Script Runtime:");
 
         clearHistorySelectionByClickingTableWhitespace(table, robot);
         SwingRobotTestSupport.waitUntilOnEdt(() -> detail.getRequestArea().getText().isBlank()

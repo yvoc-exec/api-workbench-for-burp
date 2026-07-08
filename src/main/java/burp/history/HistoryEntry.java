@@ -885,7 +885,7 @@ public class HistoryEntry {
         sb.append("Request Size: ").append(entry.requestSizeBytes > 0 ? entry.requestSizeBytes + " bytes" : "Not yet sent").append('\n');
         sb.append("Response Size: ").append(entry.responseSizeBytes > 0 ? entry.responseSizeBytes + " bytes" : "Not yet sent").append('\n');
         sb.append("Result Classification: ").append(entry.resultClassification != null && !entry.resultClassification.isBlank() ? entry.resultClassification : (entry.isExecuted() ? entry.resultDisplayName() : "Not yet sent")).append('\n');
-        sb.append("Script Engine: ").append(entry.displayValue(entry.scriptEngineName)).append('\n');
+        sb.append("Script Runtime: ").append(entry.displayValue(entry.scriptEngineName)).append('\n');
         sb.append("Script Mode: ").append(entry.displayValue(entry.scriptMode)).append('\n');
         sb.append("Script Dialect: ").append(entry.displayValue(entry.scriptDialect)).append('\n');
         sb.append("Flow Control: ").append(entry.scriptFlowControl != null ? entry.scriptFlowControl : ScriptFlowControl.CONTINUE).append('\n');

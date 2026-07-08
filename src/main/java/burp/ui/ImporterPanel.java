@@ -2240,7 +2240,7 @@ public class ImporterPanel {
         meta.append("Duration: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
         meta.append("Status: ").append(statusCode > 0 ? statusCode : "Not yet sent").append("\n");
         meta.append("Result Classification: ").append(statusCode > 0 ? (statusCode >= 400 ? "Failure" : "Success") : "Not yet sent").append("\n");
-        meta.append("Script Engine: ").append(result != null && result.executionResult != null && result.executionResult.scriptEngineName != null ? result.executionResult.scriptEngineName : "Not yet sent").append("\n");
+        meta.append("Script Runtime: ").append(result != null && result.executionResult != null && result.executionResult.scriptEngineName != null ? result.executionResult.scriptEngineName : "Not yet sent").append("\n");
         meta.append("Script Mode: ").append(scriptMode != null ? scriptMode.label : "").append("\n");
         meta.append("Flow Control State: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowControl != null ? result.executionResult.scriptFlowControl : "CONTINUE").append("\n");
         meta.append("Flow Message: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowMessage != null ? result.executionResult.scriptFlowMessage : "").append("\n");
@@ -2266,7 +2266,7 @@ public class ImporterPanel {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("Execution Source: ").append(executionResult.executionSource != null ? executionResult.executionSource : "Workbench Send").append('\n');
-        sb.append("Script Engine: ").append(executionResult.scriptEngineName != null ? executionResult.scriptEngineName : "").append('\n');
+        sb.append("Script Runtime: ").append(executionResult.scriptEngineName != null ? executionResult.scriptEngineName : "").append('\n');
         sb.append("Flow Control: ").append(executionResult.scriptFlowControl != null ? executionResult.scriptFlowControl : "CONTINUE").append('\n');
         sb.append("Flow Message: ").append(executionResult.scriptFlowMessage != null ? executionResult.scriptFlowMessage : "").append('\n');
         sb.append('\n').append("Logs:").append('\n');
@@ -2549,7 +2549,7 @@ public class ImporterPanel {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("Execution Source: ").append(result.executionSource != null ? result.executionSource : "RUNNER").append('\n');
-        sb.append("Script Engine: ").append(result.scriptEngineName != null ? result.scriptEngineName : "").append('\n');
+        sb.append("Script Runtime: ").append(result.scriptEngineName != null ? result.scriptEngineName : "").append('\n');
         sb.append("Flow Control: ").append(result.scriptFlowControl != null ? result.scriptFlowControl : "CONTINUE").append('\n');
         sb.append("Flow Message: ").append(result.scriptFlowMessage != null ? result.scriptFlowMessage : "").append('\n');
         sb.append('\n').append("Logs:").append('\n');
