@@ -1,6 +1,7 @@
 package burp.ui.traffic;
 
 import burp.models.ApiCollection;
+import burp.ui.DialogParentResolver;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -32,7 +33,7 @@ public final class TrafficDestinationDialog {
     private final TrafficDestinationDialogModel model;
 
     public TrafficDestinationDialog(Window owner, TrafficDestinationDialogModel model) {
-        this.owner = owner;
+        this.owner = owner != null ? owner : DialogParentResolver.ownerFor(null);
         this.model = model;
     }
 

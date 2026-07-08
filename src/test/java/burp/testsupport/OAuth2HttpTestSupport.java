@@ -184,22 +184,16 @@ public final class OAuth2HttpTestSupport {
                 throw new RuntimeException(failure);
             }
 
-            StringBuilder raw = new StringBuilder();
-            raw.append("HTTP/1.1 ")
-                    .append(status)
-                    .append(' ')
-                    .append(reasonPhrase(status, connection.getResponseMessage()))
-                    .append("\r\n");
-            for (Map.Entry<String, List<String>> entry : connection.getHeaderFields().entrySet()) {
-                if (entry.getKey() == null) {
-                    continue;
-                }
-                for (String value : entry.getValue()) {
-                    raw.append(entry.getKey()).append(": ").append(value).append("\r\n");
-                }
-            }
-            raw.append("\r\n").append(new String(responseBytes, StandardCharsets.UTF_8));
-            return HttpRequestResponse.httpRequestResponse(request, HttpResponse.httpResponse(raw.toString()));
+            String responseBody = new String(responseBytes, StandardCharsets.UTF_8);
+            HttpResponse response = Mockito.mock(HttpResponse.class);
+            when(response.statusCode()).thenReturn((short) status);
+            when(response.bodyToString()).thenReturn(responseBody);
+            HttpRequestResponse requestResponse = Mockito.mock(HttpRequestResponse.class);
+            when(requestResponse.request()).thenReturn(request);
+            when(requestResponse.response()).thenReturn(response);
+            when(requestResponse.hasResponse()).thenReturn(true);
+            when(requestResponse.statusCode()).thenReturn((short) status);
+            return requestResponse;
         }
 
         @Override

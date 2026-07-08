@@ -34,7 +34,7 @@ public final class ScriptTrustReviewDialog {
     private final Window owner;
 
     public ScriptTrustReviewDialog(Window owner, ScriptTrustReviewModel model) {
-        this.owner = owner;
+        this.owner = owner != null ? owner : DialogParentResolver.ownerFor(null);
         this.model = model != null ? model : new ScriptTrustReviewModel(List.of());
     }
 

@@ -327,4 +327,32 @@ class PostmanParserTest {
         assertThat(req.authExplicitlyDisabled).isTrue();
         assertThat(req.authSource).isEqualTo("folder: Public");
     }
+
+    @Test
+    void parsesLargeGeneratedPostmanCollection() throws Exception {
+        StringBuilder items = new StringBuilder();
+        for (int folder = 0; folder < 10; folder++) {
+            if (folder > 0) {
+                items.append(',');
+            }
+            items.append("{\"name\":\"Folder ").append(folder).append("\",\"item\":[");
+            for (int i = 0; i < 50; i++) {
+                if (i > 0) {
+                    items.append(',');
+                }
+                int id = folder * 50 + i;
+                items.append("""
+                        {"name":"Request %d","request":{"method":"GET","header":[{"key":"X-Request","value":"%d"}],"url":{"raw":"https://api.example.test/v1/items/%d?tenant={{tenant}}","protocol":"https","host":["api","example","test"],"path":["v1","items","%d"],"query":[{"key":"tenant","value":"{{tenant}}"}]}}}
+                        """.formatted(id, id, id, id));
+            }
+            items.append("]}");
+        }
+        ApiCollection collection = parsePostman("""
+                {"info":{"name":"Large Postman","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},"variable":[{"key":"tenant","value":"acme"}],"item":[%s]}
+                """.formatted(items));
+
+        assertThat(collection.requests).hasSize(500);
+        assertThat(collection.requests.get(499).url).contains("/v1/items/499");
+        assertThat(collection.requests.get(499).headers).extracting(header -> header.key).contains("X-Request");
+    }
 }

@@ -1264,6 +1264,34 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void largeGeneratedWorkspaceRoundTripsRequestsAndMetadata() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Large Workspace";
+        collection.description = "Generated smoke fixture";
+        collection.format = "api-workbench";
+        for (int i = 0; i < 500; i++) {
+            ApiRequest request = new ApiRequest();
+            request.id = "req-" + i;
+            request.name = "Request " + i;
+            request.path = "Folder " + (i / 50);
+            request.sourceCollection = collection.name;
+            request.method = i % 2 == 0 ? "GET" : "POST";
+            request.url = "https://api.example.test/items/" + i;
+            request.headers.add(new ApiRequest.Header("X-Trace", "trace-" + i, false));
+            collection.requests.add(request);
+        }
+
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))));
+
+        assertThat(parsed.collections).hasSize(1);
+        assertThat(parsed.collections.get(0).name).isEqualTo("Large Workspace");
+        assertThat(parsed.collections.get(0).requests).hasSize(500);
+        assertThat(parsed.collections.get(0).requests.get(499).url).endsWith("/items/499");
+        assertThat(parsed.collections.get(0).requests.get(499).headers).extracting(header -> header.value).contains("trace-499");
+    }
+
+    @Test
     void workspaceJsonRoundTripsNativeScriptBlocks() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Demo";

@@ -67,4 +67,35 @@ class ScriptLifecycleUnsupportedCapabilityTest {
         assertThat(result.mutatedRequest.url).isEqualTo("https://example.invalid/original");
         verify(engine, never()).execute(anyString(), anyMap(), any(Runnable.class));
     }
+
+    @Test
+    void unsupportedModuleHelperFailsClosedAndRecordsError() throws Exception {
+        SandboxedJavaScriptEngine engine = mock(SandboxedJavaScriptEngine.class);
+        when(engine.getEngineName()).thenReturn("MockSandbox");
+        ScriptLifecycleExecutor executor = new ScriptLifecycleExecutor(engine);
+
+        ScriptExecutionContext context = new ScriptExecutionContext(
+                new ApiCollection(),
+                new ApiRequest(),
+                null,
+                ExecutionSource.WORKBENCH_SEND,
+                1);
+        ScriptBlock block = ScriptBlock.of(
+                "const fs = require('fs'); fs.readFileSync('pom.xml');",
+                ScriptDialect.POSTMAN,
+                ScriptPhase.PRE_REQUEST,
+                ScriptScope.REQUEST);
+        block.id = "require-fs";
+
+        UnsupportedScriptCapabilityException failure = catchThrowableOfType(
+                () -> executor.execute(context, List.of(block)),
+                UnsupportedScriptCapabilityException.class);
+
+        assertThat(failure.result().success).isFalse();
+        assertThat(failure.result().errors).singleElement().satisfies(error ->
+                assertThat(error)
+                        .contains(ScriptLifecycleExecutor.UNSUPPORTED_SCRIPT_CAPABILITY)
+                        .contains("process execution"));
+        verify(engine, never()).execute(anyString(), anyMap(), any(Runnable.class));
+    }
 }

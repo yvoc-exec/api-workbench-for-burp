@@ -1,6 +1,7 @@
 package burp.auth;
 
 import burp.api.montoya.MontoyaApi;
+import burp.ui.DialogParentResolver;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import javax.swing.*;
@@ -62,7 +63,7 @@ public class AuthorizationCodeHandler {
                 JTextField urlField = new JTextField(authUrl);
                 urlField.setEditable(false);
                 urlField.setColumns(60);
-                JOptionPane.showMessageDialog(null, urlField, "Authorize this application", JOptionPane.INFORMATION_MESSAGE);
+                JOptionPane.showMessageDialog(DialogParentResolver.parentComponent(null), urlField, "Authorize this application", JOptionPane.INFORMATION_MESSAGE);
             });
         }
 

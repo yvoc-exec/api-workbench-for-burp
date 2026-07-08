@@ -6488,7 +6488,7 @@ public class ImporterPanel {
     UnresolvedVariablesDialog createUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
                                                               List<ApiCollection> targetCollections) {
         UnresolvedDialogConfig config = buildUnresolvedDialogConfig();
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        Window owner = DialogParentResolver.ownerFor(mainPanel);
         return new UnresolvedVariablesDialog(
                 owner,
                 issues,
@@ -6598,7 +6598,7 @@ public class ImporterPanel {
         }
         List<String> candidates = new ArrayList<>(uniqueNames);
 
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        Window owner = DialogParentResolver.ownerFor(mainPanel);
         JDialog dialog = new JDialog(owner, "Bind OAuth2 Token", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
 
@@ -7380,7 +7380,7 @@ public class ImporterPanel {
             appendImportLog("No collections loaded.");
             return;
         }
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Remove Collection", Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog dialog = new JDialog(DialogParentResolver.ownerFor(mainPanel), "Remove Collection", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setLayout(new BorderLayout(8, 8));
         JPanel listPanel = new JPanel();
         listPanel.setLayout(new BoxLayout(listPanel, BoxLayout.Y_AXIS));
@@ -9872,7 +9872,7 @@ public class ImporterPanel {
     private UnresolvedVariablesDialog createExportUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,
                                                                             List<ApiCollection> targetCollections) {
         UnresolvedDialogConfig config = buildExportUnresolvedDialogConfig();
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        Window owner = DialogParentResolver.ownerFor(mainPanel);
         return new UnresolvedVariablesDialog(
                 owner,
                 issues,
@@ -10112,7 +10112,7 @@ public class ImporterPanel {
     }
 
     private JDialog createExportDialog(String title, JComponent content) {
-        Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+        Window owner = DialogParentResolver.ownerFor(mainPanel);
         JDialog dialog = new JDialog(owner, title, Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setContentPane(content);
@@ -11121,7 +11121,7 @@ public class ImporterPanel {
             return;
         }
         persistCurrentRequestEditorState();
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Options", Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog dialog = new JDialog(DialogParentResolver.ownerFor(mainPanel), "Options", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setLayout(new BorderLayout(8, 8));
 
         JLabel selectedCountLabel = new JLabel("0 requests selected");
@@ -12312,7 +12312,7 @@ public class ImporterPanel {
             message = "Runner preview is ready. Continue to start the run?";
         }
 
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Runner Preview", Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog dialog = new JDialog(DialogParentResolver.ownerFor(mainPanel), "Runner Preview", Dialog.ModalityType.APPLICATION_MODAL);
         JPanel content = new JPanel(new BorderLayout(8, 8));
         content.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
@@ -12392,7 +12392,7 @@ public class ImporterPanel {
             appendImportLog("Populate OAuth2: No collections loaded.");
             return;
         }
-        JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(mainPanel), "Populate OAuth2 from Request", Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog dialog = new JDialog(DialogParentResolver.ownerFor(mainPanel), "Populate OAuth2 from Request", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setLayout(new BorderLayout(8, 8));
         JLabel selectedCountLabel = new JLabel("0 requests selected");
         DefaultMutableTreeNode selectionRoot = cloneRequestTreeRootForSelection();
@@ -12436,7 +12436,7 @@ public class ImporterPanel {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         if (activeEnvironment == null) {
             String message = "Create or select an Active Environment before populating OAuth2 settings.";
-            Window owner = SwingUtilities.getWindowAncestor(mainPanel);
+            Window owner = DialogParentResolver.ownerFor(mainPanel);
             if (GraphicsEnvironment.isHeadless() || owner == null || !owner.isDisplayable()) {
                 appendImportLog(message);
             } else {

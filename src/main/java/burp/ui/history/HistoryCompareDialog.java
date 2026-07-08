@@ -2,6 +2,7 @@ package burp.ui.history;
 
 import burp.history.HistoryDiffService;
 import burp.history.HistoryEntry;
+import burp.ui.DialogParentResolver;
 
 import javax.swing.*;
 import java.awt.*;
@@ -14,7 +15,7 @@ public final class HistoryCompareDialog {
         HistoryDiffService service = diffService != null ? diffService : new HistoryDiffService();
         String diff = service.diff(left, right);
 
-        Window owner = parent != null ? SwingUtilities.getWindowAncestor(parent) : null;
+        Window owner = DialogParentResolver.ownerFor(parent);
         JDialog dialog = new JDialog(owner, "Compare History Entries", Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setLayout(new BorderLayout(5, 5));
@@ -32,7 +33,7 @@ public final class HistoryCompareDialog {
         dialog.add(footer, BorderLayout.SOUTH);
 
         dialog.setSize(1000, 700);
-        dialog.setLocationRelativeTo(parent);
+        dialog.setLocationRelativeTo(DialogParentResolver.parentComponent(parent));
         dialog.setVisible(true);
     }
 }

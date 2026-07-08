@@ -52,7 +52,7 @@ public final class RedirectPolicyDialog extends JDialog {
             copy.normalize();
             return copy;
         }
-        Window owner = parent != null ? SwingUtilities.getWindowAncestor(parent) : null;
+        Window owner = DialogParentResolver.ownerFor(parent);
         RedirectPolicyDialog dialog = new RedirectPolicyDialog(owner, initialPolicy);
         dialog.setVisible(true);
         return dialog.result;

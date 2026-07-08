@@ -1,26 +1,35 @@
-﻿API Workbench for Burp - Local Validation Report
+API Workbench for Burp - Local Validation Report
 
 Branch: main
-Starting SHA: 05389783913469649d1add9edd760bb40f799ec7
+Starting SHA: a01174eeb19d6691cfabaf53d1274dc26a7df482
 Ending SHA / Commit SHA: final git HEAD after commit/push (commit hash cannot be embedded self-referentially in this tracked report)
-Java version: OpenJDK 17.0.19 (local .tools/jdk17/jdk-17.0.19+10)
+Java version: OpenJDK 17.0.19 (Eclipse Temurin; local .codex-tools/tools/jdk)
 Maven version: Apache Maven 3.9.9
-Full validation command: mvn -B clean verify (via .tools/maven/apache-maven-3.9.9/bin/mvn.cmd with JAVA_HOME=.tools/jdk17/jdk-17.0.19+10)
+Full validation command: mvn -B clean verify (via .codex-tools/tools/maven/bin/mvn.cmd with JAVA_HOME=.codex-tools/tools/jdk)
 Validation result: PASS
-Test count: 1507 run, 0 failures, 0 errors, 0 skipped
+Test count: 1517 run, 0 failures, 0 errors, 0 skipped
 JaCoCo result: PASS - All coverage checks have been met.
 Artifact path: release-artifacts/current/api-workbench-for-burp-local-validated.jar
-Artifact size: 42003905 bytes
-Artifact SHA256: 74C071D84D40AA52F9CB75D5EA00F4BC55E56ACD2F804FDD8E7C2898E74BF2DE
+Artifact size: 42009699 bytes
+Artifact SHA256: A4E561F8BF581F6037A273BE9DB536A8F74BF567409F7E459A1204FE742774E4
 
-Addressed findings:
-- FINDING 010: Header Enabled checkbox added; disabled headers remain preserved and omitted from send until re-enabled.
-- FINDING 011: Destination-change execution-safety label shortened and tooltip clarified while friendly combo labels remain.
-- FINDING 012: Workbench and Runner Evidence saves update canonical HistoryStore metadata for linked History entries.
-- FINDING 013: Cross-format script export emits warning when dialect-specific APIs are preserved but not translated.
-- FINDING 014: Local manual QA HTTPBin fixture now includes deterministic OAuth2 token/protected endpoints and native OAuth smoke request.
+BApp hardening items addressed:
+- OAuth2 Burp networking fallback patched: production token requests with non-null MontoyaApi use Burp/Montoya networking and fail clearly; Java HttpClient is isolated to api == null test/no-Burp harnesses.
+- GUI dialog parenting audited/fixed: dialog parent resolver added; OAuth browser fallback, Workbench dialogs, History compare, traffic import, redirect/auth dialogs, and script trust review use owner/parent resolution where practical.
+- Adversarial script tests added/updated: host interop, filesystem, thread/process, require('fs'), timeout/cancellation, unsupported capability reporting, and destination mutation preflight coverage pass.
+- Large-project generated smoke tests added/updated: generated Postman (500 requests), OpenAPI (250 operations), and WorkspaceState (500 requests) round-trip coverage pass.
+- Manual QA fixture hygiene checked: local .gitignore excludes __pycache__/ and *.pyc; tracked pycache/pyc search is clean; v7 OAuth fixture docs/endpoints preserved.
+- BApp submission docs added: SECURITY.md, CHANGELOG.md, and BAPP-SUBMISSION.md.
+- LICENSE status: LICENSE exists and is MIT; BAPP-SUBMISSION.md references it.
+
+Search gates:
+- OAuth2 fallback search: HttpClient remains only in sendTokenRequestViaJdkForTestsOnly used when api == null; isMissingMontoyaFactory removed; no api != null fallback to JDK.
+- GUI parenting search: no showOpenDialog(null), showSaveDialog(null), JOptionPane.show*(null), new JDialog((Frame)null), or setLocationRelativeTo(null) in production code.
+- Script overclaim search: no unsupported full parity / translated script claims in checked docs.
+- Smoke fixture hygiene search: no tracked __pycache__ or .pyc files.
+- Runtime disclosure search: docs/main code search gate did not reintroduce Script engine: GraalJS, GraalJS available, or Nashorn operator-facing strings.
 
 Notes:
-- Redirect behavior/docs/tests were preserved; no redirect finding was added.
-- Focused validation before full verify: mvn -B "-Dtest=RequestEditorPanelTest,ImporterPanelPolicyDisplayTest,HistoryPanelTest,HistoryDetailSelectionUiIT,RunnerHistoryCaptureTest,ImporterPanelRunnerQueueTest,PostmanCollectionExporterTest,CollectionExportServiceTest,CollectionExportRoundTripTest,ImporterPanelOAuth2PopulateTest,EnvironmentExportRoundTripTest,WorkspaceStateJsonTest,RedirectExecutorTest,RequestBuilderTest" test => PASS (251 run, 0 failures, 0 errors, 1 skipped).
+- Focused validation before full verify: mvn -B "-Dtest=ClientCredentialsHandlerTest,GrantHandlerRequestCompositionTest,OAuth2GrantHandlerIntegrationTest,OAuth2ManagerTest,ImporterPanelOAuth2AcquireTest,ImporterPanelOAuth2PopulateTest,ScriptSandboxSecurityTest,ScriptLifecycleUnsupportedCapabilityTest,ScriptSandboxTimeoutTest,ScriptRuntimeCleanupTest,CollectionRunnerScriptCancellationTest,CollectionRunnerPreflightTest,TargetChangePreflightTest,PostmanParserTest,OpenApiParserTest,WorkspaceStateJsonTest,HistoryStoreTest,DiagnosticStoreConcurrencyTest,DialogParentResolverTest" test => PASS (177 run, 0 failures, 0 errors, 0 skipped).
 - Failsafe integration-test phase is configured as skipped in this project build.
+- Manual Burp UI smoke, hosted GitHub Actions, screenshots, and PortSwigger submission remain manual follow-up.

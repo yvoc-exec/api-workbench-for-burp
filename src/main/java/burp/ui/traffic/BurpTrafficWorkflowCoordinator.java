@@ -10,6 +10,7 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
 import burp.ui.ImporterPanel;
+import burp.ui.DialogParentResolver;
 import burp.ui.tree.RequestTreeNamingPolicy;
 import burp.ui.tree.RequestTreePathService;
 
@@ -103,7 +104,7 @@ public final class BurpTrafficWorkflowCoordinator {
                 conversion.requests,
                 responseAvailable,
                 queueAfterImport);
-        Window owner = SwingUtilities.getWindowAncestor(ui.getPanel());
+        Window owner = DialogParentResolver.ownerFor(ui.getPanel());
         if (!destinationPresenter.review(owner, destination) || destination.isCancelled()) {
             return;
         }

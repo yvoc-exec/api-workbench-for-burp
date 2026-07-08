@@ -262,6 +262,39 @@ class OpenApiParserTest {
         assertThat(collection.requests.get(0).body.raw).doesNotContain("\"$ref\"");
     }
 
+    @Test
+    void parsesLargeGeneratedOpenApiSpec() throws Exception {
+        StringBuilder paths = new StringBuilder();
+        for (int i = 0; i < 250; i++) {
+            if (i > 0) {
+                paths.append(',');
+            }
+            paths.append("""
+                    "/items/%d": {
+                      "get": {
+                        "operationId": "getItem%d",
+                        "parameters": [
+                          {"name": "trace", "in": "header", "schema": {"type": "string"}, "example": "t-%d"}
+                        ],
+                        "responses": {"200": {"description": "ok"}}
+                      }
+                    }
+                    """.formatted(i, i, i));
+        }
+        ApiCollection collection = parseOpenApiJson("""
+                {
+                  "openapi": "3.0.0",
+                  "info": {"title": "Large OpenAPI", "version": "1.0"},
+                  "servers": [{"url": "https://api.example.test"}],
+                  "paths": {%s}
+                }
+                """.formatted(paths));
+
+        assertThat(collection.requests).hasSize(250);
+        assertThat(collection.requests.get(249).url).contains("/items/249");
+        assertThat(collection.requests.get(249).headers).extracting(header -> header.key).contains("trace");
+    }
+
     private Path createTempSpecFile(String content) throws Exception {
         Path tempFile = Files.createTempFile(Path.of("target"), "openapi-parser-", ".yaml").toAbsolutePath().normalize();
         Files.writeString(tempFile, content, StandardCharsets.UTF_8);

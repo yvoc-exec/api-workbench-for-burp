@@ -42,7 +42,25 @@ class ScriptSandboxSecurityTest {
             assertThat(engine.isAvailable()).isTrue();
             assertThatThrownBy(() -> engine.execute("Java.type('java.lang.System').getProperty('user.home')", Map.of()))
                     .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> engine.execute("Java.type('java.io.File')('/tmp/awb-host-access')", Map.of()))
+                    .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> engine.execute("Packages.java.io.File('/tmp/awb-host-access')", Map.of()))
+                    .isInstanceOf(Exception.class);
             assertThatThrownBy(() -> engine.execute("Java.type('java.lang.Class').forName('java.lang.System')", Map.of()))
+                    .isInstanceOf(Exception.class);
+        }
+    }
+
+    @Test
+    void scriptSandboxBlocksFilesystemThreadsProcessesAndModules() throws Exception {
+        try (SandboxedJavaScriptEngine engine = new SandboxedJavaScriptEngine()) {
+            assertThatThrownBy(() -> engine.execute("Java.type('java.nio.file.Files').readString(Java.type('java.nio.file.Path').of('pom.xml'))", Map.of()))
+                    .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> engine.execute("Java.type('java.lang.Thread').startVirtualThread(function(){})", Map.of()))
+                    .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> engine.execute("Java.type('java.lang.ProcessBuilder')('cmd').start()", Map.of()))
+                    .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> engine.execute("require('fs').readFileSync('pom.xml')", Map.of()))
                     .isInstanceOf(Exception.class);
         }
     }

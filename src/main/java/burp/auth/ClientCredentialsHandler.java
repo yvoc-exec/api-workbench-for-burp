@@ -2,8 +2,8 @@ package burp.auth;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.requests.HttpRequest;
-import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.HttpService;
+import burp.utils.MontoyaTokenRequestFactory;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.net.URI;
@@ -89,20 +89,21 @@ public class ClientCredentialsHandler {
         if (api != null) {
             try {
                 return sendTokenRequestViaMontoya(config, body, api, authHeaderValue);
-            } catch (NullPointerException e) {
-                if (!isMissingMontoyaFactory(e)) {
-                    throw e;
-                }
+            } catch (Exception e) {
+                String message = e.getMessage() != null && !e.getMessage().isBlank()
+                        ? e.getMessage()
+                        : e.getClass().getSimpleName();
+                throw new Exception("OAuth2 token request failed via Burp networking: " + message, e);
             }
         }
-        return sendTokenRequestViaJdk(config, body, authHeaderValue);
+        return sendTokenRequestViaJdkForTestsOnly(config, body, authHeaderValue);
     }
 
     private static TokenEndpointResponse sendTokenRequestViaMontoya(OAuth2Config config,
                                                                     String body,
                                                                     MontoyaApi api,
                                                                     String authHeaderValue) {
-        HttpService service = HttpService.httpService(extractHost(config.tokenUrl), extractPort(config.tokenUrl), config.tokenUrl.startsWith("https"));
+        HttpService service = MontoyaTokenRequestFactory.service(config.tokenUrl);
         String path = extractPath(config.tokenUrl);
         String authHeader = authHeaderValue != null && !authHeaderValue.isBlank()
                 ? "Authorization: " + authHeaderValue + "\r\n"
@@ -114,16 +115,18 @@ public class ClientCredentialsHandler {
                 "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n" +
                 "\r\n" + body;
 
-        HttpRequest request = HttpRequest.httpRequest(service, ByteArray.byteArray(requestStr.getBytes(StandardCharsets.UTF_8)));
+        HttpRequest request = MontoyaTokenRequestFactory.postForm(config.tokenUrl, requestStr, body);
         var response = api.http().sendRequest(request);
         return response.response() == null
                 ? new TokenEndpointResponse(0, null)
                 : new TokenEndpointResponse(response.response().statusCode(), response.response().bodyToString());
     }
 
-    private static TokenEndpointResponse sendTokenRequestViaJdk(OAuth2Config config,
-                                                                String body,
-                                                                String authHeaderValue) throws Exception {
+
+    private static TokenEndpointResponse sendTokenRequestViaJdkForTestsOnly(OAuth2Config config,
+                                                                            String body,
+                                                                            String authHeaderValue) throws Exception {
+        // This path exists only for unit tests/no-Burp harnesses. Production Burp execution must use Montoya networking.
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
@@ -135,11 +138,6 @@ public class ClientCredentialsHandler {
         }
         var response = client.send(requestBuilder.build(), BodyHandlers.ofString(StandardCharsets.UTF_8));
         return new TokenEndpointResponse(response.statusCode(), response.body());
-    }
-
-    private static boolean isMissingMontoyaFactory(NullPointerException e) {
-        String message = e.getMessage();
-        return message != null && message.contains("ObjectFactoryLocator.FACTORY");
     }
 
     static String normalizeClientAuthMode(OAuth2Config config) {

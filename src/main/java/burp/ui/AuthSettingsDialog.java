@@ -23,7 +23,7 @@ final class AuthSettingsDialog extends JDialog {
     private Result result;
 
     static Result showDialog(Component parent, String title, boolean allowInherit, String initialMode, ApiRequest.Auth initialAuth) {
-        Window owner = parent != null ? SwingUtilities.getWindowAncestor(parent) : null;
+        Window owner = DialogParentResolver.ownerFor(parent);
         AuthSettingsDialog dialog = new AuthSettingsDialog(owner, title, allowInherit, initialMode, initialAuth);
         dialog.setVisible(true);
         return dialog.result;
