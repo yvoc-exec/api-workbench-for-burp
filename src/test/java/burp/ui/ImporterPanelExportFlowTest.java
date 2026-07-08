@@ -216,6 +216,8 @@ class ImporterPanelExportFlowTest {
         File file = tempDir.resolve("environment.json").toFile();
         AtomicReference<Boolean> calledOnEdt = new AtomicReference<>();
         var imported = environment("Imported");
+        imported.variables.put("base_url", "https://api.example.test");
+        assertThat(imported.variables).isNotEmpty();
         Mockito.doAnswer(invocation -> {
             calledOnEdt.set(SwingUtilities.isEventDispatchThread());
             return List.of(imported);
