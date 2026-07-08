@@ -2,6 +2,18 @@
 
 API Workbench for Burp Suite is a Burp-native API workspace. It helps you import or create collections, edit and send requests, manage environment profiles and OAuth2, run chained workflows, inspect History and Diagnostics, and export evidence or handoff artifacts.
 
+## Extension metadata
+
+Name: API Workbench for Burp
+
+Summary: A Burp-native API workspace for importing, editing, running, scripting, and evidencing API collections from Postman, OpenAPI, Insomnia, Bruno, HAR, and native Workbench formats.
+
+Requirements:
+
+- Java 17+
+- Burp Suite with Montoya extension API support
+- Load the validated JAR as a Java extension
+
 ## Top-level tabs
 
 | Tab | What it does |

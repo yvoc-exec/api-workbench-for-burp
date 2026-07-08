@@ -707,6 +707,6 @@ mvn -Pstatic-analysis verify
 
 Push and pull-request runs use normal CI mode. Full manually dispatched validation adds the performance, mutation, and canonical package jobs.
 
-### Local OAuth2 smoke fixture
+### OAuth2 smoke validation
 
-`manual-qa/local-httpbin/` contains a deterministic local HTTP server, API Workbench environment, and native collection for OAuth2 smoke testing. The fixture exposes `POST /oauth/token` and `GET /oauth/protected` with dummy local credentials only.
+A deterministic local OAuth2 smoke fixture was used during validation. For release testing, prefer deterministic local smoke fixtures over public echo endpoints; public endpoint smoke tests are optional and should not be treated as the primary release signal.

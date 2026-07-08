@@ -523,9 +523,9 @@ Compatibility note:
 - Confirm the destination tab.
 - Confirm the checked requests.
 
-### Local OAuth2 smoke fixture
+### OAuth2 smoke validation
 
-For deterministic local OAuth2 testing, use `manual-qa/local-httpbin/START-HERE-TEST-FLOW.md`. The flow starts a local server, imports the local environment and native collection, acquires a dummy client-credentials token, and sends `AWB OAuth Protected Resource` expecting `Authorization: Bearer awb-oauth-local-access-token` in raw History.
+A deterministic local OAuth2 smoke fixture was used during validation. For release testing, prefer deterministic local smoke fixtures over public echo endpoints; public endpoint smoke tests are optional and should not be treated as the primary release signal.
 
 ### Before OAuth2 Testing
 

@@ -18,18 +18,19 @@ BApp hardening items addressed:
 - GUI dialog parenting audited/fixed: dialog parent resolver added; OAuth browser fallback, Workbench dialogs, History compare, traffic import, redirect/auth dialogs, and script trust review use owner/parent resolution where practical.
 - Adversarial script tests added/updated: host interop, filesystem, thread/process, require('fs'), timeout/cancellation, unsupported capability reporting, and destination mutation preflight coverage pass.
 - Large-project generated smoke tests added/updated: generated Postman (500 requests), OpenAPI (250 operations), and WorkspaceState (500 requests) round-trip coverage pass.
-- Manual QA fixture hygiene checked: local .gitignore excludes __pycache__/ and *.pyc; tracked pycache/pyc search is clean; v7 OAuth fixture docs/endpoints preserved.
-- BApp submission docs added: SECURITY.md, CHANGELOG.md, and BAPP-SUBMISSION.md.
-- LICENSE status: LICENSE exists and is MIT; BAPP-SUBMISSION.md references it.
+- Manual QA fixture cleanup: repo-local manual QA fixture was removed from the public repository; deterministic local smoke validation remains a maintainer-side release practice.
+- Public release docs updated: README.md, SECURITY.md, and CHANGELOG.md. Internal BApp draft and repo-local manual QA fixture were removed from the public repository.
+- LICENSE status: LICENSE exists and is MIT.
 
 Search gates:
 - OAuth2 fallback search: HttpClient remains only in sendTokenRequestViaJdkForTestsOnly used when api == null; isMissingMontoyaFactory removed; no api != null fallback to JDK.
 - GUI parenting search: no showOpenDialog(null), showSaveDialog(null), JOptionPane.show*(null), new JDialog((Frame)null), or setLocationRelativeTo(null) in production code.
 - Script overclaim search: no unsupported full parity / translated script claims in checked docs.
-- Smoke fixture hygiene search: no tracked __pycache__ or .pyc files.
+- Public release cleanup search: internal submission draft and repo-local manual QA fixture references removed.
 - Runtime disclosure search: docs/main code search gate did not reintroduce Script engine: GraalJS, GraalJS available, or Nashorn operator-facing strings.
 
 Notes:
 - Focused validation before full verify: mvn -B "-Dtest=ClientCredentialsHandlerTest,GrantHandlerRequestCompositionTest,OAuth2GrantHandlerIntegrationTest,OAuth2ManagerTest,ImporterPanelOAuth2AcquireTest,ImporterPanelOAuth2PopulateTest,ScriptSandboxSecurityTest,ScriptLifecycleUnsupportedCapabilityTest,ScriptSandboxTimeoutTest,ScriptRuntimeCleanupTest,CollectionRunnerScriptCancellationTest,CollectionRunnerPreflightTest,TargetChangePreflightTest,PostmanParserTest,OpenApiParserTest,WorkspaceStateJsonTest,HistoryStoreTest,DiagnosticStoreConcurrencyTest,DialogParentResolverTest" test => PASS (177 run, 0 failures, 0 errors, 0 skipped).
 - Failsafe integration-test phase is configured as skipped in this project build.
+- This commit is docs/repo-publication cleanup only; previous full validation/artifact remains unchanged.
 - Manual Burp UI smoke, hosted GitHub Actions, screenshots, and PortSwigger submission remain manual follow-up.
