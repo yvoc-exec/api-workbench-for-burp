@@ -327,6 +327,16 @@ public class ImporterPanel {
         int failedCount;
     }
 
+    private static final class RepeaterBuildResult {
+        final HttpRequest builtRequest;
+        final String tabName;
+
+        private RepeaterBuildResult(HttpRequest builtRequest, String tabName) {
+            this.builtRequest = builtRequest;
+            this.tabName = tabName;
+        }
+    }
+
     // Environment tab
     private JComboBox<EnvironmentRef> environmentCombo;
     private JButton environmentImportBtn, environmentNewBtn, environmentDuplicateBtn,
@@ -1290,39 +1300,80 @@ public class ImporterPanel {
             }
             runtimeOverlay = activeEnvironmentOverlayForRuntimeUse();
         }
-        try {
-            burp.parser.VariableResolver resolver = burp.utils.RuntimeResolverFactory.build(
-                    context != null ? context.collection : null,
-                    replayRequest,
-                    runtimeOverlay != null
-                            ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
-                            : burp.utils.RuntimeResolverFactory.Options.defaultOptions()
-            );
-            String resolvedUrl = resolver.resolve(replayRequest.url);
-            burp.utils.HttpUtils.ParsedTarget parsed = burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl);
-            byte[] rawRequest = requestBuilder.buildRequest(replayRequest, resolver);
-            burp.api.montoya.http.message.requests.HttpRequest builtRequest;
-            try {
-                burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
-                        parsed.host, parsed.port, parsed.useHttps);
-                builtRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
-                        service,
-                        burp.api.montoya.core.ByteArray.byteArray(rawRequest)
-                );
-            } catch (Throwable serviceFailure) {
-                builtRequest = HistoryNativeHttpMessageFactory.request(
-                        new String(rawRequest != null ? rawRequest : new byte[0], StandardCharsets.UTF_8));
+        Map<String, String> capturedRuntimeOverlay = runtimeOverlay != null ? new LinkedHashMap<>(runtimeOverlay) : null;
+        startHistoryRepeaterWorker(context, replayRequest, capturedRuntimeOverlay);
+    }
+
+    private SwingWorker<RepeaterBuildResult, Void> startHistoryRepeaterWorker(HistoryRequestContext context,
+                                                                              ApiRequest replayRequest,
+                                                                              Map<String, String> runtimeOverlay) {
+        SwingWorker<RepeaterBuildResult, Void> worker = createHistoryRepeaterWorker(context, replayRequest, runtimeOverlay);
+        worker.execute();
+        return worker;
+    }
+
+    private SwingWorker<RepeaterBuildResult, Void> createHistoryRepeaterWorker(HistoryRequestContext context,
+                                                                               ApiRequest replayRequest,
+                                                                               Map<String, String> runtimeOverlay) {
+        return new SwingWorker<>() {
+            @Override
+            protected RepeaterBuildResult doInBackground() throws Exception {
+                return buildRepeaterRequestForHistory(context, replayRequest, runtimeOverlay);
             }
-            String tabName = importer.generateRepeaterTabName(
-                    replayRequest.name,
-                    context != null && context.collection != null ? context.collection.name : "");
-            importer.sendToRepeater(builtRequest, tabName);
-            appendImportLog("Sent history request to Repeater: " + tabName);
-        } catch (Exception e) {
-            String failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            appendImportLog("Send to Repeater failed: " + failureReason);
-            historyLoadResultNotifier.showError(mainPanel, "Send to Repeater failed: " + failureReason);
+
+            @Override
+            protected void done() {
+                try {
+                    RepeaterBuildResult result = get();
+                    importer.sendToRepeater(result.builtRequest, result.tabName);
+                    appendImportLog("Sent history request to Repeater: " + result.tabName);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    handleHistoryRepeaterFailure(e);
+                } catch (ExecutionException e) {
+                    handleHistoryRepeaterFailure(e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        };
+    }
+
+    private RepeaterBuildResult buildRepeaterRequestForHistory(HistoryRequestContext context,
+                                                               ApiRequest replayRequest,
+                                                               Map<String, String> runtimeOverlay) throws Exception {
+        burp.parser.VariableResolver resolver = burp.utils.RuntimeResolverFactory.build(
+                context != null ? context.collection : null,
+                replayRequest,
+                runtimeOverlay != null
+                        ? burp.utils.RuntimeResolverFactory.Options.withRuntimeVariableOverlay(runtimeOverlay)
+                        : burp.utils.RuntimeResolverFactory.Options.defaultOptions()
+        );
+        String resolvedUrl = resolver.resolve(replayRequest.url);
+        burp.utils.HttpUtils.ParsedTarget parsed = burp.utils.HttpUtils.parseTargetForRequest(resolvedUrl);
+        byte[] rawRequest = requestBuilder.buildRequest(replayRequest, resolver);
+        burp.api.montoya.http.message.requests.HttpRequest builtRequest;
+        try {
+            burp.api.montoya.http.HttpService service = burp.api.montoya.http.HttpService.httpService(
+                    parsed.host, parsed.port, parsed.useHttps);
+            builtRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                    service,
+                    burp.api.montoya.core.ByteArray.byteArray(rawRequest)
+            );
+        } catch (Throwable serviceFailure) {
+            builtRequest = HistoryNativeHttpMessageFactory.request(
+                    new String(rawRequest != null ? rawRequest : new byte[0], StandardCharsets.UTF_8));
         }
+        String tabName = importer.generateRepeaterTabName(
+                replayRequest.name,
+                context != null && context.collection != null ? context.collection.name : "");
+        return new RepeaterBuildResult(builtRequest, tabName);
+    }
+
+    private void handleHistoryRepeaterFailure(Throwable throwable) {
+        String failureReason = throwable != null && throwable.getMessage() != null
+                ? throwable.getMessage()
+                : throwable != null ? throwable.getClass().getSimpleName() : "Exception";
+        appendImportLog("Send to Repeater failed: " + failureReason);
+        historyLoadResultNotifier.showError(mainPanel, "Send to Repeater failed: " + failureReason);
     }
 
     static boolean resolveReplayFollowRedirects(HistoryEntry entry,
@@ -9338,34 +9389,67 @@ public class ImporterPanel {
         if (file == null) {
             return;
         }
-        try {
-            List<EnvironmentProfile> imported = EnvironmentImportService.importEnvironment(file);
-            if (imported == null || imported.isEmpty()) {
-                appendImportLog("No environment profiles found in " + file.getName() + ".");
-                recordDiagnostic(
-                        DiagnosticOperation.IMPORT,
-                        DiagnosticSeverity.WARNING,
-                        "ImporterPanel",
-                        "Environment import produced no profiles",
-                        "file=" + file.getName());
-                return;
+        startEnvironmentImportWorker(file);
+    }
+
+    SwingWorker<List<EnvironmentProfile>, Void> startEnvironmentImportWorker(File file) {
+        SwingWorker<List<EnvironmentProfile>, Void> worker = createEnvironmentImportWorker(file);
+        worker.execute();
+        return worker;
+    }
+
+    SwingWorker<List<EnvironmentProfile>, Void> createEnvironmentImportWorker(File file) {
+        return new SwingWorker<>() {
+            @Override
+            protected List<EnvironmentProfile> doInBackground() throws Exception {
+                return importEnvironmentProfiles(file);
             }
-            addImportedEnvironmentProfiles(imported, file.getName());
-        } catch (Exception e) {
-            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            appendImportLog("Environment import failed: " + message);
-            recordDiagnostic(
-                    DiagnosticOperation.IMPORT,
-                    DiagnosticSeverity.ERROR,
-                    "ImporterPanel",
-                    "Environment import failed",
-                    "file=" + file.getName() + "\nerror=" + message);
-            if (!GraphicsEnvironment.isHeadless()) {
-                JOptionPane.showMessageDialog(mainPanel,
-                        "Environment import failed:\n" + message,
-                        "Import Failed",
-                        JOptionPane.ERROR_MESSAGE);
+
+            @Override
+            protected void done() {
+                try {
+                    List<EnvironmentProfile> imported = get();
+                    if (imported == null || imported.isEmpty()) {
+                        appendImportLog("No environment profiles found in " + file.getName() + ".");
+                        recordDiagnostic(
+                                DiagnosticOperation.IMPORT,
+                                DiagnosticSeverity.WARNING,
+                                "ImporterPanel",
+                                "Environment import produced no profiles",
+                                "file=" + file.getName());
+                        return;
+                    }
+                    addImportedEnvironmentProfiles(imported, file.getName());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    handleEnvironmentImportFailure(file, e);
+                } catch (ExecutionException e) {
+                    handleEnvironmentImportFailure(file, e.getCause() != null ? e.getCause() : e);
+                }
             }
+        };
+    }
+
+    List<EnvironmentProfile> importEnvironmentProfiles(File file) throws Exception {
+        return EnvironmentImportService.importEnvironment(file);
+    }
+
+    private void handleEnvironmentImportFailure(File file, Throwable throwable) {
+        String message = throwable != null && throwable.getMessage() != null
+                ? throwable.getMessage()
+                : throwable != null ? throwable.getClass().getSimpleName() : "Exception";
+        appendImportLog("Environment import failed: " + message);
+        recordDiagnostic(
+                DiagnosticOperation.IMPORT,
+                DiagnosticSeverity.ERROR,
+                "ImporterPanel",
+                "Environment import failed",
+                "file=" + (file != null ? file.getName() : "null") + "\nerror=" + message);
+        if (!GraphicsEnvironment.isHeadless()) {
+            JOptionPane.showMessageDialog(mainPanel,
+                    "Environment import failed:\n" + message,
+                    "Import Failed",
+                    JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -9740,42 +9824,105 @@ public class ImporterPanel {
                 }
             }
         }
-        try {
-            ExportResult result = performCollectionExport(
-                    collection,
-                    selection.format,
-                    selection.outputPath,
-                    selection.resolveVariables,
-                    activeEnvironment,
-                    exportOnlyVariables,
-                    false
-            );
-            StringBuilder message = new StringBuilder();
-            message.append("Exported collection \"").append(collectionDisplayName(collection)).append("\" to ").append(selection.outputPath.getFileName()).append(".");
-            if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
-                message.append(" Warnings: ").append(String.join(" | ", result.warnings));
+        startCollectionExportWorker(
+                collection,
+                selection.format,
+                selection.outputPath,
+                selection.resolveVariables,
+                activeEnvironment,
+                exportOnlyVariables
+        );
+    }
+
+    SwingWorker<ExportResult, Void> startCollectionExportWorker(ApiCollection collection,
+                                                                CollectionExportFormat format,
+                                                                Path outputPath,
+                                                                boolean resolveVariables,
+                                                                EnvironmentProfile activeEnvironment,
+                                                                Map<String, String> exportOnlyVariables) {
+        SwingWorker<ExportResult, Void> worker = createCollectionExportWorker(
+                collection,
+                format,
+                outputPath,
+                resolveVariables,
+                activeEnvironment,
+                exportOnlyVariables
+        );
+        worker.execute();
+        return worker;
+    }
+
+    SwingWorker<ExportResult, Void> createCollectionExportWorker(ApiCollection collection,
+                                                                 CollectionExportFormat format,
+                                                                 Path outputPath,
+                                                                 boolean resolveVariables,
+                                                                 EnvironmentProfile activeEnvironment,
+                                                                 Map<String, String> exportOnlyVariables) {
+        Map<String, String> capturedExportOnlyVariables = exportOnlyVariables != null
+                ? new LinkedHashMap<>(exportOnlyVariables)
+                : Collections.emptyMap();
+        return new SwingWorker<>() {
+            @Override
+            protected ExportResult doInBackground() throws ExportException {
+                return performCollectionExport(
+                        collection,
+                        format,
+                        outputPath,
+                        resolveVariables,
+                        activeEnvironment,
+                        capturedExportOnlyVariables,
+                        false
+                );
             }
-            appendImportLog(message.toString());
-            recordDiagnostic(
-                    DiagnosticOperation.EXPORT,
-                    DiagnosticSeverity.INFO,
-                    "ImporterPanel",
-                    "Collection export completed",
-                    "collection=" + collectionDisplayName(collection) +
-                            "\nformat=" + selection.format +
-                            "\noutput=" + selection.outputPath);
-        } catch (ExportException e) {
-            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            appendImportLog("Collection export failed: " + reason);
-            recordDiagnostic(
-                    DiagnosticOperation.EXPORT,
-                    DiagnosticSeverity.ERROR,
-                    "ImporterPanel",
-                    "Collection export failed",
-                    "collection=" + collectionDisplayName(collection) +
-                            "\nerror=" + reason);
-            JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
+
+            @Override
+            protected void done() {
+                try {
+                    ExportResult result = get();
+                    handleCollectionExportSuccess(collection, format, outputPath, result);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    handleCollectionExportFailure(collection, e);
+                } catch (ExecutionException e) {
+                    handleCollectionExportFailure(collection, e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        };
+    }
+
+    private void handleCollectionExportSuccess(ApiCollection collection,
+                                               CollectionExportFormat format,
+                                               Path outputPath,
+                                               ExportResult result) {
+        StringBuilder message = new StringBuilder();
+        message.append("Exported collection \"").append(collectionDisplayName(collection)).append("\" to ").append(outputPath.getFileName()).append(".");
+        if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
+            message.append(" Warnings: ").append(String.join(" | ", result.warnings));
         }
+        appendImportLog(message.toString());
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Collection export completed",
+                "collection=" + collectionDisplayName(collection) +
+                        "\nformat=" + format +
+                        "\noutput=" + outputPath);
+    }
+
+    private void handleCollectionExportFailure(ApiCollection collection, Throwable throwable) {
+        String reason = throwable != null && throwable.getMessage() != null
+                ? throwable.getMessage()
+                : throwable != null ? throwable.getClass().getSimpleName() : "Exception";
+        appendImportLog("Collection export failed: " + reason);
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.ERROR,
+                "ImporterPanel",
+                "Collection export failed",
+                "collection=" + collectionDisplayName(collection) +
+                        "\nerror=" + reason);
+        JOptionPane.showMessageDialog(mainPanel, "Collection export failed: " + reason, "Export Collection", JOptionPane.ERROR_MESSAGE);
     }
 
     ExportResult performCollectionExport(ApiCollection collection,
@@ -9839,34 +9986,74 @@ public class ImporterPanel {
                     "environment=" + selected.displayName());
             return;
         }
-        try {
-            ExportResult result = performEnvironmentExport(selected, selection.format, selection.outputPath, false);
-            StringBuilder message = new StringBuilder();
-            message.append("Exported environment \"").append(selected.displayName()).append("\" to ").append(selection.outputPath.getFileName()).append(".");
-            if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
-                message.append(" Warnings: ").append(String.join(" | ", result.warnings));
+        startEnvironmentExportWorker(selected, selection.format, selection.outputPath);
+    }
+
+    SwingWorker<ExportResult, Void> startEnvironmentExportWorker(EnvironmentProfile selected,
+                                                                 EnvironmentExportFormat format,
+                                                                 Path outputPath) {
+        SwingWorker<ExportResult, Void> worker = createEnvironmentExportWorker(selected, format, outputPath);
+        worker.execute();
+        return worker;
+    }
+
+    SwingWorker<ExportResult, Void> createEnvironmentExportWorker(EnvironmentProfile selected,
+                                                                  EnvironmentExportFormat format,
+                                                                  Path outputPath) {
+        return new SwingWorker<>() {
+            @Override
+            protected ExportResult doInBackground() throws ExportException {
+                return performEnvironmentExport(selected, format, outputPath, false);
             }
-            appendImportLog(message.toString());
-            recordDiagnostic(
-                    DiagnosticOperation.EXPORT,
-                    DiagnosticSeverity.INFO,
-                    "ImporterPanel",
-                    "Environment export completed",
-                    "environment=" + selected.displayName() +
-                            "\nformat=" + selection.format +
-                            "\noutput=" + selection.outputPath);
-        } catch (ExportException e) {
-            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            appendImportLog("Environment export failed: " + reason);
-            recordDiagnostic(
-                    DiagnosticOperation.EXPORT,
-                    DiagnosticSeverity.ERROR,
-                    "ImporterPanel",
-                    "Environment export failed",
-                    "environment=" + selected.displayName() +
-                            "\nerror=" + reason);
-            JOptionPane.showMessageDialog(mainPanel, "Environment export failed: " + reason, "Export Environment", JOptionPane.ERROR_MESSAGE);
+
+            @Override
+            protected void done() {
+                try {
+                    ExportResult result = get();
+                    handleEnvironmentExportSuccess(selected, format, outputPath, result);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    handleEnvironmentExportFailure(selected, e);
+                } catch (ExecutionException e) {
+                    handleEnvironmentExportFailure(selected, e.getCause() != null ? e.getCause() : e);
+                }
+            }
+        };
+    }
+
+    private void handleEnvironmentExportSuccess(EnvironmentProfile selected,
+                                                EnvironmentExportFormat format,
+                                                Path outputPath,
+                                                ExportResult result) {
+        StringBuilder message = new StringBuilder();
+        message.append("Exported environment \"").append(selected.displayName()).append("\" to ").append(outputPath.getFileName()).append(".");
+        if (result != null && result.warnings != null && !result.warnings.isEmpty()) {
+            message.append(" Warnings: ").append(String.join(" | ", result.warnings));
         }
+        appendImportLog(message.toString());
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.INFO,
+                "ImporterPanel",
+                "Environment export completed",
+                "environment=" + selected.displayName() +
+                        "\nformat=" + format +
+                        "\noutput=" + outputPath);
+    }
+
+    private void handleEnvironmentExportFailure(EnvironmentProfile selected, Throwable throwable) {
+        String reason = throwable != null && throwable.getMessage() != null
+                ? throwable.getMessage()
+                : throwable != null ? throwable.getClass().getSimpleName() : "Exception";
+        appendImportLog("Environment export failed: " + reason);
+        recordDiagnostic(
+                DiagnosticOperation.EXPORT,
+                DiagnosticSeverity.ERROR,
+                "ImporterPanel",
+                "Environment export failed",
+                "environment=" + selected.displayName() +
+                        "\nerror=" + reason);
+        JOptionPane.showMessageDialog(mainPanel, "Environment export failed: " + reason, "Export Environment", JOptionPane.ERROR_MESSAGE);
     }
 
     private UnresolvedVariablesDialog createExportUnresolvedVariablesDialog(List<UnresolvedVariableIssue> issues,

@@ -9,6 +9,7 @@ import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.runner.CollectionRunner;
+import burp.testsupport.ImporterPanelTestSupport;
 import burp.ui.tree.CollectionTreeNode;
 import burp.utils.ScriptMode;
 import org.junit.jupiter.api.Test;
@@ -17,11 +18,14 @@ import org.mockito.Mockito;
 
 import javax.swing.*;
 import java.awt.*;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -144,6 +148,84 @@ class ImporterPanelExportFlowTest {
 
         assertThat(result).isNull();
         assertThat(Files.exists(output)).isFalse();
+    }
+
+    @Test
+    void collectionExportWorkerPerformsExportOffEdt() throws Exception {
+        ImporterPanel panel = Mockito.spy(newPanel());
+        ApiCollection collection = collection("APIM");
+        Path output = tempDir.resolve("collection.api-workbench.collection.json");
+        AtomicReference<Boolean> calledOnEdt = new AtomicReference<>();
+        Mockito.doAnswer(invocation -> {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
+            return new burp.exporter.ExportResult(output, "API Workbench", 0, 0, 0, List.of());
+        }).when(panel).performCollectionExport(
+                Mockito.same(collection),
+                Mockito.eq(burp.exporter.CollectionExportFormat.API_WORKBENCH_JSON),
+                Mockito.eq(output),
+                Mockito.eq(false),
+                Mockito.isNull(),
+                Mockito.anyMap(),
+                Mockito.eq(false)
+        );
+
+        SwingWorker<burp.exporter.ExportResult, Void> worker = panel.startCollectionExportWorker(
+                collection,
+                burp.exporter.CollectionExportFormat.API_WORKBENCH_JSON,
+                output,
+                false,
+                null,
+                Map.of()
+        );
+
+        assertThat(worker.get(5, TimeUnit.SECONDS).outputPath).isEqualTo(output);
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(calledOnEdt.get()).isFalse();
+    }
+
+    @Test
+    void environmentExportWorkerPerformsExportOffEdt() throws Exception {
+        ImporterPanel panel = Mockito.spy(newPanel());
+        var profile = environment("UAT");
+        Path output = tempDir.resolve("environment.api-workbench.environment.json");
+        AtomicReference<Boolean> calledOnEdt = new AtomicReference<>();
+        Mockito.doAnswer(invocation -> {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
+            return new burp.exporter.ExportResult(output, "API Workbench", 0, 1, 0, List.of());
+        }).when(panel).performEnvironmentExport(
+                Mockito.same(profile),
+                Mockito.eq(burp.exporter.EnvironmentExportFormat.API_WORKBENCH_JSON),
+                Mockito.eq(output),
+                Mockito.eq(false)
+        );
+
+        SwingWorker<burp.exporter.ExportResult, Void> worker = panel.startEnvironmentExportWorker(
+                profile,
+                burp.exporter.EnvironmentExportFormat.API_WORKBENCH_JSON,
+                output
+        );
+
+        assertThat(worker.get(5, TimeUnit.SECONDS).outputPath).isEqualTo(output);
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(calledOnEdt.get()).isFalse();
+    }
+
+    @Test
+    void environmentImportWorkerParsesFileOffEdt() throws Exception {
+        ImporterPanel panel = Mockito.spy(newPanel());
+        File file = tempDir.resolve("environment.json").toFile();
+        AtomicReference<Boolean> calledOnEdt = new AtomicReference<>();
+        var imported = environment("Imported");
+        Mockito.doAnswer(invocation -> {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
+            return List.of(imported);
+        }).when(panel).importEnvironmentProfiles(Mockito.same(file));
+
+        SwingWorker<List<burp.models.EnvironmentProfile>, Void> worker = panel.startEnvironmentImportWorker(file);
+
+        assertThat(worker.get(5, TimeUnit.SECONDS)).containsExactly(imported);
+        ImporterPanelTestSupport.awaitEdt();
+        assertThat(calledOnEdt.get()).isFalse();
     }
 
     private static ImporterPanel newPanel() {

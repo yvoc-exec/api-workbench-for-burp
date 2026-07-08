@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 public class HistoryPanel extends JPanel {
@@ -505,17 +506,71 @@ public class HistoryPanel extends JPanel {
         if (file == null) {
             return;
         }
-        try {
-            Path path = file.toPath();
-            switch (format) {
-                case "csv" -> exportService.writeCsv(entries, path);
-                case "har" -> exportService.writeHar(entries, path);
-                default -> exportService.writeJson(entries, path);
-            }
-            notifier.showInfo(this, "History exported to " + path.toAbsolutePath());
-        } catch (Exception e) {
-            notifier.showError(this, "History export failed: " + e.getMessage());
+        List<HistoryEntry> detachedEntries = detachedHistoryEntries(entries);
+        if (detachedEntries.isEmpty()) {
+            return;
         }
+        startHistoryExportWorker(format, detachedEntries, file.toPath());
+    }
+
+    SwingWorker<Path, Void> startHistoryExportWorker(String format, List<HistoryEntry> detachedEntries, Path path) {
+        SwingWorker<Path, Void> worker = createHistoryExportWorker(format, detachedEntries, path);
+        actionsPanel.getExportButton().setEnabled(false);
+        worker.execute();
+        return worker;
+    }
+
+    SwingWorker<Path, Void> createHistoryExportWorker(String format, List<HistoryEntry> detachedEntries, Path path) {
+        List<HistoryEntry> workerEntries = detachedEntries != null ? new ArrayList<>(detachedEntries) : List.of();
+        return new SwingWorker<>() {
+            @Override
+            protected Path doInBackground() throws Exception {
+                switch (format) {
+                    case "csv" -> exportService.writeCsv(workerEntries, path);
+                    case "har" -> exportService.writeHar(workerEntries, path);
+                    default -> exportService.writeJson(workerEntries, path);
+                }
+                return path;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    Path exportedPath = get();
+                    notifier.showInfo(HistoryPanel.this, "History exported to " + exportedPath.toAbsolutePath());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    notifier.showError(HistoryPanel.this, "History export failed: " + exceptionMessage(e));
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    notifier.showError(HistoryPanel.this, "History export failed: " + exceptionMessage(cause));
+                } finally {
+                    updateActionState();
+                }
+            }
+        };
+    }
+
+    private static List<HistoryEntry> detachedHistoryEntries(List<HistoryEntry> entries) {
+        List<HistoryEntry> detached = new ArrayList<>();
+        if (entries == null) {
+            return detached;
+        }
+        for (HistoryEntry entry : entries) {
+            HistoryEntry copy = HistoryEntry.copyOf(entry);
+            if (copy != null) {
+                detached.add(copy);
+            }
+        }
+        return detached;
+    }
+
+    private static String exceptionMessage(Throwable throwable) {
+        if (throwable == null) {
+            return "Exception";
+        }
+        String message = throwable.getMessage();
+        return message != null ? message : throwable.getClass().getSimpleName();
     }
 
     private void copyToClipboard(String text) {

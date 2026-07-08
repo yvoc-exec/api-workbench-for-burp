@@ -11,13 +11,18 @@ import burp.history.*;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import javax.swing.*;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,6 +32,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class HistoryPanelTest {
+    @TempDir
+    Path tempDir;
 
     @Test
     void tableLayoutRemainsVisibleWithZeroEntries() {
@@ -192,6 +199,24 @@ class HistoryPanelTest {
         assertThat(store.snapshot()).hasSize(1);
     }
 
+    @Test
+    void historyExportWritesJsonCsvAndHarOffEdt() throws Exception {
+        HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        for (String format : List.of("json", "csv", "har")) {
+            RecordingExportService exportService = new RecordingExportService();
+            HistoryPanel panel = new HistoryPanel(new HistoryStore(), exportService, new HistoryDiffService(), new RecordingNotifier());
+            Path output = tempDir.resolve("history-" + format);
+
+            SwingWorker<Path, Void> worker = panel.startHistoryExportWorker(format, List.of(HistoryEntry.copyOf(entry)), output);
+
+            assertThat(worker.get(5, TimeUnit.SECONDS)).isEqualTo(output);
+            ImporterPanelTestSupport.awaitEdt();
+            assertThat(exportService.calledOnEdt.get())
+                    .as(format + " export should write outside the EDT")
+                    .isFalse();
+        }
+    }
+
     private static final class RecordingNotifier extends HistoryLoadResultNotifier {
         int confirmClearCount;
 
@@ -225,6 +250,25 @@ class HistoryPanelTest {
 
         @Override
         public void showLoadedUnderHistoryReplays(java.awt.Component parent, String requestName) {
+        }
+    }
+
+    private static final class RecordingExportService extends HistoryExportService {
+        final AtomicReference<Boolean> calledOnEdt = new AtomicReference<>();
+
+        @Override
+        public void writeJson(Collection<HistoryEntry> entries, Path output) throws IOException {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
+        }
+
+        @Override
+        public void writeCsv(Collection<HistoryEntry> entries, Path output) throws IOException {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
+        }
+
+        @Override
+        public void writeHar(Collection<HistoryEntry> entries, Path output) throws IOException {
+            calledOnEdt.set(SwingUtilities.isEventDispatchThread());
         }
     }
 }
