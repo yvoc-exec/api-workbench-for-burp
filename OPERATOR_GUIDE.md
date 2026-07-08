@@ -86,15 +86,15 @@ When a request is built, values are resolved from lowest to highest in this orde
 1. Collection environment
 2. Collection definition variables
 3. Ancestor-folder variables
-4. Collection runtime OAuth2 values
+4. Collection runtime OAuth2
 5. Collection runtime variables
 6. Active Environment overlay
    - OAuth2 environment config is added first
    - normal environment variables can override same-named config keys
 7. Explicit execution/runtime/script overlay
-8. Request-level variables
+8. Authored request variables
 9. Auth/runtime mapping when enabled
-10. `{{name|default}}` placeholder fallback, used only when the key remains unresolved
+10. `{{name|default}}` fallback syntax, used only when no higher layer resolved the key
 
 Later layers win. The active environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override.
 
@@ -123,7 +123,7 @@ Check the script mode line:
 
 | Script Mode | Meaning | Operator Impact |
 | --- | --- | --- |
-| Full | A supported JavaScript runtime is available | Pre-request, post-response, and test scripts can run |
+| Full | A supported sandboxed JavaScript runtime is available | Pre-request, post-response, and test scripts can run |
 | Limited | Runtime probing failed | Legacy post-response regex extraction remains available; JavaScript scripts are reduced |
 | Disabled | Java is below the supported requirement | JavaScript scripting is unavailable |
 
@@ -345,7 +345,7 @@ Controls:
 - Clear
 - Copy
 
-Diagnostics captures passive runtime events in a bounded in-memory store. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
+Diagnostics captures passive runtime events in a bounded in-memory store that retains at most 1,000 events. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Sanitization masks common Authorization, Cookie, Set-Cookie, bearer/basic credentials, tokens, secrets, passwords, and API-key patterns, but reports still require operator review before sharing.
 
 Workspace persistence stores the diagnostics-capture-enabled setting.
 
@@ -412,7 +412,7 @@ Scripts can:
 
 Runner-only controls such as skip, stop, next-request, and dependent-request flows belong to the Runner. Workbench single Send is not a collection-control engine. Do not assume generic network-helper compatibility that is not actually implemented.
 
-Always run only trusted scripts. Scripts can mutate requests and runtime state, and there is no execution timeout.
+Scripts are bounded by runtime timeout and cancellation safeguards, but they can still mutate requests and runtime state. Run only trusted scripts.
 
 ---
 

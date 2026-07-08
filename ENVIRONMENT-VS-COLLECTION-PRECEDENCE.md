@@ -27,7 +27,7 @@ Default placeholders are not a normal mutable scope.
 
 - Environment profiles are independent workspace objects.
 - The Environment tab selects an environment profile, not a collection.
-- The active environment applies to Workbench Send, Runner, Repeater, Intruder, Sitemap request construction, and previews.
+- The Active Environment applies to Workbench Send, Runner, Repeater, Intruder, Sitemap request construction, and previews.
 - An environment profile contains normal variables plus OAuth2 configuration and output bindings.
 - The OAuth2 tab selects and uses an environment profile.
 - Successful token acquisition writes configured token outputs to that environment.
@@ -56,12 +56,12 @@ Script-local values, helper objects, and global script context are execution-tim
 
 ## 5. Workbench Send, Runner, import destinations, and export behavior
 
-- Workbench Send uses the current active environment overlay and any explicit request/runtime/script overlay.
+- Workbench Send uses the current Active Environment overlay and any explicit request/runtime/script overlay.
 - Runner uses the same shared request pipeline as Workbench Send.
 - Repeater, Intruder, and Sitemap import destinations also honor the active environment where request resolution is needed.
 - Exported collections and environments may lose metadata that their target schema cannot represent.
 - Native API Workbench collection export is the most faithful format for authored collection structure, auth, variables, folder metadata, requests, and native script blocks. It does not automatically serialize `runtimeVars` or `runtimeOAuth2`.
-- Optional active-environment resolution can materialize values into the exported representation when selected.
+- Optional Active Environment resolution can materialize values into the exported representation when selected.
 - Native API Workbench environment export preserves the selected environment profile's variables, OAuth2 configuration, and output bindings.
 
 ## 6. Worked examples

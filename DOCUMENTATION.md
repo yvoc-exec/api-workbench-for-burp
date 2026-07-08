@@ -83,8 +83,6 @@ Root support infrastructure lives in the repository root, `config/`, `.github/wo
 
 ```text
 burp/
-|-- BurpExtender.java
-|-- UniversalImporter.java
 |-- auth/
 |   |-- AuthorizationCodeHandler.java
 |   |-- ClientCredentialsHandler.java
@@ -128,7 +126,12 @@ burp/
 |   |-- PostmanCollectionExporter.java
 |   `-- PostmanEnvironmentExporter.java
 |-- history/
+|   |-- evidence/
+|   |   |-- HistoryEvidenceBundleOptions.java
+|   |   |-- HistoryEvidenceBundleService.java
+|   |   `-- HistoryEvidenceRedactor.java
 |   |-- HistoryAssertionResult.java
+|   |-- HistoryBodyTruncator.java
 |   |-- HistoryCsvExportService.java
 |   |-- HistoryDiffService.java
 |   |-- HistoryEntry.java
@@ -140,40 +143,79 @@ burp/
 |   |-- HistoryJsonExportService.java
 |   |-- HistoryJsonSupport.java
 |   |-- HistoryPersistenceService.java
+|   |-- HistoryReplayRedirectMode.java
 |   |-- HistoryRequestSnapshot.java
 |   |-- HistoryResponseSnapshot.java
 |   |-- HistoryResult.java
 |   |-- HistoryRetentionPolicy.java
+|   |-- HistoryRetentionStats.java
 |   |-- HistorySanitizer.java
 |   |-- HistorySource.java
 |   `-- HistoryStore.java
+|-- importer/
+|   |-- BurpTrafficConversionResult.java
+|   |-- BurpTrafficImportPlan.java
+|   |-- BurpTrafficImportService.java
+|   `-- BurpTrafficSelection.java
 |-- models/
 |   |-- ApiCollection.java
 |   |-- ApiRequest.java
 |   |-- BearerTokenAliasCandidate.java
 |   |-- EnvironmentProfile.java
+|   |-- ExactHttpRequestSnapshot.java
 |   |-- ImportResult.java
 |   |-- OAuth2EnvironmentState.java
+|   |-- RedirectCrossOriginMode.java
+|   |-- RedirectHop.java
+|   |-- RedirectPolicy.java
+|   |-- RedirectTerminationReason.java
+|   |-- RunnerCancellationState.java
 |   |-- RunnerPreviewRow.java
 |   |-- RunnerResult.java
 |   |-- RunnerStopConditions.java
+|   |-- RunnerTerminationResult.java
+|   |-- RunnerTerminationType.java
 |   |-- RunnerTimelineRow.java
+|   |-- TrustedRedirectRule.java
 |   |-- UnresolvedVariableIssue.java
 |   `-- WorkspaceState.java
 |-- parser/
 |   |-- ApiWorkbenchCollectionParser.java
+|   |-- ArchiveImportLimitException.java
+|   |-- ArchiveImportLimits.java
+|   |-- BrunoBlockScanner.java
 |   |-- BrunoParser.java
 |   |-- CollectionParser.java
 |   |-- HarParser.java
+|   |-- HistoryRawHttpMessageParser.java
 |   |-- InsomniaParser.java
 |   |-- OpenApiParser.java
 |   |-- ParserRegistry.java
 |   |-- PostmanParser.java
+|   |-- SafeArchiveExtractor.java
 |   `-- VariableResolver.java
 |-- runner/
-|   `-- CollectionRunner.java
+|   |-- CollectionRunner.java
+|   |-- FlowTargetResolution.java
+|   |-- FlowTargetResolutionForm.java
+|   |-- FlowTargetResolutionStatus.java
+|   |-- RetryFailureType.java
+|   |-- RunnerFlowTargetResolver.java
+|   |-- RunnerRetryDecision.java
+|   `-- RunnerRetryPolicy.java
 |-- scripts/
+|   |-- capabilities/
+|   |   |-- ScriptCapability.java
+|   |   |-- ScriptCapabilityAnalyzer.java
+|   |   |-- ScriptCapabilityFinding.java
+|   |   |-- ScriptCapabilityReport.java
+|   |   |-- ScriptImportOrigin.java
+|   |   |-- ScriptRiskLevel.java
+|   |   |-- ScriptTrustImportService.java
+|   |   |-- ScriptTrustReviewItem.java
+|   |   `-- ScriptTrustReviewModel.java
 |   |-- ExecutionSource.java
+|   |-- ReentrantSandboxedJavaScriptEngine.java
 |   |-- SandboxedJavaScriptEngine.java
 |   |-- ScriptAdHocRequest.java
 |   |-- ScriptAssertionResult.java
@@ -189,33 +231,16 @@ burp/
 |   |-- ScriptLogEntry.java
 |   |-- ScriptPhase.java
 |   |-- ScriptScope.java
+|   |-- ScriptUnsupportedCapability.java
 |   |-- ScriptVariableMutation.java
 |   |-- UnifiedScriptRuntime.java
+|   |-- UnsupportedScriptCapabilityException.java
 |   `-- VariableScopeStore.java
 |-- smoke/
 |   `-- ScriptRuntimeProbe.java
 |-- ui/
-|   |-- AuthSettingsDialog.java
-|   |-- BearerTokenAliasDialog.java
-|   |-- ImporterPanel.java
-|   |-- OAuth2Panel.java
-|   |-- RequestEditorAuthSupport.java
-|   |-- RequestEditorBodySupport.java
-|   |-- RequestEditorPanel.java
-|   |-- RequestEditorStateMapper.java
-|   |-- RequestEditorTableSupport.java
-|   |-- RequestPreviewTableModel.java
-|   |-- ResponsePane.java
-|   |-- RunnerExecutionTableModel.java
-|   |-- RunnerPreviewTableModel.java
-|   |-- RunnerResultTableModel.java
-|   |-- RunnerTimelineTableModel.java
-|   |-- SwingShortcutSupport.java
-|   |-- UnresolvedVariablesDialog.java
-|   |-- VariableHighlightStyler.java
-|   |-- VariableResolutionStatus.java
-|   |-- VariableStatusColors.java
-|   |-- VariableTokenScanner.java
+|   |-- contextmenu/
+|   |   `-- ApiWorkbenchContextMenuProvider.java
 |   |-- dnd/
 |   |   |-- ActiveEnvironmentDropTransferHandler.java
 |   |   |-- EnvironmentDragPayload.java
@@ -227,48 +252,85 @@ burp/
 |   |   |-- HistoryActionsPanel.java
 |   |   |-- HistoryCompareDialog.java
 |   |   |-- HistoryDetailPanel.java
+|   |   |-- HistoryEvidenceBundleUiInstaller.java
 |   |   |-- HistoryFilterPanel.java
 |   |   |-- HistoryLoadResultNotifier.java
 |   |   |-- HistoryNativeHttpMessageFactory.java
 |   |   |-- HistoryNativeMessageFormatter.java
 |   |   |-- HistoryPanel.java
 |   |   `-- HistoryTableModel.java
-|   `-- tree/
-|       |-- BurpLikeTreeCellRenderer.java
-|       |-- CheckBoxTreeCellRenderer.java
-|       |-- CollectionTreeNode.java
-|       |-- RequestTreeDragPayload.java
-|       |-- RequestTreeMutationService.java
-|       |-- RequestTreeNamingPolicy.java
-|       |-- RequestTreePathService.java
-|       |-- RequestTreeTransferHandler.java
-|       `-- TreeDropRequest.java
-`-- utils/
-    |-- AuthInheritanceResolver.java
-    |-- DebouncedSwingAction.java
-    |-- EnvironmentImportService.java
-    |-- ExecutionResult.java
-    |-- HttpUtils.java
-    |-- OAuth2BearerAliasDetector.java
-    |-- OAuth2PopulateHelper.java
-    |-- OAuth2RuntimeMapper.java
-    |-- RequestBuilder.java
-    |-- RequestBuildPolicy.java
-    |-- RequestDebugFormatter.java
-    |-- RequestPathResolver.java
-    |-- RuntimeResolverFactory.java
-    |-- RuntimeVariablesJson.java
-    |-- ScriptEngine.java
-    |-- ScriptMode.java
-    |-- ScriptModeDetector.java
-    |-- SharedRequestPipeline.java
-    |-- SwingEdt.java
-    |-- UnresolvedVariableAnalyzer.java
-    |-- VariableDebugFormatter.java
-    |-- WorkspaceStateJson.java
-    |-- WorkspaceStateMigrator.java
-    `-- WorkspaceStateService.java
-
+|   |-- traffic/
+|   |   |-- BurpTrafficWorkflowCoordinator.java
+|   |   |-- TrafficDestinationDialog.java
+|   |   `-- TrafficDestinationDialogModel.java
+|   |-- tree/
+|   |   |-- BurpLikeTreeCellRenderer.java
+|   |   |-- CheckBoxTreeCellRenderer.java
+|   |   |-- CollectionTreeNode.java
+|   |   |-- RequestTreeDragPayload.java
+|   |   |-- RequestTreeMutationService.java
+|   |   |-- RequestTreeNamingPolicy.java
+|   |   |-- RequestTreePathService.java
+|   |   |-- RequestTreeTransferHandler.java
+|   |   `-- TreeDropRequest.java
+|   |-- ActiveEnvironmentVariableBridge.java
+|   |-- AuthSettingsDialog.java
+|   |-- BearerTokenAliasDialog.java
+|   |-- ImporterPanel.java
+|   |-- OAuth2Panel.java
+|   |-- RedirectPolicyDialog.java
+|   |-- RequestEditorAuthSupport.java
+|   |-- RequestEditorBodySupport.java
+|   |-- RequestEditorPanel.java
+|   |-- RequestEditorStateMapper.java
+|   |-- RequestEditorTableSupport.java
+|   |-- RequestPreviewTableModel.java
+|   |-- ResponsePane.java
+|   |-- RunnerExecutionTableModel.java
+|   |-- RunnerPreviewTableModel.java
+|   |-- RunnerResultTableModel.java
+|   |-- RunnerTimelineTableModel.java
+|   |-- ScriptTrustReviewDialog.java
+|   |-- SwingShortcutSupport.java
+|   |-- UnresolvedVariablesDialog.java
+|   |-- VariableHighlightStyler.java
+|   |-- VariableResolutionStatus.java
+|   |-- VariableStatusColors.java
+|   `-- VariableTokenScanner.java
+|-- utils/
+|   |-- AuthInheritanceResolver.java
+|   |-- DebouncedSwingAction.java
+|   |-- EnvironmentImportService.java
+|   |-- ExecutionPolicy.java
+|   |-- ExecutionPreflightResult.java
+|   |-- ExecutionPreflightStatus.java
+|   |-- ExecutionResult.java
+|   |-- HttpUtils.java
+|   |-- OAuth2BearerAliasDetector.java
+|   |-- OAuth2PopulateHelper.java
+|   |-- OAuth2RuntimeMapper.java
+|   |-- PreflightDecisionHandler.java
+|   |-- RedirectExecutor.java
+|   |-- RedirectOrigin.java
+|   |-- RequestBuildPolicy.java
+|   |-- RequestBuilder.java
+|   |-- RequestDebugFormatter.java
+|   |-- RequestExecutionException.java
+|   |-- RequestPathResolver.java
+|   |-- RuntimeResolverFactory.java
+|   |-- RuntimeVariablesJson.java
+|   |-- ScriptEngine.java
+|   |-- ScriptMode.java
+|   |-- ScriptModeDetector.java
+|   |-- SharedRequestPipeline.java
+|   |-- SwingEdt.java
+|   |-- UnresolvedVariableAnalyzer.java
+|   |-- VariableDebugFormatter.java
+|   |-- WorkspaceStateJson.java
+|   |-- WorkspaceStateMigrator.java
+|   `-- WorkspaceStateService.java
+|-- BurpExtender.java
+`-- UniversalImporter.java
 ```
 
 ### 3.2 Class Diagram (Simplified)
@@ -402,14 +464,17 @@ Lowest to highest:
 1. Collection environment
 2. Collection definition variables
 3. Ancestor-folder variables
-4. Collection runtime OAuth2 values
+4. Collection runtime OAuth2
 5. Collection runtime variables
 6. Active Environment overlay
+   - OAuth2 environment config is added first
+   - normal environment variables can override same-named config keys
 7. Explicit execution/runtime/script overlay
-8. Request-level variables
+8. Authored request variables
 9. Auth/runtime mapping when enabled
+10. `{{name|default}}` fallback syntax, used only when no higher layer resolved the key
 
-Later layers win. The active environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override. Default placeholders are used only when a key remains unresolved and are not a normal mutable scope.
+Later layers win. The Active Environment wins over collection variables and collection runtime layers. Request variables remain the strongest normal authored variable override. Default placeholders are used only when a key remains unresolved and are not a normal mutable scope.
 
 ### 6.3 Normal vs script scope
 
@@ -478,7 +543,7 @@ Legacy script paths remain bounded by the supported runtime behavior.
 
 ### 9.5 Security model
 
-Scripts can mutate requests and runtime state. Operators must run only trusted scripts and treat no-timeout execution as a security and stability risk.
+Scripts execute through a bounded sandboxed JavaScript runtime. The default script timeout is 5,000 ms, and configured timeouts are normalized between 100 ms and 60,000 ms. Cancellation closes active contexts and interrupts active workers where possible. Operators should still run only trusted scripts because scripts can mutate requests, variables, and runtime state.
 
 ## 10. History Subsystem
 
@@ -488,7 +553,7 @@ History records Workbench and Runner executions, including request/response snap
 
 ## 11. Diagnostics Subsystem
 
-Diagnostics captures passive runtime events in a bounded in-memory store. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Capture is disabled by default and does not send traffic. Workspace state stores the capture-enabled flag. Sanitization is best-effort, so reports still need operator review before sharing them.
+Diagnostics captures passive runtime events in a bounded in-memory store that retains at most 1,000 events. Sanitized reports and snapshots are generated from those events. Reports group events by operation and include warning, error, and debug summaries. Capture is disabled by default and does not send traffic. Workspace state stores the capture-enabled flag. Sanitization is best-effort, so reports still need operator review before sharing them.
 
 ## 12. State Synchronization
 
@@ -510,7 +575,7 @@ Environment and OAuth2 mutations become visible to Workbench, Runner, and export
 - Legacy script compatibility remains bounded by supported runtime behavior.
 - Scripts, uploads, exports, and project files may contain secrets.
 - OAuth2 loopback callbacks use localhost and should be used only in controlled environments.
-- There is no execution timeout for scripts.
+- Scripts are bounded by runtime timeout and cancellation safeguards; the default timeout is 5,000 ms, normalized between 100 ms and 60,000 ms where configured.
 
 ## 14. Known Limitations & Code-Level Behaviors
 
