@@ -81,7 +81,7 @@ class CollectionRunnerControlTest {
             assertThat(runner.isPaused()).isTrue();
             allowFirstToFinish.countDown();
 
-            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
+            assertThat(waitForCondition(runner::canStep, 3000)).isTrue();
             assertThat(secondStarted.await(500, TimeUnit.MILLISECONDS)).isFalse();
 
             runner.resume();
@@ -159,7 +159,7 @@ class CollectionRunnerControlTest {
             assertThat(firstStarted.await(3, TimeUnit.SECONDS)).isTrue();
             runner.pauseAfterCurrent();
             allowFirstToFinish.countDown();
-            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
+            assertThat(waitForCondition(runner::canStep, 3000)).isTrue();
             assertThat(secondStarted.getCount()).isEqualTo(1);
             assertThat(thirdStarted.getCount()).isEqualTo(1);
 
@@ -167,7 +167,7 @@ class CollectionRunnerControlTest {
             assertThat(secondStarted.await(3, TimeUnit.SECONDS)).isTrue();
 
             allowSecondToFinish.countDown();
-            assertThat(waitForCondition(runner::isPaused, 3000)).isTrue();
+            assertThat(waitForCondition(runner::canStep, 3000)).isTrue();
             assertThat(thirdStarted.getCount()).isEqualTo(1);
 
             runner.resume();
@@ -176,6 +176,74 @@ class CollectionRunnerControlTest {
 
             assertThat(started).containsExactly("Request 1", "Request 2", "Request 3");
             assertThat(executionCount.get()).isEqualTo(3);
+        });
+    }
+
+    @Test
+    void stepIsIgnoredWhileRequestIsInFlightAndReenablesBetweenQueuedRequests() throws Exception {
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            CountDownLatch firstStarted = new CountDownLatch(1);
+            CountDownLatch allowFirstToFinish = new CountDownLatch(1);
+            CountDownLatch secondStarted = new CountDownLatch(1);
+            AtomicInteger executionCount = new AtomicInteger();
+
+            CollectionRunner runner = new CollectionRunner(null, new SharedRequestPipeline(null, null, null, null) {
+                @Override
+                public ExecutionResult execute(ApiRequest req, ApiCollection col, boolean followRedirects) {
+                    executionCount.incrementAndGet();
+                    if ("Request 1".equals(req.name)) {
+                        firstStarted.countDown();
+                        awaitLatch(allowFirstToFinish);
+                    } else if ("Request 2".equals(req.name)) {
+                        secondStarted.countDown();
+                    }
+
+                    ExecutionResult exec = new ExecutionResult();
+                    exec.success = true;
+                    exec.requestHeaders = "GET /" + req.name + " HTTP/1.1\r\nHost: example.com\r\n\r\n";
+                    exec.rawRequestBytes = exec.requestHeaders.getBytes(StandardCharsets.UTF_8);
+                    exec.response = mockResponse();
+                    return exec;
+                }
+            }, null);
+            runner.setDelayMs(0);
+
+            ApiCollection collection = new ApiCollection();
+            collection.name = "Step Guard Collection";
+            ApiRequest request1 = new ApiRequest();
+            request1.name = "Request 1";
+            request1.url = "http://example.com/1";
+            request1.sequenceOrder = 1;
+            request1.sourceCollection = collection.name;
+            collection.requests.add(request1);
+            ApiRequest request2 = new ApiRequest();
+            request2.name = "Request 2";
+            request2.url = "http://example.com/2";
+            request2.sequenceOrder = 2;
+            request2.sourceCollection = collection.name;
+            collection.requests.add(request2);
+
+            runner.runCollections(List.of(collection), List.of(request1, request2), true);
+            assertThat(waitForCondition(runner::canStep, 3000)).isTrue();
+
+            runner.runNextOnly();
+            assertThat(firstStarted.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(runner.isRequestInFlight()).isTrue();
+            assertThat(runner.canStep()).isFalse();
+
+            runner.runNextOnly();
+            assertThat(secondStarted.await(300, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(executionCount.get()).isEqualTo(1);
+
+            allowFirstToFinish.countDown();
+            assertThat(waitForCondition(runner::canStep, 3000)).isTrue();
+            assertThat(executionCount.get()).isEqualTo(1);
+
+            runner.runNextOnly();
+            assertThat(secondStarted.await(3, TimeUnit.SECONDS)).isTrue();
+            waitForRunnerToStop(runner);
+            assertThat(runner.canStep()).isFalse();
+            assertThat(executionCount.get()).isEqualTo(2);
         });
     }
 

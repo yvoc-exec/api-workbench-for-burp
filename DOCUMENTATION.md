@@ -519,6 +519,12 @@ Skip, stop, next-request, and dependent-request control are Runner-oriented. Wor
 
 The current UI uses one Runner Execution Table and a shared detail viewer; there are not separate visible Results and Timeline tables in the current operator presentation.
 
+### 8.6 Redirect Security Policy
+
+Redirect following defaults to `maxHops = 10`; policy normalization clamps max hops to 1..20. The default cross-origin mode is **Strip sensitive headers**. Built-in sensitive headers are `Authorization`, `Cookie`, `Proxy-Authorization`, `X-API-Key`, `API-Key`, and `X-Auth-Token`; operators can add additional sensitive header names.
+
+Same-origin redirects preserve headers except normal hop-by-hop and transport cleanup. Cross-origin redirects strip or forward sensitive headers according to the policy mode: **Strip sensitive headers**, **Forward selected headers to trusted origins**, or **Preserve sensitive headers to any HTTPS redirect target (Dangerous)**. Trusted rules are source-origin + target-origin + allowed headers, and trusted targets must be HTTPS. `Proxy-Authorization` is never forwarded. Redirect hops are captured as evidence where supported, including followed/blocked status and stripped or forwarded sensitive-header names.
+
 ## 9. Script Runtime
 
 ### 9.0 Script mode gating
@@ -537,6 +543,8 @@ Legacy script paths remain bounded by the supported runtime behavior.
 
 `ScriptBindingsFactory` exposes dialect-aware bindings for Postman, Bruno, Insomnia, native API Workbench, and legacy compatibility scripts. Binding surfaces include `pm`, `bru / req / res`, `insomnia / request / response`, `awb`, and `console`. Runner-only controls such as skip, stop, next-request, and dependent-request are not generic Workbench Send features.
 
+API Workbench supports a compatible JavaScript scripting layer for common Postman, Insomnia, Bruno, and Workbench pre-request/post-response workflows, including request mutation, variables, assertions, extraction, and Runner flow control. It is not a byte-for-byte clone of each tool's full sandbox API. The detailed support status is tracked in [Script Compatibility Matrix](SCRIPT-COMPATIBILITY-MATRIX.md). Unsupported or partially supported sandbox APIs should fail closed, warn clearly, or be preserved without pretending to execute; imported third-party scripts should be validated before they are trusted in security testing.
+
 ### 9.4 Script lifecycle and models
 
 `ScriptLifecycleExecutor`, `ScriptExecutionContext`, `ScriptExecutionResult`, `ScriptAssertionResult`, `ScriptVariableMutation`, `ScriptFlowControl`, `ScriptLogEntry`, `ScriptPhase`, `ScriptScope`, `ScriptDialect`, `ScriptBlock`, and `ScriptDependentRequestResult` capture the script contract and its outcomes.
@@ -548,6 +556,8 @@ Scripts execute through a bounded sandboxed JavaScript runtime. The default scri
 ## 10. History Subsystem
 
 History records Workbench and Runner executions, including request/response snapshots, script output, assertions, extracted values, and variable changes. The operator-facing tab is `History`. History request and response content remains unmasked. `HistorySanitizer` handles safe text normalization and CSV-cell/formula safety; it is not a secret-redaction engine.
+
+Evidence metadata belongs to `HistoryEntry` and is separate from captured request/response content. It supports triage, reporting, retesting, and handoff through pinned state, tags, and analyst notes. Tags and notes may contain sensitive client information, so exports and Burp project files should be reviewed before sharing. Clear Unpinned removes normal unpinned history noise while retaining pinned entries; it should not be treated as reversible.
 
 `HistoryStore` retains the latest 1,000 entries by default, `HistoryPersistenceService` stores them with the workspace, and `HistoryExportService` and its format-specific services produce HAR/JSON/CSV output.
 
@@ -580,7 +590,7 @@ Environment and OAuth2 mutations become visible to Workbench, Runner, and export
 ## 14. Known Limitations & Code-Level Behaviors
 
 - Sequential Runner execution is intentional.
-- Script compatibility depends on the selected runtime mode.
+- Script compatibility depends on the selected runtime mode and the supported subset documented in `SCRIPT-COMPATIBILITY-MATRIX.md`.
 - Parser support remains limited by the external format; lossy export is expected when the schema cannot express native metadata. Collection export only materializes values when explicitly requested and does not auto-serialize runtimeVars or runtimeOAuth2.
 - Generic `sendRequest`-style compatibility helpers are not guaranteed beyond the implemented binding surfaces.
 - Default placeholders are not a normal mutable scope.

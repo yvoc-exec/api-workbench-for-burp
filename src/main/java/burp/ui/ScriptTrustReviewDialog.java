@@ -25,6 +25,7 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GraphicsEnvironment;
 import java.awt.Window;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,9 +46,20 @@ public final class ScriptTrustReviewDialog {
         dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
 
         ScriptTableModel tableModel = new ScriptTableModel(model.items());
-        JTable table = new JTable(tableModel);
+        JTable table = new JTable(tableModel) {
+            @Override
+            public String getToolTipText(MouseEvent event) {
+                int row = rowAtPoint(event.getPoint());
+                int modelRow = row >= 0 ? convertRowIndexToModel(row) : -1;
+                ScriptTrustReviewItem item = tableModel.itemAt(modelRow);
+                return item != null ? reviewItemTooltip(item) : super.getToolTipText(event);
+            }
+        };
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
+        table.getColumnModel().getColumn(2).setPreferredWidth(260);
+        table.getColumnModel().getColumn(4).setPreferredWidth(110);
+        table.getColumnModel().getColumn(5).setPreferredWidth(90);
         JTextArea preview = new JTextArea();
         preview.setEditable(false);
         preview.setLineWrap(false);
@@ -131,6 +143,51 @@ public final class ScriptTrustReviewDialog {
         return model.decision();
     }
 
+    static String friendlyPhaseLabel(burp.scripts.ScriptPhase phase) {
+        if (phase == null) {
+            return "";
+        }
+        return switch (phase) {
+            case PRE_REQUEST -> "Pre-request";
+            case POST_RESPONSE -> "Post-response";
+            case TEST -> "Test";
+            case EVENT -> "Event";
+        };
+    }
+
+    static String friendlyRiskLabel(ScriptRiskLevel riskLevel) {
+        if (riskLevel == null) {
+            return "Low";
+        }
+        String name = riskLevel.name().toLowerCase(java.util.Locale.ROOT);
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
+
+    static String reviewItemTooltip(ScriptTrustReviewItem item) {
+        if (item == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("<html>");
+        if (item.collectionName != null && !item.collectionName.isBlank()) {
+            sb.append("Collection: ").append(escapeHtml(item.collectionName)).append("<br>");
+        }
+        String location = item.folderPath != null && !item.folderPath.isBlank()
+                ? item.folderPath + "/" + (item.requestName != null ? item.requestName : "")
+                : item.requestName;
+        sb.append("Location: ").append(escapeHtml(location != null ? location : "")).append("<br>");
+        sb.append("Phase: ").append(escapeHtml(friendlyPhaseLabel(item.phase))).append("<br>");
+        sb.append("Risk: ").append(escapeHtml(friendlyRiskLabel(item.capabilityReport != null ? item.capabilityReport.riskLevel : ScriptRiskLevel.LOW)));
+        return sb.append("</html>").toString();
+    }
+
+    private static String escapeHtml(String value) {
+        return value == null ? "" : value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
+    }
+
     private static final class ScriptTableModel extends AbstractTableModel {
         private final String[] columns = {"Trust", "Collection", "Location", "Dialect", "Phase", "Risk", "Capabilities", "Unsupported"};
         private final List<ScriptTrustReviewItem> items = new ArrayList<>();
@@ -180,8 +237,8 @@ public final class ScriptTrustReviewDialog {
                 case 1 -> item.collectionName;
                 case 2 -> !item.requestName.isBlank() ? item.requestName : item.folderPath;
                 case 3 -> item.dialect != null ? item.dialect.name() : "";
-                case 4 -> item.phase != null ? item.phase.name() : "";
-                case 5 -> item.capabilityReport != null ? item.capabilityReport.riskLevel.name() : ScriptRiskLevel.LOW.name();
+                case 4 -> friendlyPhaseLabel(item.phase);
+                case 5 -> friendlyRiskLabel(item.capabilityReport != null ? item.capabilityReport.riskLevel : ScriptRiskLevel.LOW);
                 case 6 -> item.capabilityReport != null ? item.capabilityReport.capabilitySummary() : "";
                 case 7 -> item.capabilityReport != null ? item.capabilityReport.unsupportedSummary() : "";
                 default -> "";

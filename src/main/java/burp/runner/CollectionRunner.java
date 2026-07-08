@@ -59,6 +59,7 @@ public class CollectionRunner {
     private final Object pauseLock = new Object();
     private volatile boolean pauseRequested = false;
     private volatile boolean singleStepRequested = false;
+    private volatile boolean requestInFlight = false;
     private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
     private final Map<ApiCollection, Map<String, String>> extractedVarsByCollection =
             Collections.synchronizedMap(new IdentityHashMap<>());
@@ -192,7 +193,13 @@ public class CollectionRunner {
     }
 
     public void runNextOnly() {
+        if (!canStep()) {
+            return;
+        }
         synchronized (pauseLock) {
+            if (!canStep()) {
+                return;
+            }
             singleStepRequested = true;
             pauseRequested = false;
             pauseLock.notifyAll();
@@ -201,6 +208,14 @@ public class CollectionRunner {
 
     public boolean isPaused() {
         return pauseRequested;
+    }
+
+    public boolean isRequestInFlight() {
+        return requestInFlight;
+    }
+
+    public boolean canStep() {
+        return running && pauseRequested && !requestInFlight && !cancelled;
     }
 
     /** Legacy single-collection runner (kept for compatibility). */
@@ -227,6 +242,7 @@ public class CollectionRunner {
         }
         running = true;
         cancelled = false;
+        requestInFlight = false;
         final RunnerStopConditions activeStopConditions = copyStopConditions(ensureStopConditions());
         synchronized (pauseLock) {
             pauseRequested = startPaused;
@@ -320,13 +336,16 @@ public class CollectionRunner {
                         col = colMap.getOrDefault(req.sourceCollection, null);
                     }
 
+                    requestInFlight = true;
                     RequestExecutionOutcome outcome = executeRequest(req, col, dependentRequestExecutor, false, false, null, null, 0);
                     if (outcome == null || outcome.state == RequestOutcomeState.FAILED_BEFORE_RESULT || outcome.result == null) {
+                        requestInFlight = false;
                         break;
                     }
 
                     RunnerResult result = outcome.result;
                     results.add(result);
+                    requestInFlight = false;
                     fireOnRequestComplete(result);
                     if (outcome.state == RequestOutcomeState.CANCELLED || result.cancellationState != RunnerCancellationState.NOT_CANCELLED) {
                         termination.stop(RunnerTerminationType.CANCELLED,
@@ -1420,6 +1439,7 @@ public class CollectionRunner {
         }
         RunnerTerminationResult terminalResult = termination.toResult(completedCount, totalQueuedCount, failureCount);
         lastTerminationResult = terminalResult;
+        requestInFlight = false;
         running = false;
         if (activeExecutor == executor) {
             activeExecutor = null;
@@ -2509,6 +2529,7 @@ public class CollectionRunner {
 
     public void cancel() {
         cancelled = true;
+        requestInFlight = false;
         if (pipeline != null) {
             pipeline.cancelActiveScriptExecutions();
         }

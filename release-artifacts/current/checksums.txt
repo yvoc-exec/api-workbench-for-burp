@@ -1,6 +1,6 @@
-filename: api-workbench-for-burp-local-validated.jar
-SHA256: 36652CC918F2AEDF00BBB2F9F135DC7D5E82D77BB270F7D4003E1ACFEE257118
-file size bytes: 41993066
-generated timestamp: 2026-07-08T15:32:21.7184315+08:00
-source commit SHA used for build: 3d1b36fd8a703bbb179bfb3e3346048dd9c46ebf
+﻿filename: api-workbench-for-burp-local-validated.jar
+SHA256: C3090CD021255B7D6EBB3503463A2781034A19B37D215E20B597701BF2F98F1B
+file size bytes: 41999209
+generated timestamp: 2026-07-08T18:15:13.5134716+08:00
+source commit SHA used for build: 92a6e22fef675bf784799139da90b379149bfd67
 artifact policy: release-artifacts/current is overwritten every release; do not create versioned artifact folders unless explicitly requested.

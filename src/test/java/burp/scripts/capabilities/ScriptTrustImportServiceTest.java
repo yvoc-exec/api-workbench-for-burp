@@ -70,6 +70,38 @@ class ScriptTrustImportServiceTest {
     }
 
     @Test
+    void pairedPreAndPostRequestScriptsRemainSeparatelyTrusted() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Paired Scripts";
+        ApiRequest request = new ApiRequest();
+        request.id = "request-id";
+        request.name = "Paired Request";
+        ScriptBlock pre = block("pm.request.headers.add({key:'X-Pre', value:'1'});", ScriptScope.REQUEST, "pre-script");
+        pre.phase = ScriptPhase.PRE_REQUEST;
+        ScriptBlock post = block("pm.environment.set('seen', 'true');", ScriptScope.REQUEST, "post-script");
+        post.phase = ScriptPhase.POST_RESPONSE;
+        request.scriptBlocks.add(pre);
+        request.scriptBlocks.add(post);
+        collection.requests.add(request);
+
+        ScriptTrustReviewModel model = service.prepare(List.of(collection), ScriptImportOrigin.FILE_IMPORT);
+
+        assertThat(model.items()).hasSize(2);
+        assertThat(model.items()).extracting(item -> item.phase)
+                .containsExactlyInAnyOrder(ScriptPhase.PRE_REQUEST, ScriptPhase.POST_RESPONSE);
+        model.setSelectedForTrust(pre.id, true);
+        model.setDecision(ScriptTrustReviewModel.Decision.TRUST_SELECTED);
+
+        boolean accepted = service.applyDecision(List.of(collection), model);
+
+        assertThat(accepted).isTrue();
+        assertThat(pre.enabled).isTrue();
+        assertThat(post.enabled).isFalse();
+        assertThat(pre.metadata).containsEntry("trustState", "trusted");
+        assertThat(post.metadata).containsEntry("trustState", "disabled");
+    }
+
+    @Test
     void workspaceRestorePreservesPersistedEnabledStateWithoutPromptItems() {
         Fixture fixture = fixture();
         fixture.collectionBlock.enabled = true;

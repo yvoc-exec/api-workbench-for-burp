@@ -100,6 +100,52 @@ public class ImporterPanel {
     private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
     private static final int MAIN_TREE_MIN_RIGHT_CHILD_INDENT = 13;
 
+    static String friendlyExecutionPolicyLabel(Object value) {
+        if (value instanceof ExecutionPolicy.TargetChangeMode mode) {
+            return switch (mode) {
+                case ALLOW -> "Allow";
+                case ABORT -> "Abort";
+                case REQUIRE_CONFIRMATION -> "Require confirmation";
+            };
+        }
+        if (value instanceof ExecutionPolicy.UnresolvedVariableMode mode) {
+            return switch (mode) {
+                case ALLOW_WITH_WARNING -> "Allow with warning";
+                case ABORT -> "Abort";
+                case REQUIRE_CONFIRMATION -> "Require confirmation";
+            };
+        }
+        if (value instanceof ExecutionPolicy.OAuth2FailureMode mode) {
+            return switch (mode) {
+                case ABORT -> "Abort";
+                case USE_STALE_TOKEN -> "Use stale token";
+                case SEND_WITHOUT_TOKEN -> "Send without token";
+            };
+        }
+        if (value instanceof ExecutionPolicy.ScriptFailureMode mode) {
+            return switch (mode) {
+                case ABORT -> "Abort";
+                case CONTINUE -> "Continue";
+            };
+        }
+        return value != null ? String.valueOf(value) : "";
+    }
+
+    private static <E extends Enum<E>> JComboBox<E> createPolicyCombo(E[] values) {
+        JComboBox<E> combo = new JComboBox<>(values);
+        combo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                          boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                setText(friendlyExecutionPolicyLabel(value));
+                return this;
+            }
+        });
+        combo.setPrototypeDisplayValue(null);
+        return combo;
+    }
+
     private final UniversalImporter importer;
     private final CollectionRunner runner;
     private final OAuth2Manager oauth2Manager;
@@ -706,16 +752,19 @@ public class ImporterPanel {
         defaultResponseTimeoutSpinner = new JSpinner(new SpinnerNumberModel(30_000, 1_000, 300_000, 1_000));
         continueOnPreRequestScriptErrorBox = new JCheckBox("Continue after pre-request script error");
         continueOnPreRequestScriptErrorBox.setSelected(false);
-        oauth2FailureModeCombo = new JComboBox<>(ExecutionPolicy.OAuth2FailureMode.values());
+        oauth2FailureModeCombo = createPolicyCombo(ExecutionPolicy.OAuth2FailureMode.values());
         oauth2FailureModeCombo.setSelectedItem(ExecutionPolicy.OAuth2FailureMode.ABORT);
-        workbenchTargetChangeModeCombo = new JComboBox<>(new ExecutionPolicy.TargetChangeMode[] {
+        workbenchTargetChangeModeCombo = createPolicyCombo(new ExecutionPolicy.TargetChangeMode[] {
                 ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION,
                 ExecutionPolicy.TargetChangeMode.ABORT,
                 ExecutionPolicy.TargetChangeMode.ALLOW
         });
         workbenchTargetChangeModeCombo.setSelectedItem(ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION);
-        workbenchUnresolvedVariableModeCombo = new JComboBox<>(ExecutionPolicy.UnresolvedVariableMode.values());
+        workbenchUnresolvedVariableModeCombo = createPolicyCombo(ExecutionPolicy.UnresolvedVariableMode.values());
         workbenchUnresolvedVariableModeCombo.setSelectedItem(ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION);
+        oauth2FailureModeCombo.setToolTipText("How Workbench Send handles OAuth2 token acquisition failures.");
+        workbenchTargetChangeModeCombo.setToolTipText("How Workbench Send handles script or request changes that alter the destination.");
+        workbenchUnresolvedVariableModeCombo.setToolTipText("How Workbench Send handles unresolved variables before execution.");
         oauth2FailureModeCombo.addActionListener(e -> notifyWorkspaceChanged());
         workbenchTargetChangeModeCombo.addActionListener(e -> notifyWorkspaceChanged());
         workbenchUnresolvedVariableModeCombo.addActionListener(e -> notifyWorkspaceChanged());
@@ -2478,6 +2527,10 @@ public class ImporterPanel {
             entry.result = null;
             entry.ensureDefaults();
             entry.resultClassification = "Not executed yet";
+            entry.metadataSummaryText = "Execution State: Not executed yet\n"
+                    + "Request View: Authored/template preview\n"
+                    + "Raw Sent Request: Raw sent request not available yet\n\n"
+                    + entry.toMetadataText();
         } else {
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
         }
@@ -3433,8 +3486,9 @@ public class ImporterPanel {
         top.add(new JLabel("OAuth2 failure policy:"), topGbc);
         topGbc.gridx = 1;
         topGbc.weightx = 1;
-        oauth2FailureModeCombo = new JComboBox<>(ExecutionPolicy.OAuth2FailureMode.values());
+        oauth2FailureModeCombo = createPolicyCombo(ExecutionPolicy.OAuth2FailureMode.values());
         oauth2FailureModeCombo.setSelectedItem(ExecutionPolicy.OAuth2FailureMode.ABORT);
+        oauth2FailureModeCombo.setToolTipText("How requests handle OAuth2 token acquisition failures.");
         top.add(oauth2FailureModeCombo, topGbc);
         topGbc.gridx = 0;
         topGbc.gridy = 3;
@@ -3575,13 +3629,16 @@ public class ImporterPanel {
         configPanel.add(runnerResponseTimeoutSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 4;
-        configPanel.add(new JLabel("Script destination change:"), gbc);
+        JLabel runnerTargetChangeLabel = new JLabel("Script/request destination changes:");
+        runnerTargetChangeLabel.setToolTipText("How the Runner handles script or request changes that alter the destination.");
+        configPanel.add(runnerTargetChangeLabel, gbc);
         gbc.gridx = 1;
-        runnerTargetChangeModeCombo = new JComboBox<>(new ExecutionPolicy.TargetChangeMode[] {
+        runnerTargetChangeModeCombo = createPolicyCombo(new ExecutionPolicy.TargetChangeMode[] {
                 ExecutionPolicy.TargetChangeMode.ABORT,
                 ExecutionPolicy.TargetChangeMode.ALLOW
         });
         runnerTargetChangeModeCombo.setSelectedItem(ExecutionPolicy.TargetChangeMode.ABORT);
+        runnerTargetChangeModeCombo.setToolTipText("How the Runner handles script or request changes that alter the destination.");
         runnerResponseTimeoutSpinner.addChangeListener(e -> notifyWorkspaceChanged());
         runnerTargetChangeModeCombo.addActionListener(e -> notifyWorkspaceChanged());
         configPanel.add(runnerTargetChangeModeCombo, gbc);
@@ -11063,11 +11120,15 @@ public class ImporterPanel {
         safetyGbc.gridx = 2;
         executionSafety.add(continueOnPreRequestScriptErrorBox, safetyGbc);
         safetyGbc.gridx = 0; safetyGbc.gridy = 1;
-        executionSafety.add(new JLabel("Script destination change:"), safetyGbc);
+        JLabel targetChangeLabel = new JLabel("Script/request destination changes:");
+        targetChangeLabel.setToolTipText("How Workbench actions handle script or request changes that alter the destination.");
+        executionSafety.add(targetChangeLabel, safetyGbc);
         safetyGbc.gridx = 1;
         executionSafety.add(workbenchTargetChangeModeCombo, safetyGbc);
         safetyGbc.gridx = 2;
-        executionSafety.add(new JLabel("Unresolved variables:"), safetyGbc);
+        JLabel unresolvedVariablesLabel = new JLabel("Unresolved variables:");
+        unresolvedVariablesLabel.setToolTipText("How Workbench actions handle unresolved variables before execution.");
+        executionSafety.add(unresolvedVariablesLabel, safetyGbc);
         safetyGbc.gridx = 3;
         executionSafety.add(workbenchUnresolvedVariableModeCombo, safetyGbc);
         topPanel.add(executionSafety, BorderLayout.SOUTH);
@@ -11981,8 +12042,15 @@ public class ImporterPanel {
             resumeRunnerBtn.setEnabled(running && paused);
         }
         if (stepRunnerBtn != null) {
-            stepRunnerBtn.setEnabled((running && paused) || (!running && !runnerQueuedRequests.isEmpty() && runnerQueueFresh));
+            stepRunnerBtn.setEnabled(canStepRunnerNow(running, !runnerQueuedRequests.isEmpty()));
         }
+    }
+
+    private boolean canStepRunnerNow(boolean running, boolean hasQueue) {
+        if (running) {
+            return runner != null && runner.canStep();
+        }
+        return hasQueue && runnerQueueFresh;
     }
 
     private void pauseRunnerFromUi() {
@@ -11998,13 +12066,18 @@ public class ImporterPanel {
     }
 
     private void stepRunnerFromUi() {
+        boolean running = runner != null && runner.isRunning();
+        if (!canStepRunnerNow(running, !runnerQueuedRequests.isEmpty())) {
+            setRunnerControlsRunning(running);
+            return;
+        }
         appendRunnerLog("Runner stepping one request.");
-        if (runner != null && runner.isRunning()) {
+        if (running) {
             runner.runNextOnly();
         } else {
             startRunner(false, true);
         }
-        setRunnerControlsRunning(runner.isRunning());
+        setRunnerControlsRunning(runner != null && runner.isRunning());
     }
 
     private void cancelRunnerFromUi() {
@@ -12088,7 +12161,7 @@ public class ImporterPanel {
             startRunnerBtn.setEnabled(!running && hasQueue);
         }
         if (stepRunnerBtn != null) {
-            stepRunnerBtn.setEnabled((running && paused) || (!running && hasQueue && runnerQueueFresh));
+            stepRunnerBtn.setEnabled(canStepRunnerNow(running, hasQueue));
         }
         if (runnerQueueListModel != null) {
             refreshRunnerQueueList(runnerQueueList != null ? runnerQueueList.getSelectedIndex() : -1);
@@ -12727,7 +12800,3 @@ public class ImporterPanel {
     public JPanel getPanel() { return mainPanel; }
     public JTabbedPane getTabbedPane() { return tabbedPane; }
 }
-
-
-
-

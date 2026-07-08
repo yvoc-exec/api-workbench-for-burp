@@ -77,6 +77,17 @@ class BurpExtenderStartupTest {
             assertThat(restored.activeEnvironmentId).isEqualTo(HistoryTestFixtures.ENVIRONMENT_ID);
 
             assertThat(scriptLine(capture)).contains(expected.mode.label);
+            assertThat(capture.output).anySatisfy(line -> assertThat(line)
+                    .startsWith("  Script runtime: ")
+                    .contains(expected.engineName != null ? expected.engineName : "Unavailable"));
+            assertThat(capture.output).anySatisfy(line -> assertThat(line)
+                    .startsWith("  Script reason: ")
+                    .contains("JavaScript runtime"));
+            assertThat(allLogs(capture))
+                    .doesNotContain("Script " + "engine:")
+                    .doesNotContain("Gra" + "alJS")
+                    .doesNotContain("Gra" + "alJs")
+                    .doesNotContain("Nash" + "orn");
             assertThat(capture.output).contains("Extension core initialized; scheduling API Workbench UI registration...");
             assertThat(capture.output).contains("API Workbench UI init starting...");
             assertThat(capture.output).contains("Creating WorkspaceStateService...");

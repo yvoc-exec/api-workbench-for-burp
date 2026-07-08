@@ -100,6 +100,8 @@ Java 17 or later is required.
 
 API Workbench uses a bundled sandboxed JavaScript runtime. The runtime blocks general host-class lookup, direct I/O, and thread creation; scripts only see the binding APIs exposed by API Workbench.
 
+API Workbench supports a compatible JavaScript scripting layer for common Postman, Insomnia, Bruno, and Workbench pre-request/post-response workflows, including request mutation, variables, assertions, extraction, and Runner flow control. It is not a byte-for-byte clone of each tool's full sandbox API. See [Script Compatibility Matrix](SCRIPT-COMPATIBILITY-MATRIX.md) for the supported subset and planned validation areas.
+
 Supported dialects:
 
 - Postman
@@ -128,6 +130,13 @@ Runner-oriented control such as skip, stop, next-request, and dependent-request 
 
 Scripts are bounded by the runtime timeout and cancellation safeguards, but they can still mutate requests and runtime state, so only trusted scripts should be run.
 
+Compatibility note:
+
+- Common scripting workflows are supported.
+- Unsupported or partially supported sandbox APIs should fail closed, warn clearly, or be preserved without pretending to execute.
+- Exact behavior parity with Postman, Insomnia, and Bruno should be tracked through a compatibility matrix and regression fixtures.
+- Operators should validate imported third-party scripts before trusting them in security testing.
+
 ### Collection Runner
 
 Use the runner for ordered, repeatable API flows.
@@ -142,7 +151,7 @@ Use the runner for ordered, repeatable API flows.
 | Capture results | Track success, failure, status, duration, skips, debug, and errors |
 | Flow-control handling | Represent skip and stop outcomes explicitly |
 
-The current presentation is a Runner Queue on the left, one consolidated Runner Execution Table, and a shared detail viewer on the right. Selecting queue or execution entries updates the detail view. Delay, retries, stop conditions, redirects, pause, resume, step, cancel, and raw-request debug behavior remain available. Workbench Send has its own Follow redirects toggle in the Send dropdown, and Runner has a separate Follow redirects setting. Redirect following defaults to 10 hops and is configurable from 1 to 20. Pre-request scripts run once per logical request, post-response scripts run once against the final successful response, and stop-on-status evaluates only that final response.
+The current presentation is a Runner Queue on the left, one consolidated Runner Execution Table, and a shared detail viewer on the right. Selecting queue or execution entries updates the detail view. Delay, retries, stop conditions, redirects, pause, resume, step, cancel, and raw-request debug behavior remain available. Workbench Send has its own Follow redirects toggle in the Send dropdown, and Runner has a separate Follow redirects setting. Workbench Send supports redirect following with a Redirect Security Policy to control cross-origin credential and sensitive-header handling. Redirect following defaults to 10 hops and is configurable from 1 to 20. Pre-request scripts run once per logical request, post-response scripts run once against the final successful response, and stop-on-status evaluates only that final response.
 
 ### History
 
@@ -164,6 +173,9 @@ Preserved actions:
 - copy as cURL
 - JSON, CSV, and HAR export
 - clear
+- Clear Unpinned
+
+The Evidence tab stores analyst metadata for a History entry: pinned status, tags, and analyst notes. Pin important entries before using Clear Unpinned so noisy unpinned records can be removed while keep-worthy evidence remains.
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 

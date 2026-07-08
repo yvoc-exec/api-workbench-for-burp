@@ -188,6 +188,23 @@ The request editor lets you edit one request at a time.
 
 The Send dropdown also contains `Exact transport headers — Advanced`. Normal requests preserve ordinary authored headers, duplicate ordinary headers, and relative order where practical, while safe transport policy regenerates `Host` and `Content-Length`, removes unsafe transport/hop-by-hop headers, and removes `Connection`-nominated headers. Exact transport mode is per request, shows the amber `⚠ Exact transport headers` indicator while active, and warns once per editor session on explicit enable. Use it only for advanced malformed-request, desynchronization, or request-smuggling testing; Burp, proxies, HTTP/2 conversion, and servers can still normalize or reject requests, so it is not guaranteed byte-for-byte wire transport. Exact mode persists through workspace/native export/import, History, replay, Runner, and request duplication. Redirect follow-ups remain governed by redirect safety rules.
 
+### Redirect Security Policy
+
+Where: **Workbench -> Send dropdown -> Redirect security policy...**
+
+The policy controls maximum redirect hops, cross-origin credential/sensitive-header behavior, additional sensitive headers, and trusted redirect rules. Modes are **Strip sensitive headers**, **Forward selected headers to trusted origins**, and **Preserve sensitive headers to any HTTPS redirect target (Dangerous)**.
+
+Recommended workflow:
+
+1. Start with Follow redirects disabled when mapping redirect behavior.
+2. Enable Follow redirects when validating final landing behavior.
+3. Keep Strip sensitive headers for normal testing.
+4. Add trusted redirect rules only for known IdP/API gateway flows.
+5. Use Dangerous preserve mode only for controlled tests.
+6. Review History redirect hop evidence to confirm what was followed, stripped, or forwarded.
+
+Security notes: redirects can leak credentials if `Authorization`, `Cookie`, API keys, or custom sensitive headers are forwarded to attacker-controlled origins. `Proxy-Authorization` is never forwarded. Trusted redirect targets must be HTTPS, Dangerous mode applies only to HTTPS targets, and custom sensitive headers should be added when the client/API uses nonstandard auth headers.
+
 ### Workbench Detail Tabs
 
 | Tab label | What it shows |
@@ -326,6 +343,24 @@ Actions:
 - copy as cURL
 - JSON, CSV, and HAR export
 - clear
+- Clear Unpinned
+
+### Evidence tab and pinning workflow
+
+The Evidence tab is analyst metadata for a History entry. It is not the HTTP request or response itself. It helps turn Workbench/Runner execution records into pentest evidence by adding pinned status, tags, and analyst notes.
+
+Pentester workflow:
+
+1. Send or run requests from Workbench or Collection Runner.
+2. Review entries in History.
+3. When an entry is interesting, select it and open Evidence.
+4. Add tags such as `auth-bypass`, `idor`, `token-leak`, `broken-access-control`, `recon`, or `needs-retest`.
+5. Add analyst notes describing what was tested, why it matters, expected versus actual behavior, reproduction details, and impact/evidence summary.
+6. Save evidence metadata.
+7. Pin the entry so it is easy to find and retained when clearing unpinned noise.
+8. Use filters, compare, replay, send to Repeater, copy as cURL, or export when preparing report evidence.
+
+Pin marks a History entry as important. Pinned entries are keep-worthy evidence; unpinned entries are normal testing noise or temporary history. Clear Unpinned cleans noisy History while retaining pinned evidence. Pin important entries before using Clear Unpinned. Do not treat Clear Unpinned as reversible.
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
@@ -403,6 +438,8 @@ Phases:
 
 Shared runtime bindings include `pm`, `bru / req / res`, `insomnia / request / response`, `awb`, and `console`.
 
+API Workbench supports a compatible JavaScript scripting layer for common Postman, Insomnia, Bruno, and Workbench pre-request/post-response workflows, including request mutation, variables, assertions, extraction, and Runner flow control. It is not a byte-for-byte clone of each tool's full sandbox API. Use [Script Compatibility Matrix](SCRIPT-COMPATIBILITY-MATRIX.md) to review the supported subset, planned areas, and validation strategy.
+
 Scripts can:
 
 - read and mutate supported variable scopes
@@ -413,6 +450,13 @@ Scripts can:
 Runner-only controls such as skip, stop, next-request, and dependent-request flows belong to the Runner. Workbench single Send is not a collection-control engine. Do not assume generic network-helper compatibility that is not actually implemented.
 
 Scripts are bounded by runtime timeout and cancellation safeguards, but they can still mutate requests and runtime state. Run only trusted scripts.
+
+Compatibility note:
+
+- Common scripting workflows are supported.
+- Unsupported or partially supported sandbox APIs should fail closed, warn clearly, or be preserved without pretending to execute.
+- Exact behavior parity with Postman, Insomnia, and Bruno should be tracked through a compatibility matrix and regression fixtures.
+- Operators should validate imported third-party scripts before trusting them in security testing.
 
 ---
 

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,6 +68,23 @@ class ParserRegistryScriptTrustTest {
                 .hasMessageContaining("cancelled");
     }
 
+    @Test
+    void scriptlessImportDoesNotInvokeScriptReviewHandler() throws Exception {
+        Path collectionFile = writeScriptlessPostmanCollection();
+        AtomicInteger reviewCalls = new AtomicInteger();
+        ParserRegistry.setScriptTrustReviewHandler(model -> {
+            reviewCalls.incrementAndGet();
+            return ScriptTrustReviewModel.Decision.TRUST_ALL;
+        });
+        CollectionParser parser = new ParserRegistry().detectParser(collectionFile.toFile());
+
+        ApiCollection collection = parser.parse(collectionFile.toFile());
+
+        assertThat(collection.requests).hasSize(1);
+        assertThat(collection.requests.get(0).scriptBlocks).isEmpty();
+        assertThat(reviewCalls.get()).isZero();
+    }
+
     private Path writePostmanCollection() throws Exception {
         String json = """
                 {
@@ -100,6 +118,29 @@ class ParserRegistryScriptTrustTest {
                 }
                 """;
         Path file = tempDir.resolve("trust-fixture.postman_collection.json");
+        Files.writeString(file, json, StandardCharsets.UTF_8);
+        return file;
+    }
+
+    private Path writeScriptlessPostmanCollection() throws Exception {
+        String json = """
+                {
+                  "info": {
+                    "name": "Scriptless Fixture",
+                    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+                  },
+                  "item": [
+                    {
+                      "name": "Get User",
+                      "request": {
+                        "method": "GET",
+                        "url": "https://example.invalid/users/1"
+                      }
+                    }
+                  ]
+                }
+                """;
+        Path file = tempDir.resolve("scriptless.postman_collection.json");
         Files.writeString(file, json, StandardCharsets.UTF_8);
         return file;
     }
