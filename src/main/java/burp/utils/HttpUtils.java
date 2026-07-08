@@ -1,142 +1,105 @@
 package burp.utils;
 
-import java.net.URL;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
 public class HttpUtils {
-    private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{(.+?)\\}\\}");
+    private static final String DEFAULT_HOST = "localhost";
+    private static final int DEFAULT_HTTP_PORT = 80;
+    private static final int DEFAULT_HTTPS_PORT = 443;
+    private static final Pattern TEMPLATE_VARIABLE = Pattern.compile("\\{\\{[^}]+\\}\\}");
 
     public static class HostInfo {
+        public final boolean useHttps;
         public final String host;
         public final int port;
-        public final boolean useHttps;
 
         public HostInfo(String host, int port, boolean useHttps) {
-            this.host = host;
-            this.port = port;
+            this.host = normalizeHostValue(host);
             this.useHttps = useHttps;
+            this.port = port;
         }
     }
 
     /**
      * Robust parsed target for building Burp-compatible requests.
-     * <p>
-     * Heuristics:
-     * <ul>
-     *   <li>http:// or https:// -> parsed via java.net.URL</li>
-     *   <li>//host/path -> treated as https unless :80 is explicit</li>
-     *   <li>host[:port]/path -> scheme by port heuristic (443=https, 80=http, else https)</li>
-     *   <li>/path-only -> IllegalArgumentException (requires baseUrl variable)</li>
-     * </ul>
      */
     public static final class ParsedTarget {
-        public final String host;
-        public final int port;
         public final boolean useHttps;
         public final String pathWithQuery;
+        public final String host;
+        public final int port;
 
         public ParsedTarget(String host, int port, boolean useHttps, String pathWithQuery) {
+            this.useHttps = useHttps;
+            this.pathWithQuery = normalizeRequestTarget(pathWithQuery);
             this.host = host;
             this.port = port;
-            this.useHttps = useHttps;
-            this.pathWithQuery = pathWithQuery;
         }
     }
 
     public static HostInfo parseUrl(String urlString) {
-        if (urlString == null || urlString.isEmpty()) {
-            return new HostInfo("localhost", 80, false);
+        String candidate = trimToNull(urlString);
+        if (candidate == null) {
+            return new HostInfo(DEFAULT_HOST, DEFAULT_HTTP_PORT, false);
         }
 
-        // Check if URL contains unresolved variables - preserve them as-is
-        if (VARIABLE_PATTERN.matcher(urlString).find()) {
-            return parseUrlWithVariables(urlString);
+        SchemeHint hint = SchemeHint.detect(candidate);
+        if (containsTemplateVariable(candidate)) {
+            return parseHostInfoFromText(candidate, hint);
         }
 
-        try {
-            URL url = new URL(urlString);
-            String host = url.getHost();
-            int port = url.getPort();
-            boolean useHttps = "https".equalsIgnoreCase(url.getProtocol());
-
-            if (port == -1) {
-                port = useHttps ? 443 : 80;
-            }
-
-            return new HostInfo(host, port, useHttps);
-        } catch (Exception e) {
-            return parseUrlWithVariables(urlString);
+        URI uri = uriOrNull(candidate);
+        if (uri != null && isHttpOrHttps(uri.getScheme()) && hasText(uri.getHost())) {
+            boolean https = "https".equalsIgnoreCase(uri.getScheme());
+            int port = uri.getPort() > 0 ? uri.getPort() : defaultPort(https);
+            return new HostInfo(uri.getHost(), port, https);
         }
-    }
 
-    private static HostInfo parseUrlWithVariables(String urlString) {
-        String host = "localhost";
-        // FIX: Detect protocol even when variables are present
-        boolean useHttps = false;
-        int port = 80;
-        try {
-            String lowerUrl = urlString.toLowerCase();
-            if (lowerUrl.startsWith("https://")) {
-                useHttps = true;
-                port = 443;
-            } else if (lowerUrl.startsWith("http://")) {
-                useHttps = false;
-                port = 80;
+        if (candidate.startsWith("//")) {
+            URI schemeRelative = uriOrNull("http:" + candidate);
+            if (schemeRelative != null && hasText(schemeRelative.getHost())) {
+                int port = schemeRelative.getPort() > 0 ? schemeRelative.getPort() : DEFAULT_HTTP_PORT;
+                return new HostInfo(schemeRelative.getHost(), port, false);
             }
-
-            String withoutProtocol = urlString;
-            if (urlString.contains("://")) {
-                withoutProtocol = urlString.substring(urlString.indexOf("://") + 3);
-            }
-            int slashIndex = withoutProtocol.indexOf('/');
-            int colonIndex = withoutProtocol.indexOf(':');
-            int endIndex = withoutProtocol.length();
-            if (slashIndex != -1 && colonIndex != -1) {
-                endIndex = Math.min(slashIndex, colonIndex);
-            } else if (slashIndex != -1) {
-                endIndex = slashIndex;
-            } else if (colonIndex != -1) {
-                endIndex = colonIndex;
-            }
-            String hostPart = withoutProtocol.substring(0, endIndex);
-            if (VARIABLE_PATTERN.matcher(hostPart).find()) {
-                host = hostPart;
-            } else if (!hostPart.isEmpty()) {
-                host = hostPart;
-            }
-        } catch (Exception e) {
-            // Keep default
         }
-        return new HostInfo(host, port, useHttps);
+
+        return parseHostInfoFromText(candidate, hint);
     }
 
     public static String extractPathFromUrl(String urlString) {
-        if (urlString == null || urlString.isEmpty()) return "/";
-        try {
-            int protocolEnd = urlString.indexOf("://");
-            if (protocolEnd != -1) {
-                int pathStart = urlString.indexOf('/', protocolEnd + 3);
-                if (pathStart != -1) {
-                    return urlString.substring(pathStart);
-                } else {
-                    return "/";
-                }
-            } else {
-                return urlString.startsWith("/") ? urlString : "/" + urlString;
-            }
-        } catch (Exception e) {
+        String candidate = trimToNull(urlString);
+        if (candidate == null) {
             return "/";
         }
+
+        String withoutFragment = stripFragment(candidate);
+        SchemeHint hint = SchemeHint.detect(withoutFragment);
+        if (hint != SchemeHint.NONE) {
+            URI uri = uriOrNull(withoutFragment);
+            if (uri != null) {
+                return pathAndQuery(uri);
+            }
+            if (containsTemplateVariable(withoutFragment)) {
+                return pathFromAuthorityText(removeSchemePrefix(withoutFragment));
+            }
+        }
+
+        if (withoutFragment.startsWith("/")) {
+            return withoutFragment;
+        }
+
+        return "/" + withoutFragment;
     }
 
     public static String buildHostWithPort(String host, int port, boolean useHttps) {
-        boolean isDefaultPort = (useHttps && port == 443) || (!useHttps && port == 80);
-        if (isDefaultPort) {
-            return host;
-        } else {
-            return host + ":" + port;
-        }
+        String renderedHost = hostForHeader(host);
+        boolean defaultPort = (useHttps && port == DEFAULT_HTTPS_PORT)
+                || (!useHttps && port == DEFAULT_HTTP_PORT)
+                || port <= 0;
+        return defaultPort ? renderedHost : renderedHost + ":" + port;
     }
 
     /**
@@ -144,62 +107,231 @@ public class HttpUtils {
      * Throws {@link IllegalArgumentException} for path-only URLs without a host.
      */
     public static ParsedTarget parseTargetForRequest(String resolvedUrl) {
-        if (resolvedUrl == null || resolvedUrl.isEmpty()) {
+        String original = trimToNull(resolvedUrl);
+        if (original == null) {
             throw new IllegalArgumentException("Request URL cannot be empty");
         }
 
-        // Strip fragment
-        int hashIdx = resolvedUrl.indexOf('#');
-        String url = hashIdx >= 0 ? resolvedUrl.substring(0, hashIdx) : resolvedUrl;
-        url = url.trim();
-        if (isUnsafeUrlScheme(url)) {
+        String candidate = stripFragment(original).trim();
+        if (candidate.isEmpty()) {
+            throw new IllegalArgumentException("Request URL cannot be empty");
+        }
+        if (isUnsafeUrlScheme(candidate)) {
             throw new IllegalArgumentException("Unsupported URL scheme: " + resolvedUrl);
         }
 
-        // 1) Explicit scheme: http:// or https://
-        String lower = url.toLowerCase();
-        if (lower.startsWith("http://") || lower.startsWith("https://")) {
-            try {
-                URL u = new URL(url);
-                String host = u.getHost();
-                if (host == null || host.isEmpty()) {
-                    throw new IllegalArgumentException("URL has no host: " + resolvedUrl);
-                }
-                boolean useHttps = "https".equalsIgnoreCase(u.getProtocol());
-                int port = u.getPort();
-                if (port == -1) {
-                    port = useHttps ? 443 : 80;
-                }
-                String path = u.getFile();
-                if (path == null || path.isEmpty()) {
-                    path = "/";
-                }
-                return new ParsedTarget(host, port, useHttps, path);
-            } catch (Exception e) {
-                throw new IllegalArgumentException("Invalid URL: " + resolvedUrl, e);
-            }
+        SchemeHint hint = SchemeHint.detect(candidate);
+        if (hint != SchemeHint.NONE) {
+            return parseAbsoluteTarget(candidate, resolvedUrl, hint);
         }
 
-        // 2) Scheme-relative: //host/path
-        if (lower.startsWith("//")) {
-            String remainder = url.substring(2);
-            return parseHostPortPath(remainder, true); // default https unless :80
+        if (candidate.startsWith("//")) {
+            return parseAuthorityTarget(candidate.substring(2), true, resolvedUrl);
         }
 
-        // 3) Path-only like /v1/users -> reject (must provide baseUrl)
-        if (url.startsWith("/")) {
+        if (candidate.startsWith("/")) {
             throw new IllegalArgumentException(
                     "Request URL must include host (provide a baseUrl variable), got: " + resolvedUrl);
         }
 
-        // 4) Schemeless host[:port]/path or host[:port]
-        return parseHostPortPath(url, false);
+        return parseAuthorityTarget(candidate, false, resolvedUrl);
+    }
+
+    private static ParsedTarget parseAbsoluteTarget(String candidate, String original, SchemeHint hint) {
+        try {
+            URI uri = new URI(candidate);
+            if (!hasText(uri.getHost())) {
+                throw new IllegalArgumentException("URL has no host: " + original);
+            }
+            boolean https = hint == SchemeHint.HTTPS;
+            int port = uri.getPort() > 0 ? uri.getPort() : defaultPort(https);
+            return new ParsedTarget(uri.getHost(), port, https, pathAndQuery(uri));
+        } catch (URISyntaxException | IllegalArgumentException e) {
+            if (containsTemplateVariable(candidate)) {
+                return parseTemplatedAbsoluteTarget(candidate, original, hint);
+            }
+            throw new IllegalArgumentException("Invalid URL: " + original, e);
+        }
+    }
+
+    private static ParsedTarget parseTemplatedAbsoluteTarget(String candidate, String original, SchemeHint hint) {
+        String authorityAndPath = removeSchemePrefix(candidate);
+        int split = firstAuthorityTerminator(authorityAndPath);
+        String authority = split >= 0 ? authorityAndPath.substring(0, split) : authorityAndPath;
+        String suffix = split >= 0 ? authorityAndPath.substring(split) : "";
+
+        AuthorityParts parts = splitAuthority(authority);
+        if (!hasText(parts.host) || containsTemplateVariable(parts.host)) {
+            throw new IllegalArgumentException("Invalid URL: " + original);
+        }
+
+        boolean https = hint == SchemeHint.HTTPS;
+        int port = parts.port != null ? parts.port : defaultPort(https);
+        return new ParsedTarget(parts.host, port, https, suffixToRequestTarget(suffix));
+    }
+
+    private static ParsedTarget parseAuthorityTarget(String authorityAndPath, boolean schemeRelative, String original) {
+        int split = firstAuthorityTerminator(authorityAndPath);
+        String authority = split >= 0 ? authorityAndPath.substring(0, split) : authorityAndPath;
+        String suffix = split >= 0 ? authorityAndPath.substring(split) : "";
+
+        AuthorityParts parts = splitAuthority(authority);
+        if (!hasText(parts.host)) {
+            throw new IllegalArgumentException("URL has no host: " + original);
+        }
+
+        boolean https = true;
+        int port = DEFAULT_HTTPS_PORT;
+        if (parts.port != null) {
+            port = parts.port;
+            https = port != DEFAULT_HTTP_PORT;
+        } else if (schemeRelative) {
+            https = true;
+            port = DEFAULT_HTTPS_PORT;
+        }
+
+        return new ParsedTarget(parts.host, port, https, suffixToRequestTarget(suffix));
+    }
+
+    private static HostInfo parseHostInfoFromText(String candidate, SchemeHint hint) {
+        String authority = leadingAuthority(removeSchemePrefix(candidate));
+        AuthorityParts parts = splitAuthority(authority);
+
+        boolean https = hint == SchemeHint.HTTPS;
+        int port = hint == SchemeHint.HTTPS ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+
+        if (parts.port != null) {
+            port = parts.port;
+            if (hint == SchemeHint.NONE) {
+                https = port == DEFAULT_HTTPS_PORT;
+            }
+        }
+
+        String host = hasText(parts.host) ? parts.host : DEFAULT_HOST;
+        return new HostInfo(host, port, https);
+    }
+
+    private static AuthorityParts splitAuthority(String rawAuthority) {
+        String authority = rawAuthority != null ? rawAuthority.trim() : "";
+        if (authority.isEmpty()) {
+            return new AuthorityParts("", null);
+        }
+
+        int userInfo = authority.lastIndexOf('@');
+        if (userInfo >= 0 && userInfo + 1 < authority.length()) {
+            authority = authority.substring(userInfo + 1);
+        }
+
+        if (authority.startsWith("[")) {
+            int closing = authority.indexOf(']');
+            if (closing > 0) {
+                String host = authority.substring(0, closing + 1);
+                Integer port = parsePortAfterBracket(authority, closing);
+                return new AuthorityParts(host, port);
+            }
+            return new AuthorityParts(authority, null);
+        }
+
+        int colon = authority.lastIndexOf(':');
+        if (colon > 0 && authority.indexOf(':') == colon) {
+            String possiblePort = authority.substring(colon + 1);
+            Integer parsedPort = parseValidPort(possiblePort);
+            if (parsedPort != null) {
+                return new AuthorityParts(authority.substring(0, colon), parsedPort);
+            }
+        }
+
+        return new AuthorityParts(authority, null);
+    }
+
+    private static Integer parsePortAfterBracket(String authority, int closingBracket) {
+        int separator = closingBracket + 1;
+        if (separator < authority.length() && authority.charAt(separator) == ':') {
+            return parseValidPort(authority.substring(separator + 1));
+        }
+        return null;
+    }
+
+    private static Integer parseValidPort(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return null;
+            }
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            return parsed > 0 && parsed <= 65535 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static String leadingAuthority(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String withoutSlashes = value.startsWith("//") ? value.substring(2) : value;
+        int end = firstAuthorityTerminator(withoutSlashes);
+        return end >= 0 ? withoutSlashes.substring(0, end) : withoutSlashes;
+    }
+
+    private static int firstAuthorityTerminator(String value) {
+        int slash = value.indexOf('/');
+        int query = value.indexOf('?');
+        if (slash < 0) {
+            return query;
+        }
+        if (query < 0) {
+            return slash;
+        }
+        return Math.min(slash, query);
+    }
+
+    private static String suffixToRequestTarget(String suffix) {
+        if (suffix == null || suffix.isEmpty()) {
+            return "/";
+        }
+        if (suffix.charAt(0) == '?') {
+            return "/" + suffix;
+        }
+        return normalizeRequestTarget(suffix);
+    }
+
+    private static String pathFromAuthorityText(String authorityAndPath) {
+        int split = firstAuthorityTerminator(authorityAndPath);
+        return split >= 0 ? suffixToRequestTarget(authorityAndPath.substring(split)) : "/";
+    }
+
+    private static String pathAndQuery(URI uri) {
+        String path = uri.getRawPath();
+        if (path == null || path.isEmpty()) {
+            path = "/";
+        }
+        String query = uri.getRawQuery();
+        return query == null || query.isEmpty() ? path : path + "?" + query;
+    }
+
+    private static String normalizeRequestTarget(String value) {
+        if (value == null || value.isBlank()) {
+            return "/";
+        }
+        return value.startsWith("/") ? value : "/" + value;
+    }
+
+    private static String stripFragment(String value) {
+        int hash = value.indexOf('#');
+        return hash >= 0 ? value.substring(0, hash) : value;
+    }
+
+    private static String removeSchemePrefix(String value) {
+        int separator = value.indexOf("://");
+        return separator >= 0 ? value.substring(separator + 3) : value;
     }
 
     private static boolean isUnsafeUrlScheme(String url) {
-        if (url == null) {
-            return false;
-        }
         String lower = url.toLowerCase(Locale.ROOT);
         return lower.startsWith("javascript:")
                 || lower.startsWith("data:")
@@ -207,58 +339,78 @@ public class HttpUtils {
                 || lower.startsWith("ftp:");
     }
 
-    private static ParsedTarget parseHostPortPath(String input, boolean fromSchemeRelative) {
-        // Find where host:port ends and path begins
-        int slashIdx = input.indexOf('/');
-        String hostPortPart = slashIdx >= 0 ? input.substring(0, slashIdx) : input;
-        String path = slashIdx >= 0 ? input.substring(slashIdx) : "/";
-        if (path.isEmpty()) {
-            path = "/";
-        }
+    private static boolean isHttpOrHttps(String scheme) {
+        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+    }
 
-        // Parse host and explicit port
-        String host;
-        int explicitPort = -1;
-        int colonIdx = hostPortPart.lastIndexOf(':');
-        if (colonIdx > 0) {
-            // Could be IPv6 or port; try numeric port first
-            String afterColon = hostPortPart.substring(colonIdx + 1);
-            try {
-                explicitPort = Integer.parseInt(afterColon);
-                if (explicitPort > 0 && explicitPort <= 65535) {
-                    host = hostPortPart.substring(0, colonIdx);
-                } else {
-                    explicitPort = -1;
-                    host = hostPortPart;
-                }
-            } catch (NumberFormatException e) {
-                host = hostPortPart;
+    private static URI uriOrNull(String value) {
+        try {
+            return new URI(value);
+        } catch (URISyntaxException ignored) {
+            return null;
+        }
+    }
+
+    private static int defaultPort(boolean https) {
+        return https ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+    }
+
+    private static boolean containsTemplateVariable(String value) {
+        return value != null && TEMPLATE_VARIABLE.matcher(value).find();
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String normalizeHostValue(String host) {
+        String cleaned = host != null ? host.trim() : "";
+        return cleaned.isEmpty() ? DEFAULT_HOST : cleaned;
+    }
+
+    private static String hostForHeader(String host) {
+        String cleaned = normalizeHostValue(host);
+        if (cleaned.indexOf(':') >= 0
+                && !cleaned.startsWith("[")
+                && !cleaned.endsWith("]")
+                && !containsTemplateVariable(cleaned)) {
+            return "[" + cleaned + "]";
+        }
+        return cleaned;
+    }
+
+    private enum SchemeHint {
+        HTTP,
+        HTTPS,
+        NONE;
+
+        static SchemeHint detect(String value) {
+            String lower = value.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("https://")) {
+                return HTTPS;
             }
-        } else {
-            host = hostPortPart;
-        }
-
-        if (host == null || host.isEmpty()) {
-            throw new IllegalArgumentException("URL has no host: " + input);
-        }
-
-        boolean useHttps;
-        int port;
-        if (explicitPort != -1) {
-            port = explicitPort;
-            if (port == 80) {
-                useHttps = false;
-            } else if (port == 443) {
-                useHttps = true;
-            } else {
-                useHttps = fromSchemeRelative ? true : true; // default https for non-standard ports
+            if (lower.startsWith("http://")) {
+                return HTTP;
             }
-        } else {
-            // No explicit port: scheme-relative defaults https, otherwise https
-            useHttps = true;
-            port = 443;
+            return NONE;
         }
+    }
 
-        return new ParsedTarget(host, port, useHttps, path);
+    private static final class AuthorityParts {
+        final String host;
+        final Integer port;
+
+        AuthorityParts(String host, Integer port) {
+            this.host = host;
+            this.port = port;
+        }
     }
 }
