@@ -48,7 +48,7 @@ class RunnerHistoryCaptureTest {
                 "recordRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
                 attemptOne);
-        ImporterPanelTestSupport.invokeVoid(
+        HistoryEntry storedAttemptTwo = ImporterPanelTestSupport.invoke(
                 bundle.panel,
                 "recordRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
@@ -76,6 +76,23 @@ class RunnerHistoryCaptureTest {
         attemptTwo.redirectHops.get(1).targetUrl = "https://mutated.example.test/final";
         assertThat(entries.get(0).redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/next");
         assertThat(entries.get(1).redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/next");
+        assertThat(attemptTwo.historyEntryId).isEqualTo(storedAttemptTwo.id);
+
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            bundle.panel.getRunnerDetailPanelForTests().showEntry(storedAttemptTwo);
+            bundle.panel.getRunnerDetailPanelForTests().getPinnedCheckBox().setSelected(true);
+            bundle.panel.getRunnerDetailPanelForTests().getAnalystNotesArea().setText("Runner note");
+            bundle.panel.getRunnerDetailPanelForTests().getTagsField().setText("runner, evidence");
+            bundle.panel.getRunnerDetailPanelForTests().getSaveMetadataButton().doClick();
+        });
+        ImporterPanelTestSupport.awaitEdt();
+        HistoryEntry updated = bundle.panel.getWorkspaceStateSnapshot().historyEntries.stream()
+                .filter(e -> storedAttemptTwo.id.equals(e.id))
+                .findFirst()
+                .orElseThrow();
+        assertThat(updated.pinned).isTrue();
+        assertThat(updated.analystNotes).isEqualTo("Runner note");
+        assertThat(updated.tags).containsExactly("runner", "evidence");
     }
 
     @Test

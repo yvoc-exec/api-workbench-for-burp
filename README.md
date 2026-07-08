@@ -47,7 +47,7 @@ Supported collection formats are summarized in [Supported formats](#supported-fo
 
 ### Workbench
 
-Workbench is where you inspect and modify a single API request without leaving Burp.
+Workbench is where you inspect and modify a single API request without leaving Burp. In the Headers table, the Enabled checkbox controls whether each preserved header is sent; unchecked headers remain in the request but are omitted from transport.
 
 | Editor capability | What users can do |
 | --- | --- |
@@ -175,7 +175,7 @@ Preserved actions:
 - clear
 - Clear Unpinned
 
-The Evidence tab stores analyst metadata for a History entry: pinned status, tags, and analyst notes. Pin important entries before using Clear Unpinned so noisy unpinned records can be removed while keep-worthy evidence remains.
+The Evidence tab stores analyst metadata for a History entry: pinned status, tags, and analyst notes. Workbench and Runner detail viewers edit the same HistoryStore metadata once a result is captured in History. Pin important entries before using Clear Unpinned so noisy unpinned records can be removed while keep-worthy evidence remains.
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
@@ -205,7 +205,7 @@ Move cleaned-up work out of Burp when you need to share or archive it.
 | Environments | API Workbench Environment JSON, Postman Environment JSON, dotenv `.env`, Generic flat JSON, Insomnia Environment JSON, Bruno environment `.bru` | Reuse the same targets, tenants, roles, and tokens elsewhere; the export preserves the selected profile's variables, OAuth2 configuration, and output bindings |
 | History | HAR, Native History JSON, CSV summary | Export evidence or produce lightweight reports |
 
-External export formats are lossy where their schemas cannot represent all Workbench metadata.
+External export formats are lossy where their schemas cannot represent all Workbench metadata. Cross-format export preserves scripts and maps script phase where possible. API Workbench does not currently guarantee automatic translation of tool-specific scripting APIs between Postman, Insomnia, and Bruno.
 
 ### Ease-of-use features for daily testing
 

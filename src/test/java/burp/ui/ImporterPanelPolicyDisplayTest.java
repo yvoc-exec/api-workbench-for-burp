@@ -30,4 +30,14 @@ class ImporterPanelPolicyDisplayTest {
         assertThat(ExecutionPolicy.UnresolvedVariableMode.REQUIRE_CONFIRMATION.name())
                 .isEqualTo("REQUIRE_CONFIRMATION");
     }
+
+    @Test
+    void destinationChangeLabelIsShortAndTooltipExplainsPolicy() {
+        assertThat(ImporterPanel.DESTINATION_CHANGE_LABEL).isEqualTo("Destination changes:");
+        assertThat(ImporterPanel.DESTINATION_CHANGE_LABEL).doesNotContain("Script/request");
+        assertThat(ImporterPanel.DESTINATION_CHANGE_TOOLTIP)
+                .contains("request URL", "method", "host", "destination-sensitive fields");
+        assertThat(ImporterPanel.friendlyExecutionPolicyLabel(ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION))
+                .isNotEqualTo(ExecutionPolicy.TargetChangeMode.REQUIRE_CONFIRMATION.name());
+    }
 }

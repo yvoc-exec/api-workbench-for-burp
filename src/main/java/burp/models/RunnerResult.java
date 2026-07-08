@@ -20,6 +20,7 @@ import java.util.Map;
 public class RunnerResult {
     public String requestName;
     public String requestId;
+    public String historyEntryId;
     public String collectionId;
     public String collectionName;
     public String folderPath;

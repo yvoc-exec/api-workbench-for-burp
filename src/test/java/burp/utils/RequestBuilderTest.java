@@ -153,6 +153,18 @@ class RequestBuilderTest {
     }
 
     @Test
+    void reEnabledHeaderIsEmitted() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        req.headers.add(new ApiRequest.Header("X-Reenabled", "yes", false));
+
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+
+        assertThat(parsed.hasHeader("X-Reenabled")).isTrue();
+    }
+
+    @Test
     void staleContentLengthAndTransferEncodingAreRemoved() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST";

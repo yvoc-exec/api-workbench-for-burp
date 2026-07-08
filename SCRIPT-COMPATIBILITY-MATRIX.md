@@ -175,3 +175,14 @@ Compatibility should be expanded through golden scripted fixtures:
 - runner flow-control fixtures
 - script trust/review fixtures
 - variable precedence fixtures
+
+
+## Preserve vs translate on export
+
+Cross-format export preserves scripts and maps script phase where possible. API Workbench does not currently guarantee automatic translation of tool-specific scripting APIs between Postman, Insomnia, and Bruno.
+
+When a script from one tool dialect is exported to another tool format, API Workbench emits this warning once per export:
+
+`Scripts were preserved, but tool-specific scripting APIs were not translated.`
+
+Same-dialect exports do not emit this cross-dialect warning. Native API Workbench export preserves script metadata most faithfully. OpenAPI and HAR exports warn when scripts cannot be represented and are omitted.

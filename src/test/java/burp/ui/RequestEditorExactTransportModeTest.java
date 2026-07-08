@@ -342,7 +342,7 @@ class RequestEditorExactTransportModeTest {
 
         SwingUtilities.invokeAndWait(() -> {
             panel.getUrlField().setText("https://example.com/edited");
-            headers.setValueAt("application/xml", acceptRow, 1);
+            headers.setValueAt("application/xml", acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             panel.getBodyRawAreaForTests().setText("{\"edited\":true}");
             preScriptArea(panel).setText("console.log('pre');");
         });
@@ -351,7 +351,7 @@ class RequestEditorExactTransportModeTest {
         exactItem(panel).doClick();
 
         assertThat(panel.getUrlField().getText()).isEqualTo("https://example.com/edited");
-        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
+        assertThat(headers.getValueAt(acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN)).isEqualTo("application/xml");
         assertThat(headerRows(headers)).isEqualTo(headerRowsAfterEdit);
         assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo("{\"edited\":true}");
         assertThat(preScriptArea(panel).getText()).isEqualTo("console.log('pre');");
@@ -403,7 +403,7 @@ class RequestEditorExactTransportModeTest {
 
         SwingUtilities.invokeAndWait(() -> {
             panel.getUrlField().setText("https://example.com/edited");
-            headers.setValueAt("application/xml", acceptRow, 1);
+            headers.setValueAt("application/xml", acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             panel.getBodyRawAreaForTests().setText("{\"edited\":true}");
             preScriptArea(panel).setText("console.log('pre');");
         });
@@ -413,7 +413,7 @@ class RequestEditorExactTransportModeTest {
         assertThat(req.buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
         assertThat(deepSnapshot(req)).isEqualTo(requestBefore);
         assertThat(panel.getUrlField().getText()).isEqualTo("https://example.com/edited");
-        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
+        assertThat(headers.getValueAt(acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN)).isEqualTo("application/xml");
         assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo("{\"edited\":true}");
         assertThat(preScriptArea(panel).getText()).isEqualTo("console.log('pre');");
 
@@ -683,8 +683,9 @@ class RequestEditorExactTransportModeTest {
     }
 
     private static int findRow(DefaultTableModel model, String key) {
+        int keyColumn = isHeaderModel(model) ? RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN : 0;
         for (int i = 0; i < model.getRowCount(); i++) {
-            Object value = model.getValueAt(i, 0);
+            Object value = model.getValueAt(i, keyColumn);
             if (value != null && key.equals(value.toString())) {
                 return i;
             }
@@ -719,12 +720,24 @@ class RequestEditorExactTransportModeTest {
 
     private static List<String> rows(DefaultTableModel model) {
         List<String> rows = new ArrayList<>();
+        boolean headers = isHeaderModel(model);
+        int keyCol = headers ? RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN : 0;
+        int valueCol = headers ? RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN : 1;
         for (int i = 0; i < model.getRowCount(); i++) {
-            Object key = model.getValueAt(i, 0);
+            Object key = model.getValueAt(i, keyCol);
             if (key == null || key.toString().isBlank()) continue;
-            rows.add(key + ": " + model.getValueAt(i, 1) + "|" + model.getValueAt(i, 2));
+            if (headers) {
+                rows.add(key + ": " + model.getValueAt(i, valueCol) + "|" + !Boolean.TRUE.equals(model.getValueAt(i, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)));
+            } else {
+                rows.add(key + ": " + model.getValueAt(i, valueCol));
+            }
         }
         return rows;
+    }
+
+    private static boolean isHeaderModel(DefaultTableModel model) {
+        return model.getColumnCount() > RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN
+                && "Enabled".equals(String.valueOf(model.getColumnName(RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)));
     }
 
     private static List<String> rows(List<ApiRequest.Header> headers) {

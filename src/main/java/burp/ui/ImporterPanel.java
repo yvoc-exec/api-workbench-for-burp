@@ -99,6 +99,8 @@ public class ImporterPanel {
     private static final String WORKSPACE_KEY_DELIMITER_ESCAPED_LOWER = "\\u001f";
     private static final int MAIN_TREE_MIN_LEFT_CHILD_INDENT = 7;
     private static final int MAIN_TREE_MIN_RIGHT_CHILD_INDENT = 13;
+    static final String DESTINATION_CHANGE_LABEL = "Destination changes:";
+    static final String DESTINATION_CHANGE_TOOLTIP = "Controls what happens when scripts modify request URL, method, host, or destination-sensitive fields.";
 
     static String friendlyExecutionPolicyLabel(Object value) {
         if (value instanceof ExecutionPolicy.TargetChangeMode mode) {
@@ -713,6 +715,7 @@ public class ImporterPanel {
 
     private HistoryDetailPanel createWorkbenchDetailTabs() {
         workbenchDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        workbenchDetailPanel.setMetadataSaveAction(() -> saveEvidenceMetadataFromDetailPanel(workbenchDetailPanel));
         workbenchDetailTabs = workbenchDetailPanel.getTabbedPane();
         return workbenchDetailPanel;
     }
@@ -846,9 +849,6 @@ public class ImporterPanel {
                             decisionHandlerForSend);
                     var rr = result.response;
 
-                    final UniversalImporter.SingleSendResult sendResult = result;
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneSuccess(requestToSend, resolvedCol, sendResult, sendModeLabel));
-
                     if (rr != null && rr.response() != null) {
                         var resp = rr.response();
                         byte[] bodyBytes = resp.body().getBytes();
@@ -866,17 +866,12 @@ public class ImporterPanel {
                 } catch (burp.utils.RequestExecutionException e) {
                     result = e.getSingleSendResult();
                     failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    final String failure = failureReason;
-                    final UniversalImporter.SingleSendResult failedResult = result;
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, failedResult, failure, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 } catch (Exception e) {
                     failureReason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    final String failure = failureReason;
-                    SwingUtilities.invokeLater(() -> updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, null, failure, sendModeLabel));
                     publish("Send failed: " + failureReason);
                 }
-                recordWorkbenchHistoryEntry(
+                HistoryEntry storedEntry = recordWorkbenchHistoryEntry(
                         requestToSend,
                         resolvedCol,
                         result,
@@ -886,6 +881,15 @@ public class ImporterPanel {
                                 : List.of(),
                         runtimeOverlayForSend,
                         sendModeLabel);
+                final UniversalImporter.SingleSendResult finalResult = result;
+                final String finalFailureReason = failureReason;
+                SwingUtilities.invokeLater(() -> {
+                    if (finalFailureReason == null || finalFailureReason.isBlank()) {
+                        updateWorkbenchDetailPaneSuccess(requestToSend, resolvedCol, finalResult, sendModeLabel, storedEntry);
+                    } else {
+                        updateWorkbenchDetailPaneFailure(requestToSend, resolvedCol, finalResult, finalFailureReason, sendModeLabel, storedEntry);
+                    }
+                });
                 return null;
             }
 
@@ -929,15 +933,15 @@ public class ImporterPanel {
         }
     }
 
-    private void recordWorkbenchHistoryEntry(ApiRequest request,
-                                             ApiCollection collection,
-                                             UniversalImporter.SingleSendResult sendResult,
-                                             String failureReason,
-                                             List<String> unresolvedVariables,
-                                             Map<String, String> runtimeOverlay,
-                                             String sendModeLabel) {
+    private HistoryEntry recordWorkbenchHistoryEntry(ApiRequest request,
+                                                     ApiCollection collection,
+                                                     UniversalImporter.SingleSendResult sendResult,
+                                                     String failureReason,
+                                                     List<String> unresolvedVariables,
+                                                     Map<String, String> runtimeOverlay,
+                                                     String sendModeLabel) {
         if (request == null) {
-            return;
+            return null;
         }
         ensureRequestId(request);
         HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
@@ -949,7 +953,7 @@ public class ImporterPanel {
                 1,
                 unresolvedVariables);
         if (entry == null) {
-            return;
+            return null;
         }
         if (entry.requestSnapshot == null) {
             entry.requestSnapshot = HistoryRequestSnapshot.from(request);
@@ -977,12 +981,18 @@ public class ImporterPanel {
                     entry.hasAssertionFailure(),
                     unresolvedVariables != null && !unresolvedVariables.isEmpty());
         }
-        recordHistoryEntry(entry);
+        return recordHistoryEntry(entry);
     }
 
-    private void recordRunnerHistoryAttempt(RunnerResult result) {
+    private HistoryEntry recordRunnerHistoryAttempt(RunnerResult result) {
         if (result == null) {
-            return;
+            return null;
+        }
+        if (result.historyEntryId != null && !result.historyEntryId.isBlank()) {
+            HistoryEntry existing = historyStore.getById(result.historyEntryId);
+            if (existing != null) {
+                return existing;
+            }
         }
         ApiCollection collection = findCollectionByName(result.collectionName);
         ApiRequest request = findRequestById(result.requestId);
@@ -990,7 +1000,7 @@ public class ImporterPanel {
         EnvironmentProfile active = getActiveEnvironment();
         HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, active, result);
         if (entry == null) {
-            return;
+            return null;
         }
         if (entry.collectionName == null) {
             entry.collectionName = result.collectionName != null ? result.collectionName : (request != null ? request.sourceCollection : null);
@@ -1012,7 +1022,11 @@ public class ImporterPanel {
         if (entry.result == HistoryResult.UNKNOWN && result != null) {
             entry.result = HistoryResult.from(result.success, result.errorMessage, entry.hasAssertionFailure(), !entry.unresolvedVariables.isEmpty());
         }
-        recordHistoryEntry(entry);
+        HistoryEntry stored = recordHistoryEntry(entry);
+        if (stored != null) {
+            result.historyEntryId = stored.id;
+        }
+        return stored;
     }
 
     private static String ensureRequestId(ApiRequest request) {
@@ -1034,27 +1048,29 @@ public class ImporterPanel {
         }
     }
 
-    private void recordHistoryEntry(HistoryEntry entry) {
+    private HistoryEntry recordHistoryEntry(HistoryEntry entry) {
         if (entry == null) {
-            return;
+            return null;
         }
         if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(() -> recordHistoryEntry(entry));
-            return;
+            java.util.concurrent.atomic.AtomicReference<HistoryEntry> stored = new java.util.concurrent.atomic.AtomicReference<>();
+            runOnEdtSync(() -> stored.set(recordHistoryEntry(entry)));
+            return stored.get();
         }
         entry.ensureDefaults();
-        historyStore.addEntry(entry);
+        HistoryEntry stored = historyStore.addEntry(entry);
         recordDiagnostic(
                 DiagnosticOperation.HISTORY_CAPTURE,
                 DiagnosticSeverity.INFO,
                 "ImporterPanel",
                 "History entry captured",
-                "historyId=" + entry.id + "\nrawRequestAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.hasRawRequestSent()) +
-                        "\nauthoredTemplateAvailable=" + (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null));
+                "historyId=" + stored.id + "\nrawRequestAvailable=" + (stored.requestSnapshot != null && stored.requestSnapshot.hasRawRequestSent()) +
+                        "\nauthoredTemplateAvailable=" + (stored.requestSnapshot != null && stored.requestSnapshot.authoredRequest != null));
         if (historyPanel != null) {
-            historyPanel.refreshFromStore(entry.id);
+            historyPanel.refreshFromStore(stored.id);
         }
         notifyWorkspaceChanged();
+        return stored;
     }
 
     private void loadHistoryEntryIntoWorkbench(HistoryEntry entry) {
@@ -2079,8 +2095,18 @@ public class ImporterPanel {
                                                   ApiCollection sentCollection,
                                                   UniversalImporter.SingleSendResult result,
                                                   String sendModeLabel) {
+        updateWorkbenchDetailPaneSuccess(sentRequest, sentCollection, result, sendModeLabel, null);
+    }
+
+    private void updateWorkbenchDetailPaneSuccess(ApiRequest sentRequest,
+                                                  ApiCollection sentCollection,
+                                                  UniversalImporter.SingleSendResult result,
+                                                  String sendModeLabel,
+                                                  HistoryEntry storedEntry) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
+        HistoryEntry detailEntry = storedEntry != null
+                ? storedEntry
+                : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 result != null ? result.builtRequest : null,
                 result != null && result.response != null ? result.response.response() : null,
@@ -2099,8 +2125,19 @@ public class ImporterPanel {
                                                   UniversalImporter.SingleSendResult result,
                                                   String reason,
                                                   String sendModeLabel) {
+        updateWorkbenchDetailPaneFailure(sentRequest, sentCollection, result, reason, sendModeLabel, null);
+    }
+
+    private void updateWorkbenchDetailPaneFailure(ApiRequest sentRequest,
+                                                  ApiCollection sentCollection,
+                                                  UniversalImporter.SingleSendResult result,
+                                                  String reason,
+                                                  String sendModeLabel,
+                                                  HistoryEntry storedEntry) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry detailEntry = buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment);
+        HistoryEntry detailEntry = storedEntry != null
+                ? storedEntry
+                : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
                 result != null ? result.builtRequest : null,
                 result != null && result.response != null ? result.response.response() : null,
@@ -2183,6 +2220,7 @@ public class ImporterPanel {
             return;
         }
         workbenchDetailPanel.showEntry(buildWorkbenchPreviewEntry(collection, request, requestEditor != null ? requestEditor.getSendModeLabel() : ""));
+        workbenchDetailPanel.setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
     }
 
     private void displayWorkbenchSendSnapshot(WorkbenchSendSnapshot snapshot) {
@@ -2194,6 +2232,10 @@ public class ImporterPanel {
             HistoryEntry detailEntry = snapshot.detailEntry != null
                     ? HistoryEntry.copyOf(snapshot.detailEntry)
                     : new HistoryEntry();
+            HistoryEntry canonical = detailEntry.id != null ? historyStore.getById(detailEntry.id) : null;
+            if (canonical != null) {
+                detailEntry = canonical;
+            }
             detailEntry.metadataSummaryText = snapshot.metaText;
             detailEntry.scriptOutputSummaryText = snapshot.scriptOutputText;
             detailEntry.assertionsSummaryText = snapshot.assertionsText;
@@ -2208,6 +2250,7 @@ public class ImporterPanel {
                 detailEntry.id = UUID.randomUUID().toString();
             }
             workbenchDetailPanel.showEntry(detailEntry);
+            setDetailEvidenceEditability(workbenchDetailPanel, detailEntry);
             if (snapshot.builtRequest != null) {
                 workbenchDetailPanel.setRequestMessage(snapshot.builtRequest);
             }
@@ -3629,8 +3672,8 @@ public class ImporterPanel {
         configPanel.add(runnerResponseTimeoutSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 4;
-        JLabel runnerTargetChangeLabel = new JLabel("Script/request destination changes:");
-        runnerTargetChangeLabel.setToolTipText("How the Runner handles script or request changes that alter the destination.");
+        JLabel runnerTargetChangeLabel = new JLabel(DESTINATION_CHANGE_LABEL);
+        runnerTargetChangeLabel.setToolTipText(DESTINATION_CHANGE_TOOLTIP);
         configPanel.add(runnerTargetChangeLabel, gbc);
         gbc.gridx = 1;
         runnerTargetChangeModeCombo = createPolicyCombo(new ExecutionPolicy.TargetChangeMode[] {
@@ -3638,7 +3681,7 @@ public class ImporterPanel {
                 ExecutionPolicy.TargetChangeMode.ALLOW
         });
         runnerTargetChangeModeCombo.setSelectedItem(ExecutionPolicy.TargetChangeMode.ABORT);
-        runnerTargetChangeModeCombo.setToolTipText("How the Runner handles script or request changes that alter the destination.");
+        runnerTargetChangeModeCombo.setToolTipText(DESTINATION_CHANGE_TOOLTIP);
         runnerResponseTimeoutSpinner.addChangeListener(e -> notifyWorkspaceChanged());
         runnerTargetChangeModeCombo.addActionListener(e -> notifyWorkspaceChanged());
         configPanel.add(runnerTargetChangeModeCombo, gbc);
@@ -3705,6 +3748,7 @@ public class ImporterPanel {
         runnerQueueScrollPane.setMinimumSize(new Dimension(220, 180));
 
         runnerDetailPanel = new HistoryDetailPanel(importer != null ? importer.getApi() : null);
+        runnerDetailPanel.setMetadataSaveAction(() -> saveEvidenceMetadataFromDetailPanel(runnerDetailPanel));
         runnerDetailTabs = runnerDetailPanel.getTabbedPane();
 
         JSplitPane queueSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, runnerQueueScrollPane, tableScroll);
@@ -11120,8 +11164,8 @@ public class ImporterPanel {
         safetyGbc.gridx = 2;
         executionSafety.add(continueOnPreRequestScriptErrorBox, safetyGbc);
         safetyGbc.gridx = 0; safetyGbc.gridy = 1;
-        JLabel targetChangeLabel = new JLabel("Script/request destination changes:");
-        targetChangeLabel.setToolTipText("How Workbench actions handle script or request changes that alter the destination.");
+        JLabel targetChangeLabel = new JLabel(DESTINATION_CHANGE_LABEL);
+        targetChangeLabel.setToolTipText(DESTINATION_CHANGE_TOOLTIP);
         executionSafety.add(targetChangeLabel, safetyGbc);
         safetyGbc.gridx = 1;
         executionSafety.add(workbenchTargetChangeModeCombo, safetyGbc);
@@ -11687,6 +11731,7 @@ public class ImporterPanel {
         }
         HistoryEntry entry = buildRunnerQueuePreviewEntry(collection, request);
         runnerDetailPanel.showEntry(entry);
+        runnerDetailPanel.setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
     }
 
     private String buildRunnerQueueTooltip(ApiRequest request) {
@@ -11879,7 +11924,7 @@ public class ImporterPanel {
                     resultModel.addEntry(entry);
                     timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
                     if (entry.detailEntry != null) {
-                        runnerDetailPanel.showEntry(entry.detailEntry);
+                        updateRunnerDetailPane(entry.detailEntry);
                     }
                 });
             }
@@ -11890,7 +11935,7 @@ public class ImporterPanel {
                     resultModel.addEntry(entry);
                     timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
                     if (entry.detailEntry != null) {
-                        runnerDetailPanel.showEntry(entry.detailEntry);
+                        updateRunnerDetailPane(entry.detailEntry);
                     }
                 });
             }
@@ -11900,6 +11945,10 @@ public class ImporterPanel {
                         indexRunnerResult(result);
                     }
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
+                    HistoryEntry storedEntry = recordRunnerHistoryAttempt(result);
+                    if (storedEntry != null) {
+                        entry.detailEntry = storedEntry;
+                    }
                     resultModel.addEntry(entry);
                     appendRedirectHopRows(result);
                     if (result != null && !result.dependentExecution && !result.adHocExecution) {
@@ -11914,7 +11963,7 @@ public class ImporterPanel {
                     }
                     runnerExecutingQueueIndex = -1;
                     updateRunnerQueueUiState();
-                    runnerDetailPanel.showEntry(entry.detailEntry);
+                    updateRunnerDetailPane(entry.detailEntry);
                     setRunnerControlsRunning(runner.isRunning());
                 });
             }
@@ -11924,10 +11973,14 @@ public class ImporterPanel {
                         indexRunnerResult(result);
                         if (!result.success && resultModel != null) {
                             RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
+                            HistoryEntry storedEntry = recordRunnerHistoryAttempt(result);
+                            if (storedEntry != null) {
+                                entry.detailEntry = storedEntry;
+                            }
                             resultModel.addEntry(entry);
                             appendRedirectHopRows(result);
                             if (entry.detailEntry != null) {
-                                runnerDetailPanel.showEntry(entry.detailEntry);
+                                updateRunnerDetailPane(entry.detailEntry);
                             }
                         }
                     }
@@ -11984,6 +12037,7 @@ public class ImporterPanel {
                     runnerQueueFresh = false;
                     updateRunnerQueueUiState();
                     runnerDetailPanel.showEntry(buildRunnerTerminalEntry(terminal, results));
+                    runnerDetailPanel.setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
                 });
             }
             @Override public void onDebug(String message) {
@@ -12762,13 +12816,48 @@ public class ImporterPanel {
             clearRunnerDetailPane();
             return;
         }
-        runnerDetailPanel.showEntry(entry);
+        HistoryEntry canonical = entry.id != null ? historyStore.getById(entry.id) : null;
+        runnerDetailPanel.showEntry(canonical != null ? canonical : entry);
+        setDetailEvidenceEditability(runnerDetailPanel, canonical != null ? canonical : entry);
     }
 
     private void clearRunnerDetailPane() {
         if (runnerDetailPanel != null) {
             runnerDetailPanel.clear();
         }
+    }
+
+    private void setDetailEvidenceEditability(HistoryDetailPanel detailPanel, HistoryEntry entry) {
+        if (detailPanel == null) {
+            return;
+        }
+        boolean linked = entry != null && entry.id != null && historyStore.getById(entry.id) != null;
+        detailPanel.setEvidenceEditable(linked, linked
+                ? "Selected entry evidence and analyst metadata"
+                : "Evidence is editable after this result is captured in History.");
+    }
+
+    private void saveEvidenceMetadataFromDetailPanel(HistoryDetailPanel detailPanel) {
+        if (detailPanel == null || detailPanel.getCurrentEntry() == null || detailPanel.getCurrentEntry().id == null) {
+            return;
+        }
+        HistoryEntry selected = detailPanel.getCurrentEntry();
+        HistoryEntry updated = historyStore.updateEvidenceMetadata(
+                selected.id,
+                detailPanel.getPinnedCheckBox().isSelected(),
+                detailPanel.getAnalystNotesText(),
+                burp.history.HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText())
+        );
+        if (updated == null) {
+            detailPanel.setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
+            return;
+        }
+        detailPanel.showEntry(updated);
+        setDetailEvidenceEditability(detailPanel, updated);
+        if (historyPanel != null) {
+            historyPanel.refreshFromStore(updated.id);
+        }
+        notifyWorkspaceChanged();
     }
 
     RequestEditorPanel getRequestEditorForTests() { return requestEditor; }

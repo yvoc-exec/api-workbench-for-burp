@@ -1,0 +1,31 @@
+﻿{
+  "format": "api-workbench-environment",
+  "schemaVersion": 1,
+  "id": "env-awb-local-httpbin",
+  "name": "AWB Local HTTPBin",
+  "sourceFormat": "api-workbench",
+  "sourceFileName": "api-workbench-local-httpbin.environment.json",
+  "variables": {
+    "base_url": "http://127.0.0.1:18080",
+    "json_api_url": "http://127.0.0.1:18080",
+    "bearer_token": "awb-smoke-token",
+    "sample_post_title": "api-workbench-smoke-title",
+    "oauth_token_url": "http://127.0.0.1:18080/oauth/token",
+    "oauth_protected_url": "http://127.0.0.1:18080/oauth/protected",
+    "oauth_client_id": "awb-client",
+    "oauth_client_secret": "awb-secret",
+    "oauth_scope": "read write"
+  },
+  "oauth2": {
+    "config": {
+      "oauth2_grant": "client_credentials",
+      "oauth2_token_url": "{{oauth_token_url}}",
+      "oauth2_client_id": "{{oauth_client_id}}",
+      "oauth2_client_secret": "{{oauth_client_secret}}",
+      "oauth2_scope": "{{oauth_scope}}"
+    },
+    "outputBindings": {
+      "accessToken": "oauth2_access_token"
+    }
+  }
+}

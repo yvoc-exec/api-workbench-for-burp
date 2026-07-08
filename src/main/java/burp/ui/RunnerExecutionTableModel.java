@@ -264,7 +264,7 @@ public class RunnerExecutionTableModel extends RunnerResultTableModel {
         public final String duration;
         public final String flow;
         public final String message;
-        public final HistoryEntry detailEntry;
+        public HistoryEntry detailEntry;
         public final RunnerResult requestResult;
         public final RunnerTimelineRow timelineRow;
         public final String requestId;

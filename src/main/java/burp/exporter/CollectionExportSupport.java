@@ -4,6 +4,8 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptDialect;
 import burp.utils.RequestPathResolver;
 
 import com.google.gson.JsonArray;
@@ -16,6 +18,7 @@ import java.util.Locale;
 import java.util.Map;
 
 final class CollectionExportSupport {
+    static final String CROSS_FORMAT_SCRIPT_WARNING = "Scripts were preserved, but tool-specific scripting APIs were not translated.";
     private static final java.util.Set<String> TRANSPORT_HEADERS = java.util.Set.of(
             "host", "content-length", "transfer-encoding", "connection", "proxy-connection"
     );
@@ -514,6 +517,120 @@ final class CollectionExportSupport {
 
     static String normalizedFolderPath(ApiRequest request) {
         return RequestPathResolver.getRequestFolderPath(request);
+    }
+
+    static void addScriptExportWarnings(ApiCollection collection, CollectionExportFormat format, List<String> warnings) {
+        if (collection == null || warnings == null || format == null || format == CollectionExportFormat.API_WORKBENCH_JSON) {
+            return;
+        }
+        ScriptDialect target = switch (format) {
+            case POSTMAN_JSON -> ScriptDialect.POSTMAN;
+            case INSOMNIA_JSON -> ScriptDialect.INSOMNIA;
+            case BRUNO_ZIP -> ScriptDialect.BRUNO;
+            default -> null;
+        };
+        if (target == null) {
+            if (hasAnyScript(collection)) {
+                addWarningOnce(warnings, "Scripts cannot be represented in " + format.displayName() + " export and were omitted.");
+            }
+            return;
+        }
+        if (hasCrossDialectScript(collection, target)) {
+            addWarningOnce(warnings, CROSS_FORMAT_SCRIPT_WARNING);
+        }
+    }
+
+    private static boolean hasCrossDialectScript(ApiCollection collection, ScriptDialect target) {
+        if (hasCrossDialectBlock(collection.scriptBlocks, target)) {
+            return true;
+        }
+        if (collection.folderScriptBlocks != null) {
+            for (List<ScriptBlock> blocks : collection.folderScriptBlocks.values()) {
+                if (hasCrossDialectBlock(blocks, target)) {
+                    return true;
+                }
+            }
+        }
+        if (collection.requests != null) {
+            for (ApiRequest request : collection.requests) {
+                if (request != null && hasCrossDialectBlock(request.scriptBlocks, target)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasCrossDialectBlock(List<ScriptBlock> blocks, ScriptDialect target) {
+        if (blocks == null) {
+            return false;
+        }
+        for (ScriptBlock block : blocks) {
+            if (block == null || block.source == null || block.source.isBlank()) {
+                continue;
+            }
+            ScriptDialect dialect = block.dialect != null ? block.dialect : ScriptDialect.LEGACY_JAVASCRIPT;
+            if (dialect != target && dialect != ScriptDialect.API_WORKBENCH && dialect != ScriptDialect.LEGACY_JAVASCRIPT) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasAnyScript(ApiCollection collection) {
+        if (hasScripts(collection.scriptBlocks)) {
+            return true;
+        }
+        if (collection.folderScriptBlocks != null) {
+            for (List<ScriptBlock> blocks : collection.folderScriptBlocks.values()) {
+                if (hasScripts(blocks)) {
+                    return true;
+                }
+            }
+        }
+        if (collection.requests != null) {
+            for (ApiRequest request : collection.requests) {
+                if (request == null) {
+                    continue;
+                }
+                if (hasScripts(request.scriptBlocks)
+                        || hasLegacyScripts(request.preRequestScripts)
+                        || hasLegacyScripts(request.postResponseScripts)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasScripts(List<ScriptBlock> blocks) {
+        if (blocks == null) {
+            return false;
+        }
+        for (ScriptBlock block : blocks) {
+            if (block != null && block.source != null && !block.source.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasLegacyScripts(List<ApiRequest.Script> scripts) {
+        if (scripts == null) {
+            return false;
+        }
+        for (ApiRequest.Script script : scripts) {
+            if (script != null && script.exec != null && !script.exec.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addWarningOnce(List<String> warnings, String warning) {
+        if (warning != null && !warning.isBlank() && !warnings.contains(warning)) {
+            warnings.add(warning);
+        }
     }
 
     static String firstNonBlank(Map<String, String> map, String... keys) {

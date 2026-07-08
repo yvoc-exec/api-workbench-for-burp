@@ -78,7 +78,6 @@ public class RequestEditorPanel extends JPanel {
     private final Map<JTextComponent, VariableHoverSupport> variableHoverSupports = new IdentityHashMap<>();
     private static final String VARIABLE_HOVER_INSTALLED_PROPERTY = "awb.variable.hover.installed";
     private static final String VARIABLE_POPUP_PROPERTY = "awb.variable.popup";
-    private static final int HEADER_DISABLED_MODEL_COLUMN = 2;
     private static final int VARIABLE_HOVER_DELAY_MS = 650;
     private static final int VARIABLE_HOVER_HIDE_DELAY_MS = 850;
     private boolean updatingVariableStyles = false;
@@ -363,17 +362,22 @@ public class RequestEditorPanel extends JPanel {
 
     private JPanel createHeadersPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        headersModel = new DefaultTableModel(new Object[]{"Key", "Value", "Disabled"}, 0) {
+        headersModel = new DefaultTableModel(new Object[]{"Key", "Value", "Enabled"}, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
-                return columnIndex == HEADER_DISABLED_MODEL_COLUMN ? Boolean.class : String.class;
+                return columnIndex == RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN ? Boolean.class : String.class;
             }
         };
         headersTable = RequestEditorTableSupport.createEditableTable(headersModel);
-        headersTable.removeColumn(headersTable.getColumnModel().getColumn(HEADER_DISABLED_MODEL_COLUMN));
+        headersTable.moveColumn(RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN, 0);
+        headersTable.getColumnModel().getColumn(0).setHeaderValue("Enabled");
+        headersTable.getColumnModel().getColumn(0).setPreferredWidth(70);
+        headersTable.getColumnModel().getColumn(0).setMaxWidth(90);
+        headersTable.getColumnModel().getColumn(0).setMinWidth(64);
+        headersTable.getColumnModel().getColumn(0).setCellRenderer(headersTable.getDefaultRenderer(Boolean.class));
         installHeaderVariableSupport();
         panel.add(new JScrollPane(headersTable), BorderLayout.CENTER);
-        panel.add(RequestEditorTableSupport.createAddRemovePanel(headersTable, headersModel, () -> new Object[]{"", "", Boolean.FALSE}), BorderLayout.SOUTH);
+        panel.add(RequestEditorTableSupport.createAddRemovePanel(headersTable, headersModel, () -> new Object[]{"", "", Boolean.TRUE}), BorderLayout.SOUTH);
         RequestEditorStateMapper.ensureStarterRow(headersModel);
         return panel;
     }
@@ -961,7 +965,7 @@ public class RequestEditorPanel extends JPanel {
     private void upsertHeaderRow(String key, String value) {
         int blankRow = -1;
         for (int i = 0; i < headersModel.getRowCount(); i++) {
-            String existingKey = (String) headersModel.getValueAt(i, 0);
+            String existingKey = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (existingKey == null || existingKey.trim().isEmpty()) {
                 if (blankRow < 0) {
                     blankRow = i;
@@ -969,22 +973,22 @@ public class RequestEditorPanel extends JPanel {
                 continue;
             }
             if (existingKey.equalsIgnoreCase(key)) {
-                headersModel.setValueAt(key, i, 0);
-                headersModel.setValueAt(value, i, 1);
+                headersModel.setValueAt(key, i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+                headersModel.setValueAt(value, i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
                 return;
             }
         }
         if (blankRow >= 0) {
-            headersModel.setValueAt(key, blankRow, 0);
-            headersModel.setValueAt(value, blankRow, 1);
+            headersModel.setValueAt(key, blankRow, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+            headersModel.setValueAt(value, blankRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
         } else {
-            headersModel.addRow(new Object[]{key, value});
+            headersModel.addRow(new Object[]{key, value, Boolean.TRUE});
         }
     }
 
     private void removeHeaderRow(String key) {
         for (int i = headersModel.getRowCount() - 1; i >= 0; i--) {
-            String existingKey = (String) headersModel.getValueAt(i, 0);
+            String existingKey = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (existingKey != null && existingKey.equalsIgnoreCase(key)) {
                 headersModel.removeRow(i);
             }
@@ -993,9 +997,9 @@ public class RequestEditorPanel extends JPanel {
 
     private String findHeaderValue(String key) {
         for (int i = 0; i < headersModel.getRowCount(); i++) {
-            String existingKey = (String) headersModel.getValueAt(i, 0);
+            String existingKey = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (existingKey != null && existingKey.equalsIgnoreCase(key)) {
-                return (String) headersModel.getValueAt(i, 1);
+                return (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             }
         }
         return null;
@@ -1049,8 +1053,11 @@ public class RequestEditorPanel extends JPanel {
         }
         if (!usedEffective) {
             for (int i = 0; i < headersModel.getRowCount(); i++) {
-                String key = (String) headersModel.getValueAt(i, 0);
-                String value = (String) headersModel.getValueAt(i, 1);
+                if (isHeaderRowDisabled(i)) {
+                    continue;
+                }
+                String key = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+                String value = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
                 if (key != null && !key.trim().isEmpty()) {
                     out.append(vr.resolve(key)).append(": ").append(vr.resolve(value != null ? value : "")).append("\n");
                 }
@@ -1398,6 +1405,10 @@ public class RequestEditorPanel extends JPanel {
             }
             return;
         }
+        if (currentRequest == null) {
+            headersTable.setToolTipText(null);
+            return;
+        }
         HeaderVariableHover hover = resolveHeaderVariableHover(e);
         if (hover == null) {
             if (support != null) {
@@ -1417,7 +1428,12 @@ public class RequestEditorPanel extends JPanel {
     }
 
     private void updateHeaderTooltip(MouseEvent e) {
-        if (headersTable == null || e == null || currentRequest == null) {
+        if (headersTable == null || e == null) {
+            return;
+        }
+        int column = headersTable.columnAtPoint(e.getPoint());
+        if (column >= 0 && headersTable.convertColumnIndexToModel(column) == RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN) {
+            headersTable.setToolTipText("Unchecked headers are preserved but not sent.");
             return;
         }
         HeaderVariableHover hover = resolveHeaderVariableHover(e);
@@ -1498,8 +1514,8 @@ public class RequestEditorPanel extends JPanel {
         if (headersModel == null || modelRow < 0 || modelRow >= headersModel.getRowCount()) {
             return false;
         }
-        Object disabled = headersModel.getValueAt(modelRow, HEADER_DISABLED_MODEL_COLUMN);
-        return Boolean.TRUE.equals(disabled);
+        Object disabled = headersModel.getValueAt(modelRow, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN);
+        return !Boolean.TRUE.equals(disabled);
     }
 
     boolean promptAndApplyVariableEdit(VariableHoverInfo info) {
@@ -2002,7 +2018,7 @@ public class RequestEditorPanel extends JPanel {
             return null;
         }
         for (int row = 0; row < headersTable.getRowCount(); row++) {
-            for (int col = 0; col < Math.min(2, headersTable.getColumnCount()); col++) {
+            for (int col = 1; col < Math.min(3, headersTable.getColumnCount()); col++) {
                 Object value = headersTable.getValueAt(row, col);
                 VariableTokenScanner.VariableToken token = firstVariableToken(value != null ? value.toString() : null);
                 if (token != null && key.equals(token.key)) {
@@ -2154,7 +2170,7 @@ public class RequestEditorPanel extends JPanel {
         }
         Set<String> currentHeaders = new LinkedHashSet<>();
         for (int i = 0; i < headersModel.getRowCount(); i++) {
-            String key = (String) headersModel.getValueAt(i, 0);
+            String key = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
@@ -2222,7 +2238,7 @@ public class RequestEditorPanel extends JPanel {
             return false;
         }
         for (int i = 0; i < headersModel.getRowCount(); i++) {
-            String key = (String) headersModel.getValueAt(i, 0);
+            String key = (String) headersModel.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (key != null && normalized.equals(normalizeTrackedHeaderName(key))) {
                 return true;
             }

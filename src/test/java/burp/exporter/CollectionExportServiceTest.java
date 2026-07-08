@@ -330,6 +330,34 @@ class CollectionExportServiceTest {
         assertThat(ExportVariableResolutionService.collectUnresolvedIssues(collection, null, Map.of("token", "export-token"))).isEmpty();
     }
 
+    @Test
+    void crossDialectScriptExportWarnsAndPreservesText() throws Exception {
+        ApiCollection collection = scriptedCollection(ScriptDialect.INSOMNIA, "insomnia.environment.set('token', 'abc');");
+        Path output = tempDir.resolve("insomnia-to-postman.postman_collection.json");
+
+        ExportResult result = service.exportCollection(collection,
+                new CollectionExportOptions(CollectionExportFormat.POSTMAN_JSON, output, false, null, Map.of()));
+
+        assertThat(result.warnings).contains(CollectionExportSupport.CROSS_FORMAT_SCRIPT_WARNING);
+        String exported = Files.readString(output);
+        assertThat(exported).contains("insomnia.environment.set('token', 'abc');");
+        assertThat(exported).doesNotContain("pm.environment.set('token', 'abc');");
+    }
+
+    @Test
+    void brunoScriptExportWarnsAndSameDialectPostmanDoesNot() throws Exception {
+        ExportResult bruno = service.exportCollection(
+                scriptedCollection(ScriptDialect.BRUNO, "bru.setVar('token', 'abc');"),
+                new CollectionExportOptions(CollectionExportFormat.POSTMAN_JSON, tempDir.resolve("bruno.postman_collection.json"), false, null, Map.of()));
+        ExportResult postman = service.exportCollection(
+                scriptedCollection(ScriptDialect.POSTMAN, "pm.environment.set('token', 'abc');"),
+                new CollectionExportOptions(CollectionExportFormat.POSTMAN_JSON, tempDir.resolve("postman.postman_collection.json"), false, null, Map.of()));
+
+        assertThat(bruno.warnings).contains(CollectionExportSupport.CROSS_FORMAT_SCRIPT_WARNING);
+        assertThat(Files.readString(tempDir.resolve("bruno.postman_collection.json"))).contains("bru.setVar('token', 'abc');");
+        assertThat(postman.warnings).doesNotContain(CollectionExportSupport.CROSS_FORMAT_SCRIPT_WARNING);
+    }
+
     private static ApiCollection runtimeSensitiveCollection() {
         ApiCollection collection = new ApiCollection();
         collection.name = "Runtime";
@@ -346,6 +374,20 @@ class CollectionExportServiceTest {
         request.body = new ApiRequest.Body();
         request.body.mode = "raw";
         request.body.raw = "{\"password\":\"{{missing_password}}\"}";
+        collection.requests = new java.util.ArrayList<>(List.of(request));
+        return collection;
+    }
+
+    private static ApiCollection scriptedCollection(ScriptDialect dialect, String source) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Scripts";
+        ApiRequest request = new ApiRequest();
+        request.id = "req-scripted";
+        request.name = "Scripted";
+        request.method = "GET";
+        request.url = "https://api.example.test/scripted";
+        request.preRequestScripts.add(new ApiRequest.Script("js", source));
+        request.scriptBlocks.add(ExportTestFixtures.scriptBlock("script", dialect, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, source, 0));
         collection.requests = new java.util.ArrayList<>(List.of(request));
         return collection;
     }

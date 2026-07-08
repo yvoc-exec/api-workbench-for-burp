@@ -40,7 +40,7 @@ class WorkbenchHistoryCaptureTest {
                 null,
                 exec);
 
-        ImporterPanelTestSupport.invokeVoid(
+        HistoryEntry stored = ImporterPanelTestSupport.invoke(
                 bundle.panel,
                 "recordWorkbenchHistoryEntry",
                 new Class<?>[]{ApiRequest.class, ApiCollection.class, UniversalImporter.SingleSendResult.class, String.class, List.class, java.util.Map.class, String.class},
@@ -63,6 +63,20 @@ class WorkbenchHistoryCaptureTest {
         assertThat(entry.environmentName).isEqualTo(HistoryTestFixtures.ENVIRONMENT_NAME);
         assertThat(entry.result).isEqualTo(burp.history.HistoryResult.SUCCESS);
         assertThat(entry.unresolvedVariables).isEmpty();
+
+        SwingUtilities.invokeAndWait(() -> {
+            bundle.panel.getWorkbenchDetailPanelForTests().showEntry(stored);
+            bundle.panel.getWorkbenchDetailPanelForTests().getPinnedCheckBox().setSelected(true);
+            bundle.panel.getWorkbenchDetailPanelForTests().getAnalystNotesArea().setText("Workbench note");
+            bundle.panel.getWorkbenchDetailPanelForTests().getTagsField().setText("workbench, evidence");
+            bundle.panel.getWorkbenchDetailPanelForTests().getSaveMetadataButton().doClick();
+        });
+        ImporterPanelTestSupport.awaitEdt();
+
+        HistoryEntry updated = bundle.panel.getWorkspaceStateSnapshot().historyEntries.get(0);
+        assertThat(updated.pinned).isTrue();
+        assertThat(updated.analystNotes).isEqualTo("Workbench note");
+        assertThat(updated.tags).containsExactly("workbench", "evidence");
     }
 
     @Test

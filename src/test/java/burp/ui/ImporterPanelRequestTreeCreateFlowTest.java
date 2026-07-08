@@ -1234,11 +1234,11 @@ class ImporterPanelRequestTreeCreateFlowTest {
         removeHeaderRow(requestEditor(panel), "Cache-Control");
         edt(() -> toggleExactTransport(requestEditor(panel)));
         edt(() -> {
-            headersModel(requestEditor(panel)).addRow(new Object[]{"Host", "alt.example.test"});
-            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer first"});
-            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer second"});
-            headersModel(requestEditor(panel)).addRow(new Object[]{"Connection", "close"});
-            headersModel(requestEditor(panel)).addRow(new Object[]{"Proxy-Connection", "keep-alive"});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Host", "alt.example.test", Boolean.TRUE});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer first", Boolean.TRUE});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Authorization", "Bearer second", Boolean.TRUE});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Connection", "close", Boolean.TRUE});
+            headersModel(requestEditor(panel)).addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.TRUE});
         });
 
         UniversalImporter importer = importer(panel);
@@ -1541,8 +1541,8 @@ class ImporterPanelRequestTreeCreateFlowTest {
     private static Map<String, String> headerValues(DefaultTableModel model) {
         Map<String, String> out = new LinkedHashMap<>();
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
-            String value = (String) model.getValueAt(i, 1);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+            String value = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             if (key != null && !key.isBlank()) {
                 out.put(key, value);
             }
@@ -1581,7 +1581,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
         });
 
         if (headerKey != null && headerValue != null) {
-            edt(() -> headersModel(editor).addRow(new Object[]{headerKey, headerValue}));
+            edt(() -> headersModel(editor).addRow(new Object[]{headerKey, headerValue, Boolean.TRUE}));
         }
 
         if (bodyRaw != null) {
@@ -1755,7 +1755,7 @@ class ImporterPanelRequestTreeCreateFlowTest {
     private static void removeHeaderRow(RequestEditorPanel editor, String headerName) throws Exception {
         DefaultTableModel model = headersModel(editor);
         for (int i = 0; i < model.getRowCount(); i++) {
-            if (headerName.equalsIgnoreCase((String) model.getValueAt(i, 0))) {
+            if (headerName.equalsIgnoreCase((String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN))) {
                 JTable table = headersTable(editor);
                 final int rowIndex = i;
                 edt(() -> {

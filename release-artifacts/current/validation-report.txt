@@ -1,29 +1,26 @@
-﻿API Workbench for Burp - local validation report
+﻿API Workbench for Burp - Local Validation Report
 
-branch: main
-starting SHA: 92a6e22fef675bf784799139da90b379149bfd67
-ending/source SHA: 92a6e22fef675bf784799139da90b379149bfd67 with pending working tree changes committed in this patch
-artifact built from working tree changes committed in this commit: yes
+Branch: main
+Starting SHA: 05389783913469649d1add9edd760bb40f799ec7
+Ending SHA / Commit SHA: final git HEAD after commit/push (commit hash cannot be embedded self-referentially in this tracked report)
+Java version: OpenJDK 17.0.19 (local .tools/jdk17/jdk-17.0.19+10)
+Maven version: Apache Maven 3.9.9
+Full validation command: mvn -B clean verify (via .tools/maven/apache-maven-3.9.9/bin/mvn.cmd with JAVA_HOME=.tools/jdk17/jdk-17.0.19+10)
+Validation result: PASS
+Test count: 1507 run, 0 failures, 0 errors, 0 skipped
+JaCoCo result: PASS - All coverage checks have been met.
+Artifact path: release-artifacts/current/api-workbench-for-burp-local-validated.jar
+Artifact size: 42003905 bytes
+Artifact SHA256: 74C071D84D40AA52F9CB75D5EA00F4BC55E56ACD2F804FDD8E7C2898E74BF2DE
 
-Java version output:
-openjdk version "17.0.19" 2026-04-21
-OpenJDK Runtime Environment Temurin-17.0.19+10 (build 17.0.19+10)
-OpenJDK 64-Bit Server VM Temurin-17.0.19+10 (build 17.0.19+10, mixed mode, sharing)
+Addressed findings:
+- FINDING 010: Header Enabled checkbox added; disabled headers remain preserved and omitted from send until re-enabled.
+- FINDING 011: Destination-change execution-safety label shortened and tooltip clarified while friendly combo labels remain.
+- FINDING 012: Workbench and Runner Evidence saves update canonical HistoryStore metadata for linked History entries.
+- FINDING 013: Cross-format script export emits warning when dialect-specific APIs are preserved but not translated.
+- FINDING 014: Local manual QA HTTPBin fixture now includes deterministic OAuth2 token/protected endpoints and native OAuth smoke request.
 
-Maven version output:
-Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937)
-Maven home: <WORKSPACE>\.tools\maven\apache-maven-3.9.9
-Java version: 17.0.19, vendor: Eclipse Adoptium, runtime: <WORKSPACE>\.tools\jdk17\jdk-17.0.19+10
-Default locale: en_PH, platform encoding: Cp1252
-OS name: "windows 11", version: "10.0", arch: "amd64", family: "windows"
-
-validation command: mvn -B clean verify
-validation result: BUILD SUCCESS
-total tests: 1502
-JaCoCo result: All coverage checks have been met.
-selected JAR source path: target\api-workbench-for-burp-2.0.0-jar-with-dependencies.jar
-committed JAR path: release-artifacts\current\api-workbench-for-burp-local-validated.jar
-committed JAR size: 41999209
-SHA256: C3090CD021255B7D6EBB3503463A2781034A19B37D215E20B597701BF2F98F1B
-artifact policy: release-artifacts/current is overwritten every release; do not create versioned artifact folders unless explicitly requested.
-note: GitHub Actions was not manually triggered
+Notes:
+- Redirect behavior/docs/tests were preserved; no redirect finding was added.
+- Focused validation before full verify: mvn -B "-Dtest=RequestEditorPanelTest,ImporterPanelPolicyDisplayTest,HistoryPanelTest,HistoryDetailSelectionUiIT,RunnerHistoryCaptureTest,ImporterPanelRunnerQueueTest,PostmanCollectionExporterTest,CollectionExportServiceTest,CollectionExportRoundTripTest,ImporterPanelOAuth2PopulateTest,EnvironmentExportRoundTripTest,WorkspaceStateJsonTest,RedirectExecutorTest,RequestBuilderTest" test => PASS (251 run, 0 failures, 0 errors, 1 skipped).
+- Failsafe integration-test phase is configured as skipped in this project build.

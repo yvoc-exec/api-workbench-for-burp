@@ -40,6 +40,39 @@ class RequestEditorPanelTest {
         assertThat(headersModel(panel).getRowCount()).isEqualTo(1);
         assertThat(bodyFormModel(panel).getRowCount()).isEqualTo(1);
         assertThat(headersModel(panel).getColumnCount()).isEqualTo(3);
+        assertThat(headersModel(panel).getColumnName(RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo("Enabled");
+        assertThat(headersModel(panel).getValueAt(0, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.TRUE);
+    }
+
+    @Test
+    void headerEnabledCheckboxMapsToDisabledModelState() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        ApiRequest request = minimalRequest();
+        request.headers = List.of(
+                new ApiRequest.Header("X-Disabled", "no", true),
+                new ApiRequest.Header("X-Enabled", "yes", false)
+        );
+
+        panel.loadRequest(request);
+        DefaultTableModel model = headersModel(panel);
+        int disabledRow = findRow(model, "X-Disabled");
+        int enabledRow = findRow(model, "X-Enabled");
+
+        assertThat(model.getValueAt(disabledRow, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.FALSE);
+        assertThat(model.getValueAt(enabledRow, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.TRUE);
+
+        model.setValueAt(Boolean.TRUE, disabledRow, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN);
+        model.setValueAt(Boolean.FALSE, enabledRow, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN);
+
+        ApiRequest built = panel.buildRequestFromUI();
+        assertThat(built.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualTo("X-Disabled");
+            assertThat(header.disabled).isFalse();
+        });
+        assertThat(built.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualTo("X-Enabled");
+            assertThat(header.disabled).isTrue();
+        });
     }
 
     @Test
@@ -55,7 +88,8 @@ class RequestEditorPanelTest {
                 .containsEntry("User-Agent", "BurpExtensionRuntime")
                 .containsEntry("Cache-Control", "no-cache")
                 .doesNotContainKey("Host");
-        assertThat(model.getValueAt(3, 0)).isEqualTo("");
+        assertThat(model.getValueAt(3, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN)).isEqualTo("");
+        assertThat(model.getValueAt(3, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.TRUE);
     }
 
     @Test
@@ -76,9 +110,9 @@ class RequestEditorPanelTest {
                 .containsEntry("Cache-Control", "no-cache");
 
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if ("User-Agent".equalsIgnoreCase(key)) {
-                model.setValueAt("MyCustomAgent/1.0", i, 1);
+                model.setValueAt("MyCustomAgent/1.0", i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
                 break;
             }
         }
@@ -575,19 +609,19 @@ class RequestEditorPanelTest {
 
         int resolvedRow = findHeaderRow(table, "X-Api-Key");
         int unresolvedRow = findHeaderRow(table, "X-User");
-        java.awt.Color resolvedColor = ((JLabel) table.getCellRenderer(resolvedRow, 1)
-                .getTableCellRendererComponent(table, table.getValueAt(resolvedRow, 1), false, false, resolvedRow, 1))
+        java.awt.Color resolvedColor = ((JLabel) table.getCellRenderer(resolvedRow, 2)
+                .getTableCellRendererComponent(table, table.getValueAt(resolvedRow, 2), false, false, resolvedRow, 2))
                 .getForeground();
-        java.awt.Color unresolvedColor = ((JLabel) table.getCellRenderer(unresolvedRow, 1)
-                .getTableCellRendererComponent(table, table.getValueAt(unresolvedRow, 1), false, false, unresolvedRow, 1))
+        java.awt.Color unresolvedColor = ((JLabel) table.getCellRenderer(unresolvedRow, 2)
+                .getTableCellRendererComponent(table, table.getValueAt(unresolvedRow, 2), false, false, unresolvedRow, 2))
                 .getForeground();
 
         assertThat(resolvedColor).isEqualTo(VariableStatusColors.resolved(table));
         assertThat(unresolvedColor).isEqualTo(VariableStatusColors.unresolved(table));
         assertThat(resolvedColor).isNotEqualTo(unresolvedColor);
 
-        JLabel selectedResolvedLabel = (JLabel) table.getCellRenderer(resolvedRow, 1)
-                .getTableCellRendererComponent(table, table.getValueAt(resolvedRow, 1), true, false, resolvedRow, 1);
+        JLabel selectedResolvedLabel = (JLabel) table.getCellRenderer(resolvedRow, 2)
+                .getTableCellRendererComponent(table, table.getValueAt(resolvedRow, 2), true, false, resolvedRow, 2);
         assertThat(selectedResolvedLabel.getForeground()).isEqualTo(table.getSelectionForeground());
 
         RequestEditorPanel disabledPanel = new RequestEditorPanel();
@@ -610,8 +644,8 @@ class RequestEditorPanelTest {
                 .contains("[Disabled header]");
 
         int disabledRow = findHeaderRow(disabledTable, "X-Disabled");
-        JLabel disabledLabel = (JLabel) disabledTable.getCellRenderer(disabledRow, 1)
-                .getTableCellRendererComponent(disabledTable, disabledTable.getValueAt(disabledRow, 1), false, false, disabledRow, 1);
+        JLabel disabledLabel = (JLabel) disabledTable.getCellRenderer(disabledRow, 2)
+                .getTableCellRendererComponent(disabledTable, disabledTable.getValueAt(disabledRow, 2), false, false, disabledRow, 2);
         assertThat(disabledLabel.getForeground()).isEqualTo(VariableStatusColors.disabled(disabledTable));
         assertThat(disabledLabel.getForeground()).isNotEqualTo(resolvedColor);
         assertThat(disabledLabel.getForeground()).isNotEqualTo(unresolvedColor);
@@ -797,7 +831,7 @@ class RequestEditorPanelTest {
         panel.loadRequest(req);
 
         assertThat(headerValues(headersModel(panel))).doesNotContainKey("Authorization");
-        headersModel(panel).addRow(new Object[]{"Authorization", "Bearer tok123"});
+        headersModel(panel).addRow(new Object[]{"Authorization", "Bearer tok123", Boolean.TRUE});
 
         ApiRequest built = panel.buildRequestFromUI();
 
@@ -889,7 +923,7 @@ class RequestEditorPanelTest {
 
         SwingUtilities.invokeAndWait(() -> {
             url.setText("https://example.com/edited");
-            headers.setValueAt("application/xml", acceptRow, 1);
+            headers.setValueAt("application/xml", acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             body.setText("{\"edited\":true}");
             preScripts.setText("console.log('pre');");
         });
@@ -899,7 +933,7 @@ class RequestEditorPanelTest {
         assertThat(panel.getCurrentRequest()).isSameAs(request);
         assertThat(panel.getCurrentRequest().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
         assertThat(url.getText()).isEqualTo("https://example.com/edited");
-        assertThat(headers.getValueAt(acceptRow, 1)).isEqualTo("application/xml");
+        assertThat(headers.getValueAt(acceptRow, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN)).isEqualTo("application/xml");
         assertThat(body.getText()).isEqualTo("{\"edited\":true}");
         assertThat(preScripts.getText()).isEqualTo("console.log('pre');");
         assertThat(panel.getCurrentRequest().url).isEqualTo("https://example.com/original");
@@ -1095,11 +1129,11 @@ class RequestEditorPanelTest {
         DefaultTableModel headers = headersModel(panel);
 
         SwingUtilities.invokeAndWait(() -> {
-            headers.setValueAt("changed.example.test", 0, 1);
-            headers.setValueAt("321", 1, 1);
-            headers.setValueAt("gzip", 2, 1);
+            headers.setValueAt("changed.example.test", 0, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
+            headers.setValueAt("321", 1, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
+            headers.setValueAt("gzip", 2, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             headers.removeRow(3);
-            headers.addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.FALSE});
+            headers.addRow(new Object[]{"Proxy-Connection", "keep-alive", Boolean.TRUE});
         });
 
         SwingUtilities.invokeAndWait(() -> toggleExactTransport(panel));
@@ -1396,7 +1430,7 @@ class RequestEditorPanelTest {
         JTable table = headersTable(panel);
         DefaultTableModel model = headersModel(panel);
         for (int i = 0; i < model.getRowCount(); i++) {
-            if (key.equalsIgnoreCase((String) model.getValueAt(i, 0))) {
+            if (key.equalsIgnoreCase((String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN))) {
                 table.setRowSelectionInterval(i, i);
                 JButton delBtn = findButton((Container) tabs(panel).getComponentAt(2), "-");
                 assertThat(delBtn).isNotNull();
@@ -1450,8 +1484,9 @@ class RequestEditorPanelTest {
     }
 
     private static int findRow(DefaultTableModel model, String key) {
+        int keyColumn = "Enabled".equals(String.valueOf(model.getColumnName(0))) ? RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN : 0;
         for (int i = 0; i < model.getRowCount(); i++) {
-            Object value = model.getValueAt(i, 0);
+            Object value = model.getValueAt(i, keyColumn);
             if (value != null && key.equals(value.toString())) {
                 return i;
             }
@@ -1462,8 +1497,8 @@ class RequestEditorPanelTest {
     private static Map<String, String> headerValues(DefaultTableModel model) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
-            String value = (String) model.getValueAt(i, 1);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+            String value = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             if (key != null && !key.isBlank()) {
                 out.put(key, value);
             }
@@ -1474,7 +1509,7 @@ class RequestEditorPanelTest {
     private static List<String> headerNames(DefaultTableModel model) {
         List<String> out = new java.util.ArrayList<>();
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (key != null && !key.isBlank()) {
                 out.add(key);
             }
@@ -1485,15 +1520,13 @@ class RequestEditorPanelTest {
     private static List<String> headerRows(DefaultTableModel model) {
         List<String> out = new java.util.ArrayList<>();
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
             if (key == null || key.isBlank()) {
                 continue;
             }
-            String value = (String) model.getValueAt(i, 1);
-            Object disabledValue = model.getColumnCount() > 2 ? model.getValueAt(i, 2) : Boolean.FALSE;
-            boolean disabled = disabledValue instanceof Boolean
-                    ? (Boolean) disabledValue
-                    : Boolean.parseBoolean(String.valueOf(disabledValue));
+            String value = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
+            Object enabledValue = model.getValueAt(i, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN);
+            boolean disabled = !Boolean.TRUE.equals(enabledValue);
             out.add(key + "=" + (value != null ? value : "") + "|" + disabled);
         }
         return out;
@@ -1546,7 +1579,7 @@ class RequestEditorPanelTest {
 
     private static int findHeaderRow(JTable table, String headerName) {
         for (int row = 0; row < table.getRowCount(); row++) {
-            Object value = table.getValueAt(row, 0);
+            Object value = table.getValueAt(row, 1);
             if (headerName.equals(value)) {
                 return row;
             }

@@ -24,7 +24,9 @@ import java.util.function.Supplier;
  * request load/build behavior in one place.</p>
  */
 final class RequestEditorStateMapper {
-    static final int HEADER_DISABLED_MODEL_COLUMN = 2;
+    static final int HEADER_KEY_MODEL_COLUMN = 0;
+    static final int HEADER_VALUE_MODEL_COLUMN = 1;
+    static final int HEADER_ENABLED_MODEL_COLUMN = 2;
 
     private RequestEditorStateMapper() {
     }
@@ -193,9 +195,9 @@ final class RequestEditorStateMapper {
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(ctx.currentCollectionSupplier.get(), req);
 
         for (int i = 0; i < ctx.headersModel.getRowCount(); i++) {
-            String key = (String) ctx.headersModel.getValueAt(i, 0);
-            String value = (String) ctx.headersModel.getValueAt(i, 1);
-            boolean disabled = Boolean.TRUE.equals(headerDisabledValue(ctx.headersModel, i));
+            String key = (String) ctx.headersModel.getValueAt(i, HEADER_KEY_MODEL_COLUMN);
+            String value = (String) ctx.headersModel.getValueAt(i, HEADER_VALUE_MODEL_COLUMN);
+            boolean disabled = !Boolean.TRUE.equals(headerEnabledValue(ctx.headersModel, i));
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
@@ -321,7 +323,7 @@ final class RequestEditorStateMapper {
             return;
         }
         for (int i = 0; i < model.getRowCount(); i++) {
-            String existingKey = (String) model.getValueAt(i, 0);
+            String existingKey = (String) model.getValueAt(i, headerKeyColumn(model));
             if (existingKey != null && existingKey.trim().equalsIgnoreCase(key)) {
                 return;
             }
@@ -330,25 +332,23 @@ final class RequestEditorStateMapper {
     }
 
     private static Object[] headerRow(String key, String value, boolean disabled, DefaultTableModel model) {
-        if (model != null && model.getColumnCount() > HEADER_DISABLED_MODEL_COLUMN) {
-            return new Object[]{key, value, disabled};
+        if (isHeaderModel(model)) {
+            return new Object[]{key, value, !disabled};
         }
         return new Object[]{key, value};
     }
 
-    private static Object headerDisabledValue(DefaultTableModel model, int row) {
-        if (model == null || row < 0 || row >= model.getRowCount()) {
-            return Boolean.FALSE;
+    private static Object headerEnabledValue(DefaultTableModel model, int row) {
+        if (!isHeaderModel(model) || row < 0 || row >= model.getRowCount()) {
+            return Boolean.TRUE;
         }
-        if (model.getColumnCount() <= HEADER_DISABLED_MODEL_COLUMN) {
-            return Boolean.FALSE;
-        }
-        return model.getValueAt(row, HEADER_DISABLED_MODEL_COLUMN);
+        return model.getValueAt(row, HEADER_ENABLED_MODEL_COLUMN);
     }
 
     static void ensureStarterRow(DefaultTableModel model) {
+        int keyColumn = headerKeyColumn(model);
         if (model.getRowCount() > 0) {
-            String lastKey = (String) model.getValueAt(model.getRowCount() - 1, 0);
+            String lastKey = (String) model.getValueAt(model.getRowCount() - 1, keyColumn);
             if (lastKey == null || lastKey.trim().isEmpty()) {
                 return;
             }
@@ -356,7 +356,20 @@ final class RequestEditorStateMapper {
         int cols = model.getColumnCount();
         Object[] row = new Object[cols];
         java.util.Arrays.fill(row, "");
+        if (isHeaderModel(model)) {
+            row[HEADER_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
+        }
         model.addRow(row);
+    }
+
+    private static boolean isHeaderModel(DefaultTableModel model) {
+        return model != null
+                && model.getColumnCount() == 3
+                && "Enabled".equals(String.valueOf(model.getColumnName(HEADER_ENABLED_MODEL_COLUMN)));
+    }
+
+    private static int headerKeyColumn(DefaultTableModel model) {
+        return isHeaderModel(model) ? HEADER_KEY_MODEL_COLUMN : 0;
     }
 
     static void parseQueryToTable(String url, DefaultTableModel paramsModel) {

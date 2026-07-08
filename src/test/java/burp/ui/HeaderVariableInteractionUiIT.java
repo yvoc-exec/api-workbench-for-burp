@@ -494,9 +494,9 @@ class HeaderVariableInteractionUiIT {
     private static void assertHeaderValue(TableModel model, String headerName, String expectedValue) {
         Boolean matches = SwingRobotTestSupport.runOnEdtValue(() -> {
             for (int row = 0; row < model.getRowCount(); row++) {
-                Object key = model.getValueAt(row, 0);
+                Object key = model.getValueAt(row, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
                 if (headerName.equals(key)) {
-                    return expectedValue.equals(model.getValueAt(row, 1));
+                    return expectedValue.equals(model.getValueAt(row, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN));
                 }
             }
             return null;

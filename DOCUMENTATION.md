@@ -447,7 +447,7 @@ HAR files import as captured request collections and can export as evidence.
 
 ### 5.6 Native API Workbench
 
-Native API Workbench collections preserve authored collection structure, auth, variables, folder metadata, requests, build mode, editor materialization, duplicate headers, header order, disabled header state, and native script blocks most faithfully. They do not automatically serialize `runtimeVars` or `runtimeOAuth2`; optional active-environment resolution can materialize values when selected. External export formats are lossy where their schemas cannot represent all metadata.
+Native API Workbench collections preserve authored collection structure, auth, variables, folder metadata, requests, build mode, editor materialization, duplicate headers, header order, disabled header state, and native script blocks most faithfully. The Workbench Headers table exposes that state as an Enabled checkbox: checked headers are sent, unchecked headers are preserved but not sent. They do not automatically serialize `runtimeVars` or `runtimeOAuth2`; optional active-environment resolution can materialize values when selected. External export formats are lossy where their schemas cannot represent all metadata.
 
 Workbench safe mode preserves ordinary authored headers, including duplicate ordinary headers and relative order where practical, but regenerates `Host` and `Content-Length`, removes unsafe transport and hop-by-hop headers, removes `Connection`-nominated headers, and keeps redirect follow-ups under redirect safety rules. Advanced per-request `Exact transport headers — Advanced` is available from the Workbench Send dropdown; it shows `⚠ Exact transport headers`, warns once per editor session on explicit enable, persists through workspace/native export/import, History, replay, Runner, and request duplication, and is intended for malformed-request, desynchronization, or request-smuggling testing. Burp, proxies, HTTP/2 conversion, and servers may normalize or reject exact requests, so exact mode is not guaranteed byte-for-byte wire transport.
 
@@ -543,7 +543,7 @@ Legacy script paths remain bounded by the supported runtime behavior.
 
 `ScriptBindingsFactory` exposes dialect-aware bindings for Postman, Bruno, Insomnia, native API Workbench, and legacy compatibility scripts. Binding surfaces include `pm`, `bru / req / res`, `insomnia / request / response`, `awb`, and `console`. Runner-only controls such as skip, stop, next-request, and dependent-request are not generic Workbench Send features.
 
-API Workbench supports a compatible JavaScript scripting layer for common Postman, Insomnia, Bruno, and Workbench pre-request/post-response workflows, including request mutation, variables, assertions, extraction, and Runner flow control. It is not a byte-for-byte clone of each tool's full sandbox API. The detailed support status is tracked in [Script Compatibility Matrix](SCRIPT-COMPATIBILITY-MATRIX.md). Unsupported or partially supported sandbox APIs should fail closed, warn clearly, or be preserved without pretending to execute; imported third-party scripts should be validated before they are trusted in security testing.
+API Workbench supports a compatible JavaScript scripting layer for common Postman, Insomnia, Bruno, and Workbench pre-request/post-response workflows, including request mutation, variables, assertions, extraction, and Runner flow control. It is not a byte-for-byte clone of each tool's full sandbox API. The detailed support status is tracked in [Script Compatibility Matrix](SCRIPT-COMPATIBILITY-MATRIX.md). Unsupported or partially supported sandbox APIs should fail closed, warn clearly, or be preserved without pretending to execute; imported third-party scripts should be validated before they are trusted in security testing. Cross-format export preserves scripts and maps script phase where possible. API Workbench does not currently guarantee automatic translation of tool-specific scripting APIs between Postman, Insomnia, and Bruno.
 
 ### 9.4 Script lifecycle and models
 
@@ -557,7 +557,7 @@ Scripts execute through a bounded sandboxed JavaScript runtime. The default scri
 
 History records Workbench and Runner executions, including request/response snapshots, script output, assertions, extracted values, and variable changes. The operator-facing tab is `History`. History request and response content remains unmasked. `HistorySanitizer` handles safe text normalization and CSV-cell/formula safety; it is not a secret-redaction engine.
 
-Evidence metadata belongs to `HistoryEntry` and is separate from captured request/response content. It supports triage, reporting, retesting, and handoff through pinned state, tags, and analyst notes. Tags and notes may contain sensitive client information, so exports and Burp project files should be reviewed before sharing. Clear Unpinned removes normal unpinned history noise while retaining pinned entries; it should not be treated as reversible.
+Evidence metadata belongs to `HistoryEntry` in `HistoryStore` and is separate from captured request/response content. History is the canonical source of truth; Workbench and Runner detail Evidence tabs save back to the linked History entry after capture, and read-only previews become editable only after a History entry exists. It supports triage, reporting, retesting, and handoff through pinned state, tags, and analyst notes. Tags and notes may contain sensitive client information, so exports and Burp project files should be reviewed before sharing. Clear Unpinned removes normal unpinned history noise while retaining pinned entries; it should not be treated as reversible.
 
 `HistoryStore` retains the latest 1,000 entries by default, `HistoryPersistenceService` stores them with the workspace, and `HistoryExportService` and its format-specific services produce HAR/JSON/CSV output.
 
@@ -706,3 +706,7 @@ mvn -Pstatic-analysis verify
 ```
 
 Push and pull-request runs use normal CI mode. Full manually dispatched validation adds the performance, mutation, and canonical package jobs.
+
+### Local OAuth2 smoke fixture
+
+`manual-qa/local-httpbin/` contains a deterministic local HTTP server, API Workbench environment, and native collection for OAuth2 smoke testing. The fixture exposes `POST /oauth/token` and `GET /oauth/protected` with dummy local credentials only.

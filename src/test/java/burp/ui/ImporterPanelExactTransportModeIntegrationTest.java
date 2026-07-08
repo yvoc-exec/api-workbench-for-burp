@@ -77,9 +77,9 @@ class ImporterPanelExactTransportModeIntegrationTest {
         SwingUtilities.invokeAndWait(() -> {
             try {
                 ImporterPanelTestSupport.setField(editor, "loadingRequest", true);
-                headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
-                headersModel(editor).addRow(new Object[]{"X-Duplicate", "one"});
-                headersModel(editor).addRow(new Object[]{"X-Duplicate", "two"});
+                headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
+                headersModel(editor).addRow(new Object[]{"X-Duplicate", "one", Boolean.TRUE});
+                headersModel(editor).addRow(new Object[]{"X-Duplicate", "two", Boolean.TRUE});
                 ImporterPanelTestSupport.setField(editor, "loadingRequest", false);
             } catch (Exception e) {
                 throw new RuntimeException(e);
@@ -107,7 +107,7 @@ class ImporterPanelExactTransportModeIntegrationTest {
         assertThat(editor.isExactTransportHeadersSelectedForTests()).isTrue();
         assertThat(editor.getExactTransportIndicatorForTests().isVisible()).isTrue();
         assertThat(editor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
-        assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), 1)).isEqualTo("application/xml");
+        assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN)).isEqualTo("application/xml");
         assertThat(editor.getBodyRawAreaForTests().getText()).isEqualTo("pending-body");
         assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
         assertThat(headerRows(headersModel(editor))).containsSubsequence(
@@ -127,7 +127,7 @@ class ImporterPanelExactTransportModeIntegrationTest {
         assertThat(editor.isExactTransportHeadersSelectedForTests()).isFalse();
         assertThat(editor.getExactTransportIndicatorForTests().isVisible()).isFalse();
         assertThat(editor.getUrlField().getText()).isEqualTo("https://api.example.test/pending?q=pending%20value&path=x%2Fy&plus=%2B");
-        assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), 1)).isEqualTo("application/xml");
+        assertThat(headersModel(editor).getValueAt(findRow(headersModel(editor), "Accept"), RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN)).isEqualTo("application/xml");
         assertThat(editor.getBodyRawAreaForTests().getText()).isEqualTo("pending-body");
         assertThat(preScriptArea(editor).getText()).isEqualTo("console.log(\"pending\");");
 
@@ -195,7 +195,7 @@ class ImporterPanelExactTransportModeIntegrationTest {
             editor.getUrlField().setText("https://api.example.test/changed?x=1");
             paramsModel(editor).setRowCount(0);
             paramsModel(editor).addRow(new Object[]{"x", "1"});
-            headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), 1);
+            headersModel(editor).setValueAt("application/xml", findRow(headersModel(editor), "Accept"), RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             editor.getBodyRawAreaForTests().setText("changed-body");
             preScriptArea(editor).setText("console.log(\"changed\");");
         });
@@ -245,8 +245,9 @@ class ImporterPanelExactTransportModeIntegrationTest {
     }
 
     private static int findRow(DefaultTableModel model, String key) {
+        int keyColumn = "Enabled".equals(String.valueOf(model.getColumnName(0))) ? RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN : 0;
         for (int i = 0; i < model.getRowCount(); i++) {
-            Object value = model.getValueAt(i, 0);
+            Object value = model.getValueAt(i, keyColumn);
             if (key.equals(value)) {
                 return i;
             }
@@ -284,9 +285,12 @@ class ImporterPanelExactTransportModeIntegrationTest {
 
     private static List<String> headerRows(DefaultTableModel model) {
         List<String> rows = new ArrayList<>();
+        boolean headerModel = "Enabled".equals(String.valueOf(model.getColumnName(0)));
+        int keyColumn = headerModel ? RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN : 0;
+        int valueColumn = headerModel ? RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN : 1;
         for (int i = 0; i < model.getRowCount(); i++) {
-            Object key = model.getValueAt(i, 0);
-            Object value = model.getValueAt(i, 1);
+            Object key = model.getValueAt(i, keyColumn);
+            Object value = model.getValueAt(i, valueColumn);
             if (key != null && !key.toString().isBlank()) {
                 rows.add(key + "=" + (value != null ? value : ""));
             }

@@ -110,6 +110,16 @@ public class HistoryDetailPanel extends JPanel {
         this.metadataSaveAction = metadataSaveAction;
     }
 
+    public void setEvidenceEditable(boolean editable, String message) {
+        pinnedCheckBox.setEnabled(editable);
+        analystNotesArea.setEditable(editable);
+        tagsField.setEditable(editable);
+        saveMetadataButton.setEnabled(editable && currentEntry != null);
+        if (message != null && !message.isBlank()) {
+            evidenceStatusLabel.setText(message);
+        }
+    }
+
     public void showEntry(HistoryEntry entry) {
         currentEntry = entry;
         if (entry == null) {
@@ -165,7 +175,7 @@ public class HistoryDetailPanel extends JPanel {
         evidenceStatusLabel.setText(metadataText != null && !metadataText.isBlank()
                 ? "Selected entry evidence and analyst metadata"
                 : "Evidence can be edited and saved explicitly.");
-        saveMetadataButton.setEnabled(true);
+        setEvidenceEditable(true, evidenceStatusLabel.getText());
     }
 
     public void setRequestMessage(HttpRequest request) {
@@ -208,7 +218,7 @@ public class HistoryDetailPanel extends JPanel {
         analystNotesArea.setText("");
         tagsField.setText("");
         evidenceStatusLabel.setText("Evidence can be edited and saved explicitly.");
-        saveMetadataButton.setEnabled(false);
+        setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
 
         if (requestEditor != null) {
             try {

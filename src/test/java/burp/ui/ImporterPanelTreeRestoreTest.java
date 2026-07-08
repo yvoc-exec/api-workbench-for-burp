@@ -864,8 +864,8 @@ class ImporterPanelTreeRestoreTest {
 
         boolean foundAuthReference = false;
         for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
-            String value = (String) model.getValueAt(i, 1);
+            String key = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_KEY_MODEL_COLUMN);
+            String value = (String) model.getValueAt(i, RequestEditorStateMapper.HEADER_VALUE_MODEL_COLUMN);
             if ("Authorization".equalsIgnoreCase(key) && "Bearer {{token}}".equals(value)) {
                 foundAuthReference = true;
                 break;

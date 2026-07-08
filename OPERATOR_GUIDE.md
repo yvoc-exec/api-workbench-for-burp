@@ -178,7 +178,7 @@ The request editor lets you edit one request at a time.
 | --- | --- |
 | Method | Change request method |
 | URL | Edit the destination URL |
-| Headers | Add, remove, or edit headers |
+| Headers | Add, remove, edit, enable, or disable headers. Checked Enabled headers are sent; unchecked headers are preserved but not sent. |
 | Body | Edit request body content |
 | Auth | Override or inherit request auth |
 | Send | Send the current request |
@@ -347,7 +347,7 @@ Actions:
 
 ### Evidence tab and pinning workflow
 
-The Evidence tab is analyst metadata for a History entry. It is not the HTTP request or response itself. It helps turn Workbench/Runner execution records into pentest evidence by adding pinned status, tags, and analyst notes.
+The Evidence tab is analyst metadata for a History entry. It is not the HTTP request or response itself. History is the canonical source of truth: Workbench and Runner detail panes save Evidence changes to the linked History entry after capture; previews without a linked History entry are read-only. It helps turn Workbench/Runner execution records into pentest evidence by adding pinned status, tags, and analyst notes.
 
 Pentester workflow:
 
@@ -410,7 +410,7 @@ Burp project state can persist loaded collections, environment profiles, the act
 
 Collection export uses the active environment only when the operator chooses to resolve values; unchecked export preserves placeholders, checked export resolves through the active environment, quick values used only for export do not mutate the active environment, and cancel aborts the export. Environment export preserves the selected profile's variable table, OAuth2 configuration, and output bindings.
 
-External export formats are lossy where their schemas cannot represent all Workbench metadata.
+External export formats are lossy where their schemas cannot represent all Workbench metadata. Cross-format export preserves scripts and maps script phase where possible. API Workbench does not currently guarantee automatic translation of tool-specific scripting APIs between Postman, Insomnia, and Bruno.
 
 ---
 
@@ -522,6 +522,10 @@ Compatibility note:
 - Confirm the active environment profile.
 - Confirm the destination tab.
 - Confirm the checked requests.
+
+### Local OAuth2 smoke fixture
+
+For deterministic local OAuth2 testing, use `manual-qa/local-httpbin/START-HERE-TEST-FLOW.md`. The flow starts a local server, imports the local environment and native collection, acquires a dummy client-credentials token, and sends `AWB OAuth Protected Resource` expecting `Authorization: Bearer awb-oauth-local-access-token` in raw History.
 
 ### Before OAuth2 Testing
 

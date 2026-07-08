@@ -28,6 +28,7 @@ public final class CollectionExportService {
         }
 
         List<String> warnings = new ArrayList<>();
+        CollectionExportSupport.addScriptExportWarnings(collection, options.format, warnings);
         try {
             Path output = ExportSupport.prepareOutputPath(options.outputPath);
             ExportSupport.writeAtomically(output, temp -> {
