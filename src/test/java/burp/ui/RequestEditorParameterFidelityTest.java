@@ -195,6 +195,95 @@ class RequestEditorParameterFidelityTest {
         assertThat(built.body.urlencoded.get(0).fileUpload).isFalse();
     }
 
+    @Test
+    void reorderingBodyRowsMovesOriginalNullableMetadataWithRows() throws Exception {
+        ApiRequest request = requestWithNullableBodyMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).moveRow(1, 1, 0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded).extracting(field -> field.key)
+                .containsExactly("blank-upload", "null-text");
+        assertBodyMetadata(built.body.urlencoded.get(0), "", true, "/tmp/blank.bin");
+        assertBodyMetadata(built.body.urlencoded.get(1), null, false, null);
+    }
+
+    @Test
+    void deletingBodyRowDoesNotTransferOriginalNullableMetadata() throws Exception {
+        ApiRequest request = requestWithNullableBodyMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).removeRow(0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded).hasSize(1);
+        assertThat(built.body.urlencoded.get(0).key).isEqualTo("blank-upload");
+        assertBodyMetadata(built.body.urlencoded.get(0), "", true, "/tmp/blank.bin");
+    }
+
+    @Test
+    void insertingBodyRowUsesAuthoredDefaultsWithoutShiftingImportedMetadata() throws Exception {
+        ApiRequest request = requestWithNullableBodyMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).insertRow(0, new Object[]{
+                    "new", "value", Boolean.TRUE, "text", "", Boolean.FALSE,
+                    null, null, Boolean.FALSE, Boolean.FALSE
+            });
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded).extracting(field -> field.key)
+                .containsExactly("new", "null-text", "blank-upload");
+        assertBodyMetadata(built.body.urlencoded.get(0), "text", false, null);
+        assertBodyMetadata(built.body.urlencoded.get(1), null, false, null);
+        assertBodyMetadata(built.body.urlencoded.get(2), "", true, "/tmp/blank.bin");
+    }
+
+    @Test
+    void untouchedNonExactBodyRowsAlsoPreserveNullableMetadata() throws Exception {
+        ApiRequest urlEncoded = request();
+        urlEncoded.body = new ApiRequest.Body();
+        urlEncoded.body.mode = "urlencoded";
+        urlEncoded.body.urlencoded.add(bodyField("url", "1", null, false, null));
+
+        ApiRequest multipart = request();
+        multipart.body = new ApiRequest.Body();
+        multipart.body.mode = "formdata";
+        multipart.body.formdata.add(bodyField("file", "", null, true, "/tmp/file.bin"));
+
+        ApiRequest rebuiltUrlEncoded = editWithoutChanges(urlEncoded);
+        ApiRequest rebuiltMultipart = editWithoutChanges(multipart);
+
+        assertBodyMetadata(rebuiltUrlEncoded.body.urlencoded.get(0), null, false, null);
+        assertBodyMetadata(rebuiltMultipart.body.formdata.get(0), null, true, "/tmp/file.bin");
+    }
+
+    @Test
+    void bodyOriginalMetadataColumnsRemainHidden() throws Exception {
+        onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            DefaultTableModel model = bodyFormModel(panel);
+            javax.swing.JTable table = ImporterPanelTestSupport.getField(panel, "bodyFormTable");
+
+            assertThat(model.getColumnCount()).isEqualTo(10);
+            assertThat(table.getColumnCount()).isEqualTo(5);
+            assertThat(java.util.stream.IntStream.range(0, table.getColumnCount())
+                    .mapToObj(index -> table.getColumnName(index)))
+                    .containsExactly("Enabled", "Key", "Value", "Type", "File Path");
+            return null;
+        });
+    }
+
     private static ApiRequest editWithoutChanges(ApiRequest request) throws Exception {
         return onEdt(() -> {
             RequestEditorPanel panel = new RequestEditorPanel();
@@ -252,6 +341,32 @@ class RequestEditorParameterFidelityTest {
         parameter.required = required;
         parameter.type = type;
         return parameter;
+    }
+
+    private static ApiRequest requestWithNullableBodyMetadata() {
+        ApiRequest request = request();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "urlencoded";
+        request.body.urlencoded.add(bodyField("null-text", "one", null, false, null));
+        request.body.urlencoded.add(bodyField(
+                "blank-upload", "two", "", true, "/tmp/blank.bin"));
+        return request;
+    }
+
+    private static ApiRequest.Body.FormField bodyField(
+            String key, String value, String type, boolean fileUpload, String filePath) {
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
+        field.type = type;
+        field.fileUpload = fileUpload;
+        field.filePath = filePath;
+        return field;
+    }
+
+    private static void assertBodyMetadata(
+            ApiRequest.Body.FormField field, String type, boolean fileUpload, String filePath) {
+        assertThat(field.type).isEqualTo(type);
+        assertThat(field.fileUpload).isEqualTo(fileUpload);
+        assertThat(field.filePath).isEqualTo(filePath);
     }
 
     private static ApiRequest requestWithUrlEncodedFileMetadata() {

@@ -49,6 +49,10 @@ final class RequestEditorStateMapper {
     static final int BODY_TYPE_MODEL_COLUMN = 3;
     static final int BODY_FILE_PATH_MODEL_COLUMN = 4;
     static final int BODY_FILE_UPLOAD_MODEL_COLUMN = 5;
+    static final int BODY_ORIGINAL_TYPE_MODEL_COLUMN = 6;
+    static final int BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN = 7;
+    static final int BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN = 8;
+    static final int BODY_EXISTING_ROW_MODEL_COLUMN = 9;
 
     private RequestEditorStateMapper() {
     }
@@ -413,6 +417,10 @@ final class RequestEditorStateMapper {
             row[BODY_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
             row[BODY_TYPE_MODEL_COLUMN] = "text";
             row[BODY_FILE_UPLOAD_MODEL_COLUMN] = Boolean.FALSE;
+            row[BODY_ORIGINAL_TYPE_MODEL_COLUMN] = null;
+            row[BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN] = null;
+            row[BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN] = Boolean.FALSE;
+            row[BODY_EXISTING_ROW_MODEL_COLUMN] = Boolean.FALSE;
         }
         model.addRow(row);
     }
@@ -437,8 +445,17 @@ final class RequestEditorStateMapper {
 
     private static boolean isBodyModel(DefaultTableModel model) {
         return model != null
-                && model.getColumnCount() == 6
-                && "File Upload".equals(String.valueOf(model.getColumnName(BODY_FILE_UPLOAD_MODEL_COLUMN)));
+                && model.getColumnCount() == 10
+                && "File Upload".equals(String.valueOf(
+                        model.getColumnName(BODY_FILE_UPLOAD_MODEL_COLUMN)))
+                && "Original Type".equals(String.valueOf(
+                        model.getColumnName(BODY_ORIGINAL_TYPE_MODEL_COLUMN)))
+                && "Original File Path".equals(String.valueOf(
+                        model.getColumnName(BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN)))
+                && "Original File Upload".equals(String.valueOf(
+                        model.getColumnName(BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN)))
+                && "Existing Row".equals(String.valueOf(
+                        model.getColumnName(BODY_EXISTING_ROW_MODEL_COLUMN)));
     }
 
     static void parseQueryToTable(String url, DefaultTableModel paramsModel) {
@@ -544,17 +561,21 @@ final class RequestEditorStateMapper {
     }
 
     private static Object[] bodyRow(ApiRequest.Body.FormField field) {
-        String type = field.type;
-        if (type == null || type.isBlank()) {
-            type = field.fileUpload ? "file" : "text";
+        String displayedType = field.type;
+        if (displayedType == null || displayedType.isBlank()) {
+            displayedType = field.fileUpload ? "file" : "text";
         }
         return new Object[]{
                 field.key != null ? field.key : "",
                 field.value != null ? field.value : "",
                 !field.disabled,
-                type,
+                displayedType,
                 field.filePath != null ? field.filePath : "",
-                field.fileUpload
+                field.fileUpload,
+                field.type,
+                field.filePath,
+                field.fileUpload,
+                Boolean.TRUE
         };
     }
 
@@ -653,34 +674,65 @@ final class RequestEditorStateMapper {
     private static List<ApiRequest.Body.FormField> formFieldsFromTable(DefaultTableModel model,
                                                                        boolean multipart) {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
-        for (int i = 0; i < model.getRowCount(); i++) {
-            String key = tableString(model, i, BODY_KEY_MODEL_COLUMN);
+        for (int row = 0; row < model.getRowCount(); row++) {
+            String key = tableString(model, row, BODY_KEY_MODEL_COLUMN);
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            String value = tableString(model, i, BODY_VALUE_MODEL_COLUMN);
-            String type = nullableTableString(model, i, BODY_TYPE_MODEL_COLUMN);
-            String filePath = emptyToNull(tableString(model, i, BODY_FILE_PATH_MODEL_COLUMN));
-            boolean hiddenFileUpload = isBodyModel(model)
-                    && Boolean.TRUE.equals(model.getValueAt(i, BODY_FILE_UPLOAD_MODEL_COLUMN));
+            String value = tableString(model, row, BODY_VALUE_MODEL_COLUMN);
+            boolean disabled = isBodyModel(model)
+                    && Boolean.FALSE.equals(model.getValueAt(row, BODY_ENABLED_MODEL_COLUMN));
+            String visibleType = nullableTableString(model, row, BODY_TYPE_MODEL_COLUMN);
+            String visibleFilePath = emptyToNull(tableString(model, row, BODY_FILE_PATH_MODEL_COLUMN));
+            boolean hiddenFileUpload = Boolean.TRUE.equals(
+                    model.getValueAt(row, BODY_FILE_UPLOAD_MODEL_COLUMN));
+            String originalType = nullableTableString(model, row, BODY_ORIGINAL_TYPE_MODEL_COLUMN);
+            String originalFilePath = nullableTableString(
+                    model, row, BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN);
+            boolean originalFileUpload = Boolean.TRUE.equals(
+                    model.getValueAt(row, BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN));
+            boolean existingRow = Boolean.TRUE.equals(
+                    model.getValueAt(row, BODY_EXISTING_ROW_MODEL_COLUMN));
+
+            if (visibleFilePath != null && visibleFilePath.isEmpty()) {
+                visibleFilePath = null;
+            }
+
+            String originalDisplayedType = effectiveBodyDisplayType(originalType, originalFileUpload);
+            boolean metadataChanged = !Objects.equals(visibleType, originalDisplayedType)
+                    || !Objects.equals(visibleFilePath, originalFilePath)
+                    || hiddenFileUpload != originalFileUpload;
+
             ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value != null ? value : "");
-            field.disabled = isBodyModel(model)
-                    && Boolean.FALSE.equals(model.getValueAt(i, BODY_ENABLED_MODEL_COLUMN));
-            field.type = type;
-            field.filePath = filePath;
-            if (multipart) {
-                field.fileUpload = hiddenFileUpload
-                        || "file".equalsIgnoreCase(field.type)
-                        || field.filePath != null;
-                if (field.fileUpload && (field.type == null || field.type.isBlank())) {
-                    field.type = "file";
-                }
+            field.disabled = disabled;
+            if (existingRow && !metadataChanged) {
+                field.type = originalType;
+                field.filePath = originalFilePath;
+                field.fileUpload = originalFileUpload;
             } else {
-                field.fileUpload = hiddenFileUpload;
+                field.type = visibleType;
+                field.filePath = visibleFilePath;
+                if (multipart) {
+                    field.fileUpload = hiddenFileUpload
+                            || "file".equalsIgnoreCase(field.type)
+                            || field.filePath != null;
+                    if (field.fileUpload && (field.type == null || field.type.isBlank())) {
+                        field.type = "file";
+                    }
+                } else {
+                    field.fileUpload = hiddenFileUpload;
+                }
             }
             fields.add(field);
         }
         return fields;
+    }
+
+    private static String effectiveBodyDisplayType(String originalType, boolean originalFileUpload) {
+        if (originalType != null && !originalType.isBlank()) {
+            return originalType;
+        }
+        return originalFileUpload ? "file" : "text";
     }
 
     private static String tableString(DefaultTableModel model, int row, int column) {

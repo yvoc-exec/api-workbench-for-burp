@@ -510,6 +510,185 @@ class RequestEditorExactTransportModeTest {
                 .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
     }
 
+    @Test
+    void untouchedExactUrlEncodedNullTypeRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField("a", "1", null, false, null);
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("urlencoded", field);
+
+        assertThat(built.body.urlencoded.get(0).type).isNull();
+        assertThat(built.body.urlencoded.get(0).fileUpload).isFalse();
+        assertThat(built.body.urlencoded.get(0).filePath).isNull();
+    }
+
+    @Test
+    void untouchedExactUrlEncodedBlankTypeRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField("a", "1", "", false, null);
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("urlencoded", field);
+
+        assertThat(built.body.urlencoded.get(0).type).isEmpty();
+    }
+
+    @Test
+    void untouchedExactMultipartNullTextTypeRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField("a", "1", null, false, null);
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("formdata", field);
+
+        assertThat(built.body.formdata.get(0).type).isNull();
+        assertThat(built.body.formdata.get(0).fileUpload).isFalse();
+    }
+
+    @Test
+    void untouchedExactMultipartNullFileTypeWithPathRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField("upload", "", null, true, "/tmp/upload.bin");
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("formdata", field);
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+
+        assertThat(rebuilt.type).isNull();
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isEqualTo("/tmp/upload.bin");
+    }
+
+    @Test
+    void untouchedExactMultipartNullFileTypeWithoutPathRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField("upload", "", null, true, null);
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("formdata", field);
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+
+        assertThat(rebuilt.type).isNull();
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isNull();
+    }
+
+    @Test
+    void untouchedExactCustomBodyTypeRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField field = bodyField(
+                "upload", "", "application/octet-stream", false, null);
+
+        ApiRequest built = assertUntouchedExactBodyPreserved("urlencoded", field);
+
+        assertThat(built.body.urlencoded.get(0).type).isEqualTo("application/octet-stream");
+    }
+
+    @Test
+    void editingDisplayedDefaultBodyTypeInvalidatesExactSnapshot() throws Exception {
+        ApiRequest request = exactBodyRequest(
+                "urlencoded", bodyField("a", "1", null, false, null));
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).setValueAt(
+                "number", 0, RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN));
+
+        assertThat(built.body.urlencoded.get(0).type).isEqualTo("number");
+        assertExactSemanticInvalidation(built);
+    }
+
+    @Test
+    void editingMultipartFilePathCommitsVisibleTypeAndInvalidatesExactSnapshot() throws Exception {
+        ApiRequest request = exactBodyRequest(
+                "formdata", bodyField("upload", "", null, true, "/tmp/original.bin"));
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).setValueAt(
+                "/tmp/changed.bin", 0, RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN));
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+
+        assertThat(rebuilt.type).isEqualTo("file");
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isEqualTo("/tmp/changed.bin");
+        assertExactSemanticInvalidation(built);
+    }
+
+    @Test
+    void editingBodyValuePreservesNullableTypeButInvalidatesExactSnapshot() throws Exception {
+        ApiRequest request = exactBodyRequest(
+                "urlencoded", bodyField("a", "1", null, false, null));
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).setValueAt(
+                "2", 0, RequestEditorStateMapper.BODY_VALUE_MODEL_COLUMN));
+
+        assertThat(built.body.urlencoded.get(0).value).isEqualTo("2");
+        assertThat(built.body.urlencoded.get(0).type).isNull();
+        assertExactSemanticInvalidation(built);
+    }
+
+    @Test
+    void reorderingUntypedBodyRowsPreservesMetadataButInvalidatesExactSnapshot() throws Exception {
+        ApiRequest.Body.FormField first = bodyField("first", "1", null, false, null);
+        ApiRequest.Body.FormField second = bodyField("second", "2", "", true, null);
+        ApiRequest request = exactBodyRequest("urlencoded", first, second);
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).moveRow(1, 1, 0));
+
+        assertThat(built.body.urlencoded).extracting(field -> field.key)
+                .containsExactly("second", "first");
+        assertThat(built.body.urlencoded.get(0).type).isEmpty();
+        assertThat(built.body.urlencoded.get(0).fileUpload).isTrue();
+        assertThat(built.body.urlencoded.get(1).type).isNull();
+        assertThat(built.body.urlencoded.get(1).fileUpload).isFalse();
+        assertExactSemanticInvalidation(built);
+    }
+
+    private static ApiRequest assertUntouchedExactBodyPreserved(
+            String mode, ApiRequest.Body.FormField field) throws Exception {
+        ApiRequest request = exactBodyRequest(mode, field);
+        String originalFingerprint = request.computeSemanticFingerprint();
+        byte[] originalRaw = request.exactHttpRequest.rawRequestBytes.clone();
+
+        ApiRequest built = editOnEdt(request, panel -> {
+        });
+        ApiRequest.Body.FormField rebuilt = "formdata".equals(mode)
+                ? built.body.formdata.get(0)
+                : built.body.urlencoded.get(0);
+
+        assertThat(rebuilt.type).isEqualTo(field.type);
+        assertThat(rebuilt.fileUpload).isEqualTo(field.fileUpload);
+        assertThat(rebuilt.filePath).isEqualTo(field.filePath);
+        assertThat(built.computeSemanticFingerprint()).isEqualTo(originalFingerprint);
+        assertThat(built.exactHttpRequest.semanticFingerprint).isEqualTo(originalFingerprint);
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+        assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
+        assertThat(built.exactHttpRequest.rawRequestBytes).containsExactly(originalRaw);
+        return built;
+    }
+
+    private static void assertExactSemanticInvalidation(ApiRequest request) {
+        assertThat(request.exactHttpRequest.pristine).isFalse();
+        assertThat(request.exactHttpRequest.invalidationReason)
+                .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+    }
+
+    private static ApiRequest exactBodyRequest(
+            String mode, ApiRequest.Body.FormField... fields) {
+        ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
+        request.method = "POST";
+        request.body = new ApiRequest.Body();
+        request.body.mode = mode;
+        if ("formdata".equals(mode)) {
+            request.body.formdata.addAll(List.of(fields));
+        } else {
+            request.body.urlencoded.addAll(List.of(fields));
+        }
+        request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "POST /path HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        return request;
+    }
+
+    private static ApiRequest.Body.FormField bodyField(
+            String key, String value, String type, boolean fileUpload, String filePath) {
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
+        field.type = type;
+        field.fileUpload = fileUpload;
+        field.filePath = filePath;
+        return field;
+    }
+
     private static ApiRequest legacyExactQueryRequest() {
         ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
         request.url = "https://example.test/search?q=hello%20world&q=two&flag&empty=#fragment";
@@ -792,6 +971,10 @@ class RequestEditorExactTransportModeTest {
 
     private static DefaultTableModel paramsModel(RequestEditorPanel panel) {
         return ImporterPanelTestSupport.getField(panel, "paramsModel");
+    }
+
+    private static DefaultTableModel bodyFormModel(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "bodyFormModel");
     }
 
     private static JTextArea preScriptArea(RequestEditorPanel panel) {
