@@ -1,9 +1,11 @@
 package burp.ui;
 
 import burp.models.ApiRequest;
+import burp.testsupport.ImporterPanelTestSupport;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.SwingUtilities;
+import javax.swing.table.DefaultTableModel;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 
@@ -102,6 +104,97 @@ class RequestEditorParameterFidelityTest {
         assertThat(built.parameters.get(0)).isNotSameAs(path).usingRecursiveComparison().isEqualTo(path);
     }
 
+    @Test
+    void deletingQueryRowDoesNotTransferSerializationMetadata() throws Exception {
+        ApiRequest request = requestWithDistinctParameterMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            paramsModel(panel).removeRow(0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.parameters).hasSize(1);
+        assertParameterMetadata(built.parameters.get(0), "second", "spaceDelimited", null,
+                false, "second-source", "s%65cond", "t%77o", "second description", false, "number");
+    }
+
+    @Test
+    void reorderingQueryRowsMovesAllHiddenMetadataWithRows() throws Exception {
+        ApiRequest request = requestWithDistinctParameterMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            paramsModel(panel).moveRow(1, 1, 0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.parameters).extracting(p -> p.key).containsExactly("second", "first");
+        assertParameterMetadata(built.parameters.get(0), "second", "spaceDelimited", null,
+                false, "second-source", "s%65cond", "t%77o", "second description", false, "number");
+        assertParameterMetadata(built.parameters.get(1), "first", "form", Boolean.TRUE,
+                true, "first-source", "f%69rst", "%6Fne", "first description", true, "string");
+    }
+
+    @Test
+    void insertingQueryRowDoesNotShiftExistingMetadata() throws Exception {
+        ApiRequest request = requestWithDistinctParameterMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            paramsModel(panel).insertRow(0, new Object[]{
+                    "new", "value", Boolean.TRUE, "", null, null, Boolean.TRUE,
+                    Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE
+            });
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.parameters).extracting(p -> p.key).containsExactly("new", "first", "second");
+        ApiRequest.Parameter inserted = built.parameters.get(0);
+        assertThat(inserted.style).isNull();
+        assertThat(inserted.explode).isNull();
+        assertThat(inserted.allowReserved).isFalse();
+        assertThat(inserted.source).isEqualTo("workbench");
+        assertParameterMetadata(built.parameters.get(1), "first", "form", Boolean.TRUE,
+                true, "first-source", "f%69rst", "%6Fne", "first description", true, "string");
+        assertParameterMetadata(built.parameters.get(2), "second", "spaceDelimited", null,
+                false, "second-source", "s%65cond", "t%77o", "second description", false, "number");
+    }
+
+    @Test
+    void reorderingUrlEncodedBodyRowsPreservesFileUploadMetadataByRow() throws Exception {
+        ApiRequest request = requestWithUrlEncodedFileMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).moveRow(1, 1, 0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded).extracting(f -> f.key).containsExactly("plain", "upload-meta");
+        assertThat(built.body.urlencoded).extracting(f -> f.fileUpload).containsExactly(false, true);
+    }
+
+    @Test
+    void deletingUrlEncodedBodyRowDoesNotTransferFileUploadMetadata() throws Exception {
+        ApiRequest request = requestWithUrlEncodedFileMetadata();
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).removeRow(0);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded).hasSize(1);
+        assertThat(built.body.urlencoded.get(0).key).isEqualTo("plain");
+        assertThat(built.body.urlencoded.get(0).fileUpload).isFalse();
+    }
+
     private static ApiRequest editWithoutChanges(ApiRequest request) throws Exception {
         return onEdt(() -> {
             RequestEditorPanel panel = new RequestEditorPanel();
@@ -125,6 +218,86 @@ class RequestEditorParameterFidelityTest {
         request.method = "GET";
         request.url = "https://example.test/a";
         return request;
+    }
+
+    private static ApiRequest requestWithDistinctParameterMetadata() {
+        ApiRequest request = request();
+        request.parameters.add(parameterWithMetadata("first", "one", "form", Boolean.TRUE, true,
+                "first-source", "f%69rst", "%6Fne", "first description", true, "string"));
+        request.parameters.add(parameterWithMetadata("second", "two", "spaceDelimited", null, false,
+                "second-source", "s%65cond", "t%77o", "second description", false, "number"));
+        request.url = "https://example.test/a?f%69rst=%6Fne&s%65cond=t%77o";
+        return request;
+    }
+
+    private static ApiRequest.Parameter parameterWithMetadata(String key,
+                                                              String value,
+                                                              String style,
+                                                              Boolean explode,
+                                                              boolean allowReserved,
+                                                              String source,
+                                                              String rawKey,
+                                                              String rawValue,
+                                                              String description,
+                                                              boolean required,
+                                                              String type) {
+        ApiRequest.Parameter parameter = parameter(key, value, false);
+        parameter.style = style;
+        parameter.explode = explode;
+        parameter.allowReserved = allowReserved;
+        parameter.source = source;
+        parameter.rawKey = rawKey;
+        parameter.rawValue = rawValue;
+        parameter.description = description;
+        parameter.required = required;
+        parameter.type = type;
+        return parameter;
+    }
+
+    private static ApiRequest requestWithUrlEncodedFileMetadata() {
+        ApiRequest request = request();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "urlencoded";
+        ApiRequest.Body.FormField upload = new ApiRequest.Body.FormField("upload-meta", "one");
+        upload.type = "text";
+        upload.fileUpload = true;
+        ApiRequest.Body.FormField plain = new ApiRequest.Body.FormField("plain", "two");
+        plain.type = "text";
+        plain.fileUpload = false;
+        request.body.urlencoded.add(upload);
+        request.body.urlencoded.add(plain);
+        return request;
+    }
+
+    private static void assertParameterMetadata(ApiRequest.Parameter parameter,
+                                                String key,
+                                                String style,
+                                                Boolean explode,
+                                                boolean allowReserved,
+                                                String source,
+                                                String rawKey,
+                                                String rawValue,
+                                                String description,
+                                                boolean required,
+                                                String type) {
+        assertThat(parameter.key).isEqualTo(key);
+        assertThat(parameter.style).isEqualTo(style);
+        assertThat(parameter.explode).isEqualTo(explode);
+        assertThat(parameter.allowReserved).isEqualTo(allowReserved);
+        assertThat(parameter.source).isEqualTo(source);
+        assertThat(parameter.rawKey).isEqualTo(rawKey);
+        assertThat(parameter.rawValue).isEqualTo(rawValue);
+        assertThat(parameter.description).isEqualTo(description);
+        assertThat(parameter.required).isEqualTo(required);
+        assertThat(parameter.type).isEqualTo(type);
+    }
+
+    private static DefaultTableModel paramsModel(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "paramsModel");
+    }
+
+    private static DefaultTableModel bodyFormModel(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "bodyFormModel");
     }
 
     private static ApiRequest.Parameter parameter(String key, String value, boolean disabled) {

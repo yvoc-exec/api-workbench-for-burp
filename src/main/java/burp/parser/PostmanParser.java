@@ -527,30 +527,28 @@ public class PostmanParser implements CollectionParser {
         }
 
         List<ApiRequest.Parameter> rawParameters = RequestParameterSupport.parseQueryParameters(raw, "postman:url.raw");
+        boolean hasStructuredQuery = urlObj.has("query") && urlObj.get("query").isJsonArray();
+        if (!hasStructuredQuery) {
+            return new ParsedPostmanUrl(
+                    RequestParameterSupport.materializeUrl(authoredUrl, rawParameters, null),
+                    rawParameters);
+        }
+
         List<ApiRequest.Parameter> parameters = parsePostmanQueryRows(urlObj.get("query"));
-        boolean[] matchedRaw = new boolean[rawParameters.size()];
-        int nextRaw = 0;
-        for (ApiRequest.Parameter parameter : parameters) {
-            if (parameter.disabled) {
+        boolean[] consumedRaw = new boolean[rawParameters.size()];
+        for (ApiRequest.Parameter structured : parameters) {
+            int match = findFirstUnconsumedRawMatch(rawParameters, consumedRaw, structured);
+            if (match < 0) {
                 continue;
             }
-            for (int i = nextRaw; i < rawParameters.size(); i++) {
-                ApiRequest.Parameter rawParameter = rawParameters.get(i);
-                if (!matchedRaw[i]
-                        && Objects.equals(parameter.key, rawParameter.key)
-                        && Objects.equals(parameter.value != null ? parameter.value : "",
-                                rawParameter.value != null ? rawParameter.value : "")) {
-                    parameter.rawKey = rawParameter.rawKey;
-                    parameter.rawValue = rawParameter.rawValue;
-                    parameter.valuePresent = rawParameter.valuePresent;
-                    matchedRaw[i] = true;
-                    nextRaw = i + 1;
-                    break;
-                }
-            }
+            ApiRequest.Parameter rawParameter = rawParameters.get(match);
+            structured.rawKey = rawParameter.rawKey;
+            structured.rawValue = rawParameter.rawValue;
+            structured.valuePresent = rawParameter.valuePresent;
+            consumedRaw[match] = true;
         }
         for (int i = 0; i < rawParameters.size(); i++) {
-            if (!matchedRaw[i]) {
+            if (!consumedRaw[i]) {
                 ApiRequest.Parameter unmatched = rawParameters.get(i);
                 unmatched.source = "postman:url.raw-unmatched";
                 parameters.add(unmatched);
@@ -559,6 +557,28 @@ public class PostmanParser implements CollectionParser {
         return new ParsedPostmanUrl(
                 RequestParameterSupport.materializeUrl(authoredUrl, parameters, null),
                 parameters);
+    }
+
+    private int findFirstUnconsumedRawMatch(List<ApiRequest.Parameter> rawParameters,
+                                            boolean[] consumedRaw,
+                                            ApiRequest.Parameter structured) {
+        for (int i = 0; i < rawParameters.size(); i++) {
+            if (!consumedRaw[i] && equivalentDecodedParameter(rawParameters.get(i), structured)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private boolean equivalentDecodedParameter(ApiRequest.Parameter left, ApiRequest.Parameter right) {
+        return left != null
+                && right != null
+                && Objects.equals(left.key, right.key)
+                && Objects.equals(normalizedParameterValue(left.value), normalizedParameterValue(right.value));
+    }
+
+    private String normalizedParameterValue(String value) {
+        return value != null ? value : "";
     }
 
     private String joinUrlParts(JsonElement element, String delimiter) {

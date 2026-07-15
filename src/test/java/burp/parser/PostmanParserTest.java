@@ -410,6 +410,97 @@ class PostmanParserTest {
     }
 
     @Test
+    void disabledStructuredQueryConsumesMatchingRawWithoutReactivation() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?skip=x",
+                   "query":[{"key":"skip","value":"x","disabled":true}]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(1);
+        ApiRequest.Parameter parameter = request.parameters.get(0);
+        assertThat(parameter.key).isEqualTo("skip");
+        assertThat(parameter.disabled).isTrue();
+        assertThat(parameter.source).isEqualTo("postman:url.query");
+        assertThat(parameter.rawKey).isEqualTo("skip");
+        assertThat(parameter.rawValue).isEqualTo("x");
+        assertThat(request.url).isEqualTo("https://example.test/a");
+        assertThat(request.parameters).extracting(p -> p.source)
+                .doesNotContain("postman:url.raw-unmatched");
+    }
+
+    @Test
+    void reorderedStructuredQueryConsumesRawRowsWithoutDuplicates() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?a=1&b=2",
+                   "query":[{"key":"b","value":"2"},{"key":"a","value":"1"}]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("b", "a");
+        assertThat(request.parameters).filteredOn(p -> "a".equals(p.key)).hasSize(1);
+        assertThat(request.parameters).filteredOn(p -> "b".equals(p.key)).hasSize(1);
+        assertThat(request.url).isEqualTo("https://example.test/a?b=2&a=1");
+    }
+
+    @Test
+    void duplicateOccurrencesConsumeRawRowsOneForOne() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?tag=x&tag=x",
+                   "query":[
+                     {"key":"tag","value":"x","description":"first"},
+                     {"key":"tag","value":"x","description":"second"}
+                   ]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(2);
+        assertThat(request.parameters).extracting(p -> p.description).containsExactly("first", "second");
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.query");
+        assertThat(request.url).isEqualTo("https://example.test/a?tag=x&tag=x");
+    }
+
+    @Test
+    void rawOnlyPostmanUrlObjectImportsEachRawRowOnce() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?a=1&a=2"
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.value).containsExactly("1", "2");
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.raw");
+        assertThat(request.parameters).extracting(p -> p.source)
+                .doesNotContain("postman:url.raw-unmatched");
+    }
+
+    @Test
+    void disabledAndEnabledEquivalentStructuredRowsDoNotCreateExtraOccurrence() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?skip=x&skip=x",
+                   "query":[
+                     {"key":"skip","value":"x","disabled":true},
+                     {"key":"skip","value":"x"}
+                   ]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(2);
+        assertThat(request.parameters).extracting(p -> p.disabled).containsExactly(true, false);
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.query");
+        assertThat(request.url).isEqualTo("https://example.test/a?skip=x");
+    }
+
+    @Test
     void parsesLargeGeneratedPostmanCollection() throws Exception {
         StringBuilder items = new StringBuilder();
         for (int folder = 0; folder < 10; folder++) {

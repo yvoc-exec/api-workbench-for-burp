@@ -39,12 +39,16 @@ final class RequestEditorStateMapper {
     static final int PARAM_REQUIRED_MODEL_COLUMN = 7;
     static final int PARAM_TYPE_MODEL_COLUMN = 8;
     static final int PARAM_SOURCE_MODEL_COLUMN = 9;
+    static final int PARAM_STYLE_MODEL_COLUMN = 10;
+    static final int PARAM_EXPLODE_MODEL_COLUMN = 11;
+    static final int PARAM_ALLOW_RESERVED_MODEL_COLUMN = 12;
 
     static final int BODY_KEY_MODEL_COLUMN = 0;
     static final int BODY_VALUE_MODEL_COLUMN = 1;
     static final int BODY_ENABLED_MODEL_COLUMN = 2;
     static final int BODY_TYPE_MODEL_COLUMN = 3;
     static final int BODY_FILE_PATH_MODEL_COLUMN = 4;
+    static final int BODY_FILE_UPLOAD_MODEL_COLUMN = 5;
 
     private RequestEditorStateMapper() {
     }
@@ -201,12 +205,19 @@ final class RequestEditorStateMapper {
         req.id = currentRequest.id;
         req.sequenceOrder = currentRequest.sequenceOrder;
         req.method = (String) ctx.methodBox.getSelectedItem();
+        req.description = currentRequest.description;
+        req.disabled = currentRequest.disabled;
+        req.variables = copyVariables(currentRequest.variables);
         req.parameters = existingNonQueryParameters(currentRequest.parameters);
-        req.parameters.addAll(parametersFromTable(ctx.paramsModel, currentRequest.parameters));
-        req.url = RequestParameterSupport.materializeUrl(
-                ctx.urlField.getText(),
-                req.parameters,
-                null);
+        if (isUnchangedLegacyQueryView(currentRequest, ctx.urlField.getText(), ctx.paramsModel)) {
+            req.url = currentRequest.url;
+        } else {
+            req.parameters.addAll(parametersFromTable(ctx.paramsModel));
+            req.url = RequestParameterSupport.materializeUrl(
+                    ctx.urlField.getText(),
+                    req.parameters,
+                    null);
+        }
         req.editorMaterialized = true;
         req.buildMode = Boolean.TRUE.equals(ctx.exactHttpModeSupplier.get())
                 ? ApiRequest.BuildMode.EXACT_HTTP
@@ -261,11 +272,9 @@ final class RequestEditorStateMapper {
                 req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
                 if ("urlencoded".equals(bodyMode)) {
-                    req.body.urlencoded = formFieldsFromTable(ctx.bodyFormModel,
-                            existingBody != null ? existingBody.urlencoded : null, false);
+                    req.body.urlencoded = formFieldsFromTable(ctx.bodyFormModel, false);
                 } else {
-                    req.body.formdata = formFieldsFromTable(ctx.bodyFormModel,
-                            existingBody != null ? existingBody.formdata : null, true);
+                    req.body.formdata = formFieldsFromTable(ctx.bodyFormModel, true);
                 }
             }
         }
@@ -394,9 +403,16 @@ final class RequestEditorStateMapper {
             row[PARAM_VALUE_PRESENT_MODEL_COLUMN] = Boolean.FALSE;
             row[PARAM_REQUIRED_MODEL_COLUMN] = Boolean.FALSE;
             row[PARAM_SOURCE_MODEL_COLUMN] = "workbench";
+            row[PARAM_ALLOW_RESERVED_MODEL_COLUMN] = Boolean.FALSE;
+            row[PARAM_RAW_KEY_MODEL_COLUMN] = null;
+            row[PARAM_RAW_VALUE_MODEL_COLUMN] = null;
+            row[PARAM_TYPE_MODEL_COLUMN] = null;
+            row[PARAM_STYLE_MODEL_COLUMN] = null;
+            row[PARAM_EXPLODE_MODEL_COLUMN] = null;
         } else if (isBodyModel(model)) {
             row[BODY_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
             row[BODY_TYPE_MODEL_COLUMN] = "text";
+            row[BODY_FILE_UPLOAD_MODEL_COLUMN] = Boolean.FALSE;
         }
         model.addRow(row);
     }
@@ -413,14 +429,16 @@ final class RequestEditorStateMapper {
 
     private static boolean isParamsModel(DefaultTableModel model) {
         return model != null
-                && model.getColumnCount() == 10
-                && "Value Present".equals(String.valueOf(model.getColumnName(PARAM_VALUE_PRESENT_MODEL_COLUMN)));
+                && model.getColumnCount() == 13
+                && "Style".equals(String.valueOf(model.getColumnName(PARAM_STYLE_MODEL_COLUMN)))
+                && "Explode".equals(String.valueOf(model.getColumnName(PARAM_EXPLODE_MODEL_COLUMN)))
+                && "Allow Reserved".equals(String.valueOf(model.getColumnName(PARAM_ALLOW_RESERVED_MODEL_COLUMN)));
     }
 
     private static boolean isBodyModel(DefaultTableModel model) {
         return model != null
-                && model.getColumnCount() == 5
-                && "File Path".equals(String.valueOf(model.getColumnName(BODY_FILE_PATH_MODEL_COLUMN)));
+                && model.getColumnCount() == 6
+                && "File Upload".equals(String.valueOf(model.getColumnName(BODY_FILE_UPLOAD_MODEL_COLUMN)));
     }
 
     static void parseQueryToTable(String url, DefaultTableModel paramsModel) {
@@ -512,13 +530,16 @@ final class RequestEditorStateMapper {
                 parameter.key != null ? parameter.key : "",
                 parameter.value != null ? parameter.value : "",
                 !parameter.disabled,
-                parameter.description != null ? parameter.description : "",
-                parameter.rawKey != null ? parameter.rawKey : "",
-                parameter.rawValue != null ? parameter.rawValue : "",
+                parameter.description,
+                parameter.rawKey,
+                parameter.rawValue,
                 parameter.valuePresent,
                 parameter.required,
-                parameter.type != null ? parameter.type : "",
-                parameter.source != null ? parameter.source : ""
+                parameter.type,
+                parameter.source,
+                parameter.style,
+                parameter.explode,
+                parameter.allowReserved
         });
     }
 
@@ -532,7 +553,8 @@ final class RequestEditorStateMapper {
                 field.value != null ? field.value : "",
                 !field.disabled,
                 type,
-                field.filePath != null ? field.filePath : ""
+                field.filePath != null ? field.filePath : "",
+                field.fileUpload
         };
     }
 
@@ -546,22 +568,54 @@ final class RequestEditorStateMapper {
         return parameters;
     }
 
-    private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model) {
-        return parametersFromTable(model, null);
-    }
-
-    private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model,
-                                                                   List<ApiRequest.Parameter> existing) {
-        List<ApiRequest.Parameter> parameters = new ArrayList<>();
-        List<ApiRequest.Parameter> existingQuery = new ArrayList<>();
-        if (existing != null) {
-            for (ApiRequest.Parameter parameter : existing) {
-                if (parameter != null && parameter.isQuery()) {
-                    existingQuery.add(parameter);
-                }
+    private static boolean isUnchangedLegacyQueryView(ApiRequest currentRequest,
+                                                       String editorUrl,
+                                                       DefaultTableModel paramsModel) {
+        if (currentRequest == null
+                || RequestParameterSupport.hasQueryParameters(currentRequest.parameters)
+                || !Objects.equals(editorUrl, currentRequest.url)) {
+            return false;
+        }
+        List<ApiRequest.Parameter> expected = RequestParameterSupport.parseQueryParameters(
+                currentRequest.url,
+                "legacy:url");
+        List<ApiRequest.Parameter> actual = parametersFromTable(paramsModel);
+        if (expected.size() != actual.size()) {
+            return false;
+        }
+        for (int i = 0; i < expected.size(); i++) {
+            if (!equalParameterFields(expected.get(i), actual.get(i))) {
+                return false;
             }
         }
-        int existingIndex = 0;
+        return true;
+    }
+
+    private static boolean equalParameterFields(ApiRequest.Parameter left, ApiRequest.Parameter right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null) {
+            return false;
+        }
+        return Objects.equals(left.location, right.location)
+                && Objects.equals(left.key, right.key)
+                && Objects.equals(left.value, right.value)
+                && Objects.equals(left.rawKey, right.rawKey)
+                && Objects.equals(left.rawValue, right.rawValue)
+                && left.valuePresent == right.valuePresent
+                && left.disabled == right.disabled
+                && left.required == right.required
+                && Objects.equals(left.type, right.type)
+                && Objects.equals(left.description, right.description)
+                && Objects.equals(left.style, right.style)
+                && Objects.equals(left.explode, right.explode)
+                && left.allowReserved == right.allowReserved
+                && Objects.equals(left.source, right.source);
+    }
+
+    private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model) {
+        List<ApiRequest.Parameter> parameters = new ArrayList<>();
         for (int i = 0; i < model.getRowCount(); i++) {
             String key = tableString(model, i, PARAM_KEY_MODEL_COLUMN);
             String value = tableString(model, i, PARAM_VALUE_MODEL_COLUMN);
@@ -569,32 +623,21 @@ final class RequestEditorStateMapper {
                 continue;
             }
             ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value != null ? value : "");
-            ApiRequest.Parameter prior = existingIndex < existingQuery.size()
-                    ? existingQuery.get(existingIndex)
-                    : null;
-            if (prior != null) {
-                parameter.style = prior.style;
-                parameter.explode = prior.explode;
-                parameter.allowReserved = prior.allowReserved;
-            }
-            existingIndex++;
             if (isParamsModel(model)) {
                 Object enabledValue = model.getValueAt(i, PARAM_ENABLED_MODEL_COLUMN);
                 parameter.disabled = Boolean.FALSE.equals(enabledValue);
-                String source = tableString(model, i, PARAM_SOURCE_MODEL_COLUMN);
-                boolean legacy = "legacy:url".equals(source);
-                parameter.description = optionalMetadata(tableString(model, i, PARAM_DESCRIPTION_MODEL_COLUMN),
-                        prior != null ? prior.description : null, false);
-                parameter.rawKey = optionalMetadata(tableString(model, i, PARAM_RAW_KEY_MODEL_COLUMN),
-                        prior != null ? prior.rawKey : null, legacy);
-                parameter.rawValue = optionalMetadata(tableString(model, i, PARAM_RAW_VALUE_MODEL_COLUMN),
-                        prior != null ? prior.rawValue : null, legacy);
+                parameter.description = nullableTableString(model, i, PARAM_DESCRIPTION_MODEL_COLUMN);
+                parameter.rawKey = nullableTableString(model, i, PARAM_RAW_KEY_MODEL_COLUMN);
+                parameter.rawValue = nullableTableString(model, i, PARAM_RAW_VALUE_MODEL_COLUMN);
                 parameter.valuePresent = Boolean.TRUE.equals(model.getValueAt(i, PARAM_VALUE_PRESENT_MODEL_COLUMN))
                         || (value != null && !value.isEmpty());
                 parameter.required = Boolean.TRUE.equals(model.getValueAt(i, PARAM_REQUIRED_MODEL_COLUMN));
-                parameter.type = optionalMetadata(tableString(model, i, PARAM_TYPE_MODEL_COLUMN),
-                        prior != null ? prior.type : null, false);
-                parameter.source = optionalMetadata(source, prior != null ? prior.source : null, false);
+                parameter.type = nullableTableString(model, i, PARAM_TYPE_MODEL_COLUMN);
+                parameter.source = nullableTableString(model, i, PARAM_SOURCE_MODEL_COLUMN);
+                parameter.style = nullableTableString(model, i, PARAM_STYLE_MODEL_COLUMN);
+                parameter.explode = nullableTableBoolean(model, i, PARAM_EXPLODE_MODEL_COLUMN);
+                parameter.allowReserved = Boolean.TRUE.equals(
+                        model.getValueAt(i, PARAM_ALLOW_RESERVED_MODEL_COLUMN));
                 if (enabledValue == null) {
                     parameter.rawKey = java.net.URLEncoder.encode(key, java.nio.charset.StandardCharsets.UTF_8);
                     parameter.rawValue = java.net.URLEncoder.encode(value != null ? value : "", java.nio.charset.StandardCharsets.UTF_8);
@@ -608,34 +651,32 @@ final class RequestEditorStateMapper {
     }
 
     private static List<ApiRequest.Body.FormField> formFieldsFromTable(DefaultTableModel model,
-                                                                       List<ApiRequest.Body.FormField> existing,
                                                                        boolean multipart) {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
-        int existingIndex = 0;
         for (int i = 0; i < model.getRowCount(); i++) {
             String key = tableString(model, i, BODY_KEY_MODEL_COLUMN);
             if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            ApiRequest.Body.FormField prior = existing != null && existingIndex < existing.size()
-                    ? existing.get(existingIndex)
-                    : null;
-            existingIndex++;
             String value = tableString(model, i, BODY_VALUE_MODEL_COLUMN);
-            String type = emptyToNull(tableString(model, i, BODY_TYPE_MODEL_COLUMN));
+            String type = nullableTableString(model, i, BODY_TYPE_MODEL_COLUMN);
             String filePath = emptyToNull(tableString(model, i, BODY_FILE_PATH_MODEL_COLUMN));
+            boolean hiddenFileUpload = isBodyModel(model)
+                    && Boolean.TRUE.equals(model.getValueAt(i, BODY_FILE_UPLOAD_MODEL_COLUMN));
             ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value != null ? value : "");
             field.disabled = isBodyModel(model)
                     && Boolean.FALSE.equals(model.getValueAt(i, BODY_ENABLED_MODEL_COLUMN));
-            field.type = type != null ? type : "text";
+            field.type = type;
             field.filePath = filePath;
             if (multipart) {
-                field.fileUpload = "file".equalsIgnoreCase(field.type) || filePath != null;
-                if (field.fileUpload && type == null) {
+                field.fileUpload = hiddenFileUpload
+                        || "file".equalsIgnoreCase(field.type)
+                        || field.filePath != null;
+                if (field.fileUpload && (field.type == null || field.type.isBlank())) {
                     field.type = "file";
                 }
             } else {
-                field.fileUpload = prior != null && prior.fileUpload;
+                field.fileUpload = hiddenFileUpload;
             }
             fields.add(field);
         }
@@ -650,15 +691,24 @@ final class RequestEditorStateMapper {
         return value != null ? String.valueOf(value) : "";
     }
 
-    private static String emptyToNull(String value) {
-        return value == null || value.isEmpty() ? null : value;
+    private static String nullableTableString(DefaultTableModel model, int row, int column) {
+        if (model == null || column < 0 || column >= model.getColumnCount()) {
+            return null;
+        }
+        Object value = model.getValueAt(row, column);
+        return value != null ? String.valueOf(value) : null;
     }
 
-    private static String optionalMetadata(String value, String prior, boolean keepEmpty) {
-        if (value != null && !value.isEmpty()) {
-            return value;
+    private static Boolean nullableTableBoolean(DefaultTableModel model, int row, int column) {
+        if (model == null || column < 0 || column >= model.getColumnCount()) {
+            return null;
         }
-        return keepEmpty || (prior != null && prior.isEmpty()) ? "" : null;
+        Object value = model.getValueAt(row, column);
+        return value instanceof Boolean ? (Boolean) value : null;
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
     }
 
     private static List<ApiRequest.Body.FormField> copyFormFields(List<ApiRequest.Body.FormField> fields) {
@@ -668,6 +718,26 @@ final class RequestEditorStateMapper {
         }
         for (ApiRequest.Body.FormField field : fields) {
             copy.add(copyFormField(field));
+        }
+        return copy;
+    }
+
+    private static List<ApiRequest.Variable> copyVariables(List<ApiRequest.Variable> variables) {
+        List<ApiRequest.Variable> copy = new ArrayList<>();
+        if (variables == null) {
+            return copy;
+        }
+        for (ApiRequest.Variable variable : variables) {
+            if (variable == null) {
+                copy.add(null);
+                continue;
+            }
+            ApiRequest.Variable item = new ApiRequest.Variable();
+            item.key = variable.key;
+            item.value = variable.value;
+            item.type = variable.type;
+            item.enabled = variable.enabled;
+            copy.add(item);
         }
         return copy;
     }

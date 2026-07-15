@@ -17,6 +17,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -450,6 +452,101 @@ class RequestEditorExactTransportModeTest {
         assertThat(built.exactHttpRequest.pristine).isTrue();
         assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
         assertThat(built.body.raw).isNull();
+    }
+
+    @Test
+    void untouchedLegacyExactQueryKeepsPristineSnapshotAndEmptyParameterList() throws Exception {
+        ApiRequest request = legacyExactQueryRequest();
+        byte[] originalRaw = request.exactHttpRequest.rawRequestBytes.clone();
+        String originalFingerprint = request.exactHttpRequest.semanticFingerprint;
+        ApiRequest.Variable originalVariable = request.variables.get(0);
+
+        ApiRequest built = editOnEdt(request, panel -> {
+        });
+
+        assertThat(built.url).isEqualTo(request.url);
+        assertThat(built.parameters).isEmpty();
+        assertThat(built.description).isEqualTo(request.description);
+        assertThat(built.disabled).isEqualTo(request.disabled);
+        assertThat(built.variables).isNotSameAs(request.variables).hasSize(1);
+        assertThat(built.variables.get(0)).isNotSameAs(originalVariable)
+                .usingRecursiveComparison().isEqualTo(originalVariable);
+        assertThat(built.exactHttpRequest.rawRequestBytes).containsExactly(originalRaw);
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+        assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
+        assertThat(built.computeSemanticFingerprint()).isEqualTo(originalFingerprint);
+        assertThat(built.exactHttpRequest.semanticFingerprint).isEqualTo(originalFingerprint);
+    }
+
+    @Test
+    void editingLegacyExactQueryMaterializesParametersAndInvalidatesSnapshot() throws Exception {
+        ApiRequest request = legacyExactQueryRequest();
+
+        ApiRequest built = editOnEdt(request, panel -> {
+            DefaultTableModel model = paramsModel(panel);
+            model.setValueAt("changed value", 0, RequestEditorStateMapper.PARAM_VALUE_MODEL_COLUMN);
+        });
+
+        assertThat(built.parameters).hasSize(4);
+        assertThat(built.url).isEqualTo(
+                "https://example.test/search?q=changed%20value&q=two&flag&empty=#fragment");
+        assertThat(built.exactHttpRequest.pristine).isFalse();
+        assertThat(built.exactHttpRequest.invalidationReason)
+                .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+    }
+
+    @Test
+    void reorderingLegacyExactQueryIsARealSemanticEdit() throws Exception {
+        ApiRequest request = legacyExactQueryRequest();
+
+        ApiRequest built = editOnEdt(request, panel -> paramsModel(panel).moveRow(1, 1, 0));
+
+        assertThat(built.parameters).extracting(p -> p.value)
+                .containsExactly("two", "hello world", "", "");
+        assertThat(built.url).isEqualTo(
+                "https://example.test/search?q=two&q=hello%20world&flag&empty=#fragment");
+        assertThat(built.exactHttpRequest.pristine).isFalse();
+        assertThat(built.exactHttpRequest.invalidationReason)
+                .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+    }
+
+    private static ApiRequest legacyExactQueryRequest() {
+        ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
+        request.url = "https://example.test/search?q=hello%20world&q=two&flag&empty=#fragment";
+        request.description = "Legacy exact query";
+        request.disabled = true;
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "tenant";
+        variable.value = "acme";
+        variable.type = "string";
+        variable.enabled = false;
+        request.variables.add(variable);
+        request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "GET /search?q=hello%20world&q=two&flag&empty= HTTP/1.1\r\n"
+                        + "Host: example.test\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        return request;
+    }
+
+    private static ApiRequest editOnEdt(ApiRequest request,
+                                        java.util.function.Consumer<RequestEditorPanel> edit) throws Exception {
+        return onEdt(() -> {
+            RequestEditorPanel panel = panel();
+            panel.loadRequest(request);
+            edit.accept(panel);
+            return panel.buildRequestFromUI();
+        });
+    }
+
+    private static <T> T onEdt(Callable<T> action) throws Exception {
+        if (SwingUtilities.isEventDispatchThread()) {
+            return action.call();
+        }
+        FutureTask<T> task = new FutureTask<>(action);
+        SwingUtilities.invokeAndWait(task);
+        return task.get();
     }
 
     private static RequestEditorPanel panel() {
