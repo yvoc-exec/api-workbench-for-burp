@@ -689,6 +689,118 @@ class RequestEditorExactTransportModeTest {
         return field;
     }
 
+    @Test
+    void untouchedExactExplicitEmptyFilePathRemainsPristine() throws Exception {
+        ApiRequest.Body.FormField urlField = bodyField("a", "1", null, false, "");
+        ApiRequest.Body.FormField multipartField = bodyField("upload", "", null, true, "");
+
+        ApiRequest rebuiltUrl = assertUntouchedExactBodyPreserved("urlencoded", urlField);
+        ApiRequest rebuiltMultipart = assertUntouchedExactBodyPreserved("formdata", multipartField);
+
+        assertThat(rebuiltUrl.body.urlencoded.get(0).type).isNull();
+        assertThat(rebuiltUrl.body.urlencoded.get(0).filePath).isEmpty();
+        assertThat(rebuiltMultipart.body.formdata.get(0).type).isNull();
+        assertThat(rebuiltMultipart.body.formdata.get(0).filePath).isEmpty();
+    }
+
+    @Test
+    void valueOnlyEditPreservesEmptyPathButInvalidatesForValue() throws Exception {
+        ApiRequest request = exactBodyRequest(
+                "urlencoded", bodyField("a", "1", null, false, ""));
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).setValueAt(
+                "2", 0, RequestEditorStateMapper.BODY_VALUE_MODEL_COLUMN));
+
+        assertThat(built.body.urlencoded.get(0).value).isEqualTo("2");
+        assertThat(built.body.urlencoded.get(0).type).isNull();
+        assertThat(built.body.urlencoded.get(0).filePath).isEmpty();
+        assertExactSemanticInvalidation(built);
+    }
+
+    @Test
+    void clearingFilePathInvalidatesExactSnapshot() throws Exception {
+        ApiRequest request = exactBodyRequest(
+                "formdata", bodyField("upload", "", null, true, "/tmp/file.bin"));
+
+        ApiRequest built = editOnEdt(request, panel -> bodyFormModel(panel).setValueAt(
+                "", 0, RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN));
+
+        assertThat(built.body.formdata.get(0).filePath).isNull();
+        assertExactSemanticInvalidation(built);
+    }
+
+    @Test
+    void untouchedExactEmptyKeyQueryRowsRemainPristine() throws Exception {
+        ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
+        request.parameters.add(queryField("", "x", true, "", "x"));
+        request.parameters.add(queryField(" ", "two", true, "%20", "two"));
+        request.parameters.add(queryField("", "", false, "", ""));
+        request.url = "http://example.com/path?=x&%20=two&";
+        initializeExactSnapshot(request, "GET /path?=x&%20=two& HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        String fingerprint = request.computeSemanticFingerprint();
+        byte[] raw = request.exactHttpRequest.rawRequestBytes.clone();
+
+        ApiRequest built = editOnEdt(request, panel -> {
+        });
+
+        assertThat(built.parameters).extracting(parameter -> parameter.key)
+                .containsExactly("", " ", "");
+        assertThat(built.url).isEqualTo(request.url);
+        assertThat(built.computeSemanticFingerprint()).isEqualTo(fingerprint);
+        assertThat(built.exactHttpRequest.rawRequestBytes).containsExactly(raw);
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+        assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
+    }
+
+    @Test
+    void untouchedExactEmptyKeyBodyRowsRemainPristine() throws Exception {
+        ApiRequest rebuiltUrl = assertUntouchedExactBodyPreserved(
+                "urlencoded", bodyField("", "one", null, false, null));
+        ApiRequest rebuiltMultipart = assertUntouchedExactBodyPreserved(
+                "formdata", bodyField("", "two", null, true, ""));
+
+        assertThat(rebuiltUrl.body.urlencoded.get(0).key).isEmpty();
+        assertThat(rebuiltMultipart.body.formdata.get(0).key).isEmpty();
+    }
+
+    @Test
+    void untouchedLegacyEmptyQuerySegmentsRemainPristine() throws Exception {
+        ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
+        request.url = "https://example.test/a?=x&flag&&tail=&";
+        initializeExactSnapshot(request,
+                "GET /a?=x&flag&&tail=& HTTP/1.1\r\nHost: example.test\r\n\r\n");
+        String fingerprint = request.computeSemanticFingerprint();
+        byte[] raw = request.exactHttpRequest.rawRequestBytes.clone();
+
+        ApiRequest built = editOnEdt(request, panel -> {
+        });
+
+        assertThat(built.parameters).isEmpty();
+        assertThat(built.url).isEqualTo(request.url);
+        assertThat(built.computeSemanticFingerprint()).isEqualTo(fingerprint);
+        assertThat(built.exactHttpRequest.rawRequestBytes).containsExactly(raw);
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+        assertThat(built.exactHttpRequest.invalidationReason).isNullOrEmpty();
+    }
+
+    private static ApiRequest.Parameter queryField(
+            String key, String value, boolean valuePresent, String rawKey, String rawValue) {
+        ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
+        parameter.valuePresent = valuePresent;
+        parameter.rawKey = rawKey;
+        parameter.rawValue = rawValue;
+        parameter.source = "test";
+        return parameter;
+    }
+
+    private static void initializeExactSnapshot(ApiRequest request, String rawRequest) {
+        request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = rawRequest.getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+    }
+
     private static ApiRequest legacyExactQueryRequest() {
         ApiRequest request = request(ApiRequest.BuildMode.EXACT_HTTP);
         request.url = "https://example.test/search?q=hello%20world&q=two&flag&empty=#fragment";

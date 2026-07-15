@@ -67,6 +67,34 @@ class RequestBuilderParameterTest {
         assertThat(target(request, new VariableResolver())).isEqualTo("GET /a?legacy=hello%20world HTTP/1.1");
     }
 
+    @Test
+    void emptyQueryKeysAndSegmentsReachRequestTarget() throws Exception {
+        ApiRequest request = request("https://example.test/a");
+        request.parameters.add(parameter("", "x", true, false));
+        request.parameters.add(parameter("", "", false, false));
+        request.parameters.add(parameter("k", "v", true, false));
+        request.parameters.add(parameter("", "", false, false));
+
+        assertThat(target(request, new VariableResolver()))
+                .isEqualTo("GET /a?=x&&k=v& HTTP/1.1");
+    }
+
+    @Test
+    void singleBareEmptyKeyProducesTerminalQuestionMark() throws Exception {
+        ApiRequest request = request("https://example.test/a");
+        request.parameters.add(parameter("", "", false, false));
+
+        assertThat(target(request, new VariableResolver())).isEqualTo("GET /a? HTTP/1.1");
+    }
+
+    @Test
+    void whitespaceQueryKeyUsesEncodedTransportForm() throws Exception {
+        ApiRequest request = request("https://example.test/a");
+        request.parameters.add(parameter(" ", "x", true, false));
+
+        assertThat(target(request, new VariableResolver())).isEqualTo("GET /a?%20=x HTTP/1.1");
+    }
+
     private String target(ApiRequest request, VariableResolver resolver) throws Exception {
         return new String(builder.buildRequest(request, resolver), StandardCharsets.UTF_8).split("\\r\\n", 2)[0];
     }

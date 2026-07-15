@@ -284,6 +284,136 @@ class RequestEditorParameterFidelityTest {
         });
     }
 
+    @Test
+    void existingEmptyAndWhitespaceQueryKeysSurviveRebuild() throws Exception {
+        ApiRequest request = request();
+        ApiRequest.Parameter emptyValue = queryMetadata("", "x", true, "", "x", "empty value");
+        ApiRequest.Parameter whitespace = queryMetadata(" ", "two", true, "%20", "two", "space key");
+        ApiRequest.Parameter emptySegment = queryMetadata("", "", false, "", "", "empty segment");
+        request.parameters.add(emptyValue);
+        request.parameters.add(whitespace);
+        request.parameters.add(emptySegment);
+        request.url = "https://example.test/a?=x&%20=two&";
+
+        ApiRequest built = editWithoutChanges(request);
+
+        assertThat(built.parameters).hasSize(3);
+        assertThat(built.parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactly(emptyValue, whitespace, emptySegment);
+        assertThat(built.url).isEqualTo("https://example.test/a?=x&%20=two&");
+    }
+
+    @Test
+    void existingEmptyAndWhitespaceBodyKeysSurviveRebuild() throws Exception {
+        ApiRequest urlEncoded = request();
+        urlEncoded.body = new ApiRequest.Body();
+        urlEncoded.body.mode = "urlencoded";
+        urlEncoded.body.urlencoded.add(bodyField("", "one", null, false, null));
+        urlEncoded.body.urlencoded.add(bodyField(" ", "two", "", true, ""));
+
+        ApiRequest multipart = request();
+        multipart.body = new ApiRequest.Body();
+        multipart.body.mode = "formdata";
+        multipart.body.formdata.add(bodyField("", "one", null, false, null));
+        multipart.body.formdata.add(bodyField(" ", "two", null, true, "/tmp/file.bin"));
+
+        ApiRequest rebuiltUrlEncoded = editWithoutChanges(urlEncoded);
+        ApiRequest rebuiltMultipart = editWithoutChanges(multipart);
+
+        assertThat(rebuiltUrlEncoded.body.urlencoded).extracting(field -> field.key)
+                .containsExactly("", " ");
+        assertThat(rebuiltUrlEncoded.body.urlencoded.get(1).filePath).isEmpty();
+        assertThat(rebuiltMultipart.body.formdata).extracting(field -> field.key)
+                .containsExactly("", " ");
+        assertThat(rebuiltMultipart.body.formdata.get(1).filePath).isEqualTo("/tmp/file.bin");
+    }
+
+    @Test
+    void starterParameterRowIsNotMaterialized() throws Exception {
+        assertThat(editWithoutChanges(request()).parameters).isEmpty();
+    }
+
+    @Test
+    void starterBodyRowIsNotMaterialized() throws Exception {
+        ApiRequest request = request();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "urlencoded";
+
+        assertThat(editWithoutChanges(request).body.urlencoded).isEmpty();
+    }
+
+    @Test
+    void existingEmptyKeyRowsReceiveSeparateStarterRows() throws Exception {
+        ApiRequest request = request();
+        request.parameters.add(queryMetadata("", "x", true, "", "x", "empty"));
+        request.url = "https://example.test/a?=x";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "urlencoded";
+        request.body.urlencoded.add(bodyField("", "one", null, false, null));
+
+        onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            DefaultTableModel params = paramsModel(panel);
+            DefaultTableModel body = bodyFormModel(panel);
+
+            assertThat(params.getRowCount()).isEqualTo(2);
+            assertThat(params.getValueAt(0, RequestEditorStateMapper.PARAM_EXISTING_ROW_MODEL_COLUMN))
+                    .isEqualTo(Boolean.TRUE);
+            assertThat(params.getValueAt(1, RequestEditorStateMapper.PARAM_EXISTING_ROW_MODEL_COLUMN))
+                    .isEqualTo(Boolean.FALSE);
+            assertThat(body.getRowCount()).isEqualTo(2);
+            assertThat(body.getValueAt(0, RequestEditorStateMapper.BODY_EXISTING_ROW_MODEL_COLUMN))
+                    .isEqualTo(Boolean.TRUE);
+            assertThat(body.getValueAt(1, RequestEditorStateMapper.BODY_EXISTING_ROW_MODEL_COLUMN))
+                    .isEqualTo(Boolean.FALSE);
+            return null;
+        });
+    }
+
+    @Test
+    void untouchedExplicitEmptyFilePathRemainsEmpty() throws Exception {
+        ApiRequest request = requestWithSingleBodyField(
+                "urlencoded", bodyField("a", "1", null, false, ""));
+
+        ApiRequest.Body.FormField rebuilt = editWithoutChanges(request).body.urlencoded.get(0);
+
+        assertThat(rebuilt.type).isNull();
+        assertThat(rebuilt.filePath).isEmpty();
+    }
+
+    @Test
+    void valueOnlyEditPreservesExplicitEmptyFilePath() throws Exception {
+        ApiRequest request = requestWithSingleBodyField(
+                "urlencoded", bodyField("a", "1", null, false, ""));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).setValueAt("2", 0, RequestEditorStateMapper.BODY_VALUE_MODEL_COLUMN);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.urlencoded.get(0).value).isEqualTo("2");
+        assertThat(built.body.urlencoded.get(0).type).isNull();
+        assertThat(built.body.urlencoded.get(0).filePath).isEmpty();
+    }
+
+    @Test
+    void clearingNonEmptyFilePathCommitsNull() throws Exception {
+        ApiRequest request = requestWithSingleBodyField(
+                "formdata", bodyField("a", "", null, true, "/tmp/file.bin"));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            bodyFormModel(panel).setValueAt("", 0, RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.body.formdata.get(0).filePath).isNull();
+    }
+
     private static ApiRequest editWithoutChanges(ApiRequest request) throws Exception {
         return onEdt(() -> {
             RequestEditorPanel panel = new RequestEditorPanel();
@@ -341,6 +471,31 @@ class RequestEditorParameterFidelityTest {
         parameter.required = required;
         parameter.type = type;
         return parameter;
+    }
+
+    private static ApiRequest.Parameter queryMetadata(
+            String key, String value, boolean valuePresent,
+            String rawKey, String rawValue, String description) {
+        ApiRequest.Parameter parameter = parameter(key, value, false);
+        parameter.valuePresent = valuePresent;
+        parameter.rawKey = rawKey;
+        parameter.rawValue = rawValue;
+        parameter.description = description;
+        parameter.source = "test";
+        return parameter;
+    }
+
+    private static ApiRequest requestWithSingleBodyField(
+            String mode, ApiRequest.Body.FormField field) {
+        ApiRequest request = request();
+        request.body = new ApiRequest.Body();
+        request.body.mode = mode;
+        if ("formdata".equals(mode)) {
+            request.body.formdata.add(field);
+        } else {
+            request.body.urlencoded.add(field);
+        }
+        return request;
     }
 
     private static ApiRequest requestWithNullableBodyMetadata() {

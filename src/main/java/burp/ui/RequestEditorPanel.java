@@ -333,7 +333,8 @@ public class RequestEditorPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout());
         paramsModel = new DefaultTableModel(new Object[]{
                 "Key", "Value", "Enabled", "Description", "Raw Key", "Raw Value",
-                "Value Present", "Required", "Type", "Source", "Style", "Explode", "Allow Reserved"
+                "Value Present", "Required", "Type", "Source", "Style", "Explode", "Allow Reserved",
+                "Existing Row"
         }, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -342,6 +343,7 @@ public class RequestEditorPanel extends JPanel {
                         || columnIndex == RequestEditorStateMapper.PARAM_REQUIRED_MODEL_COLUMN
                         || columnIndex == RequestEditorStateMapper.PARAM_EXPLODE_MODEL_COLUMN
                         || columnIndex == RequestEditorStateMapper.PARAM_ALLOW_RESERVED_MODEL_COLUMN
+                        || columnIndex == RequestEditorStateMapper.PARAM_EXISTING_ROW_MODEL_COLUMN
                         ? Boolean.class
                         : String.class;
             }
@@ -353,14 +355,14 @@ public class RequestEditorPanel extends JPanel {
         paramsTable.getColumnModel().getColumn(0).setMaxWidth(90);
         paramsTable.getColumnModel().getColumn(0).setMinWidth(64);
         paramsTable.getColumnModel().getColumn(0).setCellRenderer(paramsTable.getDefaultRenderer(Boolean.class));
-        for (int viewColumn = 12; viewColumn >= 4; viewColumn--) {
+        for (int viewColumn = 13; viewColumn >= 4; viewColumn--) {
             paramsTable.removeColumn(paramsTable.getColumnModel().getColumn(viewColumn));
         }
         panel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
         panel.add(RequestEditorTableSupport.createAddRemovePanel(paramsTable, paramsModel,
                 () -> new Object[]{
                         "", "", Boolean.TRUE, "", null, null, Boolean.FALSE,
-                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE
+                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE
                 }),
                 BorderLayout.SOUTH);
         RequestEditorStateMapper.ensureStarterRow(paramsModel);

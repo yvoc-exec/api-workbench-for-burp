@@ -63,6 +63,65 @@ class ApiWorkbenchParameterRoundTripTest {
         assertThat(request.parameters).hasSize(1);
     }
 
+    @Test
+    void nativeRoundTripRetainsEmptyQueryKeysAndSegments() throws Exception {
+        ApiRequest original = request();
+        original.parameters.clear();
+        ApiRequest.Parameter emptyValue = parameter("", "x", false);
+        emptyValue.rawKey = "";
+        emptyValue.rawValue = "x";
+        ApiRequest.Parameter whitespace = parameter(" ", "two", false);
+        whitespace.rawKey = "%20";
+        whitespace.rawValue = "two";
+        ApiRequest.Parameter emptySegment = parameter("", "", false);
+        emptySegment.rawKey = "";
+        emptySegment.rawValue = "";
+        emptySegment.valuePresent = false;
+        original.parameters.add(emptyValue);
+        original.parameters.add(whitespace);
+        original.parameters.add(emptySegment);
+
+        ApiRequest actual = roundTrip(original).requests.get(0);
+
+        assertThat(actual.parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(original.parameters);
+    }
+
+    @Test
+    void nativeRoundTripRetainsExplicitEmptyBodyFilePath() throws Exception {
+        ApiRequest original = request();
+        original.body = new ApiRequest.Body();
+        original.body.mode = "urlencoded";
+        original.body.urlencoded.add(bodyField("url", "1", ""));
+        original.body.formdata.add(bodyField("form", "2", ""));
+
+        ApiRequest actual = roundTrip(original).requests.get(0);
+
+        assertThat(actual.body.urlencoded.get(0).filePath).isEmpty();
+        assertThat(actual.body.formdata.get(0).filePath).isEmpty();
+    }
+
+    @Test
+    void nativeRoundTripRetainsEmptyBodyFieldKeys() throws Exception {
+        ApiRequest original = request();
+        original.body = new ApiRequest.Body();
+        original.body.mode = "urlencoded";
+        original.body.urlencoded.add(bodyField("", "one", null));
+        original.body.urlencoded.add(bodyField(" ", "two", ""));
+
+        ApiRequest actual = roundTrip(original).requests.get(0);
+
+        assertThat(actual.body.urlencoded).extracting(field -> field.key).containsExactly("", " ");
+        assertThat(actual.body.urlencoded).extracting(field -> field.filePath).containsExactly(null, "");
+    }
+
+    private static ApiRequest.Body.FormField bodyField(String key, String value, String filePath) {
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
+        field.type = null;
+        field.filePath = filePath;
+        return field;
+    }
+
     private ApiCollection roundTrip(ApiRequest request) throws Exception {
         Path file = tempDir.resolve("native.json");
         Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(export(request)), StandardCharsets.UTF_8);

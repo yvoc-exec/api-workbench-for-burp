@@ -66,6 +66,38 @@ class PostmanParameterRoundTripTest {
         assertThat(actual.parameters).extracting(p -> p.valuePresent).containsExactly(false, true, true, true);
     }
 
+    @Test
+    void emptyKeysAndEmptySegmentsSurvivePostmanRoundTrip() throws Exception {
+        ApiRequest request = new ApiRequest();
+        request.name = "R";
+        request.method = "GET";
+        request.url = "https://example.test/a?stale=1";
+        request.parameters.add(parameter("", "x", true, false, "empty key", "text"));
+        request.parameters.add(parameter("", "", false, false, "empty segment", "text"));
+        request.parameters.add(parameter(" ", "two", true, false, "space", "text"));
+        request.parameters.add(parameter("", "", false, false, "trailing", "text"));
+        request.parameters.add(parameter("", "disabled", true, true, "disabled", "text"));
+
+        JsonObject url = exportedUrl(request);
+        assertThat(url.get("raw").getAsString())
+                .isEqualTo("https://example.test/a?=x&&%20=two&");
+        assertThat(url.getAsJsonArray("query")).hasSize(5);
+        Path file = tempDir.resolve("postman-empty-segments.json");
+        Files.writeString(file, new GsonBuilder().create().toJson(export(request)), StandardCharsets.UTF_8);
+
+        ApiRequest actual = new PostmanParser().parse(file.toFile()).requests.get(0);
+
+        assertThat(actual.parameters).hasSize(5);
+        assertThat(actual.parameters).extracting(p -> p.key).containsExactly("", "", " ", "", "");
+        assertThat(actual.parameters).extracting(p -> p.value)
+                .containsExactly("x", "", "two", "", "disabled");
+        assertThat(actual.parameters).extracting(p -> p.valuePresent)
+                .containsExactly(true, false, true, false, true);
+        assertThat(actual.parameters).extracting(p -> p.disabled)
+                .containsExactly(false, false, false, false, true);
+        assertThat(actual.url).isEqualTo("https://example.test/a?=x&&%20=two&");
+    }
+
     private JsonObject exportedUrl(ApiRequest request) {
         JsonArray items = export(request).getAsJsonArray("item");
         return items.get(0).getAsJsonObject().getAsJsonObject("request").getAsJsonObject("url");

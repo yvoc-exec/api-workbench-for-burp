@@ -311,7 +311,7 @@ public class HttpUtils {
             path = "/";
         }
         String query = uri.getRawQuery();
-        return query == null || query.isEmpty() ? path : path + "?" + query;
+        return query == null ? path : path + "?" + query;
     }
 
     private static String normalizeRequestTarget(String value) {

@@ -544,7 +544,6 @@ public class PostmanParser implements CollectionParser {
             ApiRequest.Parameter rawParameter = rawParameters.get(match);
             structured.rawKey = rawParameter.rawKey;
             structured.rawValue = rawParameter.rawValue;
-            structured.valuePresent = rawParameter.valuePresent;
             consumedRaw[match] = true;
         }
         for (int i = 0; i < rawParameters.size(); i++) {
@@ -562,19 +561,34 @@ public class PostmanParser implements CollectionParser {
     private int findFirstUnconsumedRawMatch(List<ApiRequest.Parameter> rawParameters,
                                             boolean[] consumedRaw,
                                             ApiRequest.Parameter structured) {
+        int exactPresenceMatch = findFirstUnconsumedRawMatch(
+                rawParameters, consumedRaw, structured, true);
+        return exactPresenceMatch >= 0
+                ? exactPresenceMatch
+                : findFirstUnconsumedRawMatch(rawParameters, consumedRaw, structured, false);
+    }
+
+    private int findFirstUnconsumedRawMatch(List<ApiRequest.Parameter> rawParameters,
+                                            boolean[] consumedRaw,
+                                            ApiRequest.Parameter structured,
+                                            boolean requireMatchingValuePresence) {
         for (int i = 0; i < rawParameters.size(); i++) {
-            if (!consumedRaw[i] && equivalentDecodedParameter(rawParameters.get(i), structured)) {
+            if (!consumedRaw[i] && equivalentDecodedParameter(
+                    rawParameters.get(i), structured, requireMatchingValuePresence)) {
                 return i;
             }
         }
         return -1;
     }
 
-    private boolean equivalentDecodedParameter(ApiRequest.Parameter left, ApiRequest.Parameter right) {
+    private boolean equivalentDecodedParameter(ApiRequest.Parameter left,
+                                               ApiRequest.Parameter right,
+                                               boolean requireMatchingValuePresence) {
         return left != null
                 && right != null
                 && Objects.equals(left.key, right.key)
-                && Objects.equals(normalizedParameterValue(left.value), normalizedParameterValue(right.value));
+                && Objects.equals(normalizedParameterValue(left.value), normalizedParameterValue(right.value))
+                && (!requireMatchingValuePresence || left.valuePresent == right.valuePresent);
     }
 
     private String normalizedParameterValue(String value) {

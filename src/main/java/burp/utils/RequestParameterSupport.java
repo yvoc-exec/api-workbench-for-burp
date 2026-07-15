@@ -71,9 +71,6 @@ public final class RequestParameterSupport {
         int end = fragmentIndex >= 0 ? fragmentIndex : url.length();
         String query = url.substring(queryIndex + 1, end);
         for (String segment : query.split("&", -1)) {
-            if (segment.isEmpty()) {
-                continue;
-            }
             int equals = segment.indexOf('=');
             String rawKey = equals >= 0 ? segment.substring(0, equals) : segment;
             String rawValue = equals >= 0 ? segment.substring(equals + 1) : "";
@@ -112,21 +109,23 @@ public final class RequestParameterSupport {
         String fragment = fragmentIndex >= 0 ? stripped.substring(fragmentIndex) : "";
         String base = fragmentIndex >= 0 ? stripped.substring(0, fragmentIndex) : stripped;
         StringBuilder query = new StringBuilder();
+        boolean emittedAnyQueryParameter = false;
         for (ApiRequest.Parameter parameter : parameters) {
             if (parameter == null || !parameter.isQuery() || parameter.disabled) {
                 continue;
             }
             String key = resolve(resolver, parameter.key != null ? parameter.key : "");
             String value = resolve(resolver, parameter.value != null ? parameter.value : "");
-            if (query.length() > 0) {
+            if (emittedAnyQueryParameter) {
                 query.append('&');
             }
             query.append(renderComponent(parameter.rawKey, key, resolver, false));
             if (parameter.valuePresent) {
                 query.append('=').append(renderComponent(parameter.rawValue, value, resolver, parameter.allowReserved));
             }
+            emittedAnyQueryParameter = true;
         }
-        return base + (query.length() > 0 ? "?" + query : "") + fragment;
+        return base + (emittedAnyQueryParameter ? "?" + query : "") + fragment;
     }
 
     private static String renderComponent(String raw,

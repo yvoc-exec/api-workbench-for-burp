@@ -501,6 +501,88 @@ class PostmanParserTest {
     }
 
     @Test
+    void reorderedBareAndEmptyRowsPreserveStructuredValuePresence() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?x=&x",
+                   "query":[
+                     {"key":"x","description":"bare"},
+                     {"key":"x","value":"","description":"empty"}
+                   ]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(2);
+        assertThat(request.parameters).extracting(p -> p.valuePresent).containsExactly(false, true);
+        assertThat(request.parameters).extracting(p -> p.description).containsExactly("bare", "empty");
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.query");
+        assertThat(request.url).isEqualTo("https://example.test/a?x&x=");
+    }
+
+    @Test
+    void oppositeReorderedBareAndEmptyRowsPreserveStructuredValuePresence() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?x&x=",
+                   "query":[{"key":"x","value":""},{"key":"x"}]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.valuePresent).containsExactly(true, false);
+        assertThat(request.url).isEqualTo("https://example.test/a?x=&x");
+    }
+
+    @Test
+    void valuePresenceMismatchConsumesStaleRawWithoutDuplicate() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?x=","query":[{"key":"x"}]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(1);
+        assertThat(request.parameters.get(0).valuePresent).isFalse();
+        assertThat(request.parameters.get(0).source).isEqualTo("postman:url.query");
+        assertThat(request.url).isEqualTo("https://example.test/a?x");
+    }
+
+    @Test
+    void disabledValuePresenceMismatchDoesNotReactivateRawRow() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?x=","query":[{"key":"x","disabled":true}]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).hasSize(1);
+        assertThat(request.parameters.get(0).disabled).isTrue();
+        assertThat(request.parameters.get(0).valuePresent).isFalse();
+        assertThat(request.url).isEqualTo("https://example.test/a");
+    }
+
+    @Test
+    void structuredEmptyAndWhitespaceKeysRemainOrdered() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?=one&%20=two&normal=three",
+                   "query":[
+                     {"key":"","value":"one"},
+                     {"key":" ","value":"two"},
+                     {"key":"normal","value":"three"}
+                   ]
+                 }}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("", " ", "normal");
+        assertThat(request.url).isEqualTo("https://example.test/a?=one&%20=two&normal=three");
+    }
+
+    @Test
     void parsesLargeGeneratedPostmanCollection() throws Exception {
         StringBuilder items = new StringBuilder();
         for (int folder = 0; folder < 10; folder++) {

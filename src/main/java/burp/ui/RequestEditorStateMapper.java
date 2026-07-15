@@ -42,6 +42,7 @@ final class RequestEditorStateMapper {
     static final int PARAM_STYLE_MODEL_COLUMN = 10;
     static final int PARAM_EXPLODE_MODEL_COLUMN = 11;
     static final int PARAM_ALLOW_RESERVED_MODEL_COLUMN = 12;
+    static final int PARAM_EXISTING_ROW_MODEL_COLUMN = 13;
 
     static final int BODY_KEY_MODEL_COLUMN = 0;
     static final int BODY_VALUE_MODEL_COLUMN = 1;
@@ -390,11 +391,26 @@ final class RequestEditorStateMapper {
     }
 
     static void ensureStarterRow(DefaultTableModel model) {
-        int keyColumn = headerKeyColumn(model);
         if (model.getRowCount() > 0) {
-            String lastKey = (String) model.getValueAt(model.getRowCount() - 1, keyColumn);
-            if (lastKey == null || lastKey.trim().isEmpty()) {
-                return;
+            int lastRow = model.getRowCount() - 1;
+            if (isHeaderModel(model)) {
+                String lastKey = tableString(model, lastRow, HEADER_KEY_MODEL_COLUMN);
+                if (lastKey.trim().isEmpty()) {
+                    return;
+                }
+            } else if (isParamsModel(model)) {
+                if (isUntouchedNewParameterRow(model, lastRow)) {
+                    return;
+                }
+            } else if (isBodyModel(model)) {
+                if (isUntouchedNewBodyRow(model, lastRow)) {
+                    return;
+                }
+            } else {
+                String lastKey = tableString(model, lastRow, 0);
+                if (lastKey.trim().isEmpty()) {
+                    return;
+                }
             }
         }
         int cols = model.getColumnCount();
@@ -408,6 +424,7 @@ final class RequestEditorStateMapper {
             row[PARAM_REQUIRED_MODEL_COLUMN] = Boolean.FALSE;
             row[PARAM_SOURCE_MODEL_COLUMN] = "workbench";
             row[PARAM_ALLOW_RESERVED_MODEL_COLUMN] = Boolean.FALSE;
+            row[PARAM_EXISTING_ROW_MODEL_COLUMN] = Boolean.FALSE;
             row[PARAM_RAW_KEY_MODEL_COLUMN] = null;
             row[PARAM_RAW_VALUE_MODEL_COLUMN] = null;
             row[PARAM_TYPE_MODEL_COLUMN] = null;
@@ -425,6 +442,44 @@ final class RequestEditorStateMapper {
         model.addRow(row);
     }
 
+    private static boolean isUntouchedNewParameterRow(DefaultTableModel model, int row) {
+        if (!isParamsModel(model)
+                || Boolean.TRUE.equals(model.getValueAt(row, PARAM_EXISTING_ROW_MODEL_COLUMN))) {
+            return false;
+        }
+        String description = nullableTableString(model, row, PARAM_DESCRIPTION_MODEL_COLUMN);
+        String type = nullableTableString(model, row, PARAM_TYPE_MODEL_COLUMN);
+        String source = nullableTableString(model, row, PARAM_SOURCE_MODEL_COLUMN);
+        String style = nullableTableString(model, row, PARAM_STYLE_MODEL_COLUMN);
+        return tableString(model, row, PARAM_KEY_MODEL_COLUMN).isEmpty()
+                && tableString(model, row, PARAM_VALUE_MODEL_COLUMN).isEmpty()
+                && Boolean.TRUE.equals(model.getValueAt(row, PARAM_ENABLED_MODEL_COLUMN))
+                && (description == null || description.isEmpty())
+                && model.getValueAt(row, PARAM_RAW_KEY_MODEL_COLUMN) == null
+                && model.getValueAt(row, PARAM_RAW_VALUE_MODEL_COLUMN) == null
+                && !Boolean.TRUE.equals(model.getValueAt(row, PARAM_VALUE_PRESENT_MODEL_COLUMN))
+                && !Boolean.TRUE.equals(model.getValueAt(row, PARAM_REQUIRED_MODEL_COLUMN))
+                && (type == null || type.isEmpty())
+                && (source == null || source.isEmpty() || "workbench".equals(source))
+                && (style == null || style.isEmpty())
+                && model.getValueAt(row, PARAM_EXPLODE_MODEL_COLUMN) == null
+                && !Boolean.TRUE.equals(model.getValueAt(row, PARAM_ALLOW_RESERVED_MODEL_COLUMN));
+    }
+
+    private static boolean isUntouchedNewBodyRow(DefaultTableModel model, int row) {
+        return isBodyModel(model)
+                && !Boolean.TRUE.equals(model.getValueAt(row, BODY_EXISTING_ROW_MODEL_COLUMN))
+                && tableString(model, row, BODY_KEY_MODEL_COLUMN).isEmpty()
+                && tableString(model, row, BODY_VALUE_MODEL_COLUMN).isEmpty()
+                && Boolean.TRUE.equals(model.getValueAt(row, BODY_ENABLED_MODEL_COLUMN))
+                && "text".equals(nullableTableString(model, row, BODY_TYPE_MODEL_COLUMN))
+                && tableString(model, row, BODY_FILE_PATH_MODEL_COLUMN).isEmpty()
+                && !Boolean.TRUE.equals(model.getValueAt(row, BODY_FILE_UPLOAD_MODEL_COLUMN))
+                && model.getValueAt(row, BODY_ORIGINAL_TYPE_MODEL_COLUMN) == null
+                && model.getValueAt(row, BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN) == null
+                && !Boolean.TRUE.equals(model.getValueAt(row, BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN));
+    }
+
     private static boolean isHeaderModel(DefaultTableModel model) {
         return model != null
                 && model.getColumnCount() == 3
@@ -437,10 +492,12 @@ final class RequestEditorStateMapper {
 
     private static boolean isParamsModel(DefaultTableModel model) {
         return model != null
-                && model.getColumnCount() == 13
+                && model.getColumnCount() == 14
                 && "Style".equals(String.valueOf(model.getColumnName(PARAM_STYLE_MODEL_COLUMN)))
                 && "Explode".equals(String.valueOf(model.getColumnName(PARAM_EXPLODE_MODEL_COLUMN)))
-                && "Allow Reserved".equals(String.valueOf(model.getColumnName(PARAM_ALLOW_RESERVED_MODEL_COLUMN)));
+                && "Allow Reserved".equals(String.valueOf(model.getColumnName(PARAM_ALLOW_RESERVED_MODEL_COLUMN)))
+                && "Existing Row".equals(String.valueOf(
+                        model.getColumnName(PARAM_EXISTING_ROW_MODEL_COLUMN)));
     }
 
     private static boolean isBodyModel(DefaultTableModel model) {
@@ -556,7 +613,8 @@ final class RequestEditorStateMapper {
                 parameter.source,
                 parameter.style,
                 parameter.explode,
-                parameter.allowReserved
+                parameter.allowReserved,
+                Boolean.TRUE
         });
     }
 
@@ -637,34 +695,39 @@ final class RequestEditorStateMapper {
 
     private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model) {
         List<ApiRequest.Parameter> parameters = new ArrayList<>();
-        for (int i = 0; i < model.getRowCount(); i++) {
-            String key = tableString(model, i, PARAM_KEY_MODEL_COLUMN);
-            String value = tableString(model, i, PARAM_VALUE_MODEL_COLUMN);
-            if (key == null || key.trim().isEmpty()) {
+        boolean fullModel = isParamsModel(model);
+        for (int row = 0; row < model.getRowCount(); row++) {
+            String key = tableString(model, row, PARAM_KEY_MODEL_COLUMN);
+            String value = tableString(model, row, PARAM_VALUE_MODEL_COLUMN);
+            if (fullModel ? isUntouchedNewParameterRow(model, row) : key.trim().isEmpty()) {
                 continue;
             }
-            ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value != null ? value : "");
-            if (isParamsModel(model)) {
-                Object enabledValue = model.getValueAt(i, PARAM_ENABLED_MODEL_COLUMN);
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
+            if (fullModel) {
+                Object enabledValue = model.getValueAt(row, PARAM_ENABLED_MODEL_COLUMN);
                 parameter.disabled = Boolean.FALSE.equals(enabledValue);
-                parameter.description = nullableTableString(model, i, PARAM_DESCRIPTION_MODEL_COLUMN);
-                parameter.rawKey = nullableTableString(model, i, PARAM_RAW_KEY_MODEL_COLUMN);
-                parameter.rawValue = nullableTableString(model, i, PARAM_RAW_VALUE_MODEL_COLUMN);
-                parameter.valuePresent = Boolean.TRUE.equals(model.getValueAt(i, PARAM_VALUE_PRESENT_MODEL_COLUMN))
-                        || (value != null && !value.isEmpty());
-                parameter.required = Boolean.TRUE.equals(model.getValueAt(i, PARAM_REQUIRED_MODEL_COLUMN));
-                parameter.type = nullableTableString(model, i, PARAM_TYPE_MODEL_COLUMN);
-                parameter.source = nullableTableString(model, i, PARAM_SOURCE_MODEL_COLUMN);
-                parameter.style = nullableTableString(model, i, PARAM_STYLE_MODEL_COLUMN);
-                parameter.explode = nullableTableBoolean(model, i, PARAM_EXPLODE_MODEL_COLUMN);
+                parameter.description = nullableTableString(model, row, PARAM_DESCRIPTION_MODEL_COLUMN);
+                parameter.rawKey = nullableTableString(model, row, PARAM_RAW_KEY_MODEL_COLUMN);
+                parameter.rawValue = nullableTableString(model, row, PARAM_RAW_VALUE_MODEL_COLUMN);
+                parameter.valuePresent = Boolean.TRUE.equals(
+                        model.getValueAt(row, PARAM_VALUE_PRESENT_MODEL_COLUMN))
+                        || !value.isEmpty();
+                parameter.required = Boolean.TRUE.equals(
+                        model.getValueAt(row, PARAM_REQUIRED_MODEL_COLUMN));
+                parameter.type = nullableTableString(model, row, PARAM_TYPE_MODEL_COLUMN);
+                parameter.source = nullableTableString(model, row, PARAM_SOURCE_MODEL_COLUMN);
+                parameter.style = nullableTableString(model, row, PARAM_STYLE_MODEL_COLUMN);
+                parameter.explode = nullableTableBoolean(model, row, PARAM_EXPLODE_MODEL_COLUMN);
                 parameter.allowReserved = Boolean.TRUE.equals(
-                        model.getValueAt(i, PARAM_ALLOW_RESERVED_MODEL_COLUMN));
+                        model.getValueAt(row, PARAM_ALLOW_RESERVED_MODEL_COLUMN));
                 if (enabledValue == null) {
-                    parameter.rawKey = java.net.URLEncoder.encode(key, java.nio.charset.StandardCharsets.UTF_8);
-                    parameter.rawValue = java.net.URLEncoder.encode(value != null ? value : "", java.nio.charset.StandardCharsets.UTF_8);
+                    parameter.rawKey = java.net.URLEncoder.encode(
+                            key, java.nio.charset.StandardCharsets.UTF_8);
+                    parameter.rawValue = java.net.URLEncoder.encode(
+                            value, java.nio.charset.StandardCharsets.UTF_8);
                 }
             } else {
-                parameter.valuePresent = value != null && !value.isEmpty();
+                parameter.valuePresent = !value.isEmpty();
             }
             parameters.add(parameter);
         }
@@ -674,16 +737,17 @@ final class RequestEditorStateMapper {
     private static List<ApiRequest.Body.FormField> formFieldsFromTable(DefaultTableModel model,
                                                                        boolean multipart) {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
+        boolean fullModel = isBodyModel(model);
         for (int row = 0; row < model.getRowCount(); row++) {
             String key = tableString(model, row, BODY_KEY_MODEL_COLUMN);
-            if (key == null || key.trim().isEmpty()) {
+            if (fullModel ? isUntouchedNewBodyRow(model, row) : key.trim().isEmpty()) {
                 continue;
             }
             String value = tableString(model, row, BODY_VALUE_MODEL_COLUMN);
-            boolean disabled = isBodyModel(model)
+            boolean disabled = fullModel
                     && Boolean.FALSE.equals(model.getValueAt(row, BODY_ENABLED_MODEL_COLUMN));
             String visibleType = nullableTableString(model, row, BODY_TYPE_MODEL_COLUMN);
-            String visibleFilePath = emptyToNull(tableString(model, row, BODY_FILE_PATH_MODEL_COLUMN));
+            String visibleFilePathCell = tableString(model, row, BODY_FILE_PATH_MODEL_COLUMN);
             boolean hiddenFileUpload = Boolean.TRUE.equals(
                     model.getValueAt(row, BODY_FILE_UPLOAD_MODEL_COLUMN));
             String originalType = nullableTableString(model, row, BODY_ORIGINAL_TYPE_MODEL_COLUMN);
@@ -694,24 +758,22 @@ final class RequestEditorStateMapper {
             boolean existingRow = Boolean.TRUE.equals(
                     model.getValueAt(row, BODY_EXISTING_ROW_MODEL_COLUMN));
 
-            if (visibleFilePath != null && visibleFilePath.isEmpty()) {
-                visibleFilePath = null;
-            }
-
             String originalDisplayedType = effectiveBodyDisplayType(originalType, originalFileUpload);
+            String originalDisplayedFilePath = originalFilePath != null ? originalFilePath : "";
             boolean metadataChanged = !Objects.equals(visibleType, originalDisplayedType)
-                    || !Objects.equals(visibleFilePath, originalFilePath)
+                    || !Objects.equals(visibleFilePathCell, originalDisplayedFilePath)
                     || hiddenFileUpload != originalFileUpload;
 
-            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value != null ? value : "");
+            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
             field.disabled = disabled;
             if (existingRow && !metadataChanged) {
                 field.type = originalType;
                 field.filePath = originalFilePath;
                 field.fileUpload = originalFileUpload;
             } else {
+                String authoredFilePath = visibleFilePathCell.isEmpty() ? null : visibleFilePathCell;
                 field.type = visibleType;
-                field.filePath = visibleFilePath;
+                field.filePath = authoredFilePath;
                 if (multipart) {
                     field.fileUpload = hiddenFileUpload
                             || "file".equalsIgnoreCase(field.type)
@@ -757,10 +819,6 @@ final class RequestEditorStateMapper {
         }
         Object value = model.getValueAt(row, column);
         return value instanceof Boolean ? (Boolean) value : null;
-    }
-
-    private static String emptyToNull(String value) {
-        return value == null || value.isEmpty() ? null : value;
     }
 
     private static List<ApiRequest.Body.FormField> copyFormFields(List<ApiRequest.Body.FormField> fields) {

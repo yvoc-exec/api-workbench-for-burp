@@ -84,6 +84,53 @@ class RequestParameterSupportTest {
                 .isEqualTo("%ZZ");
     }
 
+    @Test
+    void parsesAndMaterializesEmptyKeysAndEmptySegments() {
+        String url = "https://example.test/a?=x&flag&&tail=&";
+        List<ApiRequest.Parameter> parameters = RequestParameterSupport.parseQueryParameters(url, "test");
+
+        assertThat(parameters).hasSize(5);
+        assertThat(parameters).extracting(p -> p.key).containsExactly("", "flag", "", "tail", "");
+        assertThat(parameters).extracting(p -> p.value).containsExactly("x", "", "", "", "");
+        assertThat(parameters).extracting(p -> p.valuePresent)
+                .containsExactly(true, false, false, true, false);
+        assertThat(RequestParameterSupport.materializeUrl(url, parameters, null)).isEqualTo(url);
+    }
+
+    @Test
+    void preservesTerminalQuestionMarkAsEmptyBareSegment() {
+        String url = "https://example.test/a?";
+        List<ApiRequest.Parameter> parameters = RequestParameterSupport.parseQueryParameters(url, "test");
+
+        assertThat(parameters).hasSize(1);
+        assertThat(parameters.get(0).key).isEmpty();
+        assertThat(parameters.get(0).valuePresent).isFalse();
+        assertThat(RequestParameterSupport.materializeUrl(url, parameters, null)).isEqualTo(url);
+    }
+
+    @Test
+    void preservesLeadingTrailingAndConsecutiveEmptySegments() {
+        String url = "https://example.test/a?&x=1&&";
+        List<ApiRequest.Parameter> parameters = RequestParameterSupport.parseQueryParameters(url, "test");
+
+        assertThat(parameters).hasSize(4);
+        assertThat(parameters).extracting(p -> p.key).containsExactly("", "x", "", "");
+        assertThat(RequestParameterSupport.materializeUrl(url, parameters, null)).isEqualTo(url);
+    }
+
+    @Test
+    void disabledEmptySegmentsAreOmittedWithoutCorruptingSeparators() {
+        ApiRequest.Parameter first = parameter("", "", false);
+        ApiRequest.Parameter disabled = parameter("", "", false);
+        disabled.disabled = true;
+        ApiRequest.Parameter last = parameter("k", "v", true);
+        ApiRequest.Parameter trailing = parameter("", "", false);
+
+        assertThat(RequestParameterSupport.materializeUrl(
+                "https://example.test/a", List.of(first, disabled, last, trailing), null))
+                .isEqualTo("https://example.test/a?&k=v&");
+    }
+
     private static ApiRequest.Parameter parameter(String key, String value, boolean valuePresent) {
         ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
         parameter.valuePresent = valuePresent;
