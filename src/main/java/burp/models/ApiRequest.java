@@ -23,6 +23,7 @@ public class ApiRequest {
     public String method;
     public String url;
     public String description;
+    public List<Parameter> parameters = new ArrayList<>();
     public List<Header> headers = new ArrayList<>();
     public Body body;
     public Auth auth;
@@ -49,6 +50,46 @@ public class ApiRequest {
     public String authOverrideMode = "inherit";
     /** Explicit auth override configured at the request layer. */
     public Auth explicitAuth;
+
+    public static class Parameter {
+        public String location = "query";
+        public String key;
+        public String value;
+
+        /**
+         * Original encoded transport components. These are reused only while they
+         * still decode to the current key/value.
+         */
+        public String rawKey;
+        public String rawValue;
+
+        /**
+         * Distinguishes ?flag from ?flag=.
+         */
+        public boolean valuePresent = true;
+
+        public boolean disabled;
+        public boolean required;
+        public String type;
+        public String description;
+        public String style;
+        public Boolean explode;
+        public boolean allowReserved;
+        public String source;
+
+        public Parameter() {
+        }
+
+        public Parameter(String location, String key, String value) {
+            this.location = location != null && !location.isBlank() ? location : "query";
+            this.key = key;
+            this.value = value;
+        }
+
+        public boolean isQuery() {
+            return location == null || location.isBlank() || "query".equalsIgnoreCase(location);
+        }
+    }
 
     public static class Header {
         public String key;
@@ -119,6 +160,7 @@ public class ApiRequest {
         target.method = method;
         target.url = url;
         target.description = description;
+        target.parameters = copyParameters(parameters);
         target.headers = copyHeaders(headers);
         target.body = copyBody(body);
         target.auth = copyAuth(auth);
@@ -152,6 +194,7 @@ public class ApiRequest {
         StringBuilder canonical = new StringBuilder();
         canonical.append(method != null ? method : "").append('\n');
         canonical.append(url != null ? url : "").append('\n');
+        appendParameters(canonical, parameters);
         canonical.append(description != null ? description : "").append('\n');
         canonical.append(buildMode != null ? buildMode.name() : "").append('\n');
         canonical.append(authOverrideMode != null ? authOverrideMode : "").append('\n');
@@ -253,6 +296,32 @@ public class ApiRequest {
         }
     }
 
+    private static void appendParameters(StringBuilder canonical, List<Parameter> source) {
+        if (source == null) {
+            return;
+        }
+        for (Parameter parameter : source) {
+            if (parameter == null) {
+                continue;
+            }
+            canonical.append("P:");
+            canonical.append(parameter.location != null ? parameter.location : "").append('|');
+            canonical.append(parameter.key != null ? parameter.key : "").append('|');
+            canonical.append(parameter.value != null ? parameter.value : "").append('|');
+            canonical.append(parameter.rawKey != null ? parameter.rawKey : "").append('|');
+            canonical.append(parameter.rawValue != null ? parameter.rawValue : "").append('|');
+            canonical.append(parameter.valuePresent).append('|');
+            canonical.append(parameter.disabled).append('|');
+            canonical.append(parameter.required).append('|');
+            canonical.append(parameter.type != null ? parameter.type : "").append('|');
+            canonical.append(parameter.description != null ? parameter.description : "").append('|');
+            canonical.append(parameter.style != null ? parameter.style : "").append('|');
+            canonical.append(parameter.explode == null ? "null" : parameter.explode).append('|');
+            canonical.append(parameter.allowReserved).append('|');
+            canonical.append(parameter.source != null ? parameter.source : "").append('\n');
+        }
+    }
+
     private static void appendBody(StringBuilder canonical, Body source) {
         if (source == null) {
             return;
@@ -330,6 +399,36 @@ public class ApiRequest {
             } else {
                 copy.add(new Header(header.key, header.value, header.disabled));
             }
+        }
+        return copy;
+    }
+
+    private static List<Parameter> copyParameters(List<Parameter> source) {
+        List<Parameter> copy = new ArrayList<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Parameter parameter : source) {
+            if (parameter == null) {
+                copy.add(null);
+                continue;
+            }
+            Parameter item = new Parameter();
+            item.location = parameter.location;
+            item.key = parameter.key;
+            item.value = parameter.value;
+            item.rawKey = parameter.rawKey;
+            item.rawValue = parameter.rawValue;
+            item.valuePresent = parameter.valuePresent;
+            item.disabled = parameter.disabled;
+            item.required = parameter.required;
+            item.type = parameter.type;
+            item.description = parameter.description;
+            item.style = parameter.style;
+            item.explode = parameter.explode;
+            item.allowReserved = parameter.allowReserved;
+            item.source = parameter.source;
+            copy.add(item);
         }
         return copy;
     }

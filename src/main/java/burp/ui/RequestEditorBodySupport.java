@@ -30,7 +30,15 @@ final class RequestEditorBodySupport {
         final Map<String, JRadioButton> bodyModeButtons = new LinkedHashMap<>();
         final JPanel bodyContentPanel = new JPanel(new CardLayout());
         final JTextPane bodyRawArea = new JTextPane();
-        final DefaultTableModel bodyFormModel = new DefaultTableModel(new Object[]{"Key", "Value"}, 0);
+        final DefaultTableModel bodyFormModel = new DefaultTableModel(
+                new Object[]{"Key", "Value", "Enabled", "Type", "File Path"}, 0) {
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return columnIndex == RequestEditorStateMapper.BODY_ENABLED_MODEL_COLUMN
+                        ? Boolean.class
+                        : String.class;
+            }
+        };
         final javax.swing.JTable bodyFormTable = RequestEditorTableSupport.createEditableTable(bodyFormModel);
         final Runnable refreshResolvedMirror;
         String bodyModeInternal = "none";
@@ -48,8 +56,14 @@ final class RequestEditorBodySupport {
             bodyContentPanel.add(new JScrollPane(bodyRawArea), "raw");
 
             JPanel formPanel = new JPanel(new BorderLayout());
+            bodyFormTable.moveColumn(RequestEditorStateMapper.BODY_ENABLED_MODEL_COLUMN, 0);
+            bodyFormTable.getColumnModel().getColumn(0).setPreferredWidth(70);
+            bodyFormTable.getColumnModel().getColumn(0).setMaxWidth(90);
+            bodyFormTable.getColumnModel().getColumn(0).setMinWidth(64);
+            bodyFormTable.getColumnModel().getColumn(0).setCellRenderer(bodyFormTable.getDefaultRenderer(Boolean.class));
             formPanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
-            formPanel.add(RequestEditorTableSupport.createAddRemovePanel(bodyFormTable, bodyFormModel, () -> new Object[]{"", ""}), BorderLayout.SOUTH);
+            formPanel.add(RequestEditorTableSupport.createAddRemovePanel(bodyFormTable, bodyFormModel,
+                    () -> new Object[]{"", "", Boolean.TRUE, "text", ""}), BorderLayout.SOUTH);
             bodyContentPanel.add(formPanel, "form");
             RequestEditorStateMapper.ensureStarterRow(bodyFormModel);
 

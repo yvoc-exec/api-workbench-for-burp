@@ -4,7 +4,9 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.utils.RequestParameterSupport;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
@@ -130,11 +132,7 @@ public final class PostmanCollectionExporter {
         item.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
         JsonObject req = new JsonObject();
         req.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
-        if (request.url != null) {
-            req.addProperty("url", CollectionExportSupport.resolve(request.url, resolver, resolve));
-        } else {
-            req.addProperty("url", "");
-        }
+        req.add("url", requestUrlToPostman(request, resolver, resolve));
         JsonArray headers = CollectionExportSupport.toHeadersArray(request.headers, resolver, resolve);
         if (!headers.isEmpty()) {
             req.add("header", headers);
@@ -164,6 +162,43 @@ public final class PostmanCollectionExporter {
             item.addProperty("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
         }
         return item;
+    }
+
+    private static JsonElement requestUrlToPostman(ApiRequest request,
+                                                   VariableResolver resolver,
+                                                   boolean resolve) {
+        if (request == null || !RequestParameterSupport.hasQueryParameters(request.parameters)) {
+            return new com.google.gson.JsonPrimitive(request != null && request.url != null
+                    ? CollectionExportSupport.resolve(request.url, resolver, resolve)
+                    : "");
+        }
+        VariableResolver materializationResolver = resolve ? resolver : null;
+        JsonObject url = new JsonObject();
+        url.addProperty("raw", RequestParameterSupport.materializeUrl(
+                request.url != null ? request.url : "", request.parameters, materializationResolver));
+        JsonArray query = new JsonArray();
+        for (ApiRequest.Parameter parameter : request.parameters) {
+            if (parameter == null || !parameter.isQuery()) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("key", CollectionExportSupport.resolve(parameter.key, resolver, resolve));
+            if (parameter.valuePresent) {
+                row.addProperty("value", CollectionExportSupport.resolve(parameter.value, resolver, resolve));
+            }
+            if (parameter.disabled) {
+                row.addProperty("disabled", true);
+            }
+            if (parameter.description != null && !parameter.description.isBlank()) {
+                row.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
+            }
+            if (parameter.type != null && !parameter.type.isBlank()) {
+                row.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
+            }
+            query.add(row);
+        }
+        url.add("query", query);
+        return url;
     }
 
     private static JsonObject requestAuth(ApiCollection collection, ApiRequest request, VariableResolver resolver, boolean resolve) {

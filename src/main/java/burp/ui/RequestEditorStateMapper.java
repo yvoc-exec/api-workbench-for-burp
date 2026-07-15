@@ -7,6 +7,7 @@ import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptPhase;
 import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
+import burp.utils.RequestParameterSupport;
 
 import javax.swing.JComboBox;
 import javax.swing.JTextArea;
@@ -27,6 +28,23 @@ final class RequestEditorStateMapper {
     static final int HEADER_KEY_MODEL_COLUMN = 0;
     static final int HEADER_VALUE_MODEL_COLUMN = 1;
     static final int HEADER_ENABLED_MODEL_COLUMN = 2;
+
+    static final int PARAM_KEY_MODEL_COLUMN = 0;
+    static final int PARAM_VALUE_MODEL_COLUMN = 1;
+    static final int PARAM_ENABLED_MODEL_COLUMN = 2;
+    static final int PARAM_DESCRIPTION_MODEL_COLUMN = 3;
+    static final int PARAM_RAW_KEY_MODEL_COLUMN = 4;
+    static final int PARAM_RAW_VALUE_MODEL_COLUMN = 5;
+    static final int PARAM_VALUE_PRESENT_MODEL_COLUMN = 6;
+    static final int PARAM_REQUIRED_MODEL_COLUMN = 7;
+    static final int PARAM_TYPE_MODEL_COLUMN = 8;
+    static final int PARAM_SOURCE_MODEL_COLUMN = 9;
+
+    static final int BODY_KEY_MODEL_COLUMN = 0;
+    static final int BODY_VALUE_MODEL_COLUMN = 1;
+    static final int BODY_ENABLED_MODEL_COLUMN = 2;
+    static final int BODY_TYPE_MODEL_COLUMN = 3;
+    static final int BODY_FILE_PATH_MODEL_COLUMN = 4;
 
     private RequestEditorStateMapper() {
     }
@@ -106,7 +124,15 @@ final class RequestEditorStateMapper {
         ctx.urlField.setText(req.url != null ? req.url : "");
 
         ctx.paramsModel.setRowCount(0);
-        parseQueryToTable(req.url, ctx.paramsModel);
+        if (RequestParameterSupport.hasQueryParameters(req.parameters)) {
+            for (ApiRequest.Parameter parameter : req.parameters) {
+                if (parameter != null && parameter.isQuery()) {
+                    addParameterRow(ctx.paramsModel, parameter);
+                }
+            }
+        } else {
+            parseQueryToTable(req.url, ctx.paramsModel);
+        }
         ensureStarterRow(ctx.paramsModel);
 
         ctx.authTypeBox.setSelectedItem(ctx.resolveEditorAuthMode.apply(req));
@@ -137,17 +163,17 @@ final class RequestEditorStateMapper {
                     ctx.bodyRawArea.setText(req.body.raw);
                 }
             }
-            if (req.body.urlencoded != null) {
+            if ("urlencoded".equals(req.body.mode) && req.body.urlencoded != null) {
                 for (ApiRequest.Body.FormField f : req.body.urlencoded) {
-                    if (f != null && !f.disabled) {
-                        ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    if (f != null) {
+                        ctx.bodyFormModel.addRow(bodyRow(f));
                     }
                 }
             }
-            if (req.body.formdata != null) {
+            if ("formdata".equals(req.body.mode) && req.body.formdata != null) {
                 for (ApiRequest.Body.FormField f : req.body.formdata) {
-                    if (f != null && !f.disabled) {
-                        ctx.bodyFormModel.addRow(new Object[]{f.key, f.value});
+                    if (f != null) {
+                        ctx.bodyFormModel.addRow(bodyRow(f));
                     }
                 }
             }
@@ -175,7 +201,12 @@ final class RequestEditorStateMapper {
         req.id = currentRequest.id;
         req.sequenceOrder = currentRequest.sequenceOrder;
         req.method = (String) ctx.methodBox.getSelectedItem();
-        req.url = rebuildUrlWithParams(ctx.urlField.getText(), ctx.paramsModel);
+        req.parameters = existingNonQueryParameters(currentRequest.parameters);
+        req.parameters.addAll(parametersFromTable(ctx.paramsModel, currentRequest.parameters));
+        req.url = RequestParameterSupport.materializeUrl(
+                ctx.urlField.getText(),
+                req.parameters,
+                null);
         req.editorMaterialized = true;
         req.buildMode = Boolean.TRUE.equals(ctx.exactHttpModeSupplier.get())
                 ? ApiRequest.BuildMode.EXACT_HTTP
@@ -230,11 +261,11 @@ final class RequestEditorStateMapper {
                 req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
                 if ("urlencoded".equals(bodyMode)) {
-                    req.body.urlencoded = mergeFormFields(ctx.bodyFormModel,
-                            existingBody != null ? existingBody.urlencoded : null);
+                    req.body.urlencoded = formFieldsFromTable(ctx.bodyFormModel,
+                            existingBody != null ? existingBody.urlencoded : null, false);
                 } else {
-                    req.body.formdata = mergeFormFields(ctx.bodyFormModel,
-                            existingBody != null ? existingBody.formdata : null);
+                    req.body.formdata = formFieldsFromTable(ctx.bodyFormModel,
+                            existingBody != null ? existingBody.formdata : null, true);
                 }
             }
         }
@@ -358,6 +389,14 @@ final class RequestEditorStateMapper {
         java.util.Arrays.fill(row, "");
         if (isHeaderModel(model)) {
             row[HEADER_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
+        } else if (isParamsModel(model)) {
+            row[PARAM_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
+            row[PARAM_VALUE_PRESENT_MODEL_COLUMN] = Boolean.FALSE;
+            row[PARAM_REQUIRED_MODEL_COLUMN] = Boolean.FALSE;
+            row[PARAM_SOURCE_MODEL_COLUMN] = "workbench";
+        } else if (isBodyModel(model)) {
+            row[BODY_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
+            row[BODY_TYPE_MODEL_COLUMN] = "text";
         }
         model.addRow(row);
     }
@@ -372,83 +411,30 @@ final class RequestEditorStateMapper {
         return isHeaderModel(model) ? HEADER_KEY_MODEL_COLUMN : 0;
     }
 
+    private static boolean isParamsModel(DefaultTableModel model) {
+        return model != null
+                && model.getColumnCount() == 10
+                && "Value Present".equals(String.valueOf(model.getColumnName(PARAM_VALUE_PRESENT_MODEL_COLUMN)));
+    }
+
+    private static boolean isBodyModel(DefaultTableModel model) {
+        return model != null
+                && model.getColumnCount() == 5
+                && "File Path".equals(String.valueOf(model.getColumnName(BODY_FILE_PATH_MODEL_COLUMN)));
+    }
+
     static void parseQueryToTable(String url, DefaultTableModel paramsModel) {
-        if (url == null) {
-            return;
-        }
-        int q = url.indexOf('?');
-        if (q < 0 || q + 1 >= url.length()) {
-            return;
-        }
-        String query = url.substring(q + 1);
-        int frag = query.indexOf('#');
-        if (frag >= 0) {
-            query = query.substring(0, frag);
-        }
-        for (String pair : query.split("&")) {
-            if (pair.isEmpty()) {
-                continue;
-            }
-            int eq = pair.indexOf('=');
-            if (eq < 0) {
-                paramsModel.addRow(new Object[]{pair, ""});
+        for (ApiRequest.Parameter parameter : RequestParameterSupport.parseQueryParameters(url, "legacy:url")) {
+            if (isParamsModel(paramsModel)) {
+                addParameterRow(paramsModel, parameter);
             } else {
-                String key = pair.substring(0, eq);
-                String val = eq + 1 < pair.length() ? pair.substring(eq + 1) : "";
-                try {
-                    key = java.net.URLDecoder.decode(key, java.nio.charset.StandardCharsets.UTF_8);
-                    val = java.net.URLDecoder.decode(val, java.nio.charset.StandardCharsets.UTF_8);
-                } catch (Exception e) {
-                    // keep raw if decoding fails
-                }
-                paramsModel.addRow(new Object[]{key, val});
+                paramsModel.addRow(new Object[]{parameter.key, parameter.value});
             }
         }
     }
 
     static String rebuildUrlWithParams(String urlBase, DefaultTableModel model) {
-        if (urlBase == null) {
-            urlBase = "";
-        }
-        String fragment = "";
-        int frag = urlBase.indexOf('#');
-        if (frag >= 0) {
-            fragment = urlBase.substring(frag);
-            urlBase = urlBase.substring(0, frag);
-        }
-        int q = urlBase.indexOf('?');
-        if (q >= 0) {
-            urlBase = urlBase.substring(0, q);
-        }
-        StringBuilder sb = new StringBuilder(urlBase);
-        boolean first = true;
-        for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
-            String value = (String) model.getValueAt(i, 1);
-            if (key == null || key.trim().isEmpty()) {
-                continue;
-            }
-            if (first) {
-                sb.append('?');
-                first = false;
-            } else {
-                sb.append('&');
-            }
-            try {
-                sb.append(java.net.URLEncoder.encode(key.trim(), java.nio.charset.StandardCharsets.UTF_8));
-                if (value != null && !value.isEmpty()) {
-                    sb.append('=');
-                    sb.append(java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
-                }
-            } catch (Exception e) {
-                sb.append(key.trim());
-                if (value != null && !value.isEmpty()) {
-                    sb.append('=').append(value);
-                }
-            }
-        }
-        sb.append(fragment);
-        return sb.toString();
+        return RequestParameterSupport.materializeUrl(urlBase, parametersFromTable(model), null);
     }
 
     private static void loadScripts(List<ApiRequest.Script> scripts, JTextArea targetArea) {
@@ -521,61 +507,158 @@ final class RequestEditorStateMapper {
         return copy;
     }
 
-    private static List<ApiRequest.Body.FormField> mergeFormFields(DefaultTableModel model, List<ApiRequest.Body.FormField> existing) {
-        List<ApiRequest.Body.FormField> merged = new ArrayList<>();
-        Set<Integer> consumed = new HashSet<>();
-        for (int i = 0; i < model.getRowCount(); i++) {
-            String key = (String) model.getValueAt(i, 0);
-            String value = (String) model.getValueAt(i, 1);
-            if (key == null || key.trim().isEmpty()) {
-                continue;
-            }
-            int match = findMatchingEnabledField(existing, consumed, key, value);
-            ApiRequest.Body.FormField field = match >= 0
-                    ? copyFormField(existing.get(match))
-                    : new ApiRequest.Body.FormField(key, value != null ? value : "");
-            if (match >= 0) {
-                consumed.add(match);
-            }
-            field.key = key;
-            field.value = value != null ? value : "";
-            field.disabled = false;
-            merged.add(field);
+    private static void addParameterRow(DefaultTableModel model, ApiRequest.Parameter parameter) {
+        model.addRow(new Object[]{
+                parameter.key != null ? parameter.key : "",
+                parameter.value != null ? parameter.value : "",
+                !parameter.disabled,
+                parameter.description != null ? parameter.description : "",
+                parameter.rawKey != null ? parameter.rawKey : "",
+                parameter.rawValue != null ? parameter.rawValue : "",
+                parameter.valuePresent,
+                parameter.required,
+                parameter.type != null ? parameter.type : "",
+                parameter.source != null ? parameter.source : ""
+        });
+    }
+
+    private static Object[] bodyRow(ApiRequest.Body.FormField field) {
+        String type = field.type;
+        if (type == null || type.isBlank()) {
+            type = field.fileUpload ? "file" : "text";
         }
+        return new Object[]{
+                field.key != null ? field.key : "",
+                field.value != null ? field.value : "",
+                !field.disabled,
+                type,
+                field.filePath != null ? field.filePath : ""
+        };
+    }
+
+    private static List<ApiRequest.Parameter> existingNonQueryParameters(List<ApiRequest.Parameter> existing) {
+        List<ApiRequest.Parameter> parameters = new ArrayList<>();
+        for (ApiRequest.Parameter parameter : RequestParameterSupport.copyParameters(existing)) {
+            if (parameter != null && !parameter.isQuery()) {
+                parameters.add(parameter);
+            }
+        }
+        return parameters;
+    }
+
+    private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model) {
+        return parametersFromTable(model, null);
+    }
+
+    private static List<ApiRequest.Parameter> parametersFromTable(DefaultTableModel model,
+                                                                   List<ApiRequest.Parameter> existing) {
+        List<ApiRequest.Parameter> parameters = new ArrayList<>();
+        List<ApiRequest.Parameter> existingQuery = new ArrayList<>();
         if (existing != null) {
-            for (int i = 0; i < existing.size(); i++) {
-                ApiRequest.Body.FormField field = existing.get(i);
-                if (field != null && field.disabled) {
-                    merged.add(copyFormField(field));
+            for (ApiRequest.Parameter parameter : existing) {
+                if (parameter != null && parameter.isQuery()) {
+                    existingQuery.add(parameter);
                 }
             }
         }
-        return merged;
-    }
-
-    private static int findMatchingEnabledField(List<ApiRequest.Body.FormField> existing,
-                                                Set<Integer> consumed,
-                                                String key,
-                                                String value) {
-        if (existing == null) {
-            return -1;
-        }
-        for (int i = 0; i < existing.size(); i++) {
-            ApiRequest.Body.FormField field = existing.get(i);
-            if (field == null || field.disabled || consumed.contains(i)) {
+        int existingIndex = 0;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = tableString(model, i, PARAM_KEY_MODEL_COLUMN);
+            String value = tableString(model, i, PARAM_VALUE_MODEL_COLUMN);
+            if (key == null || key.trim().isEmpty()) {
                 continue;
             }
-            if (Objects.equals(field.key, key) && Objects.equals(field.value, value != null ? value : "")) {
-                return i;
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value != null ? value : "");
+            ApiRequest.Parameter prior = existingIndex < existingQuery.size()
+                    ? existingQuery.get(existingIndex)
+                    : null;
+            if (prior != null) {
+                parameter.style = prior.style;
+                parameter.explode = prior.explode;
+                parameter.allowReserved = prior.allowReserved;
             }
-        }
-        for (int i = 0; i < existing.size(); i++) {
-            ApiRequest.Body.FormField field = existing.get(i);
-            if (field != null && !field.disabled && !consumed.contains(i)) {
-                return i;
+            existingIndex++;
+            if (isParamsModel(model)) {
+                Object enabledValue = model.getValueAt(i, PARAM_ENABLED_MODEL_COLUMN);
+                parameter.disabled = Boolean.FALSE.equals(enabledValue);
+                String source = tableString(model, i, PARAM_SOURCE_MODEL_COLUMN);
+                boolean legacy = "legacy:url".equals(source);
+                parameter.description = optionalMetadata(tableString(model, i, PARAM_DESCRIPTION_MODEL_COLUMN),
+                        prior != null ? prior.description : null, false);
+                parameter.rawKey = optionalMetadata(tableString(model, i, PARAM_RAW_KEY_MODEL_COLUMN),
+                        prior != null ? prior.rawKey : null, legacy);
+                parameter.rawValue = optionalMetadata(tableString(model, i, PARAM_RAW_VALUE_MODEL_COLUMN),
+                        prior != null ? prior.rawValue : null, legacy);
+                parameter.valuePresent = Boolean.TRUE.equals(model.getValueAt(i, PARAM_VALUE_PRESENT_MODEL_COLUMN))
+                        || (value != null && !value.isEmpty());
+                parameter.required = Boolean.TRUE.equals(model.getValueAt(i, PARAM_REQUIRED_MODEL_COLUMN));
+                parameter.type = optionalMetadata(tableString(model, i, PARAM_TYPE_MODEL_COLUMN),
+                        prior != null ? prior.type : null, false);
+                parameter.source = optionalMetadata(source, prior != null ? prior.source : null, false);
+                if (enabledValue == null) {
+                    parameter.rawKey = java.net.URLEncoder.encode(key, java.nio.charset.StandardCharsets.UTF_8);
+                    parameter.rawValue = java.net.URLEncoder.encode(value != null ? value : "", java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } else {
+                parameter.valuePresent = value != null && !value.isEmpty();
             }
+            parameters.add(parameter);
         }
-        return -1;
+        return parameters;
+    }
+
+    private static List<ApiRequest.Body.FormField> formFieldsFromTable(DefaultTableModel model,
+                                                                       List<ApiRequest.Body.FormField> existing,
+                                                                       boolean multipart) {
+        List<ApiRequest.Body.FormField> fields = new ArrayList<>();
+        int existingIndex = 0;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            String key = tableString(model, i, BODY_KEY_MODEL_COLUMN);
+            if (key == null || key.trim().isEmpty()) {
+                continue;
+            }
+            ApiRequest.Body.FormField prior = existing != null && existingIndex < existing.size()
+                    ? existing.get(existingIndex)
+                    : null;
+            existingIndex++;
+            String value = tableString(model, i, BODY_VALUE_MODEL_COLUMN);
+            String type = emptyToNull(tableString(model, i, BODY_TYPE_MODEL_COLUMN));
+            String filePath = emptyToNull(tableString(model, i, BODY_FILE_PATH_MODEL_COLUMN));
+            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value != null ? value : "");
+            field.disabled = isBodyModel(model)
+                    && Boolean.FALSE.equals(model.getValueAt(i, BODY_ENABLED_MODEL_COLUMN));
+            field.type = type != null ? type : "text";
+            field.filePath = filePath;
+            if (multipart) {
+                field.fileUpload = "file".equalsIgnoreCase(field.type) || filePath != null;
+                if (field.fileUpload && type == null) {
+                    field.type = "file";
+                }
+            } else {
+                field.fileUpload = prior != null && prior.fileUpload;
+            }
+            fields.add(field);
+        }
+        return fields;
+    }
+
+    private static String tableString(DefaultTableModel model, int row, int column) {
+        if (model == null || column < 0 || column >= model.getColumnCount()) {
+            return "";
+        }
+        Object value = model.getValueAt(row, column);
+        return value != null ? String.valueOf(value) : "";
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static String optionalMetadata(String value, String prior, boolean keepEmpty) {
+        if (value != null && !value.isEmpty()) {
+            return value;
+        }
+        return keepEmpty || (prior != null && prior.isEmpty()) ? "" : null;
     }
 
     private static List<ApiRequest.Body.FormField> copyFormFields(List<ApiRequest.Body.FormField> fields) {

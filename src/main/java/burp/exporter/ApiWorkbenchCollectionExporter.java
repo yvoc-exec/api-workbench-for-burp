@@ -25,7 +25,7 @@ public final class ApiWorkbenchCollectionExporter {
 
         JsonObject root = new JsonObject();
         root.addProperty("format", "api-workbench-collection");
-        root.addProperty("schemaVersion", 1);
+        root.addProperty("schemaVersion", 2);
 
         JsonObject col = new JsonObject();
         if (collection != null) {
@@ -91,6 +91,7 @@ public final class ApiWorkbenchCollectionExporter {
         out.addProperty("sourceCollection", request.sourceCollection != null ? request.sourceCollection : "");
         out.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
         out.addProperty("url", CollectionExportSupport.resolve(request.url, resolver, resolve) != null ? CollectionExportSupport.resolve(request.url, resolver, resolve) : "");
+        out.add("parameters", parametersToJson(request.parameters, resolver, resolve));
         if (request.description != null) {
             out.addProperty("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
         }
@@ -118,6 +119,43 @@ public final class ApiWorkbenchCollectionExporter {
         out.addProperty("disabled", request.disabled);
         out.addProperty("sequenceOrder", request.sequenceOrder);
         out.add("exactHttpRequest", exactHttpRequestToJson(request.exactHttpRequest));
+        return out;
+    }
+
+    private static JsonArray parametersToJson(List<ApiRequest.Parameter> parameters,
+                                               VariableResolver resolver,
+                                               boolean resolve) {
+        JsonArray out = new JsonArray();
+        if (parameters == null) {
+            return out;
+        }
+        for (ApiRequest.Parameter parameter : parameters) {
+            if (parameter == null) {
+                continue;
+            }
+            JsonObject item = new JsonObject();
+            item.addProperty("location", parameter.location);
+            item.addProperty("key", CollectionExportSupport.resolve(parameter.key, resolver, resolve));
+            item.addProperty("value", CollectionExportSupport.resolve(parameter.value, resolver, resolve));
+            item.addProperty("rawKey", resolve
+                    ? CollectionExportSupport.resolve(parameter.rawKey, resolver, true)
+                    : parameter.rawKey);
+            item.addProperty("rawValue", resolve
+                    ? CollectionExportSupport.resolve(parameter.rawValue, resolver, true)
+                    : parameter.rawValue);
+            item.addProperty("valuePresent", parameter.valuePresent);
+            item.addProperty("disabled", parameter.disabled);
+            item.addProperty("required", parameter.required);
+            item.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
+            item.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
+            item.addProperty("style", CollectionExportSupport.resolve(parameter.style, resolver, resolve));
+            if (parameter.explode != null) {
+                item.addProperty("explode", parameter.explode);
+            }
+            item.addProperty("allowReserved", parameter.allowReserved);
+            item.addProperty("source", parameter.source);
+            out.add(item);
+        }
         return out;
     }
 

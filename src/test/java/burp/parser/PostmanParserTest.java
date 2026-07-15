@@ -58,8 +58,14 @@ class PostmanParserTest {
         ApiCollection collection = new PostmanParser().parse(file.toFile());
 
         assertThat(collection.requests).hasSize(1);
-        assertThat(collection.requests.get(0).url)
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.url)
                 .isEqualTo("https://api.example.test/users/{{user_id}}?include=roles");
+        assertThat(request.parameters).hasSize(2);
+        assertThat(request.parameters.get(0).key).isEqualTo("include");
+        assertThat(request.parameters.get(0).disabled).isFalse();
+        assertThat(request.parameters.get(1).key).isEqualTo("disabled");
+        assertThat(request.parameters.get(1).disabled).isTrue();
     }
 
     @Test
@@ -326,6 +332,81 @@ class PostmanParserTest {
         assertThat(req.authInherited).isTrue();
         assertThat(req.authExplicitlyDisabled).isTrue();
         assertThat(req.authSource).isEqualTo("folder: Public");
+    }
+
+    @Test
+    void preservesPostmanQueryOrderDuplicatesDescriptionsAndDisabledRows() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?tag=one&tag=two",
+                   "query":[
+                     {"key":"tag","value":"one","description":{"content":"first"},"type":"text"},
+                     {"key":"skip","value":"x","disabled":true,"description":"disabled"},
+                     {"key":"tag","value":"two","description":"second"}
+                   ]}}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("tag", "skip", "tag");
+        assertThat(request.parameters).extracting(p -> p.disabled).containsExactly(false, true, false);
+        assertThat(request.parameters).extracting(p -> p.description).containsExactly("first", "disabled", "second");
+        assertThat(request.parameters.get(0).type).isEqualTo("text");
+        assertThat(request.url).isEqualTo("https://example.test/a?tag=one&tag=two");
+    }
+
+    @Test
+    void parsesPrimitiveUrlQueryIntoFirstClassParameters() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":"https://example.test/a?x=1&x=2"}}]}
+                """).requests.get(0);
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("x", "x");
+        assertThat(request.parameters).extracting(p -> p.value).containsExactly("1", "2");
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.raw");
+    }
+
+    @Test
+    void preservesDisabledUrlEncodedBodyFields() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"POST","url":"https://example.test/a",
+                 "body":{"mode":"urlencoded","urlencoded":[
+                   {"key":"on","value":"1","type":"text"},
+                   {"key":"off","value":"2","type":"number","disabled":true}
+                 ]}}}]}
+                """).requests.get(0);
+        assertThat(request.body.urlencoded).hasSize(2);
+        assertThat(request.body.urlencoded.get(1).disabled).isTrue();
+        assertThat(request.body.urlencoded.get(1).type).isEqualTo("number");
+    }
+
+    @Test
+    void preservesDisabledMultipartFileFields() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"POST","url":"https://example.test/a",
+                 "body":{"mode":"formdata","formdata":[
+                   {"key":"file","type":"file","src":["","/tmp/a.txt"],"disabled":true}
+                 ]}}}]}
+                """).requests.get(0);
+        ApiRequest.Body.FormField field = request.body.formdata.get(0);
+        assertThat(field.disabled).isTrue();
+        assertThat(field.fileUpload).isTrue();
+        assertThat(field.type).isEqualTo("file");
+        assertThat(field.filePath).isEqualTo("/tmp/a.txt");
+    }
+
+    @Test
+    void retainsBareAndExplicitlyEmptyQueryValues() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/a?flag&empty=",
+                   "query":[{"key":"flag"},{"key":"empty","value":""}]
+                 }}}]}
+                """).requests.get(0);
+        assertThat(request.parameters).extracting(p -> p.valuePresent).containsExactly(false, true);
+        assertThat(request.url).isEqualTo("https://example.test/a?flag&empty=");
     }
 
     @Test

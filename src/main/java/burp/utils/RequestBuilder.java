@@ -103,7 +103,10 @@ public class RequestBuilder {
         }
 
         // Resolve URL and parse target robustly
-        String resolvedUrl = resolver != null ? resolver.resolve(request.url) : request.url;
+        String resolvedUrl = RequestParameterSupport.materializeUrl(
+                request.url,
+                request.parameters,
+                resolver);
         String method = request.method != null ? request.method.toUpperCase() : "GET";
         HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(resolvedUrl);
 

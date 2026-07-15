@@ -147,6 +147,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.sourceCollection = firstNonBlank(getString(obj, "sourceCollection", ""), collectionName);
             request.method = firstNonBlank(getString(obj, "method"), "GET");
             request.url = getString(obj, "url", "");
+            request.parameters = parseParameters(obj.getAsJsonArray("parameters"));
             request.description = getString(obj, "description", "");
             request.editorMaterialized = getBoolean(obj, "editorMaterialized", false);
             request.buildMode = parseBuildMode(getString(obj, "buildMode", null), request.editorMaterialized);
@@ -172,6 +173,38 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             }
         }
         return requests;
+    }
+
+    private List<ApiRequest.Parameter> parseParameters(JsonArray array) {
+        List<ApiRequest.Parameter> parameters = new ArrayList<>();
+        if (array == null) {
+            return parameters;
+        }
+        for (JsonElement element : array) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            JsonObject obj = element.getAsJsonObject();
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter();
+            parameter.location = getString(obj, "location", "query");
+            parameter.key = getString(obj, "key", null);
+            parameter.value = getString(obj, "value", null);
+            parameter.rawKey = getString(obj, "rawKey", null);
+            parameter.rawValue = getString(obj, "rawValue", null);
+            parameter.valuePresent = getBoolean(obj, "valuePresent", true);
+            parameter.disabled = getBoolean(obj, "disabled", false);
+            parameter.required = getBoolean(obj, "required", false);
+            parameter.type = getString(obj, "type", null);
+            parameter.description = getString(obj, "description", null);
+            parameter.style = getString(obj, "style", null);
+            parameter.explode = obj.has("explode") && !obj.get("explode").isJsonNull()
+                    ? obj.get("explode").getAsBoolean()
+                    : null;
+            parameter.allowReserved = getBoolean(obj, "allowReserved", false);
+            parameter.source = getString(obj, "source", null);
+            parameters.add(parameter);
+        }
+        return parameters;
     }
 
     private ExactHttpRequestSnapshot parseExactHttpRequest(JsonObject object) {
