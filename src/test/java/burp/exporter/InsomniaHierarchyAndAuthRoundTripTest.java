@@ -65,7 +65,8 @@ class InsomniaHierarchyAndAuthRoundTripTest {
         assertThat(imported.folderAuthModes).containsEntry("Folder","none");
         assertThat(imported.requests.get(0).headers).singleElement().satisfies(header ->
                 assertThat(header.key).isEqualTo("X-Legacy"));
-        assertThat(imported.importWarnings).anyMatch(value->value.contains("Folder scripts")&&!value.contains("DO_NOT_EXPORT_SCRIPT_SECRET"));
+        assertThat(imported.folderScriptBlocks.get("Folder")).singleElement().satisfies(block ->
+                assertThat(block.source).isEqualTo("DO_NOT_EXPORT_SCRIPT_SECRET"));
         assertThat(imported.importWarnings).anyMatch(value->value.contains("Folder headers")&&!value.contains("secret"));
     }
 

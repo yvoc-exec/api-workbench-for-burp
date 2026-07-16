@@ -60,6 +60,7 @@ public final class InsomniaCollectionExporter {
             env.addProperty("name", collection.name != null ? collection.name + " Environment" : "Environment");
             JsonObject data = new JsonObject();
             Map<String, String> merged = new LinkedHashMap<>();
+            Set<String> variableOverrides = new java.util.HashSet<>();
             if (collection.environment != null) {
                 merged.putAll(collection.environment);
             }
@@ -78,18 +79,25 @@ public final class InsomniaCollectionExporter {
                         addWarning(warnings, "Insomnia export collapsed duplicate enabled collection variable '"
                                 + safeText(variable.key) + "' using the last occurrence.");
                     }
+                    variableOverrides.add(variable.key);
                     merged.put(variable.key, variable.value != null ? variable.value : "");
                 }
             }
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
-            for (Map.Entry<String, String> entry : merged.entrySet()) {
+            for (Map.Entry<String, String> entry : new java.util.TreeMap<>(merged).entrySet()) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
                     addWarning(warnings, "Insomnia export skipped a blank environment variable key.");
                     continue;
                 }
-                data.addProperty(entry.getKey(), CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
-                        ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
-                        : "");
+                String resolved = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
+                com.google.gson.JsonElement typed = variableOverrides.contains(entry.getKey()) ? null
+                        : burp.parser.InsomniaEnvironmentValueTypes.recalled(
+                        collection, "", entry.getKey(), entry.getValue());
+                if (typed != null && !resolve) data.add(entry.getKey(), typed);
+                else {
+                    data.addProperty(entry.getKey(), resolved != null ? resolved : "");
+                    warnJsonLookingEnvironmentString(collection, "", entry.getKey(), entry.getValue(), typed, warnings);
+                }
             }
             env.add("data", data);
             resources.add(env);
@@ -100,6 +108,7 @@ public final class InsomniaCollectionExporter {
             if (collection.auth != null && collection.auth.type != null && !collection.auth.type.isBlank()) {
                 addWarning(warnings, "Insomnia export represented collection authentication on top-level request resources.");
             }
+            addCollectionScriptWarnings(collection, warnings);
             Map<String, String> folderIds = new LinkedHashMap<>();
             folderIds.put("", workspaceId);
             writeFolderResources(resources, collection, tree, workspaceId, true, activeEnvironment,
@@ -151,14 +160,82 @@ public final class InsomniaCollectionExporter {
                     ? collection.folderVars.get(burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path)) : null;
             if (folderEnvironment != null && !folderEnvironment.isEmpty()) {
                 JsonObject environment = new JsonObject();
-                new java.util.TreeMap<>(folderEnvironment).forEach(environment::addProperty);
+                for (Map.Entry<String, String> entry : new java.util.TreeMap<>(folderEnvironment).entrySet()) {
+                    com.google.gson.JsonElement typed = burp.parser.InsomniaEnvironmentValueTypes.recalled(
+                            collection, burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path),
+                            entry.getKey(), entry.getValue());
+                    if (typed != null && !resolve) environment.add(entry.getKey(), typed);
+                    else {
+                        environment.addProperty(entry.getKey(), CollectionExportSupport.resolve(entry.getValue(), resolver, resolve));
+                        warnJsonLookingEnvironmentString(collection, child.path, entry.getKey(), entry.getValue(), typed, warnings);
+                    }
+                }
                 group.add("environment", environment);
             }
+            addFolderScripts(group, collection, child.path, resolver, resolve, warnings);
             resources.add(group);
             folderIds.put(burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path), folderId);
             writeFolderResources(resources, collection, child, folderId, false, activeEnvironment,
                     exportOnly, resolve, warnings, idAllocator, sortKey, folderIds);
         }
+    }
+
+    private static void warnJsonLookingEnvironmentString(ApiCollection collection, String scope, String key,
+                                                         String value, com.google.gson.JsonElement typed,
+                                                         List<String> warnings) {
+        if (typed != null || value == null) return;
+        try {
+            com.google.gson.JsonElement parsed = JsonParser.parseString(value);
+            if (parsed.isJsonObject() || parsed.isJsonArray()) {
+                addWarning(warnings, "Insomnia export preserved JSON-looking environment value '"
+                        + safeText(key) + "' in " + (scope == null || scope.isBlank() ? "the base environment"
+                        : "folder '" + safeText(scope) + "'") + " as a string because its source type is unknown.");
+            }
+        } catch (RuntimeException ignored) {
+            // Ordinary string.
+        }
+    }
+
+    private static void addCollectionScriptWarnings(ApiCollection collection, List<String> warnings) {
+        if (collection.scriptBlocks == null) return;
+        Set<ScriptPhase> phases = new java.util.LinkedHashSet<>();
+        for (ScriptBlock block : collection.scriptBlocks) if (block != null) phases.add(block.phase);
+        for (ScriptPhase phase : phases) {
+            addWarning(warnings, "Insomnia export omitted collection-level " + phase
+                    + " script blocks because workspaces have no equivalent script scope.");
+        }
+    }
+
+    private static void addFolderScripts(JsonObject group, ApiCollection collection, String folderPath,
+                                         VariableResolver resolver, boolean resolve, List<String> warnings) {
+        if (collection.folderScriptBlocks == null) return;
+        List<ScriptBlock> blocks = collection.folderScriptBlocks.get(
+                burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath));
+        if (blocks == null || blocks.isEmpty()) return;
+        List<ScriptBlock> sorted = new ArrayList<>(blocks);
+        sorted.sort(Comparator.comparingInt(block -> block != null ? block.order : Integer.MAX_VALUE));
+        List<String> pre = new ArrayList<>();
+        List<String> post = new ArrayList<>();
+        for (ScriptBlock block : sorted) {
+            if (block == null) continue;
+            if (!block.enabled) {
+                addWarning(warnings, "Insomnia export omitted disabled " + block.phase
+                        + " folder script for '" + safeText(folderPath) + "'.");
+                continue;
+            }
+            if (block.source == null) continue;
+            String source = CollectionExportSupport.resolve(block.source, resolver, resolve);
+            if (block.phase == ScriptPhase.PRE_REQUEST) pre.add(source);
+            else {
+                if (block.phase == ScriptPhase.TEST) {
+                    addWarning(warnings, "Insomnia export represented TEST folder script as after-response code for '"
+                            + safeText(folderPath) + "'.");
+                }
+                post.add(source);
+            }
+        }
+        if (!pre.isEmpty()) group.addProperty("preRequestScript", String.join("\n\n", pre));
+        if (!post.isEmpty()) group.addProperty("afterResponseScript", String.join("\n\n", post));
     }
 
     private static void writeRequestResources(JsonArray resources,
@@ -198,9 +275,12 @@ public final class InsomniaCollectionExporter {
             if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, request, warnings);
             resource.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
             resource.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
-            resource.addProperty("url", RequestParameterSupport.materializeUrl(
-                    request.url, request.parameters, resolve ? resolver : null));
-            addParameters(resource, request, resolver, resolve, warnings);
+            List<ApiRequest.Parameter> exportParameters = insomniaParameters(request, warnings);
+            String resolvedUrl = CollectionExportSupport.resolve(request.url, resolver, resolve);
+            resource.addProperty("url", RequestParameterSupport.hasQueryParameters(exportParameters)
+                    ? RequestParameterSupport.stripQuery(resolvedUrl)
+                    : resolvedUrl);
+            addParameters(resource, request, exportParameters, resolver, resolve, warnings);
             JsonArray headers = CollectionExportSupport.toInsomniaHeadersArray(request.headers, resolver, resolve);
             if (!headers.isEmpty()) {
                 resource.add("headers", headers);
@@ -232,14 +312,15 @@ public final class InsomniaCollectionExporter {
     }
 
     private static void addParameters(JsonObject resource, ApiRequest request,
+                                      List<ApiRequest.Parameter> exportParameters,
                                       VariableResolver resolver, boolean resolve,
                                       List<String> warnings) {
         JsonArray parameters = new JsonArray();
         JsonArray pathParameters = new JsonArray();
         java.util.Set<String> pathApproximation = new java.util.LinkedHashSet<>();
         java.util.Set<String> queryApproximation = new java.util.LinkedHashSet<>();
-        if (request.parameters != null) {
-            for (ApiRequest.Parameter parameter : request.parameters) {
+        if (exportParameters != null) {
+            for (ApiRequest.Parameter parameter : exportParameters) {
                 if (parameter == null) continue;
                 if (!parameter.isQuery()) {
                     if (!"path".equalsIgnoreCase(parameter.location)) {
@@ -273,10 +354,9 @@ public final class InsomniaCollectionExporter {
                 JsonObject row = new JsonObject();
                 String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
                 row.addProperty("name", key != null ? key : "");
-                if (parameter.valuePresent) {
-                    String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
-                    row.addProperty("value", value != null ? value : "");
-                }
+                String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
+                row.addProperty("value", value != null ? value : "");
+                if (!parameter.valuePresent) queryApproximation.add("bare-versus-empty");
                 if (parameter.disabled) row.addProperty("disabled", true);
                 if (parameter.description != null && !parameter.description.isBlank()) {
                     row.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
@@ -293,10 +373,45 @@ public final class InsomniaCollectionExporter {
             addWarning(warnings, "Insomnia export approximated path parameter metadata for request '"
                     + safeRequestName(request) + "': " + String.join(", ", pathApproximation) + ".");
         }
+        if (queryApproximation.remove("bare-versus-empty")) {
+            addWarning(warnings, "Insomnia export for request '" + safeRequestName(request)
+                    + "' cannot preserve bare query parameters; exported them as explicit-empty values.");
+        }
         if (!queryApproximation.isEmpty()) {
             addWarning(warnings, "Insomnia export omitted unsupported query parameter metadata for request '"
                     + safeRequestName(request) + "': " + String.join(", ", queryApproximation) + ".");
         }
+    }
+
+    private static List<ApiRequest.Parameter> insomniaParameters(ApiRequest request, List<String> warnings) {
+        List<ApiRequest.Parameter> result = RequestParameterSupport.copyParameters(request.parameters);
+        if (!RequestParameterSupport.hasQueryParameters(result)) return result;
+        List<ApiRequest.Parameter> raw = RequestParameterSupport.parseQueryParameters(request.url, "insomnia:export:url.raw");
+        boolean[] consumed = new boolean[raw.size()];
+        for (ApiRequest.Parameter parameter : result) {
+            if (parameter == null || !parameter.isQuery()) continue;
+            for (int index = 0; index < raw.size(); index++) {
+                ApiRequest.Parameter candidate = raw.get(index);
+                if (!consumed[index] && candidate != null
+                        && java.util.Objects.equals(parameter.key, candidate.key)
+                        && java.util.Objects.equals(parameter.value != null ? parameter.value : "",
+                        candidate.value != null ? candidate.value : "")
+                        && parameter.valuePresent == candidate.valuePresent) {
+                    consumed[index] = true;
+                    break;
+                }
+            }
+        }
+        boolean appended = false;
+        for (int index = 0; index < raw.size(); index++) if (!consumed[index]) {
+            result.add(raw.get(index));
+            appended = true;
+        }
+        if (appended) {
+            addWarning(warnings, "Insomnia export retained unmatched raw URL query segments once for request '"
+                    + safeRequestName(request) + "'.");
+        }
+        return result;
     }
 
     private static void addScripts(JsonObject resource, ApiRequest request,
@@ -490,6 +605,21 @@ public final class InsomniaCollectionExporter {
                 if (placement != null && !isSupportedApiKeyPlacement(placement)) {
                     addWarning(warnings, "Insomnia export retained unsupported API-key placement '"
                             + safeText(placement) + "' for " + context + ".");
+                }
+            }
+            if (auth.properties != null && ("apikey".equals(type) || "api_key".equals(type) || "oauth2".equals(type))) {
+                Set<String> supported = "oauth2".equals(type)
+                        ? Set.of("grantType", "grant_type", "accessTokenUrl", "access_token_url",
+                        "authorizationUrl", "authorization_url", "redirectUrl", "redirectUri", "callback_url",
+                        "clientId", "client_id", "clientSecret", "client_secret", "scope", "username",
+                        "password", "accessToken", "access_token")
+                        : Set.of("key", "name", "value", "token", "in", "placement", "addTo");
+                Set<String> unsupported = new java.util.TreeSet<>();
+                for (String key : auth.properties.keySet()) if (key != null && !supported.contains(key)) unsupported.add(key);
+                if (!unsupported.isEmpty()) {
+                    addWarning(warnings, "Insomnia export omitted unsupported " + type
+                            + " authentication properties for " + context + ": "
+                            + String.join(", ", unsupported) + ".");
                 }
             }
         }

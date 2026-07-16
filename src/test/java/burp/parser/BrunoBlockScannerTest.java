@@ -1897,7 +1897,7 @@ class BrunoBlockScannerTest {
                         }
                         """, """
                         const example = `not JavaScript parsing`;
-                          // this is just literal body text
+                        // this is just literal body text
                         """.stripTrailing())
         );
     }

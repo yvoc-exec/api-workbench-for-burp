@@ -22,12 +22,15 @@ class BrunoArchiveAllocationSafetyTest {
     void archiveEntriesAreSafeUniqueAndCollisionAllocatedDeterministically() throws Exception {
         ApiCollection collection = new ApiCollection(); collection.name = "..\\Unsafe:/Root";
         collection.folderPaths.addAll(List.of(".", "..", "C:/absolute", "Case", "case"));
+        collection.folderPaths.add("environments");
+        collection.environment.put("base", "value");
         collection.requests.add(request("collection", ""));
         collection.requests.add(request("folder", ""));
         collection.requests.add(request("Request", "Case"));
         collection.requests.add(request("request", "Case"));
         collection.requests.add(request("REQUEST", "Case"));
         collection.requests.add(request("../escape", ".."));
+        collection.requests.add(request("Environment", "environments"));
 
         byte[] first = export(collection); byte[] second = export(collection);
         assertThat(first).isEqualTo(second);
@@ -44,6 +47,8 @@ class BrunoArchiveAllocationSafetyTest {
         assertThat(names).anyMatch(name -> name.endsWith("request_2.bru"));
         assertThat(names).anyMatch(name -> name.endsWith("REQUEST_3.bru"));
         assertThat(names).noneMatch(name -> name.endsWith("/_collection.bru") || name.endsWith("/_folder.bru"));
+        assertThat(names).filteredOn(name -> name.toLowerCase(Locale.ROOT).contains("environments/environment"))
+                .hasSize(2);
     }
 
     private static ApiRequest request(String name, String path) {

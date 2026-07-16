@@ -5,7 +5,6 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.UnresolvedVariableIssue;
 import burp.parser.VariableResolver;
-import burp.utils.UnresolvedVariableAnalyzer;
 import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
@@ -19,7 +18,6 @@ import java.util.regex.Pattern;
 
 public final class ExportVariableResolutionService {
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
-    private static final UnresolvedVariableAnalyzer ANALYZER = new UnresolvedVariableAnalyzer();
 
     private ExportVariableResolutionService() {
     }
@@ -97,35 +95,78 @@ public final class ExportVariableResolutionService {
         if (collection == null || collection.requests == null) {
             return issues;
         }
-        Map<String, String> overlay = new LinkedHashMap<>();
-        if (activeEnvironment != null && activeEnvironment.variables != null) {
-            overlay.putAll(activeEnvironment.variables);
-        }
-        if (exportOnlyVariables != null && !exportOnlyVariables.isEmpty()) {
-            overlay.putAll(exportOnlyVariables);
-        }
         for (ApiRequest request : collection.requests) {
             if (request == null) {
                 continue;
             }
-            issues.addAll(ANALYZER.analyze(collection, request, overlay, false));
-            scanValues(issues, collection.name, request.name, "script:pre-request", request.preRequestScripts != null ? request.preRequestScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
-            scanValues(issues, collection.name, request.name, "script:post-response", request.postResponseScripts != null ? request.postResponseScripts.stream().map(s -> s != null ? s.exec : null).toList() : List.of(), overlay);
+            VariableResolver resolver = buildResolver(collection, request, activeEnvironment, exportOnlyVariables);
+            scanRequestValues(issues, collection, request, resolver);
         }
-        scanCollectionLevelValues(issues, collection, overlay);
+        scanCollectionLevelValues(issues, collection,
+                buildResolver(collection, null, activeEnvironment, exportOnlyVariables));
         return dedupe(issues);
+    }
+
+    private static void scanRequestValues(List<UnresolvedVariableIssue> issues, ApiCollection collection,
+                                          ApiRequest request, VariableResolver resolver) {
+        String collectionName = collection.name;
+        scanValue(issues, collectionName, request.name, "method", request.method, resolver);
+        scanValue(issues, collectionName, request.name, "url", request.url, resolver);
+        scanValue(issues, collectionName, request.name, "description", request.description, resolver);
+        if (request.parameters != null) for (ApiRequest.Parameter parameter : request.parameters) if (parameter != null && !parameter.disabled) {
+            scanValue(issues, collectionName, request.name, "parameter:key", parameter.key, resolver);
+            scanValue(issues, collectionName, request.name, "parameter:value", parameter.value, resolver);
+        }
+        if (request.headers != null) for (ApiRequest.Header header : request.headers) if (header != null && !header.disabled) {
+            scanValue(issues, collectionName, request.name, "header:key", header.key, resolver);
+            scanValue(issues, collectionName, request.name, "header:value", header.value, resolver);
+        }
+        if (request.body != null) {
+            scanValue(issues, collectionName, request.name, "body:raw", request.body.raw, resolver);
+            if (request.body.graphql != null) {
+                scanValue(issues, collectionName, request.name, "body:graphql", request.body.graphql.query, resolver);
+                scanValue(issues, collectionName, request.name, "body:graphql:variables", request.body.graphql.variables, resolver);
+            }
+            scanFormValues(issues, collectionName, request.name, request.body.urlencoded, resolver);
+            scanFormValues(issues, collectionName, request.name, request.body.formdata, resolver);
+        }
+        ApiRequest.Auth auth = request.explicitAuth != null ? request.explicitAuth : request.auth;
+        if (auth != null && auth.properties != null) for (Map.Entry<String, String> entry : auth.properties.entrySet())
+            scanValue(issues, collectionName, request.name, "auth:" + safe(entry.getKey()), entry.getValue(), resolver);
+        if (request.scriptBlocks != null) for (burp.scripts.ScriptBlock block : request.scriptBlocks)
+            if (block != null && block.enabled) scanValue(issues, collectionName, request.name,
+                    "script:" + block.phase, block.source, resolver);
+        boolean nativePre = request.scriptBlocks != null && request.scriptBlocks.stream()
+                .anyMatch(block -> block != null && block.phase == burp.scripts.ScriptPhase.PRE_REQUEST);
+        boolean nativePost = request.scriptBlocks != null && request.scriptBlocks.stream()
+                .anyMatch(block -> block != null && block.phase == burp.scripts.ScriptPhase.POST_RESPONSE);
+        if (!nativePre && request.preRequestScripts != null) for (ApiRequest.Script script : request.preRequestScripts)
+            if (script != null) scanValue(issues, collectionName, request.name, "script:pre-request", script.exec, resolver);
+        if (!nativePost && request.postResponseScripts != null) for (ApiRequest.Script script : request.postResponseScripts)
+            if (script != null) scanValue(issues, collectionName, request.name, "script:post-response", script.exec, resolver);
+    }
+
+    private static void scanFormValues(List<UnresolvedVariableIssue> issues, String collectionName,
+                                       String requestName, List<ApiRequest.Body.FormField> fields,
+                                       VariableResolver resolver) {
+        if (fields == null) return;
+        for (ApiRequest.Body.FormField field : fields) if (field != null && !field.disabled) {
+            scanValue(issues, collectionName, requestName, "form:key", field.key, resolver);
+            scanValue(issues, collectionName, requestName, "form:value", field.value, resolver);
+            scanValue(issues, collectionName, requestName, "form:file", field.filePath, resolver);
+        }
     }
 
     private static void scanCollectionLevelValues(List<UnresolvedVariableIssue> issues,
                                                   ApiCollection collection,
-                                                  Map<String, String> overlay) {
+                                                  VariableResolver resolver) {
         if (collection == null) {
             return;
         }
         String collectionName = collection.name != null ? collection.name : "";
         if (collection.auth != null && collection.auth.properties != null) {
             for (Map.Entry<String, String> entry : collection.auth.properties.entrySet()) {
-                scanValue(issues, collectionName, collectionName, "collection-auth:" + safe(entry.getKey()), entry.getValue(), overlay);
+                scanValue(issues, collectionName, collectionName, "collection-auth:" + safe(entry.getKey()), entry.getValue(), resolver);
             }
         }
         if (collection.folderAuth != null) {
@@ -135,7 +176,7 @@ public final class ExportVariableResolutionService {
                     continue;
                 }
                 for (Map.Entry<String, String> authEntry : auth.properties.entrySet()) {
-                    scanValue(issues, collectionName, collectionName, "folder-auth:" + safe(entry.getKey()) + ":" + safe(authEntry.getKey()), authEntry.getValue(), overlay);
+                    scanValue(issues, collectionName, collectionName, "folder-auth:" + safe(entry.getKey()) + ":" + safe(authEntry.getKey()), authEntry.getValue(), resolver);
                 }
             }
         }
@@ -144,7 +185,7 @@ public final class ExportVariableResolutionService {
                 if (variable == null) {
                     continue;
                 }
-                scanValue(issues, collectionName, collectionName, "collection-variable:" + safe(variable.key), variable.value, overlay);
+                if (variable.enabled) scanValue(issues, collectionName, collectionName, "collection-variable:" + safe(variable.key), variable.value, resolver);
             }
         }
         if (collection.folderVars != null) {
@@ -153,15 +194,22 @@ public final class ExportVariableResolutionService {
                     continue;
                 }
                 for (Map.Entry<String, String> nested : entry.getValue().entrySet()) {
-                    scanValue(issues, collectionName, collectionName, "folder-variable:" + safe(entry.getKey()) + ":" + safe(nested.getKey()), nested.getValue(), overlay);
+                    scanValue(issues, collectionName, collectionName, "folder-variable:" + safe(entry.getKey()) + ":" + safe(nested.getKey()), nested.getValue(), resolver);
                 }
             }
         }
         if (collection.environment != null) {
             for (Map.Entry<String, String> entry : collection.environment.entrySet()) {
-                scanValue(issues, collectionName, collectionName, "collection-environment:" + safe(entry.getKey()), entry.getValue(), overlay);
+                scanValue(issues, collectionName, collectionName, "collection-environment:" + safe(entry.getKey()), entry.getValue(), resolver);
             }
         }
+        if (collection.scriptBlocks != null) for (burp.scripts.ScriptBlock block : collection.scriptBlocks)
+            if (block != null && block.enabled) scanValue(issues, collectionName, collectionName,
+                    "collection-script:" + block.phase, block.source, resolver);
+        if (collection.folderScriptBlocks != null) for (Map.Entry<String, List<burp.scripts.ScriptBlock>> entry : collection.folderScriptBlocks.entrySet())
+            if (entry.getValue() != null) for (burp.scripts.ScriptBlock block : entry.getValue())
+                if (block != null && block.enabled) scanValue(issues, collectionName, collectionName,
+                        "folder-script:" + safe(entry.getKey()) + ":" + block.phase, block.source, resolver);
     }
 
     private static void scanValues(List<UnresolvedVariableIssue> issues,
@@ -169,12 +217,12 @@ public final class ExportVariableResolutionService {
                                    String requestName,
                                    String location,
                                    List<String> values,
-                                   Map<String, String> overlay) {
+                                   VariableResolver resolver) {
         if (values == null || values.isEmpty()) {
             return;
         }
         for (String value : values) {
-            scanValue(issues, collectionName, requestName, location, value, overlay);
+            scanValue(issues, collectionName, requestName, location, value, resolver);
         }
     }
 
@@ -183,7 +231,7 @@ public final class ExportVariableResolutionService {
                                   String requestName,
                                   String location,
                                   String input,
-                                  Map<String, String> overlay) {
+                                  VariableResolver resolver) {
         if (input == null || input.isEmpty()) {
             return;
         }
@@ -194,19 +242,16 @@ public final class ExportVariableResolutionService {
             if (variableName.isEmpty() || defaultValue != null) {
                 continue;
             }
-            if (overlay != null && overlay.containsKey(variableName)) {
-                String resolved = overlay.get(variableName);
-                if (resolved != null && !resolved.isBlank()) {
-                    continue;
-                }
-            }
+            String token = "{{" + variableName + "}}";
+            String resolved = resolver != null ? resolver.resolve(token) : token;
+            if (resolved != null && !token.equals(resolved) && !resolved.isBlank()) continue;
             issues.add(new UnresolvedVariableIssue(
                     collectionName != null ? collectionName : "",
                     requestName != null ? requestName : "",
                     variableName,
                     location,
-                    overlay != null && overlay.containsKey(variableName)
-                            ? "Variable \"" + variableName + "\" exists in the active/runtime scope but has an empty value."
+                    resolved != null && !token.equals(resolved)
+                            ? "Variable \"" + variableName + "\" exists in the export scope but has an empty value."
                             : "Variable \"" + variableName + "\" is unresolved."
             ));
         }

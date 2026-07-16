@@ -108,6 +108,19 @@ class BrunoExportScalarCodecTest {
                 .contains("Files", "unsafe").doesNotContain("secret\npath"));
     }
 
+    @Test
+    void sanitizedKeyCollisionsAreOrderIndependentWithoutChangingSafeDuplicates() throws Exception {
+        for (List<String> keys : List.of(List.of("\n", "\ufffd", "dup", "dup"),
+                List.of("\ufffd", "\n", "dup", "dup"))) {
+            ApiCollection collection=new ApiCollection();collection.name="Keys";ApiRequest request=request("Keys","https://e.test");
+            for(String key:keys)request.parameters.add(parameter("query",key,"v"));collection.requests.add(request);
+            List<String>warnings=new ArrayList<>();ApiRequest imported=new BrunoParser().parse(export(collection,warnings).toFile()).requests.get(0);
+            assertThat(imported.parameters).extracting(p->p.key).contains("\ufffd","\ufffd_2");
+            assertThat(imported.parameters).extracting(p->p.key).filteredOn("dup"::equals).hasSize(2);
+            assertThat(warnings).filteredOn(w->w.contains("colliding key")).hasSize(1);
+        }
+    }
+
     private static ApiCollection authCollection(Map<String, String> properties) {
         ApiCollection c = new ApiCollection(); c.name = "Auth"; ApiRequest r = request("Auth", "https://e.test");
         ApiRequest.Auth auth = new ApiRequest.Auth(); auth.type = "basic"; auth.properties = new LinkedHashMap<>(properties);

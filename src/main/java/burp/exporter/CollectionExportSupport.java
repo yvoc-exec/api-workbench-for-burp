@@ -229,22 +229,45 @@ final class CollectionExportSupport {
             return out;
         }
         out.addProperty("type", type);
-        if (auth.properties != null) {
-            for (Map.Entry<String, String> entry : auth.properties.entrySet()) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    continue;
-                }
-                out.addProperty(entry.getKey(), resolve(entry.getValue(), resolver, resolve) != null ? resolve(entry.getValue(), resolver, resolve) : "");
-            }
-        }
-        if ("apikey".equals(type)) {
-            String placement = firstNonBlank(auth.properties, "in", "placement", "addTo");
-            if (placement != null) {
-                out.addProperty("addTo", "query".equalsIgnoreCase(placement)
-                        || "queryParams".equalsIgnoreCase(placement) ? "queryParams" : placement);
-            }
+        Map<String, String> properties = auth.properties != null ? auth.properties : Map.of();
+        if ("apikey".equals(type) || "api_key".equals(type)) {
+            addResolved(out, "key", firstNonBlank(properties, "key", "name"), resolver, resolve);
+            addResolved(out, "value", firstNonBlank(properties, "value", "token"), resolver, resolve);
+            String placement = firstNonBlank(properties, "in", "placement", "addTo");
+            out.addProperty("addTo", placement == null ? "header" : "query".equalsIgnoreCase(placement)
+                    || "queryParams".equalsIgnoreCase(placement) ? "queryParams" : "header".equalsIgnoreCase(placement) ? "header" : placement);
+        } else if ("oauth2".equals(type)) {
+            Map<String, String> mappings = new java.util.TreeMap<>();
+            mapFirst(mappings, properties, "grantType", "grantType", "grant_type");
+            mapFirst(mappings, properties, "accessTokenUrl", "accessTokenUrl", "access_token_url");
+            mapFirst(mappings, properties, "authorizationUrl", "authorizationUrl", "authorization_url");
+            mapFirst(mappings, properties, "redirectUrl", "redirectUrl", "redirectUri", "callback_url");
+            mapFirst(mappings, properties, "clientId", "clientId", "client_id");
+            mapFirst(mappings, properties, "clientSecret", "clientSecret", "client_secret");
+            mapFirst(mappings, properties, "scope", "scope");
+            mapFirst(mappings, properties, "username", "username");
+            mapFirst(mappings, properties, "password", "password");
+            mapFirst(mappings, properties, "accessToken", "accessToken", "access_token");
+            mappings.forEach((key, value) -> addResolved(out, key, value, resolver, resolve));
+        } else {
+            new java.util.TreeMap<>(properties).forEach((key, value) -> {
+                if (key != null && !key.isBlank()) addResolved(out, key, value, resolver, resolve);
+            });
         }
         return out;
+    }
+
+    private static void addResolved(JsonObject out, String key, String value,
+                                    VariableResolver resolver, boolean resolve) {
+        if (value == null) return;
+        String resolved = resolve(value, resolver, resolve);
+        out.addProperty(key, resolved != null ? resolved : "");
+    }
+
+    private static void mapFirst(Map<String, String> target, Map<String, String> source,
+                                 String targetKey, String... candidates) {
+        String value = firstNonBlank(source, candidates);
+        if (value != null) target.put(targetKey, value);
     }
 
     static JsonObject authToOpenApiScheme(ApiRequest.Auth auth, VariableResolver resolver, boolean resolve) {

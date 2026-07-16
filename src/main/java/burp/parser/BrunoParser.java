@@ -25,6 +25,7 @@ import java.util.zip.ZipInputStream;
  */
 public class BrunoParser implements CollectionParser {
     private final ArchiveImportLimits archiveImportLimits;
+    private boolean legacyQuotedValueMode;
     private static final Pattern BRUNO_STANDARD_METHOD_PATTERN = Pattern.compile(
             "^\\s*(get|post|put|delete|patch|head|options|trace|connect)\\s*(\\{|[^\\n]*$)",
             Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
@@ -105,13 +106,15 @@ public class BrunoParser implements CollectionParser {
                     } else {
                         if (containsLegacyQuotedDictionaryValue(content)) {
                             recordImportWarning(collection, singleFileDisplayPath(file),
-                                    "Legacy quoted dictionary values were decoded using API Workbench compatibility rules; embedded backslash escapes may be ambiguous.", false);
+                                    "Ambiguous quoted dictionary values were preserved literally because no legacy collection metadata was present.", false);
                         }
                         putCollectionVariables(collection, parseVarsEntries(scanResult.blocks));
                         ApiRequest.Auth auth = parseAuthFromBlocks(scanResult.blocks, content);
                         if (auth != null) {
                             applyScopedMetadataAuth(collection, "", auth);
                         }
+                        warnMissingScopedAuthBlock(collection, singleFileDisplayPath(file), scanResult.blocks);
+                        importScopedScripts(collection, "", effectiveBlocks, singleFileDisplayPath(file));
                     }
                 } catch (IOException | RuntimeException e) {
                     recordMalformedBrunoFile(collection, file.toPath().getParent(), file.toPath(), e);
@@ -318,6 +321,10 @@ public class BrunoParser implements CollectionParser {
                     .toList();
         }
 
+        legacyQuotedValueMode = bruFiles.stream().anyMatch(path -> {
+            String name = path.getFileName() != null ? path.getFileName().toString() : "";
+            return "_collection.bru".equalsIgnoreCase(name) || "_folder.bru".equalsIgnoreCase(name);
+        });
         for (Path path : bruFiles) {
             try {
                 String content = Files.readString(path, java.nio.charset.StandardCharsets.UTF_8);
@@ -342,7 +349,7 @@ public class BrunoParser implements CollectionParser {
                         }
                     }
                 } else {
-                    if (containsLegacyQuotedDictionaryValue(content)) {
+                    if (legacyQuotedValueMode && containsLegacyQuotedDictionaryValue(content)) {
                         recordImportWarning(collection, relativePath,
                                 "Legacy quoted dictionary values were decoded using API Workbench compatibility rules; embedded backslash escapes may be ambiguous.", false);
                     }
@@ -358,6 +365,8 @@ public class BrunoParser implements CollectionParser {
                     if (folderAuth != null) {
                         applyScopedMetadataAuth(collection, folderPath, folderAuth);
                     }
+                    warnMissingScopedAuthBlock(collection, relativePath, scanResult.blocks);
+                    importScopedScripts(collection, folderPath, effectiveBlocks, relativePath);
                 }
             } catch (IOException | RuntimeException e) {
                 recordMalformedBrunoFile(collection, rootPath, path, e);
@@ -365,6 +374,7 @@ public class BrunoParser implements CollectionParser {
         }
 
         sortRequestsBySequence(collection);
+        legacyQuotedValueMode = false;
     }
 
     private ApiRequest parseBruFile(File file, String folderPath) throws IOException {
@@ -377,7 +387,7 @@ public class BrunoParser implements CollectionParser {
         if (file == null || content == null || blocks == null) {
             return null;
         }
-        if (containsLegacyQuotedDictionaryValue(content)) {
+        if (legacyQuotedValueMode && containsLegacyQuotedDictionaryValue(content)) {
             recordImportWarning(collection, displayPath,
                     "Legacy quoted dictionary values were decoded using API Workbench compatibility rules; embedded backslash escapes may be ambiguous.", false);
         }
@@ -435,7 +445,7 @@ public class BrunoParser implements CollectionParser {
         parseBodyBlocks(req, requestBlocks, selectors.bodyMode, collection, displayPath);
         parseRequestAuth(req, requestBlocks, content, selectors.authMode, collection, displayPath);
         parseRequestVariables(req, requestBlocks, collection, displayPath);
-        parseScripts(req, file, requestBlocks, selectors.bodyMode != null || selectors.authMode != null);
+        parseScripts(req, file, requestBlocks);
 
         if (req.body == null) {
             req.body = new ApiRequest.Body();
@@ -644,8 +654,12 @@ public class BrunoParser implements CollectionParser {
                 pendingType = trimmed.substring(1).toLowerCase(Locale.ROOT);
                 continue;
             }
-            if (trimmed.startsWith("@description(") && trimmed.endsWith(")")) {
-                pendingDescription = trimmed.substring("@description(".length(), trimmed.length() - 1);
+            if (trimmed.startsWith("@description(")) {
+                DescriptionParse description = parseDescriptionAnnotation(lines, index);
+                if (description != null) {
+                    pendingDescription = description.value;
+                    index = description.lastLine;
+                }
                 continue;
             }
             DictionaryEntry entry = parseDictionaryEntry(rawLine);
@@ -693,6 +707,53 @@ public class BrunoParser implements CollectionParser {
             }
         }
         return entries;
+    }
+
+    private DescriptionParse parseDescriptionAnnotation(List<String> lines, int start) {
+        String trimmed = lines.get(start).trim();
+        String prefix = "@description(";
+        if (!trimmed.startsWith(prefix)) return null;
+        String argument = trimmed.substring(prefix.length());
+        if (argument.startsWith("'''")) {
+            String remainder = argument.substring(3);
+            StringBuilder value = new StringBuilder();
+            int index = start;
+            if (!remainder.isEmpty() && !remainder.equals(")")) value.append(remainder);
+            while (++index < lines.size()) {
+                String line = lines.get(index);
+                int closeIndex = line.indexOf("''')");
+                String contentLine = closeIndex >= 0 ? line.substring(0, closeIndex) : line;
+                if (!contentLine.isEmpty()) {
+                    if (value.length() > 0) value.append('\n');
+                    value.append(contentLine.startsWith("  ") ? contentLine.substring(2) : contentLine);
+                }
+                if (closeIndex >= 0) return new DescriptionParse(value.toString(), index);
+            }
+            return new DescriptionParse(value.toString(), lines.size() - 1);
+        }
+        if (!argument.endsWith(")")) return null;
+        argument = argument.substring(0, argument.length() - 1);
+        if (argument.length() >= 2) {
+            char quote = argument.charAt(0);
+            if ((quote == '\'' || quote == '"') && argument.charAt(argument.length() - 1) == quote) {
+                argument = decodeAnnotationQuoted(argument.substring(1, argument.length() - 1), quote);
+            }
+        }
+        return new DescriptionParse(argument, start);
+    }
+
+    private String decodeAnnotationQuoted(String value, char quote) {
+        StringBuilder out = new StringBuilder();
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            if (ch == '\\' && index + 1 < value.length() && value.charAt(index + 1) == quote) {
+                out.append(quote);
+                index++;
+            } else {
+                out.append(ch);
+            }
+        }
+        return out.toString();
     }
 
     private boolean isDictionaryMultilineClose(String line, int entryIndent) {
@@ -845,6 +906,22 @@ public class BrunoParser implements CollectionParser {
             return null;
         }
 
+        BrunoBlockScanner.Block authBlock = BrunoBlockScanner.firstByName(blocks, "auth");
+        if (authBlock != null) {
+            String selected = normalizeAuthSelector(extractValue(authBlock.content, "mode"));
+            if (selected != null) {
+                if ("none".equals(selected)) return noneAuth();
+                BrunoBlockScanner.Block selectedBlock = selectTypedAuthBlock(blocks, selected);
+                if (selectedBlock != null) return parseAuthBlock(selectedBlock.name, selectedBlock.content);
+                if (parseDictionaryEntries(authBlock.content).size() > 1) {
+                    return parseAuthBlock("auth:" + selected, authBlock.content);
+                }
+                return emptyAuthOverride(selected);
+            }
+            ApiRequest.Auth legacy = parseAuthBlock(authBlock.name, authBlock.content);
+            if (legacy != null) return legacy;
+        }
+
         BrunoBlockScanner.Block typed = BrunoBlockScanner.firstByName(blocks,
                 "auth:none",
                 "auth:noauth",
@@ -856,12 +933,20 @@ public class BrunoParser implements CollectionParser {
         if (typed != null) {
             return parseAuthBlock(typed.name, typed.content);
         }
-
-        BrunoBlockScanner.Block authBlock = BrunoBlockScanner.firstByName(blocks, "auth");
-        if (authBlock != null) {
-            return parseAuthBlock(authBlock.name, authBlock.content);
-        }
         return null;
+    }
+
+    private void warnMissingScopedAuthBlock(ApiCollection collection, String displayPath,
+                                            List<BrunoBlockScanner.Block> blocks) {
+        BrunoBlockScanner.Block selector = BrunoBlockScanner.firstByName(blocks, "auth");
+        if (selector == null) return;
+        String mode = normalizeAuthSelector(extractValue(selector.content, "mode"));
+        if (mode != null && !"none".equals(mode) && SUPPORTED_AUTH_SELECTORS.contains(mode)
+                && selectTypedAuthBlock(blocks, mode) == null
+                && parseDictionaryEntries(selector.content).size() <= 1) {
+            recordImportWarning(collection, displayPath,
+                    "Selected Bruno auth mode '" + mode + "' was not found; retained an explicit empty auth override.", false);
+        }
     }
 
     private ApiRequest.Auth parseAuthBlock(String blockName, String blockContent) {
@@ -1111,7 +1196,7 @@ public class BrunoParser implements CollectionParser {
             return null;
         }
         String line = rawLine.trim();
-        if (line.isEmpty() || line.startsWith("#") || line.startsWith("//")) {
+        if (line.isEmpty()) {
             return null;
         }
         boolean disabled = false;
@@ -1161,6 +1246,9 @@ public class BrunoParser implements CollectionParser {
     private int findCanonicalQuotedKeyEnd(String line) {
         for (int index = 1; line != null && index < line.length(); index++) {
             if (line.charAt(index) != '"') continue;
+            int slashCount = 0;
+            for (int cursor = index - 1; cursor >= 0 && line.charAt(cursor) == '\\'; cursor--) slashCount++;
+            if ((slashCount & 1) == 1) continue;
             int cursor = index + 1;
             while (cursor < line.length() && Character.isWhitespace(line.charAt(cursor))) cursor++;
             if (cursor < line.length() && line.charAt(cursor) == ':') return index;
@@ -1169,7 +1257,8 @@ public class BrunoParser implements CollectionParser {
     }
 
     private String parseBrunoValue(String value) {
-        if (value == null || value.length() < 2 || !value.startsWith("\"") || !value.endsWith("\"")) {
+        if (!legacyQuotedValueMode || value == null || value.length() < 2
+                || !value.startsWith("\"") || !value.endsWith("\"")) {
             return value;
         }
         return decodeLegacyBruQuotedValue(value.substring(1, value.length() - 1));
@@ -1289,7 +1378,7 @@ public class BrunoParser implements CollectionParser {
                     BrunoBlockScanner.Block urlencodedBlock = BrunoBlockScanner.firstByName(blocks, "body:form-urlencoded");
                     req.body = new ApiRequest.Body();
                     req.body.mode = "urlencoded";
-                    req.body.urlencoded = urlencodedBlock != null ? parseFormFields(urlencodedBlock.content, false) : new ArrayList<>();
+                    req.body.urlencoded = urlencodedBlock != null ? parseFormFields(urlencodedBlock.content, false, collection, displayPath) : new ArrayList<>();
                     req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
                     if (req.body.contentType == null || req.body.contentType.isBlank()) {
                         req.body.contentType = "application/x-www-form-urlencoded";
@@ -1304,7 +1393,7 @@ public class BrunoParser implements CollectionParser {
                     BrunoBlockScanner.Block multipartBlock = BrunoBlockScanner.firstByName(blocks, "body:multipart-form");
                     req.body = new ApiRequest.Body();
                     req.body.mode = "formdata";
-                    req.body.formdata = multipartBlock != null ? parseFormFields(multipartBlock.content, true) : new ArrayList<>();
+                    req.body.formdata = multipartBlock != null ? parseFormFields(multipartBlock.content, true, collection, displayPath) : new ArrayList<>();
                     req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
                     if (req.body.contentType == null || req.body.contentType.isBlank()) {
                         req.body.contentType = "multipart/form-data";
@@ -1378,7 +1467,7 @@ public class BrunoParser implements CollectionParser {
         if (multipartBlock != null) {
             req.body = new ApiRequest.Body();
             req.body.mode = "formdata";
-            req.body.formdata = parseFormFields(multipartBlock.content, true);
+            req.body.formdata = parseFormFields(multipartBlock.content, true, collection, displayPath);
             req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
             return;
         }
@@ -1387,7 +1476,7 @@ public class BrunoParser implements CollectionParser {
         if (urlencodedBlock != null) {
             req.body = new ApiRequest.Body();
             req.body.mode = "urlencoded";
-            req.body.urlencoded = parseFormFields(urlencodedBlock.content, false);
+            req.body.urlencoded = parseFormFields(urlencodedBlock.content, false, collection, displayPath);
             req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
             if (req.body.contentType == null || req.body.contentType.isBlank()) {
                 req.body.contentType = "application/x-www-form-urlencoded";
@@ -1452,7 +1541,8 @@ public class BrunoParser implements CollectionParser {
         }
     }
 
-    private List<ApiRequest.Body.FormField> parseFormFields(String content, boolean multipart) throws IOException {
+    private List<ApiRequest.Body.FormField> parseFormFields(String content, boolean multipart,
+                                                             ApiCollection collection, String displayPath) throws IOException {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
         if (content == null || content.isBlank()) {
             return fields;
@@ -1462,6 +1552,7 @@ public class BrunoParser implements CollectionParser {
             for (DictionaryEntry entry : parseDictionaryEntries(content)) {
                 fields.add(createFormField(entry.key, entry.value, entry.disabled,
                         isFileFieldValue(entry.value), multipart, false));
+                warnMultipartContentType(entry.value, multipart, collection, displayPath, entry.key);
             }
             return fields;
         }
@@ -1492,6 +1583,7 @@ public class BrunoParser implements CollectionParser {
                 currentBuffer.append(initialValue);
                 currentState = updateBraceState(initialValue, currentState.inSingleQuote, currentState.inDoubleQuote, currentState.escaped, currentState.depth);
                 currentFileUpload = isFileFieldValue(currentBuffer.toString());
+                warnMultipartContentType(initialValue, multipart, collection, displayPath, entry.key);
                 continue;
             }
 
@@ -1549,7 +1641,7 @@ public class BrunoParser implements CollectionParser {
             return false;
         }
         String trimmed = value.trim();
-        return trimmed.startsWith("@file(") && trimmed.endsWith(")");
+        return trimmed.startsWith("@file(") && findFileDeclarationEnd(trimmed) >= "@file(".length();
     }
 
     private String extractFilePath(String value) {
@@ -1557,10 +1649,28 @@ public class BrunoParser implements CollectionParser {
             return null;
         }
         String trimmed = value.trim();
-        if (!trimmed.startsWith("@file(") || !trimmed.endsWith(")")) {
+        int end = findFileDeclarationEnd(trimmed);
+        if (!trimmed.startsWith("@file(") || end < "@file(".length()) {
             return null;
         }
-        return trimmed.substring("@file(".length(), trimmed.length() - 1);
+        return trimmed.substring("@file(".length(), end);
+    }
+
+    private int findFileDeclarationEnd(String value) {
+        if (value == null || !value.startsWith("@file(")) return -1;
+        String marker = ") @contentType(";
+        int annotated = value.indexOf(marker, "@file(".length());
+        if (annotated >= 0 && value.endsWith(")")) return annotated;
+        return value.endsWith(")") ? value.length() - 1 : -1;
+    }
+
+    private void warnMultipartContentType(String value, boolean multipart, ApiCollection collection,
+                                          String displayPath, String key) {
+        if (multipart && value != null && value.contains(") @contentType(")) {
+            recordImportWarning(collection, displayPath,
+                    "Multipart field '" + sanitizeImportLabel(key)
+                            + "' retained without its per-field content type metadata.", false);
+        }
     }
 
     private String trimBlockContent(String content) {
@@ -1630,8 +1740,7 @@ public class BrunoParser implements CollectionParser {
         }
     }
 
-    private void parseScripts(ApiRequest req, File file, List<BrunoBlockScanner.Block> blocks,
-                              boolean canonicalStructuralIndent) {
+    private void parseScripts(ApiRequest req, File file, List<BrunoBlockScanner.Block> blocks) {
         if (req == null || blocks == null || blocks.isEmpty()) {
             return;
         }
@@ -1651,13 +1760,41 @@ public class BrunoParser implements CollectionParser {
                 continue;
             }
             ApiRequest.Script script = new ApiRequest.Script("js",
-                    BrunoSourceSupport.decodeTextBlock(block.content, canonicalStructuralIndent));
+                    BrunoSourceSupport.decodeStructuralTextBlock(block.content));
             if (phase == ScriptPhase.PRE_REQUEST) {
                 req.preRequestScripts.add(script);
             } else {
                 req.postResponseScripts.add(script);
             }
             addScriptBlock(req, script, ScriptDialect.BRUNO, phase, file, order++);
+        }
+    }
+
+    private void importScopedScripts(ApiCollection collection, String folderPath,
+                                     List<BrunoBlockScanner.Block> blocks, String sourcePath) {
+        if (collection == null || blocks == null) return;
+        String normalizedFolder = AuthInheritanceResolver.normalizeFolderPath(folderPath);
+        List<ScriptBlock> target = normalizedFolder.isEmpty()
+                ? collection.scriptBlocks
+                : collection.folderScriptBlocks.computeIfAbsent(normalizedFolder, ignored -> new ArrayList<>());
+        int order = target.size();
+        for (BrunoBlockScanner.Block block : blocks) {
+            if (block == null || block.name == null) continue;
+            ScriptPhase phase = switch (block.normalizedName()) {
+                case "script:pre-request" -> ScriptPhase.PRE_REQUEST;
+                case "script:post-response" -> ScriptPhase.POST_RESPONSE;
+                case "tests", "test", "assert", "body:test" -> ScriptPhase.TEST;
+                default -> null;
+            };
+            if (phase == null) continue;
+            ScriptBlock script = ScriptBlock.of(
+                    BrunoSourceSupport.decodeStructuralTextBlock(block.content),
+                    ScriptDialect.BRUNO, phase,
+                    normalizedFolder.isEmpty() ? ScriptScope.COLLECTION : ScriptScope.FOLDER);
+            script.sourceFormat = "bruno";
+            script.sourcePath = sourcePath;
+            script.order = order++;
+            target.add(script);
         }
     }
 
@@ -1843,6 +1980,8 @@ public class BrunoParser implements CollectionParser {
             this.legacyQuoted = legacyQuoted;
         }
     }
+
+    private record DescriptionParse(String value, int lastLine) { }
 
     private void parseFileBody(ApiRequest req,
                                BrunoBlockScanner.Block fileBlock,

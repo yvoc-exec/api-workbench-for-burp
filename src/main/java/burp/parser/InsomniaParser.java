@@ -110,11 +110,6 @@ public class InsomniaParser implements CollectionParser {
             String id = string(resource, "_id", "");
             folderNames.put(id, string(resource, "name", ""));
             folderParents.put(id, string(resource, "parentId", ""));
-            if (hasAny(resource, "preRequestScript", "pre_request_script", "requestHooks",
-                    "afterResponseScript", "after_response_script", "responseHooks", "script", "scripts")) {
-                warn(collection, buildResourceLabel(resource, "folder"),
-                        "Folder scripts could not be retained in the collection model.");
-            }
             JsonArray folderHeaders = array(resource, "headers");
             if (folderHeaders != null && !folderHeaders.isEmpty()) {
                 warn(collection, buildResourceLabel(resource, "folder"),
@@ -138,14 +133,16 @@ public class InsomniaParser implements CollectionParser {
                         AuthInheritanceResolver.normalizeParsedAuthMode(auth), auth);
             }
             JsonObject folderResource = resourceById(resources, folderId);
+            importFolderScripts(folderResource, path, collection);
             JsonObject environment = object(folderResource, "environment");
             if (environment != null && !path.isBlank()) {
                 Map<String, String> values = collection.folderVars.computeIfAbsent(path, ignored -> new LinkedHashMap<>());
                 for (Map.Entry<String, JsonElement> entry : environment.entrySet()) {
-                    if (entry.getValue() != null && !entry.getValue().isJsonNull()) {
-                        values.put(entry.getKey(), entry.getValue().isJsonPrimitive()
-                                ? entry.getValue().getAsString() : entry.getValue().toString());
-                    }
+                    if (entry.getValue() == null) continue;
+                    String text = entry.getValue().isJsonNull() ? "null" : entry.getValue().isJsonPrimitive()
+                            ? entry.getValue().getAsString() : entry.getValue().toString();
+                    values.put(entry.getKey(), text);
+                    InsomniaEnvironmentValueTypes.remember(collection, path, entry.getKey(), entry.getValue());
                 }
             }
         }
@@ -174,6 +171,65 @@ public class InsomniaParser implements CollectionParser {
 
         AuthInheritanceResolver.recomputeCollectionAuth(collection);
         return collection;
+    }
+
+    private void importFolderScripts(JsonObject resource, String folderPath, ApiCollection collection) {
+        if (resource == null || folderPath == null || folderPath.isBlank()) return;
+        List<ScriptBlock> target = collection.folderScriptBlocks.computeIfAbsent(
+                AuthInheritanceResolver.normalizeFolderPath(folderPath), ignored -> new ArrayList<>());
+        int[] order = {target.size()};
+        addFolderScriptElement(resource.get("preRequestScript"), target, collection, folderPath,
+                ScriptPhase.PRE_REQUEST, "preRequestScript", order);
+        addFolderScriptElement(resource.get("pre_request_script"), target, collection, folderPath,
+                ScriptPhase.PRE_REQUEST, "pre_request_script", order);
+        addFolderScriptElement(resource.get("requestHooks"), target, collection, folderPath,
+                ScriptPhase.PRE_REQUEST, "requestHooks", order);
+        addFolderScriptElement(resource.get("afterResponseScript"), target, collection, folderPath,
+                ScriptPhase.POST_RESPONSE, "afterResponseScript", order);
+        addFolderScriptElement(resource.get("after_response_script"), target, collection, folderPath,
+                ScriptPhase.POST_RESPONSE, "after_response_script", order);
+        addFolderScriptElement(resource.get("responseHooks"), target, collection, folderPath,
+                ScriptPhase.POST_RESPONSE, "responseHooks", order);
+    }
+
+    private void addFolderScriptElement(JsonElement element, List<ScriptBlock> target,
+                                        ApiCollection collection, String folderPath,
+                                        ScriptPhase phase, String sourcePath, int[] order) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonArray()) {
+            int index = 0;
+            for (JsonElement child : element.getAsJsonArray()) {
+                addFolderScriptElement(child, target, collection, folderPath, phase,
+                        sourcePath + "[" + index++ + "]", order);
+            }
+            return;
+        }
+        String source = null;
+        boolean enabled = true;
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+            source = element.getAsString();
+        } else if (element.isJsonObject()) {
+            JsonObject object = element.getAsJsonObject();
+            for (String property : SCRIPT_SOURCE_PROPERTIES) {
+                if (object.has(property) && object.get(property).isJsonPrimitive()
+                        && object.getAsJsonPrimitive(property).isString()) {
+                    source = object.get(property).getAsString();
+                    break;
+                }
+            }
+            enabled = object.has("enabled") ? bool(object, "enabled", true) : !bool(object, "disabled", false);
+        }
+        if (source == null) {
+            warn(collection, folderPath, "Unknown folder script object shape at '" + sourcePath
+                    + "'; no source was recovered.");
+            return;
+        }
+        ScriptBlock block = ScriptBlock.of(source, ScriptDialect.INSOMNIA, phase, ScriptScope.FOLDER);
+        block.enabled = enabled;
+        block.sourceFormat = "insomnia";
+        block.sourcePath = sourcePath;
+        block.order = order[0]++;
+        target.add(block);
     }
 
     private ApiRequest parseRequest(JsonObject resource,
@@ -403,6 +459,9 @@ public class InsomniaParser implements CollectionParser {
                         "API-key cookie placement was retained but runtime application is unsupported.");
             }
         }
+        if ("oauth2".equals(normalized) && auth.properties.containsKey("redirectUrl")) {
+            auth.properties.put("redirectUri", auth.properties.get("redirectUrl"));
+        }
         if (!SUPPORTED_AUTH.contains(normalized)) {
             warn(collection, label, "Unsupported authentication type '" + normalized
                     + "' was retained; runtime request building may not apply it.");
@@ -555,10 +614,11 @@ public class InsomniaParser implements CollectionParser {
             JsonObject data = object(base, "data");
             if (data != null) {
                 for (Map.Entry<String, JsonElement> entry : data.entrySet()) {
-                    if (entry.getValue() != null && !entry.getValue().isJsonNull()) {
-                        collection.environment.put(entry.getKey(), entry.getValue().isJsonPrimitive()
-                                ? entry.getValue().getAsString() : entry.getValue().toString());
-                    }
+                    if (entry.getValue() == null) continue;
+                    String text = entry.getValue().isJsonNull() ? "null" : entry.getValue().isJsonPrimitive()
+                            ? entry.getValue().getAsString() : entry.getValue().toString();
+                    collection.environment.put(entry.getKey(), text);
+                    InsomniaEnvironmentValueTypes.remember(collection, "", entry.getKey(), entry.getValue());
                 }
             }
         }

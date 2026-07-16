@@ -592,12 +592,12 @@ class BrunoParserTest {
         ApiRequest request = collection.requests.get(0);
         assertThat(request.auth).isNotNull();
         assertThat(request.auth.type).isEqualTo("bearer");
-        assertThat(request.auth.properties).containsEntry("token", "'''");
+        assertThat(request.auth.properties).containsEntry("token", "\"'''\"");
         assertThat(request.headers).singleElement().satisfies(header -> {
             assertThat(header.key).isEqualTo("X-After");
             assertThat(header.value).isEqualTo("yes");
         });
-        assertThat(rawRequestText(request)).contains("Authorization: Bearer '''");
+        assertThat(rawRequestText(request)).contains("Authorization: Bearer \"'''\"");
     }
 
     @Test

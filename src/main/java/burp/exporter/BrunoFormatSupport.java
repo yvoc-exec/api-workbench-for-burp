@@ -43,6 +43,16 @@ final class BrunoFormatSupport {
         String candidate = sanitized;
         String key = candidate.toLowerCase(Locale.ROOT);
         if (java.util.Objects.equals(original, sanitized)) {
+            if (usedKeys.contains("!sanitized:" + key)) {
+                int suffix = 2;
+                do {
+                    candidate = sanitized + "_" + suffix++;
+                    key = candidate.toLowerCase(Locale.ROOT);
+                } while (!usedKeys.add(key));
+                ExportWarningSupport.add(warnings, "Bruno export renamed a colliding key in "
+                        + ExportWarningSupport.label(context) + ".");
+                return candidate;
+            }
             usedKeys.add(key);
             return candidate;
         }
@@ -53,6 +63,7 @@ final class BrunoFormatSupport {
             ExportWarningSupport.add(warnings, "Bruno export renamed a colliding key in "
                     + ExportWarningSupport.label(context) + ".");
         }
+        usedKeys.add("!sanitized:" + key);
         return candidate;
     }
 

@@ -424,6 +424,9 @@ final class BrunoBlockScanner {
     private static int findQuotedDictionaryKeyEnd(String source, int keyStart, int lineEnd) {
         for (int i = keyStart + 1; i < lineEnd; i++) {
             if (source.charAt(i) != '"') continue;
+            int slashCount = 0;
+            for (int cursor = i - 1; cursor > keyStart && source.charAt(cursor) == '\\'; cursor--) slashCount++;
+            if ((slashCount & 1) == 1) continue;
             int cursor = i + 1;
             while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) cursor++;
             if (cursor < lineEnd && source.charAt(cursor) == ':') return i;

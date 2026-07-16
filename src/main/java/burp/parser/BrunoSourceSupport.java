@@ -16,12 +16,20 @@ final class BrunoSourceSupport {
     }
 
     static String decodeTextBlock(String blockContent) {
-        return decodeTextBlock(blockContent, false);
+        return decodeStructuralTextBlock(blockContent);
     }
 
     static String decodeTextBlock(String blockContent, boolean canonicalStructuralIndent) {
+        return canonicalStructuralIndent
+                ? decodeStructuralTextBlock(blockContent)
+                : decodeLegacyLooseTextBlock(blockContent);
+    }
+
+    static String decodeStructuralTextBlock(String blockContent) {
         String normalized = normalizePhysicalLines(blockContent);
-        if (!canonicalStructuralIndent) {
+        if (!normalized.contains("\n")) {
+            // Whitespace surrounding an inline block value belongs to the
+            // declaration, not to its payload.
             return normalized.trim();
         }
         List<String> lines = new java.util.ArrayList<>(lines(normalized));
@@ -31,10 +39,19 @@ final class BrunoSourceSupport {
         if (!lines.isEmpty() && lines.get(lines.size() - 1).isEmpty()) {
             lines.remove(lines.size() - 1);
         }
-        for (int index = 0; index < lines.size(); index++) {
-            String line = lines.get(index);
-            lines.set(index, line.startsWith("  ") ? line.substring(2) : line);
+        boolean hasCanonicalStructuralIndent = lines.stream()
+                .filter(line -> !line.isBlank())
+                .allMatch(line -> line.startsWith("  "));
+        if (hasCanonicalStructuralIndent) {
+            for (int index = 0; index < lines.size(); index++) {
+                String line = lines.get(index);
+                lines.set(index, line.startsWith("  ") ? line.substring(2) : line);
+            }
         }
         return String.join("\n", lines);
+    }
+
+    static String decodeLegacyLooseTextBlock(String blockContent) {
+        return normalizePhysicalLines(blockContent).trim();
     }
 }

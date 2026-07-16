@@ -6,6 +6,7 @@ import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import burp.ui.tree.RequestTreePathService;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestParameterSupport;
@@ -49,13 +50,13 @@ public final class BrunoCollectionExporter {
                     + ExportWarningSupport.label(collectionName) + "'.");
         }
         String rootDir = rootSegment + "/";
-        LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+        EntryAllocator entries = new EntryAllocator(warnings);
 
         if (collection != null) {
-            entries.put(rootDir + "bruno.json", gsonBytes(brunoJson(collection)));
+            entries.add(rootDir + "bruno.json", gsonBytes(brunoJson(collection)));
             VariableResolver collectionResolver = CollectionExportSupport.buildResolver(
                     collection, null, resolve ? activeEnvironment : null, exportOnly);
-            entries.put(rootDir + "collection.bru", textBytes(renderCollectionMetadata(
+            entries.add(rootDir + "collection.bru", textBytes(renderCollectionMetadata(
                     collection, collectionResolver, resolve, warnings)));
             appendCollectionEnvironment(entries, rootDir, collection, collectionResolver, resolve, warnings);
             CollectionExportTree.FolderNode tree = CollectionExportTree.build(collection);
@@ -68,10 +69,10 @@ public final class BrunoCollectionExporter {
                     exportOnly, resolve, warnings, requestOrder);
         }
 
-        validateEntries(entries.keySet());
+        validateEntries(entries.paths());
         try (ZipOutputStream zip = new ZipOutputStream(outputStream, StandardCharsets.UTF_8)) {
             zip.setLevel(java.util.zip.Deflater.BEST_COMPRESSION);
-            for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+            for (Map.Entry<String, byte[]> entry : entries.values().entrySet()) {
                 ZipEntry zipEntry = new ZipEntry(entry.getKey());
                 zipEntry.setTime(0L);
                 zip.putNextEntry(zipEntry);
@@ -97,12 +98,14 @@ public final class BrunoCollectionExporter {
         if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, null, warnings);
         appendVariables(out, collection.variables, resolver, resolve,
                 "collection '" + ExportWarningSupport.label(collection.name) + "'", warnings);
-        appendAuthBlock(out, collection.auth, "collection '" + ExportWarningSupport.label(collection.name) + "'",
+        appendMetadataAuth(out, collection.auth, "collection '" + ExportWarningSupport.label(collection.name) + "'",
                 resolver, resolve, warnings);
+        appendScopedScripts(out, collection.scriptBlocks, ScriptScope.COLLECTION,
+                "collection '" + ExportWarningSupport.label(collection.name) + "'", resolver, resolve, warnings);
         return out.toString();
     }
 
-    private static void appendCollectionEnvironment(Map<String, byte[]> entries,
+    private static void appendCollectionEnvironment(EntryAllocator entries,
                                                     String rootDir,
                                                     ApiCollection collection,
                                                     VariableResolver resolver,
@@ -111,7 +114,7 @@ public final class BrunoCollectionExporter {
         if (collection.environment == null || collection.environment.isEmpty()) return;
         StringBuilder out = new StringBuilder("vars {\n");
         Set<String> keys = BrunoFormatSupport.newKeySet();
-        for (Map.Entry<String, String> entry : collection.environment.entrySet()) {
+        for (Map.Entry<String, String> entry : new java.util.TreeMap<>(collection.environment).entrySet()) {
             if (entry.getKey() == null) continue;
             String key = BrunoFormatSupport.uniqueRenderedKey(entry.getKey(), keys,
                     "collection environment", warnings);
@@ -120,10 +123,10 @@ public final class BrunoCollectionExporter {
                     value != null ? value : "", "collection environment", warnings);
         }
         out.append("}\n");
-        entries.put(rootDir + "environments/Environment.bru", textBytes(out.toString()));
+        entries.add(rootDir + "environments/Environment.bru", textBytes(out.toString()));
     }
 
-    private static void writeNode(Map<String, byte[]> entries,
+    private static void writeNode(EntryAllocator entries,
                                   ApiCollection collection,
                                   CollectionExportTree.FolderNode node,
                                   String archiveDir,
@@ -141,7 +144,7 @@ public final class BrunoCollectionExporter {
             childDirs.put(child, childDir);
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection,
                     dummyRequestForFolder(child.path), resolve ? activeEnvironment : null, exportOnly);
-            entries.put(childDir + "folder.bru", textBytes(renderFolderMetadata(
+            entries.add(childDir + "folder.bru", textBytes(renderFolderMetadata(
                     collection, child, resolver, resolve, warnings)));
         }
         for (ApiRequest request : node.requests) {
@@ -150,7 +153,7 @@ public final class BrunoCollectionExporter {
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request,
                     resolve ? activeEnvironment : null, exportOnly);
             if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, request, warnings);
-            entries.put(archiveDir + fileName, textBytes(renderRequest(
+            entries.add(archiveDir + fileName, textBytes(renderRequest(
                     request, resolver, resolve, requestOrder.getOrDefault(request, 1), warnings)));
         }
         for (Map.Entry<CollectionExportTree.FolderNode, String> child : childDirs.entrySet()) {
@@ -170,7 +173,7 @@ public final class BrunoCollectionExporter {
         if (vars != null && !vars.isEmpty()) {
             out.append("vars:pre-request {\n");
             Set<String> keys = BrunoFormatSupport.newKeySet();
-            for (Map.Entry<String, String> entry : vars.entrySet()) {
+            for (Map.Entry<String, String> entry : new java.util.TreeMap<>(vars).entrySet()) {
                 if (entry.getKey() == null) continue;
                 String key = BrunoFormatSupport.uniqueRenderedKey(entry.getKey(), keys,
                         "folder '" + ExportWarningSupport.label(folderPath) + "' variables", warnings);
@@ -184,9 +187,13 @@ public final class BrunoCollectionExporter {
         if (mode != null && !"inherit".equalsIgnoreCase(mode)) {
             ApiRequest.Auth auth = collection.folderAuth != null ? collection.folderAuth.get(folderPath) : null;
             if ("none".equalsIgnoreCase(mode)) auth = noneAuth();
-            appendAuthBlock(out, auth, "folder '" + ExportWarningSupport.label(folderPath) + "'",
+            appendMetadataAuth(out, auth, "folder '" + ExportWarningSupport.label(folderPath) + "'",
                     resolver, resolve, warnings);
         }
+        List<ScriptBlock> folderScripts = collection.folderScriptBlocks != null
+                ? collection.folderScriptBlocks.get(folderPath) : null;
+        appendScopedScripts(out, folderScripts, ScriptScope.FOLDER,
+                "folder '" + ExportWarningSupport.label(folderPath) + "'", resolver, resolve, warnings);
         return out.toString();
     }
 
@@ -271,11 +278,12 @@ public final class BrunoCollectionExporter {
                                                                        List<String> warnings) {
         List<ApiRequest.Parameter> copy = burp.utils.RequestParameterSupport.copyParameters(request.parameters);
         Set<String> usedKeys = BrunoFormatSupport.newKeySet();
+        String keyContext = "parameter block in request '" + ExportWarningSupport.label(request.name) + "'";
         for (ApiRequest.Parameter parameter : copy) {
             if (parameter == null || !parameter.isQuery()) continue;
             String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
             String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
-            parameter.key = BrunoFormatSupport.uniqueKeyText(key, usedKeys, "query parameter", warnings);
+            parameter.key = BrunoFormatSupport.uniqueKeyText(key, usedKeys, keyContext, warnings);
             parameter.value = BrunoFormatSupport.normalizePhysicalLines(
                     BrunoFormatSupport.sanitizeText(value, "query parameter value", warnings));
             parameter.rawKey = null;
@@ -317,13 +325,7 @@ public final class BrunoCollectionExporter {
                 String description = BrunoFormatSupport.sanitizeText(
                         CollectionExportSupport.resolve(parameter.description, resolver, resolve),
                         "parameter description", warnings);
-                if (description.indexOf('\n') < 0 && description.indexOf('\r') < 0
-                        && description.indexOf(')') < 0) {
-                    out.append("  @description(").append(description).append(")\n");
-                } else {
-                    ExportWarningSupport.add(warnings, "Bruno export omitted a multiline parameter description for request '"
-                            + ExportWarningSupport.label(request.name) + "'.");
-                }
+                appendDescription(out, description);
             }
             String keyValue = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
             String key = BrunoFormatSupport.uniqueRenderedKey(keyValue, keys,
@@ -334,6 +336,20 @@ public final class BrunoCollectionExporter {
                             + ExportWarningSupport.label(request.name) + "'", warnings);
         }
         out.append("}\n\n");
+    }
+
+    private static void appendDescription(StringBuilder out, String description) throws IOException {
+        String normalized = BrunoFormatSupport.normalizePhysicalLines(description);
+        if (normalized.contains("'''")) {
+            throw new IOException("Bruno export cannot represent a description containing the triple-apostrophe delimiter.");
+        }
+        if (normalized.indexOf('\n') >= 0) {
+            out.append("  @description('''\n");
+            for (String line : BrunoFormatSupport.physicalLines(normalized)) out.append("    ").append(line).append('\n');
+            out.append("  ''')\n");
+        } else {
+            out.append("  @description('").append(normalized.replace("'", "\\'")).append("')\n");
+        }
     }
 
     private static void appendHeaders(StringBuilder out, ApiRequest request,
@@ -487,7 +503,12 @@ public final class BrunoCollectionExporter {
             String key = BrunoFormatSupport.uniqueRenderedKey(
                     CollectionExportSupport.resolve(variable.key, resolver, resolve), keys,
                     context + " variables", warnings);
-            String value = CollectionExportSupport.resolve(variable.value, resolver, resolve);
+            String value = variable.enabled
+                    ? CollectionExportSupport.resolve(variable.value, resolver, resolve) : "";
+            if (!variable.enabled && variable.value != null && !variable.value.isEmpty()) {
+                ExportWarningSupport.add(warnings, "Bruno export omitted the value of disabled variable '"
+                        + ExportWarningSupport.label(variable.key) + "' in " + context + ".");
+            }
             BrunoFormatSupport.appendDictionaryEntry(out, "  ", variable.enabled ? "" : "~", key,
                     value != null ? value : "", context + " variable", warnings);
         }
@@ -538,6 +559,57 @@ public final class BrunoCollectionExporter {
         sources.removeIf(source -> source == null || source.isBlank());
         if (!sources.isEmpty()) BrunoFormatSupport.appendTextBlock(out, blockName, String.join("\n\n", sources),
                 phase + " script for request '" + ExportWarningSupport.label(request.name) + "'", warnings);
+    }
+
+    private static void appendScopedScripts(StringBuilder out, List<ScriptBlock> blocks,
+                                            ScriptScope scope, String context,
+                                            VariableResolver resolver, boolean resolve,
+                                            List<String> warnings) {
+        if (blocks == null || blocks.isEmpty()) return;
+        List<ScriptBlock> sorted = new ArrayList<>(blocks);
+        sorted.sort(Comparator.comparingInt(block -> block != null ? block.order : Integer.MAX_VALUE));
+        for (ScriptPhase phase : List.of(ScriptPhase.PRE_REQUEST, ScriptPhase.POST_RESPONSE, ScriptPhase.TEST)) {
+            List<String> sources = new ArrayList<>();
+            boolean omittedDisabled = false;
+            for (ScriptBlock block : sorted) {
+                if (block == null || block.scope != scope || block.phase != phase) continue;
+                if (!block.enabled) omittedDisabled = true;
+                else if (block.source != null) sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
+            }
+            if (omittedDisabled) {
+                ExportWarningSupport.add(warnings, "Bruno export omitted disabled " + phase
+                        + " script blocks for " + context + ".");
+            }
+            if (sources.size() > 1) {
+                ExportWarningSupport.add(warnings, "Bruno export collapsed multiple " + phase
+                        + " script blocks for " + context + " into one canonical block.");
+            }
+            if (!sources.isEmpty()) {
+                String name = phase == ScriptPhase.PRE_REQUEST ? "script:pre-request"
+                        : phase == ScriptPhase.POST_RESPONSE ? "script:post-response" : "tests";
+                BrunoFormatSupport.appendTextBlock(out, name, String.join("\n\n", sources),
+                        phase + " scripts for " + context, warnings);
+            }
+        }
+    }
+
+    private static void appendMetadataAuth(StringBuilder out, ApiRequest.Auth auth, String context,
+                                           VariableResolver resolver, boolean resolve,
+                                           List<String> warnings) throws IOException {
+        if (auth == null || auth.type == null || auth.type.isBlank() || "inherit".equalsIgnoreCase(auth.type)) return;
+        String type = auth.type.toLowerCase(Locale.ROOT);
+        if ("noauth".equals(type)) type = "none";
+        ApiRequest.Auth selected = auth;
+        if (!SUPPORTED_AUTH.contains(type)) {
+            ExportWarningSupport.add(warnings, "Bruno export represented unsupported auth type '"
+                    + ExportWarningSupport.label(type) + "' as none for " + context + ".");
+            type = "none";
+            selected = noneAuth();
+        }
+        out.append("auth {\n");
+        appendSimpleEntry(out, "mode", type, context + " auth selector", warnings);
+        out.append("}\n\n");
+        if (!"none".equals(type)) appendAuthBlock(out, selected, context, resolver, resolve, warnings);
     }
 
     private static void appendAuthBlock(StringBuilder out,
@@ -762,6 +834,39 @@ public final class BrunoCollectionExporter {
         request.name = "__folder__";
         request.path = folderPath;
         return request;
+    }
+
+    private static final class EntryAllocator {
+        private final LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+        private final Set<String> allocated = new LinkedHashSet<>();
+        private final List<String> warnings;
+
+        private EntryAllocator(List<String> warnings) {
+            this.warnings = warnings;
+        }
+
+        void add(String desiredPath, byte[] value) throws IOException {
+            validateEntries(Set.of(desiredPath));
+            String candidate = desiredPath;
+            int suffix = 2;
+            while (!allocated.add(candidate.toLowerCase(Locale.ROOT))) {
+                int slash = candidate.lastIndexOf('/');
+                String parent = slash >= 0 ? desiredPath.substring(0, slash + 1) : "";
+                String file = slash >= 0 ? desiredPath.substring(slash + 1) : desiredPath;
+                int dot = file.lastIndexOf('.');
+                String stem = dot > 0 ? file.substring(0, dot) : file;
+                String extension = dot > 0 ? file.substring(dot) : "";
+                candidate = parent + stem + "_" + suffix++ + extension;
+            }
+            if (!candidate.equals(desiredPath)) {
+                ExportWarningSupport.add(warnings, "Bruno export renamed a colliding archive entry '"
+                        + ExportWarningSupport.label(desiredPath) + "'.");
+            }
+            entries.put(candidate, value);
+        }
+
+        Set<String> paths() { return entries.keySet(); }
+        Map<String, byte[]> values() { return entries; }
     }
 
     private record AuthSelection(String selector, ApiRequest.Auth auth) { }

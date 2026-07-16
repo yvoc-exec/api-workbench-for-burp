@@ -38,11 +38,11 @@ class InsomniaCollectionRoundTripTest {
         ApiRequest request = imported.requests.stream().filter(r -> "Request".equals(r.name)).findFirst().orElseThrow();
         assertThat(request.path).isEqualTo("Folder/Request");
         assertThat(request.parameters).extracting(p -> p.key)
-                .containsExactly("tag", "tag", "flag", "empty", "", " ", "disabled");
+                .containsExactly("tag", "tag", "flag", "empty", "", " ", "disabled", "stale");
         assertThat(request.parameters).extracting(p -> p.valuePresent)
-                .containsExactly(true, true, false, true, true, true, false);
+                .containsExactly(true, true, true, true, true, true, true, true);
         assertThat(request.parameters.get(6).disabled).isTrue();
-        assertThat(request.url).isEqualTo("https://e.test/a?tag=one&tag=two&flag&empty=&=x&%20=space");
+        assertThat(request.url).isEqualTo("https://e.test/a?tag=one&tag=two&flag=&empty=&=x&%20=space&stale=x");
         assertThat(request.body.contentType).isEqualTo("application/vnd.api+json");
         assertThat(request.body.raw).isEqualTo("{\"ok\":true}");
         assertThat(request.authOverrideMode).isEqualTo("explicit");
@@ -64,7 +64,7 @@ class InsomniaCollectionRoundTripTest {
         assertThat(root.get("__type").getAsString()).isEqualTo("export");
         assertThat(root.get("__export_format").getAsInt()).isEqualTo(4);
         JsonObject request = resource(root, "request", "Request");
-        assertThat(request.getAsJsonArray("parameters")).hasSize(7);
+        assertThat(request.getAsJsonArray("parameters")).hasSize(8);
         assertThat(request.get("preRequestScript").getAsString()).contains("pre();");
         assertThat(request.get("afterResponseScript").getAsString()).contains("post();");
         JsonObject upload = resource(root, "request", "Upload");
