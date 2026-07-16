@@ -7,7 +7,17 @@ import burp.models.UnresolvedVariableIssue;
 import burp.parser.VariableResolver;
 import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,6 +26,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public final class ExportVariableResolutionService {
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
@@ -99,6 +111,9 @@ public final class ExportVariableResolutionService {
                                                                         EnvironmentProfile activeEnvironment,
                                                                         Map<String, String> exportOnlyVariables,
                                                                         CollectionExportFormat format) {
+        if (format == CollectionExportFormat.BRUNO_ZIP || format == CollectionExportFormat.INSOMNIA_JSON) {
+            return collectFromSerializedTarget(collection, activeEnvironment, exportOnlyVariables, format);
+        }
         List<UnresolvedVariableIssue> issues = new ArrayList<>();
         if (collection == null || collection.requests == null) {
             return issues;
@@ -113,6 +128,320 @@ public final class ExportVariableResolutionService {
         scanCollectionLevelValues(issues, collection,
                 buildResolver(collection, null, activeEnvironment, exportOnlyVariables), format);
         return dedupe(issues);
+    }
+
+    /**
+     * Reads the completed target artifact and reports templates that remain in
+     * fields active under that target's own representation rules.
+     */
+    public static List<UnresolvedVariableIssue> collectUnresolvedIssuesFromArtifact(
+            Path artifact, CollectionExportFormat format, ApiCollection collection) throws IOException {
+        if (artifact == null || format == null) return List.of();
+        String collectionName = collection != null && collection.name != null ? collection.name : "";
+        return switch (format) {
+            case BRUNO_ZIP -> scanBrunoZip(Files.readAllBytes(artifact), collection, collectionName);
+            case INSOMNIA_JSON -> scanInsomniaRoot(
+                    JsonParser.parseString(Files.readString(artifact, StandardCharsets.UTF_8)), collectionName);
+            default -> List.of();
+        };
+    }
+
+    private static List<UnresolvedVariableIssue> collectFromSerializedTarget(
+            ApiCollection collection, EnvironmentProfile activeEnvironment,
+            Map<String, String> exportOnlyVariables, CollectionExportFormat format) {
+        CollectionExportOptions options = new CollectionExportOptions(
+                format, Path.of("target-exact-diagnostics"), true,
+                activeEnvironment, exportOnlyVariables);
+        List<String> ignoredWarnings = new ArrayList<>();
+        try {
+            if (format == CollectionExportFormat.BRUNO_ZIP) {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                BrunoCollectionExporter.write(collection, options, bytes, ignoredWarnings);
+                return scanBrunoZip(bytes.toByteArray(), collection,
+                        collection != null && collection.name != null ? collection.name : "");
+            }
+            JsonObject root = InsomniaCollectionExporter.build(collection, options, ignoredWarnings);
+            return scanInsomniaRoot(root,
+                    collection != null && collection.name != null ? collection.name : "");
+        } catch (IOException | RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    private static List<UnresolvedVariableIssue> scanBrunoZip(
+            byte[] bytes, ApiCollection collection, String collectionName) throws IOException {
+        List<UnresolvedVariableIssue> issues = new ArrayList<>();
+        Set<String> overriddenEnvironmentKeys = new java.util.HashSet<>();
+        if (collection != null && collection.variables != null) {
+            for (ApiRequest.Variable variable : collection.variables) {
+                if (variable != null && variable.enabled && variable.key != null) {
+                    overriddenEnvironmentKeys.add(BrunoFormatSupport.renderKey(
+                            variable.key, "diagnostic key", new ArrayList<>()));
+                }
+            }
+        }
+        try (ZipInputStream zip = new ZipInputStream(
+                new ByteArrayInputStream(bytes), StandardCharsets.UTF_8)) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory()) continue;
+                String text = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                String path = entry.getName();
+                if (path.toLowerCase(Locale.ROOT).endsWith(".bru")) {
+                    Set<String> shadowed = path.toLowerCase(Locale.ROOT)
+                            .endsWith("/environments/environment.bru")
+                            ? overriddenEnvironmentKeys : Set.of();
+                    scanBrunoText(issues, collectionName, path, text, shadowed);
+                } else if (path.toLowerCase(Locale.ROOT).endsWith("bruno.json")) {
+                    scanRemainingTokens(issues, collectionName, path, "json", text);
+                }
+            }
+        }
+        return dedupeByVariableName(issues);
+    }
+
+    private static void scanBrunoText(List<UnresolvedVariableIssue> issues,
+                                      String collectionName, String entryPath, String text,
+                                      Set<String> shadowedEnvironmentKeys) {
+        List<String> lines = physicalLines(text);
+        String block = "";
+        boolean dictionaryBlock = false;
+        boolean skipMultiline = false;
+        boolean descriptionMultiline = false;
+        StringBuilder pendingDescription = null;
+        for (int index = 0; index < lines.size(); index++) {
+            String line = lines.get(index);
+            String trimmed = line.trim();
+            if (skipMultiline) {
+                if ("'''".equals(trimmed)) skipMultiline = false;
+                continue;
+            }
+            if (descriptionMultiline) {
+                pendingDescription.append('\n').append(line);
+                if ("''')".equals(trimmed)) descriptionMultiline = false;
+                continue;
+            }
+            if (line.equals("}")) {
+                block = "";
+                dictionaryBlock = false;
+                pendingDescription = null;
+                continue;
+            }
+            if (line.equals(trimmed) && line.endsWith("{") && line.length() > 1) {
+                block = line.substring(0, line.length() - 1).trim();
+                dictionaryBlock = !isBruTextBlock(block);
+                scanRemainingTokens(issues, collectionName, entryPath, "block", line);
+                continue;
+            }
+            if (!dictionaryBlock) {
+                scanRemainingTokens(issues, collectionName, entryPath,
+                        block + ":" + (index + 1), line);
+                continue;
+            }
+            if (trimmed.startsWith("@description(")) {
+                pendingDescription = new StringBuilder(line);
+                descriptionMultiline = trimmed.startsWith("@description('''")
+                        && !trimmed.endsWith("''')");
+                continue;
+            }
+            int colon = dictionaryColon(line);
+            if (colon >= 0 && !trimmed.startsWith("@")) {
+                boolean disabled = trimmed.startsWith("~");
+                String renderedKey = line.substring(0, colon).trim();
+                if (renderedKey.startsWith("~")) renderedKey = renderedKey.substring(1);
+                boolean shadowed = shadowedEnvironmentKeys.contains(renderedKey);
+                if (!disabled && !shadowed) {
+                    if (pendingDescription != null) {
+                        scanRemainingTokens(issues, collectionName, entryPath,
+                                block + ":description:" + (index + 1), pendingDescription.toString());
+                    }
+                    scanRemainingTokens(issues, collectionName, entryPath,
+                            block + ":" + (index + 1), line);
+                }
+                pendingDescription = null;
+                if (line.substring(colon + 1).trim().equals("'''")) {
+                    skipMultiline = disabled || shadowed;
+                }
+                continue;
+            }
+            scanRemainingTokens(issues, collectionName, entryPath,
+                    block + ":" + (index + 1), line);
+        }
+    }
+
+    private static boolean isBruTextBlock(String block) {
+        return block.startsWith("script:") || block.equals("tests") || block.equals("test")
+                || block.equals("assert") || block.equals("body:test")
+                || block.equals("body:json") || block.equals("body:text")
+                || block.equals("body:xml") || block.equals("body:graphql")
+                || block.equals("body:graphql:vars");
+    }
+
+    private static int dictionaryColon(String line) {
+        boolean quoted = false;
+        for (int index = 0; index < line.length(); index++) {
+            char ch = line.charAt(index);
+            if (ch == '"') {
+                int slashes = 0;
+                for (int back = index - 1; back >= 0 && line.charAt(back) == '\\'; back--) slashes++;
+                if ((slashes & 1) == 0) quoted = !quoted;
+            } else if (ch == ':' && !quoted) return index;
+        }
+        return -1;
+    }
+
+    private static List<String> physicalLines(String text) {
+        return java.util.Arrays.asList((text != null ? text : "").split("\\r\\n|\\n|\\r", -1));
+    }
+
+    private static List<UnresolvedVariableIssue> scanInsomniaRoot(
+            JsonElement rootElement, String collectionName) {
+        List<UnresolvedVariableIssue> issues = new ArrayList<>();
+        if (rootElement == null || !rootElement.isJsonObject()) return issues;
+        JsonArray resources = rootElement.getAsJsonObject().getAsJsonArray("resources");
+        if (resources == null) return issues;
+        for (JsonElement element : resources) {
+            if (element == null || !element.isJsonObject()) continue;
+            JsonObject resource = element.getAsJsonObject();
+            String type = jsonString(resource, "_type");
+            String name = jsonString(resource, "name");
+            String label = name != null ? name : type;
+            switch (type != null ? type : "") {
+                case "workspace" -> {
+                    scanJsonProperty(issues, collectionName, label, "workspace:name", resource, "name");
+                    scanJsonProperty(issues, collectionName, label, "workspace:description", resource, "description");
+                }
+                case "environment" -> scanJsonObject(issues, collectionName, label,
+                        "environment", resource.get("data"), true);
+                case "request_group", "folder" -> {
+                    scanJsonProperty(issues, collectionName, label, "folder:name", resource, "name");
+                    scanJsonProperty(issues, collectionName, label, "folder:description", resource, "description");
+                    scanJsonObject(issues, collectionName, label, "folder:environment",
+                            resource.get("environment"), true);
+                    scanActiveAuth(issues, collectionName, label, "folder:auth", resource.get("authentication"));
+                    scanJsonProperty(issues, collectionName, label, "folder:script:pre", resource, "preRequestScript");
+                    scanJsonProperty(issues, collectionName, label, "folder:script:post", resource, "afterResponseScript");
+                }
+                case "request" -> scanInsomniaRequest(issues, collectionName, label, resource);
+                default -> { }
+            }
+        }
+        return dedupeByVariableName(issues);
+    }
+
+    private static void scanInsomniaRequest(List<UnresolvedVariableIssue> issues,
+                                            String collectionName, String requestName,
+                                            JsonObject request) {
+        for (String property : List.of("name", "method", "url", "description")) {
+            scanJsonProperty(issues, collectionName, requestName, "request:" + property, request, property);
+        }
+        scanActiveRows(issues, collectionName, requestName, "header", request.get("headers"));
+        scanActiveRows(issues, collectionName, requestName, "parameter", request.get("parameters"));
+        scanActiveRows(issues, collectionName, requestName, "path-parameter", request.get("pathParameters"));
+        JsonElement bodyElement = request.get("body");
+        if (bodyElement != null && bodyElement.isJsonObject()) {
+            JsonObject body = bodyElement.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> entry : body.entrySet()) {
+                if ("params".equals(entry.getKey())) {
+                    scanActiveRows(issues, collectionName, requestName, "body:params", entry.getValue());
+                } else {
+                    scanJsonObject(issues, collectionName, requestName,
+                            "body:" + entry.getKey(), entry.getValue(), true);
+                }
+            }
+        }
+        scanActiveAuth(issues, collectionName, requestName, "request:auth", request.get("authentication"));
+        scanJsonProperty(issues, collectionName, requestName, "script:pre", request, "preRequestScript");
+        scanJsonProperty(issues, collectionName, requestName, "script:post", request, "afterResponseScript");
+    }
+
+    private static void scanActiveRows(List<UnresolvedVariableIssue> issues,
+                                       String collectionName, String requestName,
+                                       String location, JsonElement rows) {
+        if (rows == null || !rows.isJsonArray()) return;
+        int index = 0;
+        for (JsonElement row : rows.getAsJsonArray()) {
+            if (row != null && row.isJsonObject()
+                    && !jsonBoolean(row.getAsJsonObject(), "disabled")) {
+                scanJsonObject(issues, collectionName, requestName,
+                        location + "[" + index + "]", row, true);
+            }
+            index++;
+        }
+    }
+
+    private static void scanActiveAuth(List<UnresolvedVariableIssue> issues,
+                                       String collectionName, String requestName,
+                                       String location, JsonElement auth) {
+        if (auth == null || !auth.isJsonObject()) return;
+        JsonObject object = auth.getAsJsonObject();
+        String type = jsonString(object, "type");
+        if (jsonBoolean(object, "disabled") || "none".equalsIgnoreCase(type)
+                || "noauth".equalsIgnoreCase(type)) return;
+        scanJsonObject(issues, collectionName, requestName, location, auth, true);
+    }
+
+    private static void scanJsonProperty(List<UnresolvedVariableIssue> issues,
+                                         String collectionName, String requestName,
+                                         String location, JsonObject object, String property) {
+        if (object != null && object.has(property)) {
+            scanJsonObject(issues, collectionName, requestName, location, object.get(property), true);
+        }
+    }
+
+    private static void scanJsonObject(List<UnresolvedVariableIssue> issues,
+                                       String collectionName, String requestName,
+                                       String location, JsonElement element, boolean scanKeys) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonPrimitive()) {
+            if (element.getAsJsonPrimitive().isString()) {
+                scanRemainingTokens(issues, collectionName, requestName, location, element.getAsString());
+            }
+            return;
+        }
+        if (element.isJsonArray()) {
+            int index = 0;
+            for (JsonElement child : element.getAsJsonArray()) {
+                scanJsonObject(issues, collectionName, requestName,
+                        location + "[" + index++ + "]", child, scanKeys);
+            }
+            return;
+        }
+        for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+            if (scanKeys) scanRemainingTokens(issues, collectionName, requestName,
+                    location + ":key", entry.getKey());
+            scanJsonObject(issues, collectionName, requestName,
+                    location + "." + entry.getKey(), entry.getValue(), scanKeys);
+        }
+    }
+
+    private static String jsonString(JsonObject object, String property) {
+        JsonElement value = object != null ? object.get(property) : null;
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()
+                ? value.getAsString() : null;
+    }
+
+    private static boolean jsonBoolean(JsonObject object, String property) {
+        JsonElement value = object != null ? object.get(property) : null;
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()
+                && value.getAsBoolean();
+    }
+
+    private static void scanRemainingTokens(List<UnresolvedVariableIssue> issues,
+                                            String collectionName, String requestName,
+                                            String location, String emittedValue) {
+        if (emittedValue == null || emittedValue.isEmpty()) return;
+        Matcher matcher = VARIABLE_PATTERN.matcher(emittedValue);
+        while (matcher.find()) {
+            String variableName = matcher.group(1) != null ? matcher.group(1).trim() : "";
+            if (variableName.isEmpty() || matcher.group(2) != null) continue;
+            issues.add(new UnresolvedVariableIssue(
+                    collectionName != null ? collectionName : "",
+                    requestName != null ? requestName : "",
+                    variableName,
+                    location,
+                    "Variable \"" + variableName + "\" remains unresolved in the emitted target artifact."));
+        }
     }
 
     private static void scanRequestValues(List<UnresolvedVariableIssue> issues, ApiCollection collection,
@@ -311,6 +640,16 @@ public final class ExportVariableResolutionService {
             if (seen.add(key)) {
                 out.add(issue);
             }
+        }
+        return out;
+    }
+
+    private static List<UnresolvedVariableIssue> dedupeByVariableName(List<UnresolvedVariableIssue> issues) {
+        if (issues == null || issues.isEmpty()) return List.of();
+        List<UnresolvedVariableIssue> out = new ArrayList<>();
+        Set<String> seen = new java.util.LinkedHashSet<>();
+        for (UnresolvedVariableIssue issue : issues) {
+            if (issue != null && seen.add(issue.variableName)) out.add(issue);
         }
         return out;
     }

@@ -203,19 +203,16 @@ public class InsomniaParser implements CollectionParser {
                     + sourcePath + "'; no source was recovered.");
             return;
         }
-        boolean recognized = false;
         for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
             ScriptPhase phase = PRE_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.PRE_REQUEST
                     : POST_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.POST_RESPONSE : null;
             if (phase != null) {
-                recognized = true;
                 addFolderScriptElement(entry.getValue(), target, collection, folderPath, phase,
                         sourcePath + "." + entry.getKey(), order);
+            } else {
+                warn(collection, folderPath, "Unknown folder script object shape at '"
+                        + sourcePath + "." + entry.getKey() + "'; no source was recovered.");
             }
-        }
-        if (!recognized && !element.getAsJsonObject().entrySet().isEmpty()) {
-            warn(collection, folderPath, "Unknown folder script object shape at '"
-                    + sourcePath + "'; no source was recovered.");
         }
     }
 

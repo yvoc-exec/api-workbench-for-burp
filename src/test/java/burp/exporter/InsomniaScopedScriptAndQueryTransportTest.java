@@ -82,6 +82,31 @@ class InsomniaScopedScriptAndQueryTransportTest {
         assertThat(warnings).anyMatch(w->w.contains("invalid")&&w.contains("no longer matched")&&!w.contains("{{bad}}"));
     }
 
+    @Test
+    void editedBaseAndFolderEnvironmentValuesInvalidateRememberedTypesWithAndWithoutResolution() throws Exception {
+        for (boolean resolve : List.of(false, true)) {
+            JsonObject root=new JsonObject();root.addProperty("__type","export");root.addProperty("__export_format",4);JsonArray resources=new JsonArray();
+            JsonObject workspace=new JsonObject();workspace.addProperty("_id","wrk");workspace.addProperty("_type","workspace");workspace.addProperty("name","W");resources.add(workspace);
+            JsonObject env=new JsonObject();env.addProperty("_id","env");env.addProperty("_type","environment");env.addProperty("parentId","wrk");env.addProperty("name","Base");JsonObject data=new JsonObject();
+            data.add("unchanged",JsonParser.parseString("{\"v\":\"{{word}}\"}"));data.add("same",JsonParser.parseString("{\"old\":1}"));data.add("different",JsonParser.parseString("[1]"));env.add("data",data);resources.add(env);
+            JsonObject folder=new JsonObject();folder.addProperty("_id","fld");folder.addProperty("_type","request_group");folder.addProperty("parentId","wrk");folder.addProperty("name","F");JsonObject folderData=new JsonObject();
+            folderData.add("unchanged",JsonParser.parseString("[\"{{word}}\"]"));folderData.add("same",JsonParser.parseString("[1]"));folderData.add("different",JsonParser.parseString("true"));folder.add("environment",folderData);resources.add(folder);root.add("resources",resources);
+            Path file=tempDir.resolve("edited-types-"+resolve+".json");Files.writeString(file,root.toString());ApiCollection imported=new InsomniaParser().parse(file.toFile());
+            imported.environment.put("same","{\"new\":2}");imported.environment.put("different","plain");
+            imported.folderVars.get("F").put("same","[2]");imported.folderVars.get("F").put("different","false");
+            EnvironmentProfile profile=new EnvironmentProfile();profile.variables.put("word","resolved");
+            CollectionExportOptions options=new CollectionExportOptions(CollectionExportFormat.INSOMNIA_JSON,tempDir.resolve("edited-out-"+resolve+".json"),resolve,profile,Map.of());
+            List<String>warnings=new ArrayList<>();JsonObject exported=InsomniaCollectionExporter.build(imported,options,warnings);
+            JsonObject baseValues=resource(exported,"environment","W Environment").getAsJsonObject("data");
+            JsonObject folderValues=resource(exported,"request_group","F").getAsJsonObject("environment");
+            assertThat(baseValues.get("unchanged").isJsonObject()).isTrue();assertThat(folderValues.get("unchanged").isJsonArray()).isTrue();
+            assertThat(baseValues.get("same").getAsString()).isEqualTo("{\"new\":2}");assertThat(baseValues.get("different").getAsString()).isEqualTo("plain");
+            assertThat(folderValues.get("same").getAsString()).isEqualTo("[2]");assertThat(folderValues.get("different").getAsString()).isEqualTo("false");
+            assertThat(warnings.stream().filter(w->w.contains("type provenance was invalidated")).count()).isEqualTo(4);
+            assertThat(warnings).allSatisfy(w->assertThat(w).doesNotContain("{\"new\":2}","plain","[2]","false"));
+        }
+    }
+
     private static ApiRequest.Parameter parameter(String key,String value,boolean present,boolean disabled){ApiRequest.Parameter p=new ApiRequest.Parameter("query",key,value);p.valuePresent=present;p.disabled=disabled;return p;}
     private static ScriptBlock block(String source,ScriptPhase phase,ScriptScope scope,int order){ScriptBlock b=ScriptBlock.of(source,ScriptDialect.INSOMNIA,phase,scope);b.order=order;return b;}
     private static JsonObject resource(JsonObject root,String type,String name){for(JsonElement e:root.getAsJsonArray("resources")){JsonObject o=e.getAsJsonObject();if(type.equals(o.get("_type").getAsString())&&name.equals(o.get("name").getAsString()))return o;}throw new AssertionError();}

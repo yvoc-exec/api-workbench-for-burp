@@ -55,10 +55,15 @@ public final class CollectionExportService {
                     default -> throw new IOException("Unsupported collection export format: " + options.format);
                 }
             });
-            int unresolved = options.resolveVariablesUsingActiveEnvironment
-                    ? ExportVariableResolutionService.collectUnresolvedIssues(collection, options.activeEnvironment,
-                    options.exportOnlyVariables, options.format).size()
-                    : 0;
+            int unresolved = 0;
+            if (options.resolveVariablesUsingActiveEnvironment) {
+                unresolved = options.format == CollectionExportFormat.BRUNO_ZIP
+                        || options.format == CollectionExportFormat.INSOMNIA_JSON
+                        ? ExportVariableResolutionService.collectUnresolvedIssuesFromArtifact(
+                        output, options.format, collection).size()
+                        : ExportVariableResolutionService.collectUnresolvedIssues(
+                        collection, options.activeEnvironment, options.exportOnlyVariables).size();
+            }
             int requestCount = collection.requests != null ? collection.requests.size() : 0;
             return new ExportResult(output, options.format.displayName(), requestCount, 0, unresolved, warnings);
         } catch (IOException e) {

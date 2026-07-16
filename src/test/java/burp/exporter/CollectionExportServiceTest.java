@@ -388,7 +388,7 @@ class CollectionExportServiceTest {
         ExportResult bruno = service.exportCollection(collection, new CollectionExportOptions(
                 CollectionExportFormat.BRUNO_ZIP, tempDir.resolve("diagnostics.bruno.zip"),
                 true, null, Map.of()));
-        assertThat(insomnia.unresolvedVariableCount).isEqualTo(3);
+        assertThat(insomnia.unresolvedVariableCount).isEqualTo(4);
         assertThat(bruno.unresolvedVariableCount).isEqualTo(4);
     }
 

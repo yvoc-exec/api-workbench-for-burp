@@ -5,11 +5,12 @@ import com.google.gson.JsonElement;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.WeakHashMap;
 
 /** Session-scoped provenance for Insomnia structured environment values in the string model. */
 public final class InsomniaEnvironmentValueTypes {
-    private static final Map<ApiCollection, Map<String, JsonElement>> VALUES = new WeakHashMap<>();
+    private static final Map<ApiCollection, Map<String, RememberedValue>> VALUES = new WeakHashMap<>();
 
     private InsomniaEnvironmentValueTypes() { }
 
@@ -17,19 +18,42 @@ public final class InsomniaEnvironmentValueTypes {
         if (collection == null || key == null || value == null
                 || (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString())) return;
         VALUES.computeIfAbsent(collection, ignored -> new HashMap<>())
-                .put((scope != null ? scope : "") + "\u0000" + key, value.deepCopy());
+                .put(provenanceKey(scope, key), new RememberedValue(
+                        value.deepCopy(), normalizedRepresentation(value)));
     }
 
     public static synchronized JsonElement recalled(ApiCollection collection, String scope, String key, String text) {
-        JsonElement value = recalledSource(collection, scope, key);
-        return value != null && value.toString().equals(text) ? value.deepCopy() : null;
+        return recalledSource(collection, scope, key, text);
     }
 
-    /** Returns the imported source type even when export-time resolution changes its text. */
-    public static synchronized JsonElement recalledSource(ApiCollection collection, String scope, String key) {
-        Map<String, JsonElement> values = VALUES.get(collection);
-        if (values == null) return null;
-        JsonElement value = values.get((scope != null ? scope : "") + "\u0000" + key);
-        return value != null ? value.deepCopy() : null;
+    /** Returns the imported type only while the editable representation is unchanged. */
+    public static synchronized JsonElement recalledSource(
+            ApiCollection collection, String scope, String key, String currentText) {
+        RememberedValue remembered = remembered(collection, scope, key);
+        return remembered != null && Objects.equals(remembered.normalizedText, currentText)
+                ? remembered.value.deepCopy() : null;
     }
+
+    public static synchronized boolean hasRememberedSource(
+            ApiCollection collection, String scope, String key) {
+        return remembered(collection, scope, key) != null;
+    }
+
+    private static RememberedValue remembered(ApiCollection collection, String scope, String key) {
+        Map<String, RememberedValue> values = VALUES.get(collection);
+        if (values == null) return null;
+        return values.get(provenanceKey(scope, key));
+    }
+
+    private static String provenanceKey(String scope, String key) {
+        return (scope != null ? scope : "") + "\u0000" + key;
+    }
+
+    private static String normalizedRepresentation(JsonElement value) {
+        if (value.isJsonNull()) return "null";
+        if (value.isJsonPrimitive()) return value.getAsString();
+        return value.toString();
+    }
+
+    private record RememberedValue(JsonElement value, String normalizedText) { }
 }

@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -189,9 +190,8 @@ class InsomniaImportFidelityTest {
                 {"__type":"export","resources":[
                   {"_type":"workspace","_id":"wrk","name":"W"},
                   {"_type":"request_group","_id":"good","parentId":"wrk","name":"Good",
-                   "script":{"pre":"before();","after":{"code":"after();","disabled":true}}},
-                  {"_type":"request_group","_id":"bad","parentId":"wrk","name":"Bad",
-                   "scripts":{"metadata":"DO_NOT_EXPORT_SCRIPT_SECRET"}}
+                   "script":{"after":{"code":"after();","disabled":true}},
+                   "scripts":{"pre":"before();","customMetadata":{"source":"DO_NOT_EXPORT_SCRIPT_SECRET"}}}
                 ]}
                 """);
         assertThat(collection.folderScriptBlocks.get("Good")).hasSize(2).allSatisfy(block -> {
@@ -199,12 +199,16 @@ class InsomniaImportFidelityTest {
             assertThat(block.dialect).isEqualTo(ScriptDialect.INSOMNIA);
         });
         assertThat(collection.folderScriptBlocks.get("Good")).extracting(block -> block.phase)
-                .containsExactly(ScriptPhase.PRE_REQUEST, ScriptPhase.POST_RESPONSE);
-        assertThat(collection.folderScriptBlocks.get("Good").get(1).enabled).isFalse();
-        assertThat(collection.importWarnings).anySatisfy(warning -> {
-            assertThat(warning).contains("Bad", "scripts", "no source was recovered");
-            assertThat(warning).doesNotContain("DO_NOT_EXPORT_SCRIPT_SECRET");
-        });
+                .containsExactly(ScriptPhase.POST_RESPONSE, ScriptPhase.PRE_REQUEST);
+        assertThat(collection.folderScriptBlocks.get("Good").get(0).enabled).isFalse();
+        List<String> relevant = collection.importWarnings.stream()
+                .filter(warning -> warning.contains("scripts.customMetadata")).toList();
+        assertThat(relevant).singleElement().satisfies(warning -> assertThat(warning)
+                .contains("Good", "no source was recovered")
+                .doesNotContain("DO_NOT_EXPORT_SCRIPT_SECRET"));
+        assertThat(collection.folderScriptBlocks.get("Good")).extracting(block -> block.source)
+                .containsExactly("after();", "before();")
+                .doesNotContain("DO_NOT_EXPORT_SCRIPT_SECRET");
     }
 
     private ApiRequest onlyRequest(String body) throws Exception {

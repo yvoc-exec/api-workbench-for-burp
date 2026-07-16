@@ -193,14 +193,21 @@ public final class InsomniaCollectionExporter {
     private static JsonElement environmentValue(ApiCollection collection, String scope, String key,
                                                 String sourceText, VariableResolver resolver, boolean resolve,
                                                 List<String> warnings) {
-        JsonElement sourceType = burp.parser.InsomniaEnvironmentValueTypes.recalledSource(
+        boolean rememberedSource = burp.parser.InsomniaEnvironmentValueTypes.hasRememberedSource(
                 collection, scope, key);
+        JsonElement sourceType = burp.parser.InsomniaEnvironmentValueTypes.recalledSource(
+                collection, scope, key, sourceText);
         String resolved = CollectionExportSupport.resolve(sourceText, resolver, resolve);
+        if (rememberedSource && sourceType == null) {
+            addWarning(warnings, "Insomnia export represented edited environment value '"
+                    + safeText(key) + "' in " + (scope == null || scope.isBlank() ? "the base environment"
+                    : "folder '" + safeText(scope) + "'")
+                    + " as a string because its imported JSON type provenance was invalidated.");
+            return new com.google.gson.JsonPrimitive(resolved != null ? resolved : "");
+        }
         if (sourceType != null) {
             if (!resolve) {
-                JsonElement exact = burp.parser.InsomniaEnvironmentValueTypes.recalled(
-                        collection, scope, key, sourceText);
-                if (exact != null) return exact;
+                return sourceType;
             } else {
                 try {
                     JsonElement parsed = JsonParser.parseString(resolved != null ? resolved : "");
