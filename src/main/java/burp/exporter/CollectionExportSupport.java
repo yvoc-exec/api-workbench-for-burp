@@ -11,6 +11,7 @@ import burp.utils.RequestPathResolver;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
 import java.util.List;
@@ -363,13 +364,34 @@ final class CollectionExportSupport {
         JsonObject out = new JsonObject();
         String mode = body.mode.toLowerCase(Locale.ROOT);
         switch (mode) {
-            case "raw", "graphql" -> {
+            case "raw" -> {
                 out.addProperty("mimeType", contentTypeForRaw(body));
-                String text = "graphql".equals(mode) && body.graphql != null ? body.graphql.query : body.raw;
-                if ("graphql".equals(mode) && body.graphql != null) {
-                    text = "{\"query\":" + jsonString(resolve(body.graphql.query, resolver, resolve)) + ",\"variables\":" + jsonString(resolve(body.graphql.variables, resolver, resolve)) + "}";
+                out.addProperty("text", resolve(body.raw, resolver, resolve) != null
+                        ? resolve(body.raw, resolver, resolve) : "");
+            }
+            case "graphql" -> {
+                out.addProperty("mimeType", "application/json");
+                JsonObject payload = new JsonObject();
+                String query = resolve(body.graphql != null ? body.graphql.query : "", resolver, resolve);
+                payload.addProperty("query", query != null ? query : "");
+                String variables = resolve(body.graphql != null ? body.graphql.variables : null, resolver, resolve);
+                if (variables == null || variables.isBlank()) {
+                    payload.add("variables", new JsonObject());
+                } else {
+                    try {
+                        payload.add("variables", JsonParser.parseString(variables));
+                    } catch (RuntimeException invalidJson) {
+                        payload.addProperty("variables", variables);
+                    }
                 }
-                out.addProperty("text", resolve(text, resolver, resolve) != null ? resolve(text, resolver, resolve) : "");
+                out.addProperty("text", payload.toString());
+            }
+            case "file" -> {
+                if (body.contentType != null && !body.contentType.isBlank()) {
+                    out.addProperty("mimeType", body.contentType);
+                }
+                String path = resolve(body.raw, resolver, resolve);
+                out.addProperty("fileName", path != null ? path : "");
             }
             case "urlencoded" -> {
                 out.addProperty("mimeType", "application/x-www-form-urlencoded");

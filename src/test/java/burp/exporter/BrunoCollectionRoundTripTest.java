@@ -85,6 +85,33 @@ class BrunoCollectionRoundTripTest {
         });
     }
 
+    @Test
+    void barePathParametersWarnAndRoundTripAsExplicitEmptyWithoutLosingOrder() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Paths";
+        ApiRequest request = request("Path request", "GET", "https://e.test/:id", "none");
+        request.parameters.add(barePath("id", false));
+        request.parameters.add(parameter("path", "id", "one", false));
+        request.parameters.add(barePath("id", false));
+        request.parameters.add(parameter("path", "id", "two", true));
+        request.parameters.add(barePath("", false));
+        request.parameters.add(barePath(" ", true));
+        collection.requests.add(request);
+
+        List<String> warnings = new ArrayList<>();
+        Path archive = export(collection, warnings);
+        String bru = readZip(archive).values().stream().filter(v -> v.contains("params:path {")).findFirst().orElseThrow();
+        ApiRequest imported = new BrunoParser().parse(archive.toFile()).requests.get(0);
+
+        assertThat(bru).contains("params:path {", "id: ", "\"\": ", "~\" \": ");
+        assertThat(warnings).filteredOn(w -> w.contains("bare path parameter")).hasSize(3);
+        assertThat(imported.parameters).extracting(p -> p.location).containsOnly("path");
+        assertThat(imported.parameters).extracting(p -> p.key).containsExactly("id", "id", "id", "id", "", " ");
+        assertThat(imported.parameters).extracting(p -> p.valuePresent).containsOnly(true);
+        assertThat(imported.parameters).extracting(p -> p.disabled)
+                .containsExactly(false, false, false, true, false, true);
+    }
+
     private ApiCollection collectionWithRequests() {
         ApiCollection collection = new ApiCollection();
         collection.name = "RoundTrip";
@@ -141,6 +168,12 @@ class BrunoCollectionRoundTripTest {
         ApiRequest.Parameter p = new ApiRequest.Parameter(location, key, value);
         p.disabled = disabled;
         return p;
+    }
+
+    private static ApiRequest.Parameter barePath(String key, boolean disabled) {
+        ApiRequest.Parameter parameter = parameter("path", key, "", disabled);
+        parameter.valuePresent = false;
+        return parameter;
     }
 
     private static ApiRequest.Body.FormField field(String key, String value, boolean disabled,

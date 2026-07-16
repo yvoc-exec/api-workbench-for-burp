@@ -75,12 +75,12 @@ public final class BrunoCollectionExporter {
         sb.append("vars {\n");
         VariableResolver resolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
         for (ApiRequest.Variable variable : collection.variables) {
-            if (variable == null || variable.key == null || variable.key.isBlank()) {
+            if (variable == null || variable.key == null) {
                 continue;
             }
             sb.append("  ").append(variable.enabled ? "" : "~")
                     .append(renderBruDictionaryKey(variable.key)).append(": ");
-            sb.append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
+            sb.append(renderBruScalarValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
                     ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
                     : "")).append("\n");
         }
@@ -138,11 +138,11 @@ public final class BrunoCollectionExporter {
         sb.append("vars {\n");
         VariableResolver resolver = CollectionExportSupport.buildResolver(collection, dummyRequestForFolder(folderPath), activeEnvironment, exportOnly);
         for (Map.Entry<String, String> entry : vars.entrySet()) {
-            if (entry.getKey() == null || entry.getKey().isBlank()) {
+            if (entry.getKey() == null) {
                 continue;
             }
             sb.append("  ").append(renderBruDictionaryKey(entry.getKey())).append(": ");
-            sb.append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
+            sb.append(renderBruScalarValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
                     ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
                     : "")).append("\n");
         }
@@ -159,7 +159,7 @@ public final class BrunoCollectionExporter {
                                          List<String> warnings) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("meta {\n");
-        sb.append("  name: ").append(request.name != null ? request.name : "Request").append("\n");
+        sb.append("  name: ").append(renderBruScalarValue(request.name != null ? request.name : "Request")).append("\n");
         sb.append("  type: http\n");
         sb.append("  seq: ").append(request.sequenceOrder > 0 ? request.sequenceOrder : seq).append("\n");
         sb.append("}\n\n");
@@ -168,7 +168,7 @@ public final class BrunoCollectionExporter {
         String exportedUrl = RequestParameterSupport.materializeUrl(
                 request.url, request.parameters, resolve ? resolver : null);
         sb.append(method).append(" {\n");
-        sb.append("  url: ").append(exportedUrl != null ? exportedUrl : "").append("\n");
+        sb.append("  url: ").append(renderBruScalarValue(exportedUrl != null ? exportedUrl : "")).append("\n");
         sb.append("}\n\n");
 
         appendParameterBlocks(sb, request, resolver, resolve, warnings);
@@ -187,14 +187,14 @@ public final class BrunoCollectionExporter {
                 }
                 String prefix = header.disabled ? "~" : "";
                 sb.append("  ").append(prefix).append(renderBruDictionaryKey(header.key)).append(": ")
-                        .append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(header.value, resolver, resolve) != null
+                        .append(renderBruScalarValue(CollectionExportSupport.resolve(header.value, resolver, resolve) != null
                                 ? CollectionExportSupport.resolve(header.value, resolver, resolve)
                                 : ""))
                         .append("\n");
             }
             if (synthesizeContentType) {
                 sb.append("  Content-Type: ")
-                        .append(BrunoEnvironmentExporterHelper.escapeValue(request.body.contentType)).append("\n");
+                        .append(renderBruScalarValue(request.body.contentType)).append("\n");
             }
             sb.append("}\n\n");
         }
@@ -216,12 +216,12 @@ public final class BrunoCollectionExporter {
         if (request.variables != null && !request.variables.isEmpty()) {
             sb.append("vars {\n");
             for (ApiRequest.Variable variable : request.variables) {
-                if (variable == null || variable.key == null || variable.key.isBlank()) {
+                if (variable == null || variable.key == null) {
                     continue;
                 }
                 sb.append("  ").append(variable.enabled ? "" : "~")
                         .append(renderBruDictionaryKey(variable.key)).append(": ")
-                        .append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
+                        .append(renderBruScalarValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
                                 ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
                                 : ""))
                         .append("\n");
@@ -244,34 +244,38 @@ public final class BrunoCollectionExporter {
                 else if ("path".equalsIgnoreCase(parameter.location)) path.add(parameter);
             }
         }
-        appendParameterBlock(sb, "params:query", query, request, resolver, resolve, warnings, true);
-        appendParameterBlock(sb, "params:path", path, request, resolver, resolve, warnings, false);
+        appendParameterBlock(sb, "params:query", query, request, resolver, resolve, warnings, ParameterKind.QUERY);
+        appendParameterBlock(sb, "params:path", path, request, resolver, resolve, warnings, ParameterKind.PATH);
     }
 
     private static void appendParameterBlock(StringBuilder sb, String name,
                                              List<ApiRequest.Parameter> parameters,
                                              ApiRequest request, VariableResolver resolver,
                                              boolean resolve, List<String> warnings,
-                                             boolean query) {
+                                             ParameterKind kind) {
         List<ApiRequest.Parameter> emitted = new ArrayList<>();
         for (ApiRequest.Parameter parameter : parameters) {
-            if (parameter.valuePresent || (!parameter.valuePresent && parameter.disabled)) {
+            if (kind == ParameterKind.PATH || parameter.valuePresent || parameter.disabled) {
                 emitted.add(parameter);
             }
         }
         if (emitted.isEmpty()) return;
         sb.append(name).append(" {\n");
         for (ApiRequest.Parameter parameter : emitted) {
-            if (query && !parameter.valuePresent && parameter.disabled) {
+            if (kind == ParameterKind.QUERY && !parameter.valuePresent && parameter.disabled) {
                 addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
                         + "' cannot preserve disabled bare query parameter '" + safeKey(parameter.key)
                         + "'; exported it as disabled explicit-empty.");
+            } else if (kind == ParameterKind.PATH && !parameter.valuePresent) {
+                addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
+                        + "' cannot preserve bare path parameter '" + safeKey(parameter.key)
+                        + "'; exported it as explicit-empty.");
             }
             String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
             String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
             sb.append("  ").append(parameter.disabled ? "~" : "")
                     .append(renderBruDictionaryKey(key)).append(": ")
-                    .append(BrunoEnvironmentExporterHelper.escapeValue(value != null ? value : ""))
+                    .append(renderBruScalarValue(value != null ? value : ""))
                     .append("\n");
         }
         sb.append("}\n\n");
@@ -321,7 +325,15 @@ public final class BrunoCollectionExporter {
                 boolean file = multipart && (field.fileUpload || "file".equalsIgnoreCase(field.type));
                 if (file && field.filePath != null && !field.filePath.isBlank()) {
                     String path = CollectionExportSupport.resolve(field.filePath, resolver, resolve);
-                    sb.append("@file(").append(path != null ? path : "").append(')');
+                    if (isSafeBruFilePath(path)) {
+                        sb.append("@file(").append(path).append(')');
+                    } else {
+                        addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
+                                + "' retained file field '" + safeKey(field.key)
+                                + "' as text because its path contains an unsafe control character.");
+                        String value = CollectionExportSupport.resolve(field.value, resolver, resolve);
+                        sb.append(renderBruScalarValue(value != null ? value : ""));
+                    }
                 } else {
                     if (file) {
                         addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
@@ -329,7 +341,7 @@ public final class BrunoCollectionExporter {
                                 + "' as text because it has no usable path.");
                     }
                     String value = CollectionExportSupport.resolve(field.value, resolver, resolve);
-                    sb.append(BrunoEnvironmentExporterHelper.escapeValue(value != null ? value : ""));
+                    sb.append(renderBruScalarValue(value != null ? value : ""));
                 }
                 sb.append("\n");
             }
@@ -398,9 +410,47 @@ public final class BrunoCollectionExporter {
         if (value.matches("[A-Za-z0-9_.-]+") && !value.startsWith("~")) {
             return value;
         }
-        String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
-        return "\"" + escaped + "\"";
+        return "\"" + escapeBruQuotedText(value) + "\"";
+    }
+
+    private static String renderBruScalarValue(String value) {
+        if (value == null) return "";
+        boolean quote = value.isEmpty() ? false
+                : !value.equals(value.strip())
+                || value.chars().anyMatch(ch -> Character.isWhitespace(ch)
+                || ch == ':' || ch == '#' || ch == '/' || ch == '\"' || ch == '\''
+                || ch == '\\' || ch == '{' || ch == '}' || ch < 0x20 || ch == 0x7f);
+        return quote ? "\"" + escapeBruQuotedText(value) + "\"" : value;
+    }
+
+    private static String escapeBruQuotedText(String value) {
+        StringBuilder escaped = new StringBuilder();
+        for (int i = 0; value != null && i < value.length(); i++) {
+            char ch = value.charAt(i);
+            switch (ch) {
+                case '\\' -> escaped.append("\\\\");
+                case '\"' -> escaped.append("\\\"");
+                case '\n' -> escaped.append("\\n");
+                case '\r' -> escaped.append("\\r");
+                case '\t' -> escaped.append("\\t");
+                case '\b' -> escaped.append("\\b");
+                case '\f' -> escaped.append("\\f");
+                default -> {
+                    if (ch < 0x20 || ch == 0x7f) escaped.append(String.format("\\u%04X", (int) ch));
+                    else escaped.append(ch);
+                }
+            }
+        }
+        return escaped.toString();
+    }
+
+    private static boolean isSafeBruFilePath(String path) {
+        if (path == null) return false;
+        for (int i = 0; i < path.length(); i++) {
+            char ch = path.charAt(i);
+            if (ch < 0x20 || ch == 0x7f) return false;
+        }
+        return true;
     }
 
     private static String safeRequestName(ApiRequest request) {
@@ -433,14 +483,17 @@ public final class BrunoCollectionExporter {
         String type = request.auth.type.toLowerCase(java.util.Locale.ROOT);
         StringBuilder sb = new StringBuilder();
         sb.append("auth {\n");
-        sb.append("  mode: ").append(type).append("\n");
+        sb.append("  mode: ").append(renderBruScalarValue(type)).append("\n");
         if (request.auth.properties != null) {
-            for (Map.Entry<String, String> entry : request.auth.properties.entrySet()) {
+            List<Map.Entry<String, String>> properties = new ArrayList<>(request.auth.properties.entrySet());
+            properties.removeIf(entry -> entry.getKey() == null || entry.getKey().isBlank());
+            properties.sort(Map.Entry.comparingByKey());
+            for (Map.Entry<String, String> entry : properties) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
                     continue;
                 }
-                sb.append("  ").append(entry.getKey()).append(": ")
-                        .append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
+                sb.append("  ").append(renderBruDictionaryKey(entry.getKey())).append(": ")
+                        .append(renderBruScalarValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
                                 ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
                                 : ""))
                         .append("\n");
@@ -490,30 +543,5 @@ public final class BrunoCollectionExporter {
         return request;
     }
 
-    private static final class BrunoEnvironmentExporterHelper {
-        private BrunoEnvironmentExporterHelper() {}
-
-        static String escapeValue(String value) {
-            if (value == null) {
-                return "";
-            }
-            boolean needsQuotes = value.contains(":")
-                    || value.contains("#")
-                    || value.contains("\"")
-                    || value.contains("'")
-                    || value.contains("\\")
-                    || value.contains("{")
-                    || value.contains("}")
-                    || value.contains(" ")
-                    || value.contains("\t")
-                    || value.contains("\n")
-                    || value.contains("\r");
-            String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"");
-            return needsQuotes ? "\"" + escaped + "\"" : escaped;
-        }
-
-        static String jsonString(String value) {
-            return new com.google.gson.JsonPrimitive(value != null ? value : "").toString();
-        }
-    }
+    private enum ParameterKind { QUERY, PATH }
 }

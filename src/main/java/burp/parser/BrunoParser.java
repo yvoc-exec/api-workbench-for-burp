@@ -388,7 +388,7 @@ public class BrunoParser implements CollectionParser {
             String metaContent = trimBlockContent(metaBlock.content);
             String metaName = extractValue(metaContent, "name");
             if (metaName != null && !metaName.isBlank()) {
-                req.name = metaName.trim();
+                req.name = metaName;
                 req.path = folderPath == null || folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;
             }
             String seq = extractValue(metaContent, "seq");
@@ -404,7 +404,7 @@ public class BrunoParser implements CollectionParser {
         if (methodBlockContent != null) {
             String inlineUrl = extractValue(methodBlockContent, "url");
             if (inlineUrl != null && !inlineUrl.isBlank()) {
-                req.url = inlineUrl.trim();
+                req.url = inlineUrl;
             }
         }
 
@@ -637,7 +637,7 @@ public class BrunoParser implements CollectionParser {
             }
         }
         for (DictionaryEntry entry : vars) {
-            if (entry == null || entry.key == null || entry.key.isBlank()) {
+            if (entry == null || entry.key == null) {
                 continue;
             }
             ApiRequest.Variable variable = byKey.get(entry.key);
@@ -671,7 +671,7 @@ public class BrunoParser implements CollectionParser {
             collection.folderVars.put(normalizedPath, existing);
         }
         for (DictionaryEntry entry : vars) {
-            if (entry == null || entry.key == null || entry.key.isBlank()) {
+            if (entry == null || entry.key == null) {
                 continue;
             }
             if (entry.disabled) {
@@ -1035,18 +1035,11 @@ public class BrunoParser implements CollectionParser {
         boolean quotedKey = false;
         if (line.startsWith("\"")) {
             quotedKey = true;
-            StringBuilder keyBuilder = new StringBuilder();
             boolean escaped = false;
             int i = 1;
             for (; i < line.length(); i++) {
                 char ch = line.charAt(i);
                 if (escaped) {
-                    keyBuilder.append(switch (ch) {
-                        case 'n' -> '\n';
-                        case 'r' -> '\r';
-                        case 't' -> '\t';
-                        default -> ch;
-                    });
                     escaped = false;
                     continue;
                 }
@@ -1057,7 +1050,6 @@ public class BrunoParser implements CollectionParser {
                 if (ch == '"') {
                     break;
                 }
-                keyBuilder.append(ch);
             }
             if (i >= line.length()) {
                 return null;
@@ -1069,7 +1061,7 @@ public class BrunoParser implements CollectionParser {
             if (colonIndex >= line.length() || line.charAt(colonIndex) != ':') {
                 return null;
             }
-            key = keyBuilder.toString();
+            key = decodeBruQuotedText(line.substring(1, i));
         } else {
             colonIndex = line.indexOf(':');
             if (colonIndex <= 0) {
@@ -1089,28 +1081,41 @@ public class BrunoParser implements CollectionParser {
         if (value == null || value.length() < 2 || !value.startsWith("\"") || !value.endsWith("\"")) {
             return value;
         }
+        return decodeBruQuotedText(value.substring(1, value.length() - 1));
+    }
+
+    private String decodeBruQuotedText(String encoded) {
         StringBuilder result = new StringBuilder();
-        boolean escaped = false;
-        for (int i = 1; i < value.length() - 1; i++) {
-            char ch = value.charAt(i);
-            if (!escaped && ch == '\\') {
-                escaped = true;
+        for (int i = 0; encoded != null && i < encoded.length(); i++) {
+            char ch = encoded.charAt(i);
+            if (ch != '\\' || i + 1 >= encoded.length()) {
+                result.append(ch);
                 continue;
             }
-            if (escaped) {
-                result.append(switch (ch) {
-                    case 'n' -> '\n';
-                    case 'r' -> '\r';
-                    case 't' -> '\t';
-                    default -> ch;
-                });
-                escaped = false;
-            } else {
-                result.append(ch);
+            char escaped = encoded.charAt(++i);
+            switch (escaped) {
+                case '\\' -> result.append('\\');
+                case '"' -> result.append('"');
+                case 'n' -> result.append('\n');
+                case 'r' -> result.append('\r');
+                case 't' -> result.append('\t');
+                case 'b' -> result.append('\b');
+                case 'f' -> result.append('\f');
+                case 'u' -> {
+                    if (i + 4 < encoded.length()) {
+                        String digits = encoded.substring(i + 1, i + 5);
+                        try {
+                            result.append((char) Integer.parseInt(digits, 16));
+                            i += 4;
+                        } catch (NumberFormatException invalidUnicode) {
+                            result.append("\\u");
+                        }
+                    } else {
+                        result.append("\\u");
+                    }
+                }
+                default -> result.append('\\').append(escaped);
             }
-        }
-        if (escaped) {
-            result.append('\\');
         }
         return result.toString();
     }
@@ -1343,6 +1348,7 @@ public class BrunoParser implements CollectionParser {
         String currentKey = null;
         boolean currentDisabled = false;
         boolean currentFileUpload = false;
+        boolean currentHasContinuation = false;
         BraceState currentState = new BraceState(0, false, false, false);
 
         for (String rawLine : content.split("\\R", -1)) {
@@ -1351,12 +1357,14 @@ public class BrunoParser implements CollectionParser {
 
             if (startOfField) {
                 if (currentKey != null) {
-                    fields.add(createFormField(currentKey, currentBuffer.toString(), currentDisabled, currentFileUpload, multipart));
+                    fields.add(createFormField(currentKey, currentBuffer.toString(), currentDisabled,
+                            currentFileUpload, multipart, currentHasContinuation));
                 }
                 currentKey = null;
                 currentBuffer.setLength(0);
                 currentState = new BraceState(0, false, false, false);
                 currentDisabled = entry.disabled;
+                currentHasContinuation = false;
                 currentKey = entry.key;
                 String initialValue = entry.value != null ? entry.value : "";
                 currentBuffer.append(initialValue);
@@ -1369,23 +1377,33 @@ public class BrunoParser implements CollectionParser {
                 continue;
             }
 
+            if (currentState.depth == 0 && rawLine.isBlank()) {
+                continue;
+            }
+
             if (currentBuffer.length() > 0) {
                 currentBuffer.append('\n');
             }
             currentBuffer.append(rawLine);
+            currentHasContinuation = true;
             currentState = updateBraceState(rawLine, currentState.inSingleQuote, currentState.inDoubleQuote, currentState.escaped, currentState.depth);
             currentFileUpload = currentFileUpload || isFileFieldValue(currentBuffer.toString());
         }
 
         if (currentKey != null) {
-            fields.add(createFormField(currentKey, currentBuffer.toString(), currentDisabled, currentFileUpload, multipart));
+            fields.add(createFormField(currentKey, currentBuffer.toString(), currentDisabled,
+                    currentFileUpload, multipart, currentHasContinuation));
         }
 
         return fields;
     }
 
-    private ApiRequest.Body.FormField createFormField(String key, String value, boolean disabled, boolean fileUpload, boolean multipart) {
-        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value != null ? trimBlockContent(value) : "");
+    private ApiRequest.Body.FormField createFormField(String key, String value, boolean disabled,
+                                                      boolean fileUpload, boolean multipart,
+                                                      boolean hasPhysicalContinuation) {
+        String importedValue = value != null ? value : "";
+        if (hasPhysicalContinuation) importedValue = trimBlockContent(importedValue);
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, importedValue);
         field.disabled = disabled;
         if (multipart && fileUpload) {
             field.fileUpload = true;
@@ -1459,7 +1477,7 @@ public class BrunoParser implements CollectionParser {
             return;
         }
         for (DictionaryEntry entry : parseVarsEntries(blocks)) {
-            if (entry == null || entry.key == null || entry.key.isBlank()) {
+            if (entry == null || entry.key == null) {
                 continue;
             }
             ApiRequest.Variable variable = new ApiRequest.Variable();
@@ -1573,7 +1591,7 @@ public class BrunoParser implements CollectionParser {
         }
         for (String value : values) {
             if (value != null && !value.isBlank()) {
-                return value.trim();
+                return value;
             }
         }
         return null;
@@ -1598,7 +1616,9 @@ public class BrunoParser implements CollectionParser {
         Matcher m = p.matcher(block);
         if (m.find()) {
             String val = m.group(1).trim();
-            if ((val.startsWith("\"") && val.endsWith("\"")) || (val.startsWith("'") && val.endsWith("'"))) {
+            if (val.startsWith("\"") && val.endsWith("\"")) {
+                val = parseBrunoValue(val);
+            } else if (val.startsWith("'") && val.endsWith("'")) {
                 val = val.substring(1, val.length() - 1);
             }
             return val.isEmpty() ? null : val;

@@ -29,6 +29,7 @@ class InsomniaCollectionRoundTripTest {
         ApiCollection source = sourceCollection();
         JsonObject json = InsomniaCollectionExporter.build(source, null, new ArrayList<>());
         ApiCollection imported = parse(json);
+        assertThat(imported.id).isEqualTo("workspace-id");
         assertThat(imported.name).isEqualTo("Insomnia Round Trip");
         assertThat(imported.description).isEqualTo("Description");
         assertThat(imported.environment).containsEntry("base", "value");

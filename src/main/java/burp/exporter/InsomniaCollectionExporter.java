@@ -9,6 +9,7 @@ import burp.scripts.ScriptPhase;
 import burp.utils.RequestParameterSupport;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
 import java.io.Writer;
@@ -32,7 +33,8 @@ public final class InsomniaCollectionExporter {
         root.addProperty("__export_source", "api-workbench-for-burp");
         JsonArray resources = new JsonArray();
 
-        String workspaceId = ExportIds.workspaceId(collection);
+        String workspaceId = collection != null && collection.id != null && !collection.id.isBlank()
+                ? collection.id : ExportIds.workspaceId(collection);
         JsonObject workspace = new JsonObject();
         workspace.addProperty("_id", workspaceId);
         workspace.addProperty("_type", "workspace");
@@ -54,9 +56,19 @@ public final class InsomniaCollectionExporter {
                 merged.putAll(collection.environment);
             }
             if (collection.variables != null) {
+                java.util.Set<String> enabledKeys = new java.util.HashSet<>();
                 for (ApiRequest.Variable variable : collection.variables) {
                     if (variable == null || variable.key == null || variable.key.isBlank()) {
                         continue;
+                    }
+                    if (!variable.enabled) {
+                        addWarning(warnings, "Insomnia export omitted disabled collection variable '"
+                                + safeText(variable.key) + "' from the active base environment.");
+                        continue;
+                    }
+                    if (!enabledKeys.add(variable.key)) {
+                        addWarning(warnings, "Insomnia export collapsed duplicate enabled collection variable '"
+                                + safeText(variable.key) + "' using the last occurrence.");
                     }
                     merged.put(variable.key, variable.value != null ? variable.value : "");
                 }
@@ -139,6 +151,7 @@ public final class InsomniaCollectionExporter {
             if (body != null && !body.entrySet().isEmpty()) {
                 resource.add("body", body);
                 addBodyWarnings(request, warnings);
+                addBodyApproximationWarnings(request, resolver, resolve, warnings);
             }
             JsonObject auth = requestAuth(request, resolver, resolve);
             if (auth != null) {
@@ -207,6 +220,10 @@ public final class InsomniaCollectionExporter {
                     addWarning(warnings, "Insomnia export omitted disabled " + block.phase
                             + " script for request '" + safeRequestName(request) + "'.");
                 } else if (block.source != null && !block.source.isBlank()) {
+                    if (block.phase == ScriptPhase.TEST) {
+                        addWarning(warnings, "Insomnia export represented TEST script as after-response code for request '"
+                                + safeRequestName(request) + "'.");
+                    }
                     sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
                 }
             }
@@ -272,6 +289,34 @@ public final class InsomniaCollectionExporter {
                         + safeText(field.key) + "' for request '" + safeRequestName(request)
                         + "' without a file path.");
             }
+        }
+    }
+
+    private static void addBodyApproximationWarnings(ApiRequest request, VariableResolver resolver,
+                                                     boolean resolve, List<String> warnings) {
+        if (request == null || request.body == null || request.body.mode == null) return;
+        if ("file".equalsIgnoreCase(request.body.mode)) {
+            String path = CollectionExportSupport.resolve(request.body.raw, resolver, resolve);
+            if (path == null || path.isEmpty()) {
+                addWarning(warnings, "Insomnia export represented empty file body for request '"
+                        + safeRequestName(request) + "' as file metadata; runtime file transport requires validation.");
+            } else {
+                addWarning(warnings, "Insomnia export represented file body for request '"
+                        + safeRequestName(request) + "' as file metadata; runtime file transport requires validation.");
+            }
+        } else if ("graphql".equalsIgnoreCase(request.body.mode)) {
+            String variables = CollectionExportSupport.resolve(
+                    request.body.graphql != null ? request.body.graphql.variables : null, resolver, resolve);
+            if (variables != null && !variables.isBlank()) {
+                try {
+                    JsonParser.parseString(variables);
+                } catch (RuntimeException invalidJson) {
+                    addWarning(warnings, "Insomnia export retained invalid GraphQL variables as text for request '"
+                            + safeRequestName(request) + "'.");
+                }
+            }
+            addWarning(warnings, "Insomnia export represented GraphQL body for request '"
+                    + safeRequestName(request) + "' as an application/json transport payload.");
         }
     }
 
