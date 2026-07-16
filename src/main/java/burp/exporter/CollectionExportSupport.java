@@ -376,12 +376,13 @@ final class CollectionExportSupport {
                 JsonArray params = new JsonArray();
                 if (body.urlencoded != null) {
                     for (ApiRequest.Body.FormField field : body.urlencoded) {
-                        if (field == null || field.key == null || field.key.isBlank()) {
+                        if (field == null) {
                             continue;
                         }
                         JsonObject obj = new JsonObject();
                         obj.addProperty("name", resolve(field.key, resolver, resolve) != null ? resolve(field.key, resolver, resolve) : "");
                         obj.addProperty("value", resolve(field.value, resolver, resolve) != null ? resolve(field.value, resolver, resolve) : "");
+                        obj.addProperty("type", "text");
                         if (field.disabled) {
                             obj.addProperty("disabled", true);
                         }
@@ -395,17 +396,20 @@ final class CollectionExportSupport {
                 JsonArray params = new JsonArray();
                 if (body.formdata != null) {
                     for (ApiRequest.Body.FormField field : body.formdata) {
-                        if (field == null || field.key == null || field.key.isBlank()) {
+                        if (field == null) {
                             continue;
                         }
                         JsonObject obj = new JsonObject();
                         obj.addProperty("name", resolve(field.key, resolver, resolve) != null ? resolve(field.key, resolver, resolve) : "");
                         if (field.fileUpload || "file".equalsIgnoreCase(field.type)) {
                             obj.addProperty("type", "file");
-                            if (field.filePath != null && !field.filePath.isBlank()) {
-                                obj.addProperty("src", resolve(field.filePath, resolver, resolve) != null ? resolve(field.filePath, resolver, resolve) : "");
+                            if (field.filePath != null) {
+                                obj.addProperty("fileName", resolve(field.filePath, resolver, resolve) != null ? resolve(field.filePath, resolver, resolve) : "");
+                            } else if (field.value != null && !field.value.isBlank()) {
+                                obj.addProperty("value", resolve(field.value, resolver, resolve));
                             }
                         } else {
+                            obj.addProperty("type", field.type != null && !field.type.isBlank() ? field.type : "text");
                             obj.addProperty("value", resolve(field.value, resolver, resolve) != null ? resolve(field.value, resolver, resolve) : "");
                         }
                         if (field.disabled) {

@@ -959,6 +959,74 @@ class BrunoParserTypedSyntaxTest {
                 .containsExactlyInAnyOrder(ScriptPhase.PRE_REQUEST, ScriptPhase.POST_RESPONSE);
     }
 
+    @Test
+    void multipartTextFileAndDisabledRowsPreserveMetadata() throws Exception {
+        ApiRequest request = parse("""
+                post { url: https://example.test/upload }
+                body:multipart-form {
+                  name: value
+                  ~name: disabled
+                  upload: @file(C:\\files\\one.bin)
+                  ~upload: @file(C:\\files\\two.bin)
+                  "": blank
+                }
+                """);
+        assertThat(request.body.formdata).extracting(f -> f.key)
+                .containsExactly("name", "name", "upload", "upload", "");
+        assertThat(request.body.formdata).extracting(f -> f.disabled)
+                .containsExactly(false, true, false, true, false);
+        assertThat(request.body.formdata.get(2).type).isEqualTo("file");
+        assertThat(request.body.formdata.get(2).fileUpload).isTrue();
+        assertThat(request.body.formdata.get(2).filePath).isEqualTo("C:\\files\\one.bin");
+        assertThat(request.body.formdata.get(2).value).isEqualTo("@file(C:\\files\\one.bin)");
+    }
+
+    @Test
+    void requestVarsPreserveOrderDuplicatesAndEnabledState() throws Exception {
+        ApiRequest request = parse("""
+                get { url: https://example.test/a }
+                vars {
+                  token: one
+                  ~token: two
+                  token: three
+                }
+                """);
+        assertThat(request.variables).extracting(v -> v.key + ":" + v.value + ":" + v.enabled)
+                .containsExactly("token:one:true", "token:two:false", "token:three:true");
+    }
+
+    @Test
+    void allBrunoScriptBlocksPreserveSourceOrderAndPhases() throws Exception {
+        ApiRequest request = parse("""
+                get { url: https://example.test/a }
+                script:post-response { postOne(); }
+                script:pre-request { pre(); }
+                test { verify(); }
+                script:post-response { postTwo(); }
+                """);
+        assertThat(request.scriptBlocks).hasSize(4);
+        assertThat(request.scriptBlocks).extracting(b -> b.order).containsExactly(0, 1, 2, 3);
+        assertThat(request.scriptBlocks).extracting(b -> b.phase)
+                .containsExactly(ScriptPhase.POST_RESPONSE, ScriptPhase.PRE_REQUEST,
+                        ScriptPhase.TEST, ScriptPhase.POST_RESPONSE);
+        assertThat(request.scriptBlocks).allSatisfy(b -> assertThat(b.dialect).isEqualTo(ScriptDialect.BRUNO));
+        assertThat(request.preRequestScripts).hasSize(1);
+        assertThat(request.postResponseScripts).hasSize(3);
+    }
+
+    @Test
+    void disabledFolderVariableIsNotActivatedAndWarns() throws Exception {
+        Path folder = Files.createDirectories(tempDir.resolve("Admin"));
+        Files.writeString(folder.resolve("_folder.bru"), "vars { ~secret: sensitive-value }", StandardCharsets.UTF_8);
+        Files.writeString(folder.resolve("request.bru"), "get { url: https://example.test/a }", StandardCharsets.UTF_8);
+        ApiCollection collection = new BrunoParser().parse(tempDir.toFile());
+        assertThat(collection.folderVars.getOrDefault("Admin", Map.of())).doesNotContainKey("secret");
+        assertThat(collection.importWarnings).anySatisfy(warning -> {
+            assertThat(warning).contains("Admin", "secret");
+            assertThat(warning).doesNotContain("sensitive-value");
+        });
+    }
+
     private ApiRequest parse(String content) throws Exception {
         Path file = Files.createTempFile(tempDir, "bruno-", ".bru");
         Files.writeString(file, content, StandardCharsets.UTF_8);

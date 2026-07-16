@@ -55,6 +55,7 @@ class InsomniaParserTest {
                 """, StandardCharsets.UTF_8);
 
         ApiCollection collection = new InsomniaParser().parse(file.toFile());
+        assertThat(collection.importedRequestCount).isEqualTo(2);
 
         ApiRequest urlencoded = collection.requests.stream()
                 .filter(r -> "Submit Form".equals(r.name))
@@ -66,6 +67,7 @@ class InsomniaParserTest {
                 .orElseThrow();
 
         assertThat(urlencoded.body.urlencoded).hasSize(2);
+        assertThat(urlencoded.body.urlencoded).allSatisfy(field -> assertThat(field.type).isEqualTo("text"));
         assertThat(urlencoded.body.urlencoded.get(0).disabled).isFalse();
         assertThat(urlencoded.body.urlencoded.get(1).key).isEqualTo("disabled");
         assertThat(urlencoded.body.urlencoded.get(1).disabled).isTrue();

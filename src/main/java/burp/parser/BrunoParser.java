@@ -11,6 +11,7 @@ import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
 import burp.utils.AuthInheritanceResolver;
+import burp.utils.RequestParameterSupport;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -102,8 +103,7 @@ public class BrunoParser implements CollectionParser {
                             collection.importedRequestCount++;
                         }
                     } else {
-                        Map<String, String> vars = parseVarsBlocks(scanResult.blocks);
-                        putCollectionVariables(collection, vars);
+                        putCollectionVariables(collection, parseVarsEntries(scanResult.blocks));
                         ApiRequest.Auth auth = parseAuthFromBlocks(scanResult.blocks, content);
                         if (auth != null) {
                             applyScopedMetadataAuth(collection, "", auth);
@@ -331,12 +331,12 @@ public class BrunoParser implements CollectionParser {
                         }
                     }
                 } else {
-                    Map<String, String> vars = parseVarsBlocks(scanResult.blocks);
+                    List<DictionaryEntry> vars = parseVarsEntries(scanResult.blocks);
                     if (!vars.isEmpty()) {
                         if (folderPath.isEmpty()) {
                             putCollectionVariables(collection, vars);
                         } else {
-                            putFolderVariables(collection, folderPath, vars);
+                            putFolderVariables(collection, folderPath, vars, normalizeRelativeImportPath(rootPath, path));
                         }
                     }
                     ApiRequest.Auth folderAuth = parseAuthFromBlocks(scanResult.blocks, content);
@@ -409,6 +409,7 @@ public class BrunoParser implements CollectionParser {
         }
 
         MethodSelectors selectors = parseMethodSelectors(methodBlockContent);
+        parseRequestParameters(req, requestBlocks);
         List<ApiRequest.Header> headers = parseHeadersBlock(BrunoBlockScanner.firstByName(requestBlocks, "headers"));
         req.headers.addAll(headers);
 
@@ -425,6 +426,38 @@ public class BrunoParser implements CollectionParser {
         }
 
         return req;
+    }
+
+    private void parseRequestParameters(ApiRequest request, List<BrunoBlockScanner.Block> blocks) {
+        if (request == null) {
+            return;
+        }
+        BrunoBlockScanner.Block queryBlock = BrunoBlockScanner.firstByName(blocks, "params:query", "query");
+        List<ApiRequest.Parameter> structuredQuery = null;
+        if (queryBlock != null) {
+            structuredQuery = new ArrayList<>();
+            for (DictionaryEntry entry : parseDictionaryEntries(queryBlock.content)) {
+                ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", entry.key, entry.value);
+                parameter.valuePresent = true;
+                parameter.disabled = entry.disabled;
+                parameter.source = "bruno:params:query";
+                structuredQuery.add(parameter);
+            }
+        }
+        request.parameters.addAll(QueryParameterImportSupport.reconcileStructuredQueryWithRawUrl(
+                request.url, structuredQuery, "bruno:url.raw", "bruno:url.raw-unmatched"));
+        request.url = RequestParameterSupport.materializeUrl(request.url, request.parameters, null);
+
+        BrunoBlockScanner.Block pathBlock = BrunoBlockScanner.firstByName(blocks, "params:path", "path");
+        if (pathBlock != null) {
+            for (DictionaryEntry entry : parseDictionaryEntries(pathBlock.content)) {
+                ApiRequest.Parameter parameter = new ApiRequest.Parameter("path", entry.key, entry.value);
+                parameter.valuePresent = true;
+                parameter.disabled = entry.disabled;
+                parameter.source = "bruno:params:path";
+                request.parameters.add(parameter);
+            }
+        }
     }
 
     private boolean looksLikeRequestBru(String content) {
@@ -543,16 +576,39 @@ public class BrunoParser implements CollectionParser {
 
     private Map<String, String> parseVarsBlocks(List<BrunoBlockScanner.Block> blocks) {
         Map<String, String> vars = new LinkedHashMap<>();
-        if (blocks == null || blocks.isEmpty()) {
-            return vars;
-        }
-        for (BrunoBlockScanner.Block block : blocks) {
-            if (block == null || block.name == null || !"vars".equalsIgnoreCase(block.name.trim())) {
-                continue;
+        for (DictionaryEntry entry : parseVarsEntries(blocks)) {
+            if (!entry.disabled) {
+                vars.put(entry.key, entry.value);
             }
-            vars.putAll(parseVarsBlockContent(block.content));
         }
         return vars;
+    }
+
+    private List<DictionaryEntry> parseVarsEntries(List<BrunoBlockScanner.Block> blocks) {
+        List<DictionaryEntry> entries = new ArrayList<>();
+        if (blocks == null) {
+            return entries;
+        }
+        for (BrunoBlockScanner.Block block : blocks) {
+            if (block != null && block.name != null && "vars".equalsIgnoreCase(block.name.trim())) {
+                entries.addAll(parseDictionaryEntries(block.content));
+            }
+        }
+        return entries;
+    }
+
+    private List<DictionaryEntry> parseDictionaryEntries(String content) {
+        List<DictionaryEntry> entries = new ArrayList<>();
+        if (content == null) {
+            return entries;
+        }
+        for (String rawLine : content.split("\\R", -1)) {
+            DictionaryEntry entry = parseDictionaryEntry(rawLine);
+            if (entry != null) {
+                entries.add(entry);
+            }
+        }
+        return entries;
     }
 
     private Map<String, String> parseVarsBlockContent(String content) {
@@ -570,7 +626,7 @@ public class BrunoParser implements CollectionParser {
         return vars;
     }
 
-    private void putCollectionVariables(ApiCollection collection, Map<String, String> vars) {
+    private void putCollectionVariables(ApiCollection collection, List<DictionaryEntry> vars) {
         if (collection == null || vars == null || vars.isEmpty()) {
             return;
         }
@@ -580,21 +636,25 @@ public class BrunoParser implements CollectionParser {
                 byKey.put(existing.key, existing);
             }
         }
-        for (Map.Entry<String, String> entry : vars.entrySet()) {
-            ApiRequest.Variable variable = byKey.get(entry.getKey());
+        for (DictionaryEntry entry : vars) {
+            if (entry == null || entry.key == null || entry.key.isBlank()) {
+                continue;
+            }
+            ApiRequest.Variable variable = byKey.get(entry.key);
             if (variable == null) {
                 variable = new ApiRequest.Variable();
-                variable.key = entry.getKey();
+                variable.key = entry.key;
                 variable.type = "string";
-                variable.enabled = true;
                 collection.variables.add(variable);
-                byKey.put(entry.getKey(), variable);
+                byKey.put(entry.key, variable);
             }
-            variable.value = entry.getValue();
+            variable.value = entry.value;
+            variable.enabled = !entry.disabled;
         }
     }
 
-    private void putFolderVariables(ApiCollection collection, String folderPath, Map<String, String> vars) {
+    private void putFolderVariables(ApiCollection collection, String folderPath, List<DictionaryEntry> vars,
+                                    String displayPath) {
         if (collection == null || vars == null || vars.isEmpty()) {
             return;
         }
@@ -610,7 +670,18 @@ public class BrunoParser implements CollectionParser {
             existing = new LinkedHashMap<>();
             collection.folderVars.put(normalizedPath, existing);
         }
-        existing.putAll(vars);
+        for (DictionaryEntry entry : vars) {
+            if (entry == null || entry.key == null || entry.key.isBlank()) {
+                continue;
+            }
+            if (entry.disabled) {
+                recordImportWarning(collection, displayPath,
+                        "Disabled folder variable '" + entry.key + "' in folder '" + normalizedPath
+                                + "' was not activated.", false);
+            } else {
+                existing.put(entry.key, entry.value);
+            }
+        }
     }
 
     private void applyScopedMetadataAuth(ApiCollection collection, String folderPath, ApiRequest.Auth auth) {
@@ -961,14 +1032,21 @@ public class BrunoParser implements CollectionParser {
 
         int colonIndex;
         String key;
+        boolean quotedKey = false;
         if (line.startsWith("\"")) {
+            quotedKey = true;
             StringBuilder keyBuilder = new StringBuilder();
             boolean escaped = false;
             int i = 1;
             for (; i < line.length(); i++) {
                 char ch = line.charAt(i);
                 if (escaped) {
-                    keyBuilder.append(ch);
+                    keyBuilder.append(switch (ch) {
+                        case 'n' -> '\n';
+                        case 'r' -> '\r';
+                        case 't' -> '\t';
+                        default -> ch;
+                    });
                     escaped = false;
                     continue;
                 }
@@ -1000,11 +1078,41 @@ public class BrunoParser implements CollectionParser {
             key = line.substring(0, colonIndex).trim();
         }
 
-        if (key == null || key.isBlank()) {
+        if (key == null || (!quotedKey && key.isBlank())) {
             return null;
         }
-        String value = line.substring(colonIndex + 1).trim();
+        String value = parseBrunoValue(line.substring(colonIndex + 1).trim());
         return new DictionaryEntry(key, value, disabled);
+    }
+
+    private String parseBrunoValue(String value) {
+        if (value == null || value.length() < 2 || !value.startsWith("\"") || !value.endsWith("\"")) {
+            return value;
+        }
+        StringBuilder result = new StringBuilder();
+        boolean escaped = false;
+        for (int i = 1; i < value.length() - 1; i++) {
+            char ch = value.charAt(i);
+            if (!escaped && ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (escaped) {
+                result.append(switch (ch) {
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    default -> ch;
+                });
+                escaped = false;
+            } else {
+                result.append(ch);
+            }
+        }
+        if (escaped) {
+            result.append('\\');
+        }
+        return result.toString();
     }
 
     private List<ApiRequest.Header> parseHeadersBlock(BrunoBlockScanner.Block headersBlock) {
@@ -1283,8 +1391,8 @@ public class BrunoParser implements CollectionParser {
             field.fileUpload = true;
             field.type = "file";
             field.filePath = extractFilePath(field.value);
-            if (field.filePath == null || field.filePath.isBlank()) {
-                field.filePath = field.value;
+            if (field.filePath != null && field.filePath.isBlank()) {
+                field.filePath = null;
             }
         } else {
             field.type = "text";
@@ -1350,18 +1458,14 @@ public class BrunoParser implements CollectionParser {
         if (req == null || blocks == null || blocks.isEmpty()) {
             return;
         }
-        Map<String, String> vars = new LinkedHashMap<>();
-        for (BrunoBlockScanner.Block block : blocks) {
-            if (block == null || block.name == null || !"vars".equalsIgnoreCase(block.name.trim())) {
+        for (DictionaryEntry entry : parseVarsEntries(blocks)) {
+            if (entry == null || entry.key == null || entry.key.isBlank()) {
                 continue;
             }
-            vars.putAll(parseVarsBlockContent(block.content));
-        }
-        for (Map.Entry<String, String> entry : vars.entrySet()) {
             ApiRequest.Variable variable = new ApiRequest.Variable();
-            variable.key = entry.getKey();
-            variable.value = entry.getValue();
-            variable.enabled = true;
+            variable.key = entry.key;
+            variable.value = entry.value;
+            variable.enabled = !entry.disabled;
             variable.type = "string";
             req.variables.add(variable);
         }
@@ -1372,25 +1476,27 @@ public class BrunoParser implements CollectionParser {
             return;
         }
         int order = 0;
-        BrunoBlockScanner.Block assertBlock = BrunoBlockScanner.firstByName(blocks, "assert", "test", "tests", "body:test");
-        if (assertBlock != null && assertBlock.content != null) {
-            ApiRequest.Script script = new ApiRequest.Script("js", trimBlockContent(assertBlock.content));
-            req.postResponseScripts.add(script);
-            addScriptBlock(req, script, ScriptDialect.BRUNO, ScriptPhase.TEST, file, order++);
-        }
-
-        BrunoBlockScanner.Block preScriptBlock = BrunoBlockScanner.firstByName(blocks, "script:pre-request");
-        if (preScriptBlock != null && preScriptBlock.content != null) {
-            ApiRequest.Script script = new ApiRequest.Script("js", trimBlockContent(preScriptBlock.content));
-            req.preRequestScripts.add(script);
-            addScriptBlock(req, script, ScriptDialect.BRUNO, ScriptPhase.PRE_REQUEST, file, order++);
-        }
-
-        BrunoBlockScanner.Block postScriptBlock = BrunoBlockScanner.firstByName(blocks, "script:post-response");
-        if (postScriptBlock != null && postScriptBlock.content != null) {
-            ApiRequest.Script script = new ApiRequest.Script("js", trimBlockContent(postScriptBlock.content));
-            req.postResponseScripts.add(script);
-            addScriptBlock(req, script, ScriptDialect.BRUNO, ScriptPhase.POST_RESPONSE, file, order);
+        for (BrunoBlockScanner.Block block : blocks) {
+            if (block == null || block.name == null || block.content == null) {
+                continue;
+            }
+            String name = block.normalizedName();
+            ScriptPhase phase = switch (name) {
+                case "script:pre-request" -> ScriptPhase.PRE_REQUEST;
+                case "script:post-response" -> ScriptPhase.POST_RESPONSE;
+                case "assert", "test", "tests", "body:test" -> ScriptPhase.TEST;
+                default -> null;
+            };
+            if (phase == null) {
+                continue;
+            }
+            ApiRequest.Script script = new ApiRequest.Script("js", trimBlockContent(block.content));
+            if (phase == ScriptPhase.PRE_REQUEST) {
+                req.preRequestScripts.add(script);
+            } else {
+                req.postResponseScripts.add(script);
+            }
+            addScriptBlock(req, script, ScriptDialect.BRUNO, phase, file, order++);
         }
     }
 

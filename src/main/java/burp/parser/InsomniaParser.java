@@ -1,5 +1,10 @@
 package burp.parser;
 
+import burp.diagnostics.DiagnosticEvent;
+import burp.diagnostics.DiagnosticOperation;
+import burp.diagnostics.DiagnosticSanitizer;
+import burp.diagnostics.DiagnosticSeverity;
+import burp.diagnostics.DiagnosticStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.scripts.ScriptBlock;
@@ -7,33 +12,52 @@ import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
 import burp.utils.AuthInheritanceResolver;
-import com.google.gson.*;
-import java.io.*;
-import java.util.*;
+import burp.utils.RequestParameterSupport;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
-/**
- * Parser for Insomnia v4 JSON exports.
- */
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
 public class InsomniaParser implements CollectionParser {
-    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    private static final Set<String> SUPPORTED_AUTH = Set.of(
+            "none", "noauth", "basic", "bearer", "apikey", "oauth2");
+    private static final String[] SCRIPT_SOURCE_PROPERTIES = {"script", "code", "source", "text", "value"};
+    private static final Set<String> PRE_SCRIPT_KEYS = Set.of("pre", "request", "preRequest", "before");
+    private static final Set<String> POST_SCRIPT_KEYS = Set.of("post", "response", "postResponse", "after", "afterResponse");
 
     @Override
     public boolean canParse(File file) {
-        if (!file.getName().endsWith(".json")) return false;
-        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
-            JsonObject obj = JsonParser.parseReader(reader).getAsJsonObject();
-            // Insomnia v4 has __type field or resources array
-            if (obj.has("__type") && obj.get("__type").getAsString().contains("export")) return true;
-            if (obj.has("resources") && obj.get("resources").isJsonArray()) {
-                JsonArray resources = obj.getAsJsonArray("resources");
-                for (JsonElement r : resources) {
-                    JsonObject res = r.getAsJsonObject();
-                    if (res.has("_type") && "request".equals(res.get("_type").getAsString())) {
+        try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
+            JsonElement root = JsonParser.parseReader(reader);
+            if (!root.isJsonObject()) {
+                return false;
+            }
+            JsonObject obj = root.getAsJsonObject();
+            if (obj.has("__type") && string(obj, "__type", "").contains("export")) {
+                return true;
+            }
+            JsonArray resources = array(obj, "resources");
+            if (resources != null) {
+                for (JsonElement element : resources) {
+                    if (element != null && element.isJsonObject()
+                            && "request".equals(string(element.getAsJsonObject(), "_type", ""))) {
                         return true;
                     }
                 }
             }
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return false;
         }
         return false;
@@ -41,362 +65,579 @@ public class InsomniaParser implements CollectionParser {
 
     @Override
     public ApiCollection parse(File file) throws Exception {
-        JsonObject obj;
-        try (java.io.InputStreamReader reader = new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
-            obj = JsonParser.parseReader(reader).getAsJsonObject();
+        JsonObject root;
+        try (InputStreamReader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
+            root = JsonParser.parseReader(reader).getAsJsonObject();
         }
 
         ApiCollection collection = new ApiCollection();
         collection.format = "insomnia";
-        collection.name = getString(obj, "__export_format", "Insomnia Collection");
+        collection.version = string(root, "__export_format", null);
+        collection.name = "Insomnia Collection";
+        JsonArray resources = array(root, "resources");
+        if (resources == null) {
+            return collection;
+        }
 
-        JsonArray resources = obj.getAsJsonArray("resources");
-        if (resources == null) return collection;
+        JsonObject workspace = firstResource(resources, "workspace");
+        String workspaceId = null;
+        if (workspace != null) {
+            workspaceId = string(workspace, "_id", null);
+            if (workspaceId != null && !workspaceId.isBlank()) {
+                collection.id = workspaceId;
+            }
+            String name = string(workspace, "name", null);
+            if (name != null && !name.isBlank()) {
+                collection.name = name;
+            }
+            collection.description = string(workspace, "description", null);
+        }
 
-        // Build ID -> name/parent/auth maps for folders
-        Map<String, String> folderNames = new HashMap<>();
-        Map<String, String> folderParents = new HashMap<>();
-        Map<String, ApiRequest.Auth> folderAuths = new HashMap<>();
-        for (JsonElement r : resources) {
-            JsonObject res = r.getAsJsonObject();
-            if (res.has("_type") && "request_group".equals(res.get("_type").getAsString())) {
-                String id = getString(res, "_id", "");
-                String name = getString(res, "name", "");
-                String parentId = getString(res, "parentId", "");
-                folderNames.put(id, name);
-                folderParents.put(id, parentId);
-                if (res.has("authentication") && res.get("authentication").isJsonObject()) {
-                    folderAuths.put(id, parseAuth(res.getAsJsonObject("authentication")));
-                }
+        Map<String, String> folderNames = new LinkedHashMap<>();
+        Map<String, String> folderParents = new LinkedHashMap<>();
+        Map<String, ApiRequest.Auth> folderAuths = new LinkedHashMap<>();
+        for (JsonElement element : resources) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            JsonObject resource = element.getAsJsonObject();
+            String type = string(resource, "_type", "");
+            if (!"request_group".equals(type) && !"folder".equals(type)) {
+                continue;
+            }
+            String id = string(resource, "_id", "");
+            folderNames.put(id, string(resource, "name", ""));
+            folderParents.put(id, string(resource, "parentId", ""));
+            JsonObject authObject = object(resource, "authentication");
+            ApiRequest.Auth auth = parseAuth(authObject, collection,
+                    buildResourceLabel(resource, "folder"));
+            if (auth != null) {
+                folderAuths.put(id, auth);
             }
         }
-        for (Map.Entry<String, ApiRequest.Auth> entry : folderAuths.entrySet()) {
-            storeInsomniaFolderAuth(collection, entry.getKey(), folderNames, folderParents, entry.getValue());
-        }
-
-        // Parse environment resources into collection.environment
-        for (JsonElement r : resources) {
-            JsonObject res = r.getAsJsonObject();
-            if (res.has("_type") && "environment".equals(res.get("_type").getAsString())) {
-                if (res.has("data") && res.get("data").isJsonObject()) {
-                    JsonObject data = res.getAsJsonObject("data");
-                    for (Map.Entry<String, com.google.gson.JsonElement> entry : data.entrySet()) {
-                        com.google.gson.JsonElement value = entry.getValue();
-                        if (value != null && !value.isJsonNull()) {
-                            if (value.isJsonPrimitive()) {
-                                collection.environment.put(entry.getKey(), value.getAsString());
-                            } else {
-                                collection.environment.put(entry.getKey(), value.toString());
-                            }
-                        }
-                    }
-                }
+        for (String folderId : folderNames.keySet()) {
+            String path = buildFolderPath(folderId, folderNames, folderParents);
+            if (!path.isBlank() && !collection.folderPaths.contains(path)) {
+                collection.folderPaths.add(path);
+            }
+            ApiRequest.Auth auth = folderAuths.get(folderId);
+            if (auth != null && !path.isBlank()) {
+                AuthInheritanceResolver.setFolderAuth(collection, path,
+                        AuthInheritanceResolver.normalizeParsedAuthMode(auth), auth);
             }
         }
 
-        // Parse requests
-        for (JsonElement r : resources) {
-            JsonObject res = r.getAsJsonObject();
-            if (res.has("_type") && "request".equals(res.get("_type").getAsString())) {
-                ApiRequest req = parseInsomniaRequest(res, folderNames, folderParents, folderAuths);
-                req.sourceCollection = collection.name;
-                collection.requests.add(req);
+        importBaseEnvironment(resources, workspaceId, collection);
+
+        for (JsonElement element : resources) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            JsonObject resource = element.getAsJsonObject();
+            if (!"request".equals(string(resource, "_type", ""))) {
+                continue;
+            }
+            try {
+                ApiRequest request = parseRequest(resource, folderNames, folderParents, collection);
+                request.sourceCollection = collection.name;
+                collection.requests.add(request);
+                collection.importedRequestCount++;
+            } catch (RuntimeException exception) {
+                collection.skippedRequestCount++;
+                warn(collection, buildResourceLabel(resource, "request"),
+                        "Malformed request resource was skipped: " + exception.getClass().getSimpleName());
             }
         }
 
         AuthInheritanceResolver.recomputeCollectionAuth(collection);
-
         return collection;
     }
 
-    private ApiRequest parseInsomniaRequest(JsonObject res, Map<String, String> folderNames,
-                                            Map<String, String> folderParents,
-                                            Map<String, ApiRequest.Auth> folderAuths) {
-        ApiRequest req = new ApiRequest();
-        req.id = getString(res, "_id", "");
-        req.name = getString(res, "name", "Unnamed");
-        req.method = getString(res, "method", "GET");
-        req.url = getString(res, "url", "");
-        req.description = getString(res, "description", "");
+    private ApiRequest parseRequest(JsonObject resource,
+                                    Map<String, String> folderNames,
+                                    Map<String, String> folderParents,
+                                    ApiCollection collection) {
+        requirePrimitiveWhenPresent(resource, "name");
+        requirePrimitiveWhenPresent(resource, "method");
+        requirePrimitiveWhenPresent(resource, "url");
+        ApiRequest request = new ApiRequest();
+        request.id = string(resource, "_id", "");
+        request.name = string(resource, "name", "Unnamed");
+        request.method = string(resource, "method", "GET");
+        request.url = string(resource, "url", "");
+        request.description = string(resource, "description", "");
+        String folderPath = buildFolderPath(string(resource, "parentId", ""), folderNames, folderParents);
+        request.path = folderPath.isBlank() ? request.name : folderPath + "/" + request.name;
+        String label = request.path != null ? request.path : request.name;
 
-        // Build path from folder hierarchy
-        String parentId = getString(res, "parentId", "");
-        List<String> pathParts = new ArrayList<>();
-        while (parentId != null && !parentId.isEmpty() && folderNames.containsKey(parentId)) {
-            pathParts.add(0, folderNames.get(parentId));
-            parentId = folderParents.getOrDefault(parentId, "");
-        }
-        req.path = String.join("/", pathParts) + "/" + req.name;
+        parseQueryParameters(resource, request);
+        parseHeaders(resource, request);
+        parseBody(resource, request, collection, label);
 
-        // Headers
-        if (res.has("headers") && res.get("headers").isJsonArray()) {
-            for (JsonElement h : res.getAsJsonArray("headers")) {
-                JsonObject header = h.getAsJsonObject();
-                boolean disabled = header.has("disabled") && header.get("disabled").getAsBoolean();
-                req.headers.add(new ApiRequest.Header(
-                    getString(header, "name", ""),
-                    getString(header, "value", ""),
-                    disabled
-                ));
-            }
-        }
-
-        // Body
-        if (res.has("body") && res.get("body").isJsonObject()) {
-            JsonObject bodyObj = res.getAsJsonObject("body");
-            req.body = new ApiRequest.Body();
-            req.body.mode = getString(bodyObj, "mimeType", "none");
-            if (req.body.mode == null || req.body.mode.isEmpty()) req.body.mode = "none";
-
-            switch (req.body.mode) {
-                case "application/json":
-                case "text/plain":
-                case "application/xml":
-                case "text/html":
-                    req.body.mode = "raw";
-                    req.body.raw = getString(bodyObj, "text", "");
-                    req.body.contentType = getString(bodyObj, "mimeType", "text/plain");
-                    break;
-                case "application/x-www-form-urlencoded":
-                    req.body.mode = "urlencoded";
-                    if (bodyObj.has("params") && bodyObj.get("params").isJsonArray()) {
-                        for (JsonElement p : bodyObj.getAsJsonArray("params")) {
-                            JsonObject param = p.getAsJsonObject();
-                            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
-                                    getString(param, "name", ""),
-                                    getString(param, "value", "")
-                            );
-                            field.disabled = param.has("disabled") && param.get("disabled").getAsBoolean();
-                            req.body.urlencoded.add(field);
-                        }
-                    }
-                    break;
-                case "multipart/form-data":
-                    req.body.mode = "formdata";
-                    if (bodyObj.has("params") && bodyObj.get("params").isJsonArray()) {
-                        for (JsonElement p : bodyObj.getAsJsonArray("params")) {
-                            JsonObject param = p.getAsJsonObject();
-                            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
-                                    getString(param, "name", ""),
-                                    getString(param, "value", "")
-                            );
-                            field.disabled = param.has("disabled") && param.get("disabled").getAsBoolean();
-                            req.body.formdata.add(field);
-                        }
-                    }
-                    break;
-            }
-        }
-
-        // Auth
-        if (res.has("authentication") && res.get("authentication").isJsonObject()) {
-            ApiRequest.Auth parsedAuth = parseAuth(res.getAsJsonObject("authentication"));
-            String mode = AuthInheritanceResolver.normalizeParsedAuthMode(parsedAuth);
-            if ("none".equalsIgnoreCase(mode)) {
-                AuthInheritanceResolver.markRequestNoAuth(req);
+        if (resource.has("authentication") && resource.get("authentication").isJsonObject()) {
+            ApiRequest.Auth auth = parseAuth(resource.getAsJsonObject("authentication"), collection, label);
+            if (auth == null) {
+                AuthInheritanceResolver.markRequestInherit(request);
+            } else if ("none".equalsIgnoreCase(AuthInheritanceResolver.normalizeParsedAuthMode(auth))) {
+                AuthInheritanceResolver.markRequestNoAuth(request);
             } else {
-                AuthInheritanceResolver.markRequestExplicitAuth(req, parsedAuth);
+                AuthInheritanceResolver.markRequestExplicitAuth(request, auth);
             }
         } else {
-            AuthInheritanceResolver.markRequestInherit(req);
+            AuthInheritanceResolver.markRequestInherit(request);
         }
-
-        extractInsomniaScripts(res, req);
-
-        return req;
+        parseScripts(resource, request, collection, label);
+        return request;
     }
 
-    private void extractInsomniaScripts(JsonObject res, ApiRequest req) {
-        if (res == null || req == null) {
-            return;
+    private void parseQueryParameters(JsonObject resource, ApiRequest request) {
+        JsonArray structuredArray = array(resource, "parameters");
+        if (structuredArray == null) {
+            structuredArray = array(resource, "queryParameters");
         }
-        addInsomniaScriptsFromField(res, req, "requestHooks", ScriptPhase.PRE_REQUEST, 0);
-        addInsomniaScriptsFromField(res, req, "preRequestScript", ScriptPhase.PRE_REQUEST, 1);
-        addInsomniaScriptsFromField(res, req, "pre_request_script", ScriptPhase.PRE_REQUEST, 2);
-        addInsomniaScriptsFromField(res, req, "responseHooks", ScriptPhase.POST_RESPONSE, 3);
-        addInsomniaScriptsFromField(res, req, "afterResponseScript", ScriptPhase.POST_RESPONSE, 4);
-        addInsomniaScriptsFromField(res, req, "after_response_script", ScriptPhase.POST_RESPONSE, 5);
-
-        if (res.has("script") && res.get("script").isJsonObject()) {
-            JsonObject script = res.getAsJsonObject("script");
-            addInsomniaScriptsFromNested(script, req, ScriptPhase.PRE_REQUEST, new String[]{"pre", "request", "preRequest", "before"});
-            addInsomniaScriptsFromNested(script, req, ScriptPhase.POST_RESPONSE, new String[]{"post", "response", "after", "postResponse", "afterResponse"});
-        }
-        if (res.has("scripts") && res.get("scripts").isJsonObject()) {
-            JsonObject scripts = res.getAsJsonObject("scripts");
-            addInsomniaScriptsFromNested(scripts, req, ScriptPhase.PRE_REQUEST, new String[]{"pre", "request", "preRequest", "before"});
-            addInsomniaScriptsFromNested(scripts, req, ScriptPhase.POST_RESPONSE, new String[]{"post", "response", "after", "postResponse", "afterResponse"});
-        }
-    }
-
-    private void addInsomniaScriptsFromNested(JsonObject container,
-                                              ApiRequest req,
-                                              ScriptPhase phase,
-                                              String[] candidateKeys) {
-        if (container == null || req == null || candidateKeys == null) {
-            return;
-        }
-        for (String key : candidateKeys) {
-            if (container.has(key)) {
-                addInsomniaScriptsFromElement(container.get(key), req, phase, key);
-            }
-        }
-    }
-
-    private void addInsomniaScriptsFromField(JsonObject res,
-                                             ApiRequest req,
-                                             String field,
-                                             ScriptPhase phase,
-                                             int order) {
-        if (res == null || req == null || field == null || !res.has(field)) {
-            return;
-        }
-        addInsomniaScriptsFromElement(res.get(field), req, phase, field);
-    }
-
-    private void addInsomniaScriptsFromElement(com.google.gson.JsonElement element,
-                                               ApiRequest req,
-                                               ScriptPhase phase,
-                                               String sourcePath) {
-        if (element == null || req == null || element.isJsonNull()) {
-            return;
-        }
-        List<String> scripts = new ArrayList<>();
-        if (element.isJsonPrimitive()) {
-            scripts.add(element.getAsString());
-        } else if (element.isJsonArray()) {
-            for (JsonElement part : element.getAsJsonArray()) {
-                if (part == null || part.isJsonNull()) {
+        List<ApiRequest.Parameter> structured = null;
+        if (structuredArray != null) {
+            structured = new ArrayList<>();
+            for (JsonElement element : structuredArray) {
+                if (element == null || !element.isJsonObject()) {
                     continue;
                 }
-                if (part.isJsonPrimitive()) {
-                    scripts.add(part.getAsString());
-                } else {
-                    scripts.add(part.toString());
-                }
+                JsonObject row = element.getAsJsonObject();
+                String key = row.has("name") ? string(row, "name", "") : string(row, "key", "");
+                boolean valuePresent = row.has("value") && !row.get("value").isJsonNull();
+                ApiRequest.Parameter parameter = new ApiRequest.Parameter(
+                        "query", key, valuePresent ? string(row, "value", "") : "");
+                parameter.valuePresent = valuePresent;
+                parameter.disabled = bool(row, "disabled", false);
+                parameter.description = string(row, "description", null);
+                parameter.type = string(row, "type", null);
+                parameter.source = "insomnia:parameters";
+                structured.add(parameter);
             }
-        } else if (element.isJsonObject()) {
-            JsonObject obj = element.getAsJsonObject();
-            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
-                addInsomniaScriptsFromElement(entry.getValue(), req, phase, sourcePath + ":" + entry.getKey());
-            }
-            return;
-        } else {
-            scripts.add(element.toString());
         }
+        request.parameters = QueryParameterImportSupport.reconcileStructuredQueryWithRawUrl(
+                request.url, structured, "insomnia:url.raw", "insomnia:url.raw-unmatched");
+        request.url = RequestParameterSupport.materializeUrl(request.url, request.parameters, null);
+    }
 
-        for (String scriptSource : scripts) {
-            if (scriptSource == null || scriptSource.isBlank()) {
+    private void parseHeaders(JsonObject resource, ApiRequest request) {
+        JsonArray headers = array(resource, "headers");
+        if (headers == null) {
+            return;
+        }
+        for (JsonElement element : headers) {
+            if (element == null || !element.isJsonObject()) {
                 continue;
             }
-            ApiRequest.Script legacy = new ApiRequest.Script("js", scriptSource);
-            if (phase == ScriptPhase.PRE_REQUEST) {
-                req.preRequestScripts.add(legacy);
+            JsonObject header = element.getAsJsonObject();
+            request.headers.add(new ApiRequest.Header(
+                    string(header, "name", ""), string(header, "value", ""),
+                    bool(header, "disabled", false)));
+        }
+    }
+
+    private void parseBody(JsonObject resource, ApiRequest request, ApiCollection collection, String label) {
+        JsonObject body = object(resource, "body");
+        if (body == null) {
+            return;
+        }
+        request.body = new ApiRequest.Body();
+        String mimeType = string(body, "mimeType", null);
+        request.body.contentType = mimeType != null && !mimeType.isBlank() ? mimeType : null;
+        if ("application/x-www-form-urlencoded".equalsIgnoreCase(mimeType)) {
+            request.body.mode = "urlencoded";
+            parseUrlEncodedFields(array(body, "params"), request.body.urlencoded);
+            return;
+        }
+        if ("multipart/form-data".equalsIgnoreCase(mimeType)) {
+            request.body.mode = "formdata";
+            parseMultipartFields(array(body, "params"), request.body.formdata);
+            return;
+        }
+        if (body.has("text") && !body.get("text").isJsonNull()) {
+            request.body.mode = "raw";
+            request.body.raw = string(body, "text", "");
+            return;
+        }
+        String filePath = firstNonNullString(body, "fileName", "filePath", "src", "file");
+        if (filePath != null) {
+            request.body.mode = "file";
+            request.body.raw = filePath;
+            warn(collection, label, "File-only body metadata was retained; file-mode transport requires later validation.");
+            return;
+        }
+        if (mimeType != null && !mimeType.isBlank()) {
+            request.body.mode = "raw";
+            request.body.raw = "";
+        } else {
+            request.body.mode = "none";
+        }
+    }
+
+    private void parseUrlEncodedFields(JsonArray params, List<ApiRequest.Body.FormField> target) {
+        if (params == null) {
+            return;
+        }
+        for (JsonElement element : params) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
+                    row.has("name") ? string(row, "name", "") : string(row, "key", ""),
+                    string(row, "value", ""));
+            field.disabled = bool(row, "disabled", false);
+            String type = string(row, "type", null);
+            field.type = type != null && !type.isBlank() ? type : "text";
+            field.fileUpload = false;
+            field.filePath = null;
+            target.add(field);
+        }
+    }
+
+    private void parseMultipartFields(JsonArray params, List<ApiRequest.Body.FormField> target) {
+        if (params == null) {
+            return;
+        }
+        for (JsonElement element : params) {
+            if (element == null || !element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
+                    row.has("name") ? string(row, "name", "") : string(row, "key", ""),
+                    string(row, "value", ""));
+            field.disabled = bool(row, "disabled", false);
+            String suppliedType = string(row, "type", null);
+            boolean file = "file".equalsIgnoreCase(suppliedType)
+                    || hasNonNull(row, "fileName") || hasNonNull(row, "filePath")
+                    || hasNonNull(row, "src");
+            if (file) {
+                field.type = "file";
+                field.fileUpload = true;
+                field.filePath = firstNonNullString(row, "fileName", "filePath", "src", "value");
             } else {
-                req.postResponseScripts.add(legacy);
+                field.type = suppliedType != null && !suppliedType.isBlank() ? suppliedType : "text";
+                field.fileUpload = false;
+                field.filePath = null;
             }
-            ScriptBlock block = ScriptBlock.fromLegacy(
-                    legacy,
-                    ScriptDialect.INSOMNIA,
-                    phase,
-                    ScriptScope.REQUEST,
-                    "insomnia",
-                    sourcePath,
-                    req.scriptBlocks.size()
-            );
-            if (block != null) {
-                block.metadata.put("sourceField", sourcePath);
-                req.scriptBlocks.add(block);
-            }
+            target.add(field);
         }
     }
 
-    private String buildFolderPath(String folderId, Map<String, String> folderNames, Map<String, String> folderParents) {
-        if (folderId == null || folderId.isBlank()) {
-            return "";
+    private ApiRequest.Auth parseAuth(JsonObject object, ApiCollection collection, String label) {
+        if (object == null) {
+            return null;
         }
-        List<String> pathParts = new ArrayList<>();
-        Set<String> visited = new HashSet<>();
-        String current = folderId;
-        while (current != null && !current.isBlank() && folderNames.containsKey(current) && visited.add(current)) {
-            String name = folderNames.get(current);
-            if (name != null && !name.isBlank()) {
-                pathParts.add(0, name);
-            }
-            current = folderParents.getOrDefault(current, "");
+        String originalType = string(object, "type", null);
+        if (originalType == null || originalType.isBlank()) {
+            return null;
         }
-        return String.join("/", pathParts);
-    }
-
-    private void storeInsomniaFolderAuth(ApiCollection collection,
-                                         String folderId,
-                                         Map<String, String> folderNames,
-                                         Map<String, String> folderParents,
-                                         ApiRequest.Auth auth) {
-        if (collection == null || auth == null || auth.type == null) {
-            return;
+        String normalized = originalType.toLowerCase(Locale.ROOT);
+        if ("noauth".equals(normalized)) {
+            normalized = "none";
+        } else if ("api_key".equals(normalized)) {
+            normalized = "apikey";
         }
-        String folderPath = AuthInheritanceResolver.normalizeFolderPath(buildFolderPath(folderId, folderNames, folderParents));
-        if (folderPath.isEmpty()) {
-            return;
-        }
-        String mode = AuthInheritanceResolver.normalizeParsedAuthMode(auth);
-        AuthInheritanceResolver.setFolderAuth(collection, folderPath, mode, auth);
-    }
-
-    private ApiRequest.Auth parseAuth(JsonObject authObj) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
-        auth.type = getString(authObj, "type", "none");
-        for (Map.Entry<String, JsonElement> entry : authObj.entrySet()) {
-            String key = entry.getKey();
-            if ("type".equals(key)) continue;
-            JsonElement value = entry.getValue();
-            if (value.isJsonPrimitive()) {
-                auth.properties.put(key, value.getAsString());
+        auth.type = normalized;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if ("type".equals(entry.getKey()) || entry.getValue() == null || entry.getValue().isJsonNull()) {
+                continue;
+            }
+            auth.properties.put(entry.getKey(), entry.getValue().isJsonPrimitive()
+                    ? entry.getValue().getAsString() : entry.getValue().toString());
+        }
+        String addTo = auth.properties.get("addTo");
+        if (addTo != null) {
+            if ("queryParams".equalsIgnoreCase(addTo) || "query".equalsIgnoreCase(addTo)) {
+                auth.properties.put("in", "query");
+            } else if ("header".equalsIgnoreCase(addTo)) {
+                auth.properties.put("in", "header");
             }
         }
-        // Normalize Insomnia-specific property names
-        if (auth.properties.containsKey("addTo")) {
-            auth.properties.put("in", auth.properties.get("addTo"));
+        if (!SUPPORTED_AUTH.contains(normalized)) {
+            warn(collection, label, "Unsupported authentication type '" + normalized
+                    + "' was retained; runtime request building may not apply it.");
         }
         return auth;
     }
 
-    private ApiRequest.Auth findInheritedAuth(String folderId, Map<String, String> folderParents,
-                                               Map<String, ApiRequest.Auth> folderAuths) {
-        Set<String> visited = new HashSet<>();
-        while (folderId != null && !folderId.isEmpty() && !visited.contains(folderId)) {
-            visited.add(folderId);
-            ApiRequest.Auth auth = folderAuths.get(folderId);
-            if (auth != null && auth.type != null && !"none".equals(auth.type)) {
-                return auth;
+    private void parseScripts(JsonObject resource, ApiRequest request, ApiCollection collection, String label) {
+        int[] order = {0};
+        addScriptElement(resource.get("preRequestScript"), request, collection, label,
+                ScriptPhase.PRE_REQUEST, "preRequestScript", order);
+        addScriptElement(resource.get("pre_request_script"), request, collection, label,
+                ScriptPhase.PRE_REQUEST, "pre_request_script", order);
+        addScriptElement(resource.get("requestHooks"), request, collection, label,
+                ScriptPhase.PRE_REQUEST, "requestHooks", order);
+        addScriptElement(resource.get("afterResponseScript"), request, collection, label,
+                ScriptPhase.POST_RESPONSE, "afterResponseScript", order);
+        addScriptElement(resource.get("after_response_script"), request, collection, label,
+                ScriptPhase.POST_RESPONSE, "after_response_script", order);
+        addScriptElement(resource.get("responseHooks"), request, collection, label,
+                ScriptPhase.POST_RESPONSE, "responseHooks", order);
+        parseScriptContainer(resource.get("script"), request, collection, label, "script", order);
+        parseScriptContainer(resource.get("scripts"), request, collection, label, "scripts", order);
+    }
+
+    private void parseScriptContainer(JsonElement element, ApiRequest request, ApiCollection collection,
+                                      String label, String path, int[] order) {
+        if (element == null || element.isJsonNull()) {
+            return;
+        }
+        if (!element.isJsonObject()) {
+            warn(collection, label, "Unknown script object shape at '" + path + "'; no source was recovered.");
+            return;
+        }
+        JsonObject container = element.getAsJsonObject();
+        boolean recognized = false;
+        for (Map.Entry<String, JsonElement> entry : container.entrySet()) {
+            ScriptPhase phase = PRE_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.PRE_REQUEST
+                    : POST_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.POST_RESPONSE : null;
+            if (phase != null) {
+                recognized = true;
+                addScriptElement(entry.getValue(), request, collection, label, phase,
+                        path + "." + entry.getKey(), order);
             }
-            folderId = folderParents.getOrDefault(folderId, "");
+        }
+        if (!recognized && !container.entrySet().isEmpty()) {
+            warn(collection, label, "Unknown script object shape at '" + path + "'; no source was recovered.");
+        }
+    }
+
+    private void addScriptElement(JsonElement element, ApiRequest request, ApiCollection collection,
+                                  String label, ScriptPhase phase, String path, int[] order) {
+        if (element == null || element.isJsonNull()) {
+            return;
+        }
+        if (element.isJsonArray()) {
+            int index = 0;
+            for (JsonElement child : element.getAsJsonArray()) {
+                addScriptElement(child, request, collection, label, phase,
+                        path + "[" + index++ + "]", order);
+            }
+            return;
+        }
+        String source = null;
+        boolean enabled = true;
+        JsonObject metadataObject = null;
+        String sourceProperty = null;
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+            source = element.getAsString();
+        } else if (element.isJsonObject()) {
+            metadataObject = element.getAsJsonObject();
+            for (String property : SCRIPT_SOURCE_PROPERTIES) {
+                if (metadataObject.has(property) && metadataObject.get(property).isJsonPrimitive()
+                        && metadataObject.getAsJsonPrimitive(property).isString()) {
+                    source = metadataObject.get(property).getAsString();
+                    sourceProperty = property;
+                    break;
+                }
+            }
+            enabled = metadataObject.has("enabled") ? bool(metadataObject, "enabled", true)
+                    : !bool(metadataObject, "disabled", false);
+            if (source == null) {
+                boolean recursed = false;
+                for (Map.Entry<String, JsonElement> entry : metadataObject.entrySet()) {
+                    ScriptPhase nestedPhase = PRE_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.PRE_REQUEST
+                            : POST_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.POST_RESPONSE : null;
+                    if (nestedPhase != null) {
+                        recursed = true;
+                        addScriptElement(entry.getValue(), request, collection, label, nestedPhase,
+                                path + "." + entry.getKey(), order);
+                    }
+                }
+                if (!recursed) {
+                    warn(collection, label, "Unknown script object shape at '" + path + "'; no source was recovered.");
+                }
+                return;
+            }
+        } else {
+            warn(collection, label, "Unknown script object shape at '" + path + "'; no source was recovered.");
+            return;
+        }
+        if (source == null || source.isBlank()) {
+            return;
+        }
+        ScriptBlock block = ScriptBlock.of(source, ScriptDialect.INSOMNIA, phase, ScriptScope.REQUEST);
+        block.enabled = enabled;
+        block.sourceFormat = "insomnia";
+        block.sourcePath = path;
+        block.order = order[0]++;
+        block.metadata.put("sourceField", path);
+        if (sourceProperty != null) {
+            block.metadata.put("sourceProperty", sourceProperty);
+        }
+        if (metadataObject != null) {
+            String name = string(metadataObject, "name", null);
+            String id = string(metadataObject, "id", string(metadataObject, "_id", null));
+            if (name != null) block.metadata.put("name", name);
+            if (id != null) block.metadata.put("id", id);
+        }
+        request.scriptBlocks.add(block);
+        if (enabled) {
+            ApiRequest.Script legacy = block.toLegacyScript();
+            if (phase == ScriptPhase.PRE_REQUEST) {
+                request.preRequestScripts.add(legacy);
+            } else {
+                request.postResponseScripts.add(legacy);
+            }
+        }
+    }
+
+    private void importBaseEnvironment(JsonArray resources, String workspaceId, ApiCollection collection) {
+        List<JsonObject> environments = resourcesOfType(resources, "environment");
+        if (environments.isEmpty()) {
+            return;
+        }
+        JsonObject base = null;
+        for (JsonObject environment : environments) {
+            String parent = string(environment, "parentId", "");
+            String id = string(environment, "_id", "");
+            if ((workspaceId != null && workspaceId.equals(parent))
+                    || id.toUpperCase(Locale.ROOT).contains("BASE_ENVIRONMENT")) {
+                base = environment;
+                break;
+            }
+        }
+        if (base == null && environments.size() == 1) {
+            base = environments.get(0);
+        }
+        if (base != null) {
+            JsonObject data = object(base, "data");
+            if (data != null) {
+                for (Map.Entry<String, JsonElement> entry : data.entrySet()) {
+                    if (entry.getValue() != null && !entry.getValue().isJsonNull()) {
+                        collection.environment.put(entry.getKey(), entry.getValue().isJsonPrimitive()
+                                ? entry.getValue().getAsString() : entry.getValue().toString());
+                    }
+                }
+            }
+        }
+        for (JsonObject environment : environments) {
+            if (environment != base) {
+                warn(collection, string(environment, "name", "Unnamed environment"),
+                        "Child environment '" + string(environment, "name", "Unnamed environment")
+                                + "' was not flattened; collection import supports the base environment only.");
+            }
+        }
+    }
+
+    private String buildFolderPath(String folderId, Map<String, String> names, Map<String, String> parents) {
+        if (folderId == null || folderId.isBlank()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        String current = folderId;
+        while (current != null && !current.isBlank() && names.containsKey(current) && visited.add(current)) {
+            String name = names.get(current);
+            if (name != null && !name.isBlank()) {
+                parts.add(0, name);
+            }
+            current = parents.getOrDefault(current, "");
+        }
+        return String.join("/", parts);
+    }
+
+    private void warn(ApiCollection collection, String path, String reason) {
+        if (collection == null || reason == null || reason.isBlank()) {
+            return;
+        }
+        String safePath = DiagnosticSanitizer.sanitizeText(path != null ? path : "unknown resource");
+        String safeReason = DiagnosticSanitizer.sanitizeText(reason);
+        String message = "Insomnia import warning for \"" + safePath + "\": " + safeReason;
+        collection.importWarnings.add(message);
+        DiagnosticStore.getInstance().record(DiagnosticEvent.of(
+                        DiagnosticOperation.IMPORT, DiagnosticSeverity.WARNING,
+                        "InsomniaParser", "Insomnia import warning")
+                .withAttribute("path", safePath)
+                .withAttribute("reason", safeReason)
+                .withDetails(message));
+    }
+
+    private static JsonObject firstResource(JsonArray resources, String type) {
+        for (JsonElement element : resources) {
+            if (element != null && element.isJsonObject()
+                    && type.equals(string(element.getAsJsonObject(), "_type", ""))) {
+                return element.getAsJsonObject();
+            }
         }
         return null;
     }
 
-    private ApiRequest.Auth deepCopyAuth(ApiRequest.Auth src) {
-        if (src == null) return null;
-        ApiRequest.Auth copy = new ApiRequest.Auth();
-        copy.type = src.type;
-        if (src.properties != null) {
-            copy.properties.putAll(src.properties);
+    private static List<JsonObject> resourcesOfType(JsonArray resources, String type) {
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonElement element : resources) {
+            if (element != null && element.isJsonObject()
+                    && type.equals(string(element.getAsJsonObject(), "_type", ""))) {
+                result.add(element.getAsJsonObject());
+            }
         }
-        return copy;
+        return result;
     }
 
-    private String getString(JsonObject obj, String key, String defaultValue) {
-        if (obj.has(key) && !obj.get(key).isJsonNull()) {
-            JsonElement elem = obj.get(key);
-            if (elem.isJsonPrimitive()) return elem.getAsString();
+    private static String buildResourceLabel(JsonObject object, String fallback) {
+        String name = string(object, "name", null);
+        String id = string(object, "_id", null);
+        return name != null && !name.isBlank() ? name : id != null && !id.isBlank() ? id : fallback;
+    }
+
+    private static boolean hasNonNull(JsonObject object, String key) {
+        return object != null && object.has(key) && !object.get(key).isJsonNull();
+    }
+
+    private static void requirePrimitiveWhenPresent(JsonObject object, String key) {
+        if (object != null && object.has(key) && !object.get(key).isJsonNull()
+                && !object.get(key).isJsonPrimitive()) {
+            throw new IllegalArgumentException("Invalid " + key);
         }
-        return defaultValue;
+    }
+
+    private static String firstNonNullString(JsonObject object, String... keys) {
+        for (String key : keys) {
+            if (hasNonNull(object, key)) {
+                return string(object, key, "");
+            }
+        }
+        return null;
+    }
+
+    private static JsonArray array(JsonObject object, String key) {
+        return object != null && object.has(key) && object.get(key).isJsonArray()
+                ? object.getAsJsonArray(key) : null;
+    }
+
+    private static JsonObject object(JsonObject object, String key) {
+        return object != null && object.has(key) && object.get(key).isJsonObject()
+                ? object.getAsJsonObject(key) : null;
+    }
+
+    private static String string(JsonObject object, String key, String fallback) {
+        if (object != null && object.has(key) && !object.get(key).isJsonNull()
+                && object.get(key).isJsonPrimitive()) {
+            return object.get(key).getAsString();
+        }
+        return fallback;
+    }
+
+    private static boolean bool(JsonObject object, String key, boolean fallback) {
+        try {
+            return object != null && object.has(key) && !object.get(key).isJsonNull()
+                    ? object.get(key).getAsBoolean() : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     @Override
-    public String getFormatName() { return "Insomnia"; }
+    public String getFormatName() {
+        return "Insomnia";
+    }
 
     @Override
-    public String[] getSupportedExtensions() { return new String[]{"json"}; }
+    public String[] getSupportedExtensions() {
+        return new String[]{"json"};
+    }
 }

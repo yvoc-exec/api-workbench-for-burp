@@ -4,12 +4,17 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptPhase;
+import burp.utils.RequestParameterSupport;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
 import java.io.Writer;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -22,6 +27,9 @@ public final class InsomniaCollectionExporter {
         EnvironmentProfile activeEnvironment = options != null ? options.activeEnvironment : null;
         Map<String, String> exportOnly = options != null ? options.exportOnlyVariables : Map.of();
         JsonObject root = new JsonObject();
+        root.addProperty("__type", "export");
+        root.addProperty("__export_format", 4);
+        root.addProperty("__export_source", "api-workbench-for-burp");
         JsonArray resources = new JsonArray();
 
         String workspaceId = ExportIds.workspaceId(collection);
@@ -38,6 +46,7 @@ public final class InsomniaCollectionExporter {
             JsonObject env = new JsonObject();
             env.addProperty("_id", ExportIds.environmentId(activeEnvironment != null ? activeEnvironment : new EnvironmentProfile()));
             env.addProperty("_type", "environment");
+            env.addProperty("parentId", workspaceId);
             env.addProperty("name", collection.name != null ? collection.name + " Environment" : "Environment");
             JsonObject data = new JsonObject();
             Map<String, String> merged = new LinkedHashMap<>();
@@ -119,7 +128,9 @@ public final class InsomniaCollectionExporter {
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
             resource.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
             resource.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
-            resource.addProperty("url", CollectionExportSupport.resolve(request.url, resolver, resolve) != null ? CollectionExportSupport.resolve(request.url, resolver, resolve) : "");
+            resource.addProperty("url", RequestParameterSupport.materializeUrl(
+                    request.url, request.parameters, resolve ? resolver : null));
+            addParameters(resource, request, resolver, resolve, warnings);
             JsonArray headers = CollectionExportSupport.toHeadersArray(request.headers, resolver, resolve);
             if (!headers.isEmpty()) {
                 resource.add("headers", headers);
@@ -127,6 +138,7 @@ public final class InsomniaCollectionExporter {
             JsonObject body = CollectionExportSupport.bodyToInsomnia(request.body, resolver, resolve);
             if (body != null && !body.entrySet().isEmpty()) {
                 resource.add("body", body);
+                addBodyWarnings(request, warnings);
             }
             JsonObject auth = requestAuth(request, resolver, resolve);
             if (auth != null) {
@@ -135,7 +147,145 @@ public final class InsomniaCollectionExporter {
             if (request.description != null && !request.description.isBlank()) {
                 resource.addProperty("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
             }
+            addScripts(resource, request, resolver, resolve, warnings);
             resources.add(resource);
+        }
+    }
+
+    private static void addParameters(JsonObject resource, ApiRequest request,
+                                      VariableResolver resolver, boolean resolve,
+                                      List<String> warnings) {
+        JsonArray parameters = new JsonArray();
+        if (request.parameters != null) {
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (parameter == null) continue;
+                if (!parameter.isQuery()) {
+                    addWarning(warnings, "Insomnia export for request '" + safeRequestName(request)
+                            + "' cannot represent parameter location '" + safeText(parameter.location) + "'.");
+                    continue;
+                }
+                JsonObject row = new JsonObject();
+                String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+                row.addProperty("name", key != null ? key : "");
+                if (parameter.valuePresent) {
+                    String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
+                    row.addProperty("value", value != null ? value : "");
+                }
+                if (parameter.disabled) row.addProperty("disabled", true);
+                if (parameter.description != null && !parameter.description.isBlank()) {
+                    row.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
+                }
+                if (parameter.type != null && !parameter.type.isBlank()) {
+                    row.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
+                }
+                parameters.add(row);
+            }
+        }
+        if (!parameters.isEmpty()) resource.add("parameters", parameters);
+    }
+
+    private static void addScripts(JsonObject resource, ApiRequest request,
+                                   VariableResolver resolver, boolean resolve,
+                                   List<String> warnings) {
+        String pre = scriptSource(request, ScriptPhase.PRE_REQUEST,
+                request.preRequestScripts, resolver, resolve, warnings);
+        String post = combinedPostSource(request, resolver, resolve, warnings);
+        if (pre != null && !pre.isBlank()) resource.addProperty("preRequestScript", pre);
+        if (post != null && !post.isBlank()) resource.addProperty("afterResponseScript", post);
+    }
+
+    private static String combinedPostSource(ApiRequest request, VariableResolver resolver,
+                                             boolean resolve, List<String> warnings) {
+        List<String> sources = new ArrayList<>();
+        boolean hasBlocks = hasPhaseBlocks(request, ScriptPhase.POST_RESPONSE)
+                || hasPhaseBlocks(request, ScriptPhase.TEST);
+        if (hasBlocks) {
+            List<ScriptBlock> sorted = sortedBlocks(request);
+            for (ScriptBlock block : sorted) {
+                if (block == null || (block.phase != ScriptPhase.POST_RESPONSE && block.phase != ScriptPhase.TEST)) continue;
+                if (!block.enabled) {
+                    addWarning(warnings, "Insomnia export omitted disabled " + block.phase
+                            + " script for request '" + safeRequestName(request) + "'.");
+                } else if (block.source != null && !block.source.isBlank()) {
+                    sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
+                }
+            }
+        } else if (request.postResponseScripts != null) {
+            addLegacySources(sources, request.postResponseScripts, resolver, resolve);
+        }
+        sources.removeIf(value -> value == null || value.isBlank());
+        return sources.isEmpty() ? null : String.join("\n\n", sources);
+    }
+
+    private static String scriptSource(ApiRequest request, ScriptPhase phase,
+                                       List<ApiRequest.Script> legacy,
+                                       VariableResolver resolver, boolean resolve,
+                                       List<String> warnings) {
+        List<String> sources = new ArrayList<>();
+        if (hasPhaseBlocks(request, phase)) {
+            for (ScriptBlock block : sortedBlocks(request)) {
+                if (block == null || block.phase != phase) continue;
+                if (!block.enabled) {
+                    addWarning(warnings, "Insomnia export omitted disabled " + phase
+                            + " script for request '" + safeRequestName(request) + "'.");
+                } else if (block.source != null && !block.source.isBlank()) {
+                    sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
+                }
+            }
+        } else {
+            addLegacySources(sources, legacy, resolver, resolve);
+        }
+        sources.removeIf(value -> value == null || value.isBlank());
+        return sources.isEmpty() ? null : String.join("\n\n", sources);
+    }
+
+    private static void addLegacySources(List<String> target, List<ApiRequest.Script> legacy,
+                                         VariableResolver resolver, boolean resolve) {
+        if (legacy == null) return;
+        for (ApiRequest.Script script : legacy) {
+            if (script != null && script.exec != null && !script.exec.isBlank()) {
+                target.add(CollectionExportSupport.resolve(script.exec, resolver, resolve));
+            }
+        }
+    }
+
+    private static boolean hasPhaseBlocks(ApiRequest request, ScriptPhase phase) {
+        if (request.scriptBlocks == null) return false;
+        for (ScriptBlock block : request.scriptBlocks) {
+            if (block != null && block.phase == phase) return true;
+        }
+        return false;
+    }
+
+    private static List<ScriptBlock> sortedBlocks(ApiRequest request) {
+        List<ScriptBlock> sorted = new ArrayList<>(request.scriptBlocks != null ? request.scriptBlocks : List.of());
+        sorted.sort(Comparator.comparingInt(block -> block != null ? block.order : Integer.MAX_VALUE));
+        return sorted;
+    }
+
+    private static void addBodyWarnings(ApiRequest request, List<String> warnings) {
+        if (request.body == null || request.body.formdata == null) return;
+        for (ApiRequest.Body.FormField field : request.body.formdata) {
+            if (field != null && (field.fileUpload || "file".equalsIgnoreCase(field.type))
+                    && field.filePath == null) {
+                addWarning(warnings, "Insomnia export retained multipart file field '"
+                        + safeText(field.key) + "' for request '" + safeRequestName(request)
+                        + "' without a file path.");
+            }
+        }
+    }
+
+    private static String safeRequestName(ApiRequest request) {
+        return request != null ? safeText(request.name) : "Request";
+    }
+
+    private static String safeText(String value) {
+        return value != null ? value.replaceAll("[\\r\\n]", " ") : "";
+    }
+
+    private static void addWarning(List<String> warnings, String warning) {
+        if (warnings != null && warning != null && !warning.isBlank() && !warnings.contains(warning)) {
+            warnings.add(warning);
         }
     }
 

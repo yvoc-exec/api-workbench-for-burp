@@ -43,7 +43,7 @@ class BrunoCollectionExporterTest {
         assertThat(loginBru).contains("meta {");
         assertThat(loginBru).contains("post {");
         assertThat(loginBru).contains("headers {");
-        assertThat(loginBru).contains("body {");
+        assertThat(loginBru).contains("body:json {");
         assertThat(loginBru).contains("auth {");
         assertThat(loginBru).contains("script:pre-request {");
         assertThat(loginBru).contains("script:post-response {");

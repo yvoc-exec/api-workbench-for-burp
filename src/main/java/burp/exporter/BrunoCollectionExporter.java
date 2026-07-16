@@ -4,20 +4,19 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.scripts.ScriptBlock;
+import burp.scripts.ScriptPhase;
 import burp.ui.tree.RequestTreePathService;
+import burp.utils.RequestParameterSupport;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -79,7 +78,8 @@ public final class BrunoCollectionExporter {
             if (variable == null || variable.key == null || variable.key.isBlank()) {
                 continue;
             }
-            sb.append("  ").append(variable.key).append(": ");
+            sb.append("  ").append(variable.enabled ? "" : "~")
+                    .append(renderBruDictionaryKey(variable.key)).append(": ");
             sb.append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
                     ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
                     : "")).append("\n");
@@ -141,7 +141,7 @@ public final class BrunoCollectionExporter {
             if (entry.getKey() == null || entry.getKey().isBlank()) {
                 continue;
             }
-            sb.append("  ").append(entry.getKey()).append(": ");
+            sb.append("  ").append(renderBruDictionaryKey(entry.getKey())).append(": ");
             sb.append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
                     ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
                     : "")).append("\n");
@@ -165,13 +165,20 @@ public final class BrunoCollectionExporter {
         sb.append("}\n\n");
 
         String method = request.method != null ? request.method.toLowerCase(java.util.Locale.ROOT) : "get";
+        String exportedUrl = RequestParameterSupport.materializeUrl(
+                request.url, request.parameters, resolve ? resolver : null);
         sb.append(method).append(" {\n");
-        sb.append("  url: ").append(CollectionExportSupport.resolve(request.url, resolver, resolve) != null ? CollectionExportSupport.resolve(request.url, resolver, resolve) : "").append("\n");
+        sb.append("  url: ").append(exportedUrl != null ? exportedUrl : "").append("\n");
         sb.append("}\n\n");
 
-        if (request.headers != null && !request.headers.isEmpty()) {
+        appendParameterBlocks(sb, request, resolver, resolve, warnings);
+
+        boolean synthesizeContentType = request.body != null
+                && request.body.contentType != null && !request.body.contentType.isBlank()
+                && !hasEnabledHeader(request.headers, "Content-Type");
+        if ((request.headers != null && !request.headers.isEmpty()) || synthesizeContentType) {
             sb.append("headers {\n");
-            for (ApiRequest.Header header : request.headers) {
+            for (ApiRequest.Header header : request.headers != null ? request.headers : List.<ApiRequest.Header>of()) {
                 if (header == null || header.key == null || header.key.isBlank()) {
                     continue;
                 }
@@ -179,66 +186,32 @@ public final class BrunoCollectionExporter {
                     continue;
                 }
                 String prefix = header.disabled ? "~" : "";
-                sb.append("  ").append(prefix).append(header.key).append(": ")
+                sb.append("  ").append(prefix).append(renderBruDictionaryKey(header.key)).append(": ")
                         .append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(header.value, resolver, resolve) != null
                                 ? CollectionExportSupport.resolve(header.value, resolver, resolve)
                                 : ""))
                         .append("\n");
             }
+            if (synthesizeContentType) {
+                sb.append("  Content-Type: ")
+                        .append(BrunoEnvironmentExporterHelper.escapeValue(request.body.contentType)).append("\n");
+            }
             sb.append("}\n\n");
         }
 
-        if (request.body != null && request.body.mode != null && !"none".equalsIgnoreCase(request.body.mode)) {
-            sb.append("body {\n");
-            String bodyText = renderBodyText(request.body, resolver, resolve);
-            if (!bodyText.isBlank()) {
-                for (String line : bodyText.split("\\R", -1)) {
-                    sb.append("  ").append(line).append("\n");
-                }
-            }
-            sb.append("}\n\n");
-        } else {
-            sb.append("body: none\n\n");
-        }
+        appendTypedBody(sb, request, resolver, resolve, warnings);
 
         String authBlock = renderAuthBlock(request, resolver, resolve);
         if (authBlock != null && !authBlock.isBlank()) {
             sb.append(authBlock).append("\n\n");
         }
 
-        if (request.preRequestScripts != null && !request.preRequestScripts.isEmpty()) {
-            sb.append("script:pre-request {\n");
-            for (ApiRequest.Script script : request.preRequestScripts) {
-                if (script == null || script.exec == null) {
-                    continue;
-                }
-                String text = CollectionExportSupport.resolve(script.exec, resolver, resolve);
-                if (text == null || text.isBlank()) {
-                    continue;
-                }
-                for (String line : text.split("\\R", -1)) {
-                    sb.append("  ").append(line).append("\n");
-                }
-            }
-            sb.append("}\n\n");
-        }
-
-        if (request.postResponseScripts != null && !request.postResponseScripts.isEmpty()) {
-            sb.append("script:post-response {\n");
-            for (ApiRequest.Script script : request.postResponseScripts) {
-                if (script == null || script.exec == null) {
-                    continue;
-                }
-                String text = CollectionExportSupport.resolve(script.exec, resolver, resolve);
-                if (text == null || text.isBlank()) {
-                    continue;
-                }
-                for (String line : text.split("\\R", -1)) {
-                    sb.append("  ").append(line).append("\n");
-                }
-            }
-            sb.append("}\n\n");
-        }
+        appendScriptBlock(sb, "script:pre-request", request, ScriptPhase.PRE_REQUEST,
+                request.preRequestScripts, resolver, resolve, warnings);
+        appendScriptBlock(sb, "script:post-response", request, ScriptPhase.POST_RESPONSE,
+                request.postResponseScripts, resolver, resolve, warnings);
+        appendScriptBlock(sb, "test", request, ScriptPhase.TEST,
+                null, resolver, resolve, warnings);
 
         if (request.variables != null && !request.variables.isEmpty()) {
             sb.append("vars {\n");
@@ -246,7 +219,8 @@ public final class BrunoCollectionExporter {
                 if (variable == null || variable.key == null || variable.key.isBlank()) {
                     continue;
                 }
-                sb.append("  ").append(variable.key).append(": ")
+                sb.append("  ").append(variable.enabled ? "" : "~")
+                        .append(renderBruDictionaryKey(variable.key)).append(": ")
                         .append(BrunoEnvironmentExporterHelper.escapeValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
                                 ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
                                 : ""))
@@ -258,44 +232,189 @@ public final class BrunoCollectionExporter {
         writeTextEntry(zip, filePath, sb.toString());
     }
 
-    private static String renderBodyText(ApiRequest.Body body, VariableResolver resolver, boolean resolve) {
-        if (body == null || body.mode == null) {
-            return "";
-        }
-        String mode = body.mode.toLowerCase(java.util.Locale.ROOT);
-        return switch (mode) {
-            case "raw" -> CollectionExportSupport.resolve(body.raw, resolver, resolve) != null ? CollectionExportSupport.resolve(body.raw, resolver, resolve) : "";
-            case "urlencoded" -> renderFields(body.urlencoded, resolver, resolve);
-            case "formdata" -> renderFields(body.formdata, resolver, resolve);
-            case "graphql" -> {
-                String query = CollectionExportSupport.resolve(body.graphql != null ? body.graphql.query : "", resolver, resolve);
-                String vars = CollectionExportSupport.resolve(body.graphql != null ? body.graphql.variables : "", resolver, resolve);
-                yield "{\"query\":" + BrunoEnvironmentExporterHelper.jsonString(query) + ",\"variables\":" + BrunoEnvironmentExporterHelper.jsonString(vars) + "}";
+    private static void appendParameterBlocks(StringBuilder sb, ApiRequest request,
+                                              VariableResolver resolver, boolean resolve,
+                                              List<String> warnings) {
+        List<ApiRequest.Parameter> query = new ArrayList<>();
+        List<ApiRequest.Parameter> path = new ArrayList<>();
+        if (request.parameters != null) {
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (parameter == null) continue;
+                if (parameter.isQuery()) query.add(parameter);
+                else if ("path".equalsIgnoreCase(parameter.location)) path.add(parameter);
             }
-            default -> "";
-        };
+        }
+        appendParameterBlock(sb, "params:query", query, request, resolver, resolve, warnings, true);
+        appendParameterBlock(sb, "params:path", path, request, resolver, resolve, warnings, false);
     }
 
-    private static String renderFields(List<ApiRequest.Body.FormField> fields, VariableResolver resolver, boolean resolve) {
-        if (fields == null || fields.isEmpty()) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        for (ApiRequest.Body.FormField field : fields) {
-            if (field == null || field.key == null || field.key.isBlank()) {
-                continue;
+    private static void appendParameterBlock(StringBuilder sb, String name,
+                                             List<ApiRequest.Parameter> parameters,
+                                             ApiRequest request, VariableResolver resolver,
+                                             boolean resolve, List<String> warnings,
+                                             boolean query) {
+        List<ApiRequest.Parameter> emitted = new ArrayList<>();
+        for (ApiRequest.Parameter parameter : parameters) {
+            if (parameter.valuePresent || (!parameter.valuePresent && parameter.disabled)) {
+                emitted.add(parameter);
             }
-            sb.append(field.key).append('=');
-            sb.append(CollectionExportSupport.resolve(field.value, resolver, resolve) != null ? CollectionExportSupport.resolve(field.value, resolver, resolve) : "");
-            if (field.fileUpload || "file".equalsIgnoreCase(field.type)) {
-                sb.append("  # file");
-                if (field.filePath != null && !field.filePath.isBlank()) {
-                    sb.append(": ").append(CollectionExportSupport.resolve(field.filePath, resolver, resolve));
+        }
+        if (emitted.isEmpty()) return;
+        sb.append(name).append(" {\n");
+        for (ApiRequest.Parameter parameter : emitted) {
+            if (query && !parameter.valuePresent && parameter.disabled) {
+                addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
+                        + "' cannot preserve disabled bare query parameter '" + safeKey(parameter.key)
+                        + "'; exported it as disabled explicit-empty.");
+            }
+            String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+            String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
+            sb.append("  ").append(parameter.disabled ? "~" : "")
+                    .append(renderBruDictionaryKey(key)).append(": ")
+                    .append(BrunoEnvironmentExporterHelper.escapeValue(value != null ? value : ""))
+                    .append("\n");
+        }
+        sb.append("}\n\n");
+    }
+
+    private static void appendTypedBody(StringBuilder sb, ApiRequest request,
+                                        VariableResolver resolver, boolean resolve,
+                                        List<String> warnings) {
+        ApiRequest.Body body = request.body;
+        if (body == null || body.mode == null || "none".equalsIgnoreCase(body.mode)) return;
+        String mode = body.mode.toLowerCase(java.util.Locale.ROOT);
+        if ("graphql".equals(mode)) {
+            appendContentBlock(sb, "body:graphql", CollectionExportSupport.resolve(
+                    body.graphql != null ? body.graphql.query : "", resolver, resolve));
+            appendContentBlock(sb, "body:graphql:vars", CollectionExportSupport.resolve(
+                    body.graphql != null ? body.graphql.variables : "{}", resolver, resolve));
+            return;
+        }
+        if ("urlencoded".equals(mode)) {
+            appendFieldBody(sb, "body:form-urlencoded", body.urlencoded, false,
+                    request, resolver, resolve, warnings);
+            return;
+        }
+        if ("formdata".equals(mode)) {
+            appendFieldBody(sb, "body:multipart-form", body.formdata, true,
+                    request, resolver, resolve, warnings);
+            return;
+        }
+        String type = "body:text";
+        String contentType = body.contentType != null ? body.contentType.toLowerCase(java.util.Locale.ROOT) : "";
+        if (contentType.contains("json")) type = "body:json";
+        else if (contentType.contains("xml")) type = "body:xml";
+        appendContentBlock(sb, type, CollectionExportSupport.resolve(body.raw, resolver, resolve));
+    }
+
+    private static void appendFieldBody(StringBuilder sb, String name,
+                                        List<ApiRequest.Body.FormField> fields, boolean multipart,
+                                        ApiRequest request, VariableResolver resolver,
+                                        boolean resolve, List<String> warnings) {
+        sb.append(name).append(" {\n");
+        if (fields != null) {
+            for (ApiRequest.Body.FormField field : fields) {
+                if (field == null || field.key == null) continue;
+                String key = CollectionExportSupport.resolve(field.key, resolver, resolve);
+                sb.append("  ").append(field.disabled ? "~" : "")
+                        .append(renderBruDictionaryKey(key)).append(": ");
+                boolean file = multipart && (field.fileUpload || "file".equalsIgnoreCase(field.type));
+                if (file && field.filePath != null && !field.filePath.isBlank()) {
+                    String path = CollectionExportSupport.resolve(field.filePath, resolver, resolve);
+                    sb.append("@file(").append(path != null ? path : "").append(')');
+                } else {
+                    if (file) {
+                        addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
+                                + "' retained file field '" + safeKey(field.key)
+                                + "' as text because it has no usable path.");
+                    }
+                    String value = CollectionExportSupport.resolve(field.value, resolver, resolve);
+                    sb.append(BrunoEnvironmentExporterHelper.escapeValue(value != null ? value : ""));
+                }
+                sb.append("\n");
+            }
+        }
+        sb.append("}\n\n");
+    }
+
+    private static void appendContentBlock(StringBuilder sb, String name, String source) {
+        sb.append(name).append(" {\n");
+        appendIndented(sb, source != null ? source : "");
+        sb.append("}\n\n");
+    }
+
+    private static void appendScriptBlock(StringBuilder sb, String blockName,
+                                          ApiRequest request, ScriptPhase phase,
+                                          List<ApiRequest.Script> legacy,
+                                          VariableResolver resolver, boolean resolve,
+                                          List<String> warnings) {
+        List<String> sources = new ArrayList<>();
+        boolean hasPhaseBlocks = false;
+        if (request.scriptBlocks != null) {
+            List<ScriptBlock> sorted = new ArrayList<>(request.scriptBlocks);
+            sorted.sort(Comparator.comparingInt(block -> block != null ? block.order : Integer.MAX_VALUE));
+            for (ScriptBlock block : sorted) {
+                if (block == null || block.phase != phase) continue;
+                hasPhaseBlocks = true;
+                if (!block.enabled) {
+                    addWarning(warnings, "Bruno export omitted disabled " + phase
+                            + " script for request '" + safeRequestName(request) + "'.");
+                } else if (block.source != null && !block.source.isBlank()) {
+                    sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
                 }
             }
-            sb.append("\n");
         }
-        return sb.toString().trim();
+        if (!hasPhaseBlocks && legacy != null) {
+            for (ApiRequest.Script script : legacy) {
+                if (script != null && script.exec != null && !script.exec.isBlank()) {
+                    sources.add(CollectionExportSupport.resolve(script.exec, resolver, resolve));
+                }
+            }
+        }
+        sources.removeIf(source -> source == null || source.isBlank());
+        if (sources.isEmpty()) return;
+        sb.append(blockName).append(" {\n");
+        appendIndented(sb, String.join("\n\n", sources));
+        sb.append("}\n\n");
+    }
+
+    private static void appendIndented(StringBuilder sb, String source) {
+        for (String line : source.split("\\R", -1)) {
+            sb.append("  ").append(line).append("\n");
+        }
+    }
+
+    private static boolean hasEnabledHeader(List<ApiRequest.Header> headers, String name) {
+        if (headers == null) return false;
+        for (ApiRequest.Header header : headers) {
+            if (header != null && !header.disabled && header.key != null
+                    && name.equalsIgnoreCase(header.key.trim())) return true;
+        }
+        return false;
+    }
+
+    private static String renderBruDictionaryKey(String key) {
+        String value = key != null ? key : "";
+        if (value.matches("[A-Za-z0-9_.-]+") && !value.startsWith("~")) {
+            return value;
+        }
+        String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+        return "\"" + escaped + "\"";
+    }
+
+    private static String safeRequestName(ApiRequest request) {
+        return request != null && request.name != null ? request.name.replaceAll("[\\r\\n]", " ") : "Request";
+    }
+
+    private static String safeKey(String key) {
+        return key != null ? key.replaceAll("[\\r\\n]", " ") : "";
+    }
+
+    private static void addWarning(List<String> warnings, String warning) {
+        if (warnings != null && warning != null && !warning.isBlank() && !warnings.contains(warning)) {
+            warnings.add(warning);
+        }
     }
 
     private static String renderAuthBlock(ApiRequest request, VariableResolver resolver, boolean resolve) {

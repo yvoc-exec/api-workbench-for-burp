@@ -226,6 +226,7 @@ class BrunoParserTest {
         Files.writeString(root.resolve("MyCollection.bru"), """
                 vars {
                   baseUrl: https://collection.example.test
+                  ~disabledVar: inactive
                 }
                 """);
         Files.writeString(root.resolve("GetMe.bru"), """
@@ -245,7 +246,9 @@ class BrunoParserTest {
         assertThat(collection.requests).hasSize(1);
         assertThat(collection.variables)
                 .extracting(variable -> variable.key + "=" + variable.value)
-                .contains("baseUrl=https://collection.example.test");
+                .contains("baseUrl=https://collection.example.test", "disabledVar=inactive");
+        assertThat(collection.variables).filteredOn(v -> "disabledVar".equals(v.key))
+                .singleElement().satisfies(v -> assertThat(v.enabled).isFalse());
         assertThat(collection.requests.get(0).name).isEqualTo("Get Me");
     }
 
