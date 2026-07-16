@@ -25,7 +25,6 @@ import java.util.zip.ZipInputStream;
  */
 public class BrunoParser implements CollectionParser {
     private final ArchiveImportLimits archiveImportLimits;
-    private boolean legacyQuotedValueMode;
     private static final Pattern BRUNO_STANDARD_METHOD_PATTERN = Pattern.compile(
             "^\\s*(get|post|put|delete|patch|head|options|trace|connect)\\s*(\\{|[^\\n]*$)",
             Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
@@ -97,7 +96,8 @@ public class BrunoParser implements CollectionParser {
                     recordMalformedBrunoScanWarnings(collection, file.toPath().getParent(), file.toPath(), scanResult.malformedBlocks, true);
                     List<BrunoBlockScanner.Block> effectiveBlocks = filterBlocksAfterMalformed(scanResult.blocks, scanResult.malformedBlockStartIndices);
                     if (looksLikeRequestBru(effectiveBlocks, content)) {
-                        ApiRequest req = parseBruFile(file, "", content, effectiveBlocks, collection, singleFileDisplayPath(file));
+                        ApiRequest req = parseBruFile(file, "", content, effectiveBlocks, collection,
+                                singleFileDisplayPath(file), false);
                         if (req != null) {
                             req.sourceCollection = collection.name;
                             collection.requests.add(req);
@@ -321,7 +321,7 @@ public class BrunoParser implements CollectionParser {
                     .toList();
         }
 
-        legacyQuotedValueMode = bruFiles.stream().anyMatch(path -> {
+        boolean legacyQuotedValues = bruFiles.stream().anyMatch(path -> {
             String name = path.getFileName() != null ? path.getFileName().toString() : "";
             return "_collection.bru".equalsIgnoreCase(name) || "_folder.bru".equalsIgnoreCase(name);
         });
@@ -334,13 +334,14 @@ public class BrunoParser implements CollectionParser {
                 List<BrunoBlockScanner.Block> effectiveBlocks = filterBlocksAfterMalformed(scanResult.blocks, scanResult.malformedBlockStartIndices);
                 String relativePath = normalizeRelativeImportPath(rootPath, path);
                 if (relativePath.toLowerCase(Locale.ROOT).startsWith("environments/")) {
-                    for (DictionaryEntry entry : parseVarsEntries(scanResult.blocks)) {
+                    for (DictionaryEntry entry : parseVarsEntries(scanResult.blocks, legacyQuotedValues)) {
                         if (entry != null && !entry.disabled && entry.key != null) {
                             collection.environment.put(entry.key, entry.value);
                         }
                     }
                 } else if (looksLikeRequestBru(effectiveBlocks, content)) {
-                    ApiRequest req = parseBruFile(path.toFile(), folderPath, content, effectiveBlocks, collection, normalizeRelativeImportPath(rootPath, path));
+                    ApiRequest req = parseBruFile(path.toFile(), folderPath, content, effectiveBlocks, collection,
+                            normalizeRelativeImportPath(rootPath, path), legacyQuotedValues);
                     if (req != null) {
                         req.sourceCollection = collection.name;
                         collection.requests.add(req);
@@ -349,11 +350,11 @@ public class BrunoParser implements CollectionParser {
                         }
                     }
                 } else {
-                    if (legacyQuotedValueMode && containsLegacyQuotedDictionaryValue(content)) {
+                    if (legacyQuotedValues && containsLegacyQuotedDictionaryValue(content)) {
                         recordImportWarning(collection, relativePath,
                                 "Legacy quoted dictionary values were decoded using API Workbench compatibility rules; embedded backslash escapes may be ambiguous.", false);
                     }
-                    List<DictionaryEntry> vars = parseVarsEntries(scanResult.blocks);
+                    List<DictionaryEntry> vars = parseVarsEntries(scanResult.blocks, legacyQuotedValues);
                     if (!vars.isEmpty()) {
                         if (folderPath.isEmpty()) {
                             putCollectionVariables(collection, vars);
@@ -361,7 +362,7 @@ public class BrunoParser implements CollectionParser {
                             putFolderVariables(collection, folderPath, vars, normalizeRelativeImportPath(rootPath, path));
                         }
                     }
-                    ApiRequest.Auth folderAuth = parseAuthFromBlocks(scanResult.blocks, content);
+                    ApiRequest.Auth folderAuth = parseAuthFromBlocks(scanResult.blocks, content, legacyQuotedValues);
                     if (folderAuth != null) {
                         applyScopedMetadataAuth(collection, folderPath, folderAuth);
                     }
@@ -374,25 +375,27 @@ public class BrunoParser implements CollectionParser {
         }
 
         sortRequestsBySequence(collection);
-        legacyQuotedValueMode = false;
     }
 
     private ApiRequest parseBruFile(File file, String folderPath) throws IOException {
         String content = file != null ? Files.readString(file.toPath(), java.nio.charset.StandardCharsets.UTF_8) : null;
         BrunoBlockScanner.ScanResult scanResult = BrunoBlockScanner.scanDetailed(content);
-        return parseBruFile(file, folderPath, content, scanResult.blocks, null, file != null ? file.getName() : null);
+        return parseBruFile(file, folderPath, content, scanResult.blocks, null,
+                file != null ? file.getName() : null, false);
     }
 
-    private ApiRequest parseBruFile(File file, String folderPath, String content, List<BrunoBlockScanner.Block> blocks, ApiCollection collection, String displayPath) throws IOException {
+    private ApiRequest parseBruFile(File file, String folderPath, String content,
+                                    List<BrunoBlockScanner.Block> blocks, ApiCollection collection,
+                                    String displayPath, boolean legacyQuotedValues) throws IOException {
         if (file == null || content == null || blocks == null) {
             return null;
         }
-        if (legacyQuotedValueMode && containsLegacyQuotedDictionaryValue(content)) {
+        if (legacyQuotedValues && containsLegacyQuotedDictionaryValue(content)) {
             recordImportWarning(collection, displayPath,
                     "Legacy quoted dictionary values were decoded using API Workbench compatibility rules; embedded backslash escapes may be ambiguous.", false);
         }
 
-        BrunoMethodMatch methodMatch = extractBrunoMethod(blocks, content);
+        BrunoMethodMatch methodMatch = extractBrunoMethod(blocks, content, legacyQuotedValues);
         if (methodMatch == null) {
             return null;
         }
@@ -415,12 +418,12 @@ public class BrunoParser implements CollectionParser {
         BrunoBlockScanner.Block metaBlock = BrunoBlockScanner.firstByName(blocks, "meta");
         if (metaBlock != null) {
             String metaContent = metaBlock.content;
-            String metaName = extractValue(metaContent, "name");
+            String metaName = extractValue(metaContent, "name", legacyQuotedValues);
             if (metaName != null && !metaName.isBlank()) {
                 req.name = metaName;
                 req.path = folderPath == null || folderPath.isEmpty() ? req.name : folderPath + "/" + req.name;
             }
-            String seq = extractValue(metaContent, "seq");
+            String seq = extractValue(metaContent, "seq", legacyQuotedValues);
             if (seq != null && !seq.isBlank()) {
                 try {
                     req.sequenceOrder = Integer.parseInt(seq.trim());
@@ -431,20 +434,21 @@ public class BrunoParser implements CollectionParser {
         }
 
         if (methodBlockContent != null) {
-            String inlineUrl = extractValue(methodBlockContent, "url");
+            String inlineUrl = extractValue(methodBlockContent, "url", legacyQuotedValues);
             if (inlineUrl != null && !inlineUrl.isBlank()) {
                 req.url = inlineUrl;
             }
         }
 
         MethodSelectors selectors = parseMethodSelectors(methodBlockContent);
-        parseRequestParameters(req, requestBlocks);
-        List<ApiRequest.Header> headers = parseHeadersBlock(BrunoBlockScanner.firstByName(requestBlocks, "headers"));
+        parseRequestParameters(req, requestBlocks, legacyQuotedValues);
+        List<ApiRequest.Header> headers = parseHeadersBlock(
+                BrunoBlockScanner.firstByName(requestBlocks, "headers"), legacyQuotedValues);
         req.headers.addAll(headers);
 
-        parseBodyBlocks(req, requestBlocks, selectors.bodyMode, collection, displayPath);
-        parseRequestAuth(req, requestBlocks, content, selectors.authMode, collection, displayPath);
-        parseRequestVariables(req, requestBlocks, collection, displayPath);
+        parseBodyBlocks(req, requestBlocks, selectors.bodyMode, collection, displayPath, legacyQuotedValues);
+        parseRequestAuth(req, requestBlocks, content, selectors.authMode, collection, displayPath, legacyQuotedValues);
+        parseRequestVariables(req, requestBlocks, collection, displayPath, legacyQuotedValues);
         parseScripts(req, file, requestBlocks);
 
         if (req.body == null) {
@@ -457,7 +461,8 @@ public class BrunoParser implements CollectionParser {
         return req;
     }
 
-    private void parseRequestParameters(ApiRequest request, List<BrunoBlockScanner.Block> blocks) {
+    private void parseRequestParameters(ApiRequest request, List<BrunoBlockScanner.Block> blocks,
+                                        boolean legacyQuotedValues) {
         if (request == null) {
             return;
         }
@@ -465,7 +470,7 @@ public class BrunoParser implements CollectionParser {
         List<ApiRequest.Parameter> structuredQuery = null;
         if (queryBlock != null) {
             structuredQuery = new ArrayList<>();
-            for (DictionaryEntry entry : parseDictionaryEntries(queryBlock.content)) {
+            for (DictionaryEntry entry : parseDictionaryEntries(queryBlock.content, legacyQuotedValues)) {
                 ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", entry.key, entry.value);
                 parameter.valuePresent = true;
                 parameter.disabled = entry.disabled;
@@ -480,7 +485,7 @@ public class BrunoParser implements CollectionParser {
 
         BrunoBlockScanner.Block pathBlock = BrunoBlockScanner.firstByName(blocks, "params:path", "path");
         if (pathBlock != null) {
-            for (DictionaryEntry entry : parseDictionaryEntries(pathBlock.content)) {
+            for (DictionaryEntry entry : parseDictionaryEntries(pathBlock.content, legacyQuotedValues)) {
                 ApiRequest.Parameter parameter = new ApiRequest.Parameter("path", entry.key, entry.value);
                 parameter.valuePresent = true;
                 parameter.disabled = entry.disabled;
@@ -504,6 +509,11 @@ public class BrunoParser implements CollectionParser {
     }
 
     private BrunoMethodMatch extractBrunoMethod(List<BrunoBlockScanner.Block> blocks, String content) {
+        return extractBrunoMethod(blocks, content, false);
+    }
+
+    private BrunoMethodMatch extractBrunoMethod(List<BrunoBlockScanner.Block> blocks, String content,
+                                                 boolean legacyQuotedValues) {
         if (blocks == null || blocks.isEmpty()) {
             return null;
         }
@@ -520,7 +530,7 @@ public class BrunoParser implements CollectionParser {
 
         BrunoBlockScanner.Block canonicalHttp = BrunoBlockScanner.firstByName(blocks, "http");
         if (canonicalHttp != null) {
-            String customMethod = extractValue(canonicalHttp.content, "method");
+            String customMethod = extractValue(canonicalHttp.content, "method", legacyQuotedValues);
             if (customMethod != null && !customMethod.isBlank()) {
                 return new BrunoMethodMatch(customMethod, canonicalHttp.inlineText, "http");
             }
@@ -624,6 +634,11 @@ public class BrunoParser implements CollectionParser {
     }
 
     private List<DictionaryEntry> parseVarsEntries(List<BrunoBlockScanner.Block> blocks) {
+        return parseVarsEntries(blocks, false);
+    }
+
+    private List<DictionaryEntry> parseVarsEntries(List<BrunoBlockScanner.Block> blocks,
+                                                    boolean legacyQuotedValues) {
         List<DictionaryEntry> entries = new ArrayList<>();
         if (blocks == null) {
             return entries;
@@ -633,13 +648,17 @@ public class BrunoParser implements CollectionParser {
                     && ("vars".equalsIgnoreCase(block.name.trim())
                     || "vars:pre-request".equalsIgnoreCase(block.name.trim())
                     || "vars:post-response".equalsIgnoreCase(block.name.trim()))) {
-                entries.addAll(parseDictionaryEntries(block.content));
+                entries.addAll(parseDictionaryEntries(block.content, legacyQuotedValues));
             }
         }
         return entries;
     }
 
     private List<DictionaryEntry> parseDictionaryEntries(String content) {
+        return parseDictionaryEntries(content, false);
+    }
+
+    private List<DictionaryEntry> parseDictionaryEntries(String content, boolean legacyQuotedValues) {
         List<DictionaryEntry> entries = new ArrayList<>();
         if (content == null) {
             return entries;
@@ -662,7 +681,7 @@ public class BrunoParser implements CollectionParser {
                 }
                 continue;
             }
-            DictionaryEntry entry = parseDictionaryEntry(rawLine);
+            DictionaryEntry entry = parseDictionaryEntry(rawLine, legacyQuotedValues);
             if (entry != null) {
                 if ("'''".equals(entry.value)) {
                     int entryIndent = leadingPhysicalWhitespace(rawLine);
@@ -710,26 +729,31 @@ public class BrunoParser implements CollectionParser {
     }
 
     private DescriptionParse parseDescriptionAnnotation(List<String> lines, int start) {
-        String trimmed = lines.get(start).trim();
+        String openingLine = lines.get(start);
+        String trimmed = openingLine.trim();
         String prefix = "@description(";
         if (!trimmed.startsWith(prefix)) return null;
         String argument = trimmed.substring(prefix.length());
         if (argument.startsWith("'''")) {
             String remainder = argument.substring(3);
-            StringBuilder value = new StringBuilder();
+            int annotationIndent = leadingPhysicalWhitespace(openingLine);
+            String structuralPrefix = " ".repeat(annotationIndent + 2);
+            List<String> payload = new ArrayList<>();
             int index = start;
-            if (!remainder.isEmpty() && !remainder.equals(")")) value.append(remainder);
+            if (!remainder.isEmpty() && !remainder.equals(")")) payload.add(remainder);
             while (++index < lines.size()) {
                 String line = lines.get(index);
+                int indent = leadingPhysicalWhitespace(line);
+                if (indent == annotationIndent && line.substring(indent).equals("''')")) {
+                    return new DescriptionParse(String.join("\n", payload), index);
+                }
                 int closeIndex = line.indexOf("''')");
                 String contentLine = closeIndex >= 0 ? line.substring(0, closeIndex) : line;
-                if (!contentLine.isEmpty()) {
-                    if (value.length() > 0) value.append('\n');
-                    value.append(contentLine.startsWith("  ") ? contentLine.substring(2) : contentLine);
-                }
-                if (closeIndex >= 0) return new DescriptionParse(value.toString(), index);
+                payload.add(contentLine.startsWith(structuralPrefix)
+                        ? contentLine.substring(structuralPrefix.length()) : contentLine);
+                if (closeIndex >= 0) return new DescriptionParse(String.join("\n", payload), index);
             }
-            return new DescriptionParse(value.toString(), lines.size() - 1);
+            return new DescriptionParse(String.join("\n", payload), lines.size() - 1);
         }
         if (!argument.endsWith(")")) return null;
         argument = argument.substring(0, argument.length() - 1);
@@ -852,7 +876,8 @@ public class BrunoParser implements CollectionParser {
                                   String content,
                                   String selectedAuthMode,
                                   ApiCollection collection,
-                                  String displayPath) throws IOException {
+                                  String displayPath,
+                                  boolean legacyQuotedValues) throws IOException {
         if (req == null) {
             return;
         }
@@ -874,7 +899,7 @@ public class BrunoParser implements CollectionParser {
 
             BrunoBlockScanner.Block selectedBlock = selectTypedAuthBlock(blocks, normalizedSelector);
             if (selectedBlock != null) {
-                ApiRequest.Auth parsedAuth = parseAuthBlock(selectedBlock.name, selectedBlock.content);
+                ApiRequest.Auth parsedAuth = parseAuthBlock(selectedBlock.name, selectedBlock.content, legacyQuotedValues);
                 if (parsedAuth == null) {
                     parsedAuth = emptyAuthOverride(normalizedSelector);
                 }
@@ -889,7 +914,7 @@ public class BrunoParser implements CollectionParser {
             return;
         }
 
-        ApiRequest.Auth parsedAuth = parseAuthFromBlocks(blocks, content);
+        ApiRequest.Auth parsedAuth = parseAuthFromBlocks(blocks, content, legacyQuotedValues);
         if (parsedAuth == null) {
             AuthInheritanceResolver.markRequestInherit(req);
             return;
@@ -902,23 +927,28 @@ public class BrunoParser implements CollectionParser {
     }
 
     private ApiRequest.Auth parseAuthFromBlocks(List<BrunoBlockScanner.Block> blocks, String content) {
+        return parseAuthFromBlocks(blocks, content, false);
+    }
+
+    private ApiRequest.Auth parseAuthFromBlocks(List<BrunoBlockScanner.Block> blocks, String content,
+                                                boolean legacyQuotedValues) {
         if (blocks == null || blocks.isEmpty()) {
             return null;
         }
 
         BrunoBlockScanner.Block authBlock = BrunoBlockScanner.firstByName(blocks, "auth");
         if (authBlock != null) {
-            String selected = normalizeAuthSelector(extractValue(authBlock.content, "mode"));
+            String selected = normalizeAuthSelector(extractValue(authBlock.content, "mode", legacyQuotedValues));
             if (selected != null) {
                 if ("none".equals(selected)) return noneAuth();
                 BrunoBlockScanner.Block selectedBlock = selectTypedAuthBlock(blocks, selected);
-                if (selectedBlock != null) return parseAuthBlock(selectedBlock.name, selectedBlock.content);
-                if (parseDictionaryEntries(authBlock.content).size() > 1) {
-                    return parseAuthBlock("auth:" + selected, authBlock.content);
+                if (selectedBlock != null) return parseAuthBlock(selectedBlock.name, selectedBlock.content, legacyQuotedValues);
+                if (parseDictionaryEntries(authBlock.content, legacyQuotedValues).size() > 1) {
+                    return parseAuthBlock("auth:" + selected, authBlock.content, legacyQuotedValues);
                 }
                 return emptyAuthOverride(selected);
             }
-            ApiRequest.Auth legacy = parseAuthBlock(authBlock.name, authBlock.content);
+            ApiRequest.Auth legacy = parseAuthBlock(authBlock.name, authBlock.content, legacyQuotedValues);
             if (legacy != null) return legacy;
         }
 
@@ -931,7 +961,7 @@ public class BrunoParser implements CollectionParser {
                 "auth:apikey",
                 "auth:oauth2");
         if (typed != null) {
-            return parseAuthBlock(typed.name, typed.content);
+            return parseAuthBlock(typed.name, typed.content, legacyQuotedValues);
         }
         return null;
     }
@@ -950,6 +980,10 @@ public class BrunoParser implements CollectionParser {
     }
 
     private ApiRequest.Auth parseAuthBlock(String blockName, String blockContent) {
+        return parseAuthBlock(blockName, blockContent, false);
+    }
+
+    private ApiRequest.Auth parseAuthBlock(String blockName, String blockContent, boolean legacyQuotedValues) {
         String normalizedBlockName = blockName != null ? blockName.trim().toLowerCase(Locale.ROOT) : "";
         String content = blockContent;
 
@@ -959,36 +993,40 @@ public class BrunoParser implements CollectionParser {
             case "auth:no_auth":
                 return noneAuth();
             case "auth:basic":
-                return basicAuth(content);
+                return basicAuth(content, legacyQuotedValues);
             case "auth:bearer":
-                return bearerAuth(content);
+                return bearerAuth(content, legacyQuotedValues);
             case "auth:apikey":
-                return apiKeyAuth(content);
+                return apiKeyAuth(content, legacyQuotedValues);
             case "auth:oauth2":
-                return oauth2Auth(content);
+                return oauth2Auth(content, legacyQuotedValues);
             case "auth":
-                return parseLegacyAuth(content);
+                return parseLegacyAuth(content, legacyQuotedValues);
             default:
-                return parseLegacyAuth(content);
+                return parseLegacyAuth(content, legacyQuotedValues);
         }
     }
 
     private ApiRequest.Auth parseLegacyAuth(String authContent) {
+        return parseLegacyAuth(authContent, false);
+    }
+
+    private ApiRequest.Auth parseLegacyAuth(String authContent, boolean legacyQuotedValues) {
         if (authContent == null || authContent.isBlank()) {
             return null;
         }
-        String flatMode = extractValue(authContent, "mode");
+        String flatMode = extractValue(authContent, "mode", legacyQuotedValues);
         if (flatMode == null) {
-            flatMode = extractValue(authContent, "type");
+            flatMode = extractValue(authContent, "type", legacyQuotedValues);
         }
         if (flatMode != null) {
             String normalized = flatMode.trim().toLowerCase(Locale.ROOT);
             return switch (normalized) {
                 case "none", "noauth", "no_auth" -> noneAuth();
-                case "basic" -> basicAuth(authContent);
-                case "bearer" -> bearerAuth(authContent);
-                case "apikey" -> apiKeyAuth(authContent);
-                case "oauth2" -> oauth2Auth(authContent);
+                case "basic" -> basicAuth(authContent, legacyQuotedValues);
+                case "bearer" -> bearerAuth(authContent, legacyQuotedValues);
+                case "apikey" -> apiKeyAuth(authContent, legacyQuotedValues);
+                case "oauth2" -> oauth2Auth(authContent, legacyQuotedValues);
                 default -> null;
             };
         }
@@ -997,7 +1035,7 @@ public class BrunoParser implements CollectionParser {
         if (nested == null) {
             return null;
         }
-        return parseAuthBlock(nested.name, nested.content);
+        return parseAuthBlock(nested.name, nested.content, legacyQuotedValues);
     }
 
     private BrunoBlockScanner.Block selectTypedAuthBlock(List<BrunoBlockScanner.Block> blocks, String normalizedSelector) {
@@ -1150,48 +1188,68 @@ public class BrunoParser implements CollectionParser {
     }
 
     private ApiRequest.Auth basicAuth(String content) {
+        return basicAuth(content, false);
+    }
+
+    private ApiRequest.Auth basicAuth(String content, boolean legacyQuotedValues) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
         auth.type = "basic";
-        auth.properties.put("username", firstNonBlank(extractValue(content, "username"), extractValue(content, "user")));
-        auth.properties.put("password", firstNonBlank(extractValue(content, "password"), extractValue(content, "pass")));
+        auth.properties.put("username", firstNonBlank(extractValue(content, "username", legacyQuotedValues), extractValue(content, "user", legacyQuotedValues)));
+        auth.properties.put("password", firstNonBlank(extractValue(content, "password", legacyQuotedValues), extractValue(content, "pass", legacyQuotedValues)));
         return auth;
     }
 
     private ApiRequest.Auth bearerAuth(String content) {
+        return bearerAuth(content, false);
+    }
+
+    private ApiRequest.Auth bearerAuth(String content, boolean legacyQuotedValues) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
         auth.type = "bearer";
-        auth.properties.put("token", firstNonBlank(extractValue(content, "token"), extractValue(content, "value"), extractValue(content, "access_token")));
+        auth.properties.put("token", firstNonBlank(extractValue(content, "token", legacyQuotedValues), extractValue(content, "value", legacyQuotedValues), extractValue(content, "access_token", legacyQuotedValues)));
         return auth;
     }
 
     private ApiRequest.Auth apiKeyAuth(String content) {
+        return apiKeyAuth(content, false);
+    }
+
+    private ApiRequest.Auth apiKeyAuth(String content, boolean legacyQuotedValues) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
         auth.type = "apikey";
-        auth.properties.put("key", firstNonBlank(extractValue(content, "key"), extractValue(content, "name"), extractValue(content, "keyname")));
-        auth.properties.put("value", firstNonBlank(extractValue(content, "value"), extractValue(content, "keyvalue"), extractValue(content, "token")));
-        String placement = firstNonBlank(extractValue(content, "in"), extractValue(content, "placement"), extractValue(content, "location"));
+        auth.properties.put("key", firstNonBlank(extractValue(content, "key", legacyQuotedValues), extractValue(content, "name", legacyQuotedValues), extractValue(content, "keyname", legacyQuotedValues)));
+        auth.properties.put("value", firstNonBlank(extractValue(content, "value", legacyQuotedValues), extractValue(content, "keyvalue", legacyQuotedValues), extractValue(content, "token", legacyQuotedValues)));
+        String placement = firstNonBlank(extractValue(content, "in", legacyQuotedValues), extractValue(content, "placement", legacyQuotedValues), extractValue(content, "location", legacyQuotedValues));
         auth.properties.put("in", placement != null ? placement : "header");
         return auth;
     }
 
     private ApiRequest.Auth oauth2Auth(String content) {
+        return oauth2Auth(content, false);
+    }
+
+    private ApiRequest.Auth oauth2Auth(String content, boolean legacyQuotedValues) {
         ApiRequest.Auth auth = new ApiRequest.Auth();
         auth.type = "oauth2";
-        String grantType = firstNonBlank(extractValue(content, "grant_type"), extractValue(content, "grantType"), extractValue(content, "grant"));
+        String grantType = firstNonBlank(extractValue(content, "grant_type", legacyQuotedValues), extractValue(content, "grantType", legacyQuotedValues), extractValue(content, "grant", legacyQuotedValues));
         auth.properties.put("grantType", grantType != null ? grantType : "client_credentials");
-        auth.properties.put("accessTokenUrl", firstNonBlank(extractValue(content, "access_token_url"), extractValue(content, "accessTokenUrl")));
-        auth.properties.put("authorizationUrl", firstNonBlank(extractValue(content, "authorization_url"), extractValue(content, "authorizationUrl")));
-        auth.properties.put("redirectUri", firstNonBlank(extractValue(content, "callback_url"), extractValue(content, "redirect_uri"), extractValue(content, "redirectUri")));
-        auth.properties.put("clientId", firstNonBlank(extractValue(content, "client_id"), extractValue(content, "clientId")));
-        auth.properties.put("clientSecret", firstNonBlank(extractValue(content, "client_secret"), extractValue(content, "clientSecret")));
-        auth.properties.put("scope", extractValue(content, "scope"));
-        auth.properties.put("username", extractValue(content, "username"));
-        auth.properties.put("password", extractValue(content, "password"));
-        auth.properties.put("accessToken", firstNonBlank(extractValue(content, "access_token"), extractValue(content, "accessToken"), extractValue(content, "token")));
+        auth.properties.put("accessTokenUrl", firstNonBlank(extractValue(content, "access_token_url", legacyQuotedValues), extractValue(content, "accessTokenUrl", legacyQuotedValues)));
+        auth.properties.put("authorizationUrl", firstNonBlank(extractValue(content, "authorization_url", legacyQuotedValues), extractValue(content, "authorizationUrl", legacyQuotedValues)));
+        auth.properties.put("redirectUri", firstNonBlank(extractValue(content, "callback_url", legacyQuotedValues), extractValue(content, "redirect_uri", legacyQuotedValues), extractValue(content, "redirectUri", legacyQuotedValues)));
+        auth.properties.put("clientId", firstNonBlank(extractValue(content, "client_id", legacyQuotedValues), extractValue(content, "clientId", legacyQuotedValues)));
+        auth.properties.put("clientSecret", firstNonBlank(extractValue(content, "client_secret", legacyQuotedValues), extractValue(content, "clientSecret", legacyQuotedValues)));
+        auth.properties.put("scope", extractValue(content, "scope", legacyQuotedValues));
+        auth.properties.put("username", extractValue(content, "username", legacyQuotedValues));
+        auth.properties.put("password", extractValue(content, "password", legacyQuotedValues));
+        auth.properties.put("accessToken", firstNonBlank(extractValue(content, "access_token", legacyQuotedValues), extractValue(content, "accessToken", legacyQuotedValues), extractValue(content, "token", legacyQuotedValues)));
         return auth;
     }
 
     private DictionaryEntry parseDictionaryEntry(String rawLine) {
+        return parseDictionaryEntry(rawLine, false);
+    }
+
+    private DictionaryEntry parseDictionaryEntry(String rawLine, boolean legacyQuotedValues) {
         if (rawLine == null) {
             return null;
         }
@@ -1239,7 +1297,7 @@ public class BrunoParser implements CollectionParser {
         String authoredValue = line.substring(colonIndex + 1).trim();
         boolean legacyQuoted = authoredValue.length() >= 2
                 && authoredValue.startsWith("\"") && authoredValue.endsWith("\"");
-        String value = parseBrunoValue(authoredValue);
+        String value = parseBrunoValue(authoredValue, legacyQuotedValues);
         return new DictionaryEntry(key, value, disabled, "string", null, legacyQuoted);
     }
 
@@ -1256,8 +1314,8 @@ public class BrunoParser implements CollectionParser {
         return line != null ? line.length() : 0;
     }
 
-    private String parseBrunoValue(String value) {
-        if (!legacyQuotedValueMode || value == null || value.length() < 2
+    private String parseBrunoValue(String value, boolean legacyQuotedValues) {
+        if (!legacyQuotedValues || value == null || value.length() < 2
                 || !value.startsWith("\"") || !value.endsWith("\"")) {
             return value;
         }
@@ -1314,12 +1372,13 @@ public class BrunoParser implements CollectionParser {
         return result.toString();
     }
 
-    private List<ApiRequest.Header> parseHeadersBlock(BrunoBlockScanner.Block headersBlock) {
+    private List<ApiRequest.Header> parseHeadersBlock(BrunoBlockScanner.Block headersBlock,
+                                                      boolean legacyQuotedValues) {
         List<ApiRequest.Header> headers = new ArrayList<>();
         if (headersBlock == null || headersBlock.content == null) {
             return headers;
         }
-        for (DictionaryEntry entry : parseDictionaryEntries(headersBlock.content)) {
+        for (DictionaryEntry entry : parseDictionaryEntries(headersBlock.content, legacyQuotedValues)) {
             if (entry == null || entry.key == null || entry.key.isBlank()) {
                 continue;
             }
@@ -1332,7 +1391,8 @@ public class BrunoParser implements CollectionParser {
                                  List<BrunoBlockScanner.Block> blocks,
                                  String selectedBodyMode,
                                  ApiCollection collection,
-                                 String displayPath) throws IOException {
+                                 String displayPath,
+                                 boolean legacyQuotedValues) throws IOException {
         if (req == null || blocks == null || blocks.isEmpty()) {
             return;
         }
@@ -1378,7 +1438,7 @@ public class BrunoParser implements CollectionParser {
                     BrunoBlockScanner.Block urlencodedBlock = BrunoBlockScanner.firstByName(blocks, "body:form-urlencoded");
                     req.body = new ApiRequest.Body();
                     req.body.mode = "urlencoded";
-                    req.body.urlencoded = urlencodedBlock != null ? parseFormFields(urlencodedBlock.content, false, collection, displayPath) : new ArrayList<>();
+                    req.body.urlencoded = urlencodedBlock != null ? parseFormFields(urlencodedBlock.content, false, collection, displayPath, legacyQuotedValues) : new ArrayList<>();
                     req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
                     if (req.body.contentType == null || req.body.contentType.isBlank()) {
                         req.body.contentType = "application/x-www-form-urlencoded";
@@ -1393,7 +1453,7 @@ public class BrunoParser implements CollectionParser {
                     BrunoBlockScanner.Block multipartBlock = BrunoBlockScanner.firstByName(blocks, "body:multipart-form");
                     req.body = new ApiRequest.Body();
                     req.body.mode = "formdata";
-                    req.body.formdata = multipartBlock != null ? parseFormFields(multipartBlock.content, true, collection, displayPath) : new ArrayList<>();
+                    req.body.formdata = multipartBlock != null ? parseFormFields(multipartBlock.content, true, collection, displayPath, legacyQuotedValues) : new ArrayList<>();
                     req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
                     if (req.body.contentType == null || req.body.contentType.isBlank()) {
                         req.body.contentType = "multipart/form-data";
@@ -1405,7 +1465,8 @@ public class BrunoParser implements CollectionParser {
                     return;
                 }
                 case "file" -> {
-                    parseFileBody(req, BrunoBlockScanner.firstByName(blocks, "body:file"), collection, displayPath);
+                    parseFileBody(req, BrunoBlockScanner.firstByName(blocks, "body:file"), collection,
+                            displayPath, legacyQuotedValues);
                     return;
                 }
                 case "json", "text", "xml" -> {
@@ -1467,7 +1528,7 @@ public class BrunoParser implements CollectionParser {
         if (multipartBlock != null) {
             req.body = new ApiRequest.Body();
             req.body.mode = "formdata";
-            req.body.formdata = parseFormFields(multipartBlock.content, true, collection, displayPath);
+            req.body.formdata = parseFormFields(multipartBlock.content, true, collection, displayPath, legacyQuotedValues);
             req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
             return;
         }
@@ -1476,7 +1537,7 @@ public class BrunoParser implements CollectionParser {
         if (urlencodedBlock != null) {
             req.body = new ApiRequest.Body();
             req.body.mode = "urlencoded";
-            req.body.urlencoded = parseFormFields(urlencodedBlock.content, false, collection, displayPath);
+            req.body.urlencoded = parseFormFields(urlencodedBlock.content, false, collection, displayPath, legacyQuotedValues);
             req.body.contentType = firstEnabledHeaderValue(req.headers, "Content-Type");
             if (req.body.contentType == null || req.body.contentType.isBlank()) {
                 req.body.contentType = "application/x-www-form-urlencoded";
@@ -1486,7 +1547,7 @@ public class BrunoParser implements CollectionParser {
 
         BrunoBlockScanner.Block fileBlock = BrunoBlockScanner.firstByName(blocks, "body:file");
         if (fileBlock != null) {
-            parseFileBody(req, fileBlock, collection, displayPath);
+            parseFileBody(req, fileBlock, collection, displayPath, legacyQuotedValues);
             return;
         }
 
@@ -1542,14 +1603,15 @@ public class BrunoParser implements CollectionParser {
     }
 
     private List<ApiRequest.Body.FormField> parseFormFields(String content, boolean multipart,
-                                                             ApiCollection collection, String displayPath) throws IOException {
+                                                             ApiCollection collection, String displayPath,
+                                                             boolean legacyQuotedValues) throws IOException {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
         if (content == null || content.isBlank()) {
             return fields;
         }
 
         if (content.contains("'''")) {
-            for (DictionaryEntry entry : parseDictionaryEntries(content)) {
+            for (DictionaryEntry entry : parseDictionaryEntries(content, legacyQuotedValues)) {
                 fields.add(createFormField(entry.key, entry.value, entry.disabled,
                         isFileFieldValue(entry.value), multipart, false));
                 warnMultipartContentType(entry.value, multipart, collection, displayPath, entry.key);
@@ -1565,7 +1627,7 @@ public class BrunoParser implements CollectionParser {
         BraceState currentState = new BraceState(0, false, false, false);
 
         for (String rawLine : BrunoSourceSupport.lines(content)) {
-            DictionaryEntry entry = parseDictionaryEntry(rawLine);
+            DictionaryEntry entry = parseDictionaryEntry(rawLine, legacyQuotedValues);
             boolean startOfField = entry != null && (currentKey == null || currentState.depth == 0);
 
             if (startOfField) {
@@ -1705,11 +1767,12 @@ public class BrunoParser implements CollectionParser {
     }
 
     private void parseRequestVariables(ApiRequest req, List<BrunoBlockScanner.Block> blocks,
-                                       ApiCollection collection, String displayPath) {
+                                       ApiCollection collection, String displayPath,
+                                       boolean legacyQuotedValues) {
         if (req == null || blocks == null || blocks.isEmpty()) {
             return;
         }
-        for (DictionaryEntry entry : parseVarsEntries(blocks)) {
+        for (DictionaryEntry entry : parseVarsEntries(blocks, legacyQuotedValues)) {
             if (entry == null || entry.key == null) {
                 continue;
             }
@@ -1888,10 +1951,14 @@ public class BrunoParser implements CollectionParser {
     }
 
     private String extractValue(String block, String key) {
+        return extractValue(block, key, false);
+    }
+
+    private String extractValue(String block, String key, boolean legacyQuotedValues) {
         if (block == null || key == null || key.isBlank()) {
             return null;
         }
-        for (DictionaryEntry entry : parseDictionaryEntries(block)) {
+        for (DictionaryEntry entry : parseDictionaryEntries(block, legacyQuotedValues)) {
             if (entry != null && key.equalsIgnoreCase(entry.key)) {
                 return entry.value == null || entry.value.isEmpty() ? null : entry.value;
             }
@@ -1986,7 +2053,8 @@ public class BrunoParser implements CollectionParser {
     private void parseFileBody(ApiRequest req,
                                BrunoBlockScanner.Block fileBlock,
                                ApiCollection collection,
-                               String displayPath) {
+                               String displayPath,
+                               boolean legacyQuotedValues) {
         req.body = new ApiRequest.Body();
         req.body.mode = "file";
         req.body.raw = "";
@@ -1997,7 +2065,7 @@ public class BrunoParser implements CollectionParser {
         }
         String declaration = null;
         for (String line : BrunoSourceSupport.lines(fileBlock.content)) {
-            DictionaryEntry entry = parseDictionaryEntry(line);
+            DictionaryEntry entry = parseDictionaryEntry(line, legacyQuotedValues);
             if (entry != null && "file".equalsIgnoreCase(entry.key)) {
                 declaration = entry.value;
                 break;

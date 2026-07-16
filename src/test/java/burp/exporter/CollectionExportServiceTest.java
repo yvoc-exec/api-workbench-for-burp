@@ -11,6 +11,7 @@ import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
 import burp.scripts.ScriptScope;
+import burp.utils.AuthInheritanceResolver;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -356,6 +357,48 @@ class CollectionExportServiceTest {
         assertThat(bruno.warnings).contains(CollectionExportSupport.CROSS_FORMAT_SCRIPT_WARNING);
         assertThat(Files.readString(tempDir.resolve("bruno.postman_collection.json"))).contains("bru.setVar('token', 'abc');");
         assertThat(postman.warnings).doesNotContain(CollectionExportSupport.CROSS_FORMAT_SCRIPT_WARNING);
+    }
+
+    @Test
+    void unresolvedCountsMatchBrunoAndInsomniaEmittedScopes() throws Exception {
+        ApiCollection collection = new ApiCollection(); collection.name = "Exact diagnostics";
+        collection.folderPaths.add("F");
+        collection.scriptBlocks.add(ExportTestFixtures.scriptBlock("collection", ScriptDialect.BRUNO,
+                ScriptPhase.PRE_REQUEST, ScriptScope.COLLECTION, "{{collection_only}}", 0));
+        collection.folderScriptBlocks.put("F", new java.util.ArrayList<>(List.of(
+                ExportTestFixtures.scriptBlock("folder", ScriptDialect.INSOMNIA,
+                        ScriptPhase.PRE_REQUEST, ScriptScope.FOLDER, "{{folder_script}}", 0))));
+        ApiRequest inherited = diagnosticRequest("Inherited", "F/Inherited", "{{request_script}}");
+        inherited.auth = new ApiRequest.Auth(); inherited.auth.type = "bearer";
+        inherited.auth.properties.put("token", "{{inherited_auth}}");
+        AuthInheritanceResolver.markRequestInherit(inherited);
+        ApiRequest explicit = diagnosticRequest("Explicit", "F/Explicit", null);
+        ApiRequest.Auth bearer = new ApiRequest.Auth(); bearer.type = "bearer";
+        bearer.properties.put("token", "{{auth_token}}");
+        bearer.properties.put("unsupported", "{{omitted_property}}");
+        AuthInheritanceResolver.markRequestExplicitAuth(explicit, bearer);
+        ApiRequest none = diagnosticRequest("None", "F/None", null);
+        AuthInheritanceResolver.markRequestNoAuth(none);
+        none.explicitAuth.properties.put("token", "{{stale_none_auth}}");
+        collection.requests.addAll(List.of(inherited, explicit, none));
+
+        ExportResult insomnia = service.exportCollection(collection, new CollectionExportOptions(
+                CollectionExportFormat.INSOMNIA_JSON, tempDir.resolve("diagnostics.insomnia.json"),
+                true, null, Map.of()));
+        ExportResult bruno = service.exportCollection(collection, new CollectionExportOptions(
+                CollectionExportFormat.BRUNO_ZIP, tempDir.resolve("diagnostics.bruno.zip"),
+                true, null, Map.of()));
+        assertThat(insomnia.unresolvedVariableCount).isEqualTo(3);
+        assertThat(bruno.unresolvedVariableCount).isEqualTo(4);
+    }
+
+    private static ApiRequest diagnosticRequest(String name, String path, String script) {
+        ApiRequest request = new ApiRequest(); request.name = name; request.path = path;
+        request.method = "GET"; request.url = "https://e.test";
+        request.body = new ApiRequest.Body(); request.body.mode = "none";
+        if (script != null) request.scriptBlocks.add(ExportTestFixtures.scriptBlock(name,
+                ScriptDialect.INSOMNIA, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST, script, 0));
+        return request;
     }
 
     private static ApiCollection runtimeSensitiveCollection() {

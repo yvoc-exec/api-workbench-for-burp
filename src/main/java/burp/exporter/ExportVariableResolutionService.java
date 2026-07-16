@@ -5,6 +5,7 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.UnresolvedVariableIssue;
 import burp.parser.VariableResolver;
+import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
@@ -91,6 +92,13 @@ public final class ExportVariableResolutionService {
     public static List<UnresolvedVariableIssue> collectUnresolvedIssues(ApiCollection collection,
                                                                         EnvironmentProfile activeEnvironment,
                                                                         Map<String, String> exportOnlyVariables) {
+        return collectUnresolvedIssues(collection, activeEnvironment, exportOnlyVariables, null);
+    }
+
+    public static List<UnresolvedVariableIssue> collectUnresolvedIssues(ApiCollection collection,
+                                                                        EnvironmentProfile activeEnvironment,
+                                                                        Map<String, String> exportOnlyVariables,
+                                                                        CollectionExportFormat format) {
         List<UnresolvedVariableIssue> issues = new ArrayList<>();
         if (collection == null || collection.requests == null) {
             return issues;
@@ -100,15 +108,16 @@ public final class ExportVariableResolutionService {
                 continue;
             }
             VariableResolver resolver = buildResolver(collection, request, activeEnvironment, exportOnlyVariables);
-            scanRequestValues(issues, collection, request, resolver);
+            scanRequestValues(issues, collection, request, resolver, format);
         }
         scanCollectionLevelValues(issues, collection,
-                buildResolver(collection, null, activeEnvironment, exportOnlyVariables));
+                buildResolver(collection, null, activeEnvironment, exportOnlyVariables), format);
         return dedupe(issues);
     }
 
     private static void scanRequestValues(List<UnresolvedVariableIssue> issues, ApiCollection collection,
-                                          ApiRequest request, VariableResolver resolver) {
+                                          ApiRequest request, VariableResolver resolver,
+                                          CollectionExportFormat format) {
         String collectionName = collection.name;
         scanValue(issues, collectionName, request.name, "method", request.method, resolver);
         scanValue(issues, collectionName, request.name, "url", request.url, resolver);
@@ -122,17 +131,21 @@ public final class ExportVariableResolutionService {
             scanValue(issues, collectionName, request.name, "header:value", header.value, resolver);
         }
         if (request.body != null) {
-            scanValue(issues, collectionName, request.name, "body:raw", request.body.raw, resolver);
-            if (request.body.graphql != null) {
+            String mode = request.body.mode != null ? request.body.mode.toLowerCase(Locale.ROOT) : "none";
+            if ("raw".equals(mode) || "file".equals(mode))
+                scanValue(issues, collectionName, request.name, "body:raw", request.body.raw, resolver);
+            if ("graphql".equals(mode) && request.body.graphql != null) {
                 scanValue(issues, collectionName, request.name, "body:graphql", request.body.graphql.query, resolver);
                 scanValue(issues, collectionName, request.name, "body:graphql:variables", request.body.graphql.variables, resolver);
             }
-            scanFormValues(issues, collectionName, request.name, request.body.urlencoded, resolver);
-            scanFormValues(issues, collectionName, request.name, request.body.formdata, resolver);
+            if ("urlencoded".equals(mode)) scanFormValues(issues, collectionName, request.name, request.body.urlencoded, resolver);
+            if ("formdata".equals(mode)) scanFormValues(issues, collectionName, request.name, request.body.formdata, resolver);
         }
-        ApiRequest.Auth auth = request.explicitAuth != null ? request.explicitAuth : request.auth;
-        if (auth != null && auth.properties != null) for (Map.Entry<String, String> entry : auth.properties.entrySet())
-            scanValue(issues, collectionName, request.name, "auth:" + safe(entry.getKey()), entry.getValue(), resolver);
+        String authMode = AuthInheritanceResolver.normalizeAuthOverrideMode(request.authOverrideMode, request);
+        if ("explicit".equals(authMode)) {
+            ApiRequest.Auth auth = request.explicitAuth != null ? request.explicitAuth : request.auth;
+            scanAuthValues(issues, collectionName, request.name, "auth", auth, resolver, format);
+        }
         if (request.scriptBlocks != null) for (burp.scripts.ScriptBlock block : request.scriptBlocks)
             if (block != null && block.enabled) scanValue(issues, collectionName, request.name,
                     "script:" + block.phase, block.source, resolver);
@@ -159,25 +172,21 @@ public final class ExportVariableResolutionService {
 
     private static void scanCollectionLevelValues(List<UnresolvedVariableIssue> issues,
                                                   ApiCollection collection,
-                                                  VariableResolver resolver) {
+                                                  VariableResolver resolver,
+                                                  CollectionExportFormat format) {
         if (collection == null) {
             return;
         }
         String collectionName = collection.name != null ? collection.name : "";
-        if (collection.auth != null && collection.auth.properties != null) {
-            for (Map.Entry<String, String> entry : collection.auth.properties.entrySet()) {
-                scanValue(issues, collectionName, collectionName, "collection-auth:" + safe(entry.getKey()), entry.getValue(), resolver);
-            }
-        }
+        scanAuthValues(issues, collectionName, collectionName, "collection-auth",
+                collection.auth, resolver, format);
         if (collection.folderAuth != null) {
             for (Map.Entry<String, ApiRequest.Auth> entry : collection.folderAuth.entrySet()) {
-                ApiRequest.Auth auth = entry.getValue();
-                if (auth == null || auth.properties == null) {
-                    continue;
-                }
-                for (Map.Entry<String, String> authEntry : auth.properties.entrySet()) {
-                    scanValue(issues, collectionName, collectionName, "folder-auth:" + safe(entry.getKey()) + ":" + safe(authEntry.getKey()), authEntry.getValue(), resolver);
-                }
+                String folder = AuthInheritanceResolver.normalizeFolderPath(entry.getKey());
+                String mode = collection.folderAuthModes != null ? collection.folderAuthModes.get(folder) : null;
+                if (!"explicit".equals(AuthInheritanceResolver.normalizeAuthOverrideMode(mode, null))) continue;
+                scanAuthValues(issues, collectionName, collectionName, "folder-auth:" + safe(folder),
+                        entry.getValue(), resolver, format);
             }
         }
         if (collection.variables != null) {
@@ -203,13 +212,44 @@ public final class ExportVariableResolutionService {
                 scanValue(issues, collectionName, collectionName, "collection-environment:" + safe(entry.getKey()), entry.getValue(), resolver);
             }
         }
-        if (collection.scriptBlocks != null) for (burp.scripts.ScriptBlock block : collection.scriptBlocks)
-            if (block != null && block.enabled) scanValue(issues, collectionName, collectionName,
-                    "collection-script:" + block.phase, block.source, resolver);
+        if (format != CollectionExportFormat.INSOMNIA_JSON) {
+            if (collection.scriptBlocks != null) for (burp.scripts.ScriptBlock block : collection.scriptBlocks)
+                if (block != null && block.enabled) scanValue(issues, collectionName, collectionName,
+                        "collection-script:" + block.phase, block.source, resolver);
+        }
         if (collection.folderScriptBlocks != null) for (Map.Entry<String, List<burp.scripts.ScriptBlock>> entry : collection.folderScriptBlocks.entrySet())
             if (entry.getValue() != null) for (burp.scripts.ScriptBlock block : entry.getValue())
                 if (block != null && block.enabled) scanValue(issues, collectionName, collectionName,
                         "folder-script:" + safe(entry.getKey()) + ":" + block.phase, block.source, resolver);
+    }
+
+    private static void scanAuthValues(List<UnresolvedVariableIssue> issues, String collectionName,
+                                       String requestName, String location, ApiRequest.Auth auth,
+                                       VariableResolver resolver, CollectionExportFormat format) {
+        if (auth == null || auth.type == null || auth.properties == null) return;
+        String type = auth.type.toLowerCase(Locale.ROOT);
+        if ("none".equals(type) || "noauth".equals(type) || "inherit".equals(type)) return;
+        for (Map.Entry<String, String> entry : auth.properties.entrySet()) {
+            if (entry.getKey() != null && exportedAuthProperty(format, type, entry.getKey())) {
+                scanValue(issues, collectionName, requestName,
+                        location + ":" + safe(entry.getKey()), entry.getValue(), resolver);
+            }
+        }
+    }
+
+    private static boolean exportedAuthProperty(CollectionExportFormat format, String type, String key) {
+        if (format == null) return true;
+        Set<String> supported = switch (type) {
+            case "basic" -> Set.of("username", "user", "password", "pass");
+            case "bearer" -> Set.of("token", "value", "access_token");
+            case "apikey", "api_key" -> Set.of("key", "name", "value", "token", "in", "placement", "addTo");
+            case "oauth2" -> Set.of("grantType", "grant_type", "accessTokenUrl", "access_token_url",
+                    "authorizationUrl", "authorization_url", "redirectUri", "redirectUrl", "callback_url",
+                    "clientId", "client_id", "clientSecret", "client_secret", "scope", "username",
+                    "password", "accessToken", "access_token");
+            default -> format == CollectionExportFormat.INSOMNIA_JSON ? null : Set.of();
+        };
+        return supported == null || supported.contains(key);
     }
 
     private static void scanValues(List<UnresolvedVariableIssue> issues,

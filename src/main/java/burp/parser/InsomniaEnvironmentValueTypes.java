@@ -21,9 +21,15 @@ public final class InsomniaEnvironmentValueTypes {
     }
 
     public static synchronized JsonElement recalled(ApiCollection collection, String scope, String key, String text) {
+        JsonElement value = recalledSource(collection, scope, key);
+        return value != null && value.toString().equals(text) ? value.deepCopy() : null;
+    }
+
+    /** Returns the imported source type even when export-time resolution changes its text. */
+    public static synchronized JsonElement recalledSource(ApiCollection collection, String scope, String key) {
         Map<String, JsonElement> values = VALUES.get(collection);
         if (values == null) return null;
         JsonElement value = values.get((scope != null ? scope : "") + "\u0000" + key);
-        return value != null && value.toString().equals(text) ? value.deepCopy() : null;
+        return value != null ? value.deepCopy() : null;
     }
 }

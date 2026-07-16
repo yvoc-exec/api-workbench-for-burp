@@ -2,11 +2,15 @@ package burp.exporter;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.parser.BrunoParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -18,6 +22,8 @@ import java.util.zip.ZipInputStream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class BrunoArchiveAllocationSafetyTest {
+    @TempDir Path tempDir;
+
     @Test
     void archiveEntriesAreSafeUniqueAndCollisionAllocatedDeterministically() throws Exception {
         ApiCollection collection = new ApiCollection(); collection.name = "..\\Unsafe:/Root";
@@ -48,7 +54,18 @@ class BrunoArchiveAllocationSafetyTest {
         assertThat(names).anyMatch(name -> name.endsWith("REQUEST_3.bru"));
         assertThat(names).noneMatch(name -> name.endsWith("/_collection.bru") || name.endsWith("/_folder.bru"));
         assertThat(names).filteredOn(name -> name.toLowerCase(Locale.ROOT).contains("environments/environment"))
-                .hasSize(2);
+                .hasSize(1);
+        assertThat(names).anyMatch(name -> name.contains("/environments/Environment.bru"));
+        assertThat(names).anyMatch(name -> name.contains("/environments_2/Environment.bru"));
+
+        Path archive = tempDir.resolve("collision.zip");
+        Files.write(archive, first);
+        ApiCollection imported = new BrunoParser().parse(archive.toFile());
+        assertThat(imported.environment).containsEntry("base", "value");
+        assertThat(imported.requests).anySatisfy(request -> {
+            assertThat(request.name).isEqualTo("Environment");
+            assertThat(request.path).isEqualTo("environments_2/Environment");
+        });
     }
 
     private static ApiRequest request(String name, String path) {

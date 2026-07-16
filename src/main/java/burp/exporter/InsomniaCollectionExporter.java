@@ -8,6 +8,7 @@ import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptPhase;
 import burp.utils.RequestParameterSupport;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -89,14 +90,12 @@ public final class InsomniaCollectionExporter {
                     addWarning(warnings, "Insomnia export skipped a blank environment variable key.");
                     continue;
                 }
-                String resolved = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
-                com.google.gson.JsonElement typed = variableOverrides.contains(entry.getKey()) ? null
-                        : burp.parser.InsomniaEnvironmentValueTypes.recalled(
-                        collection, "", entry.getKey(), entry.getValue());
-                if (typed != null && !resolve) data.add(entry.getKey(), typed);
-                else {
+                if (variableOverrides.contains(entry.getKey())) {
+                    String resolved = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
                     data.addProperty(entry.getKey(), resolved != null ? resolved : "");
-                    warnJsonLookingEnvironmentString(collection, "", entry.getKey(), entry.getValue(), typed, warnings);
+                } else {
+                    data.add(entry.getKey(), environmentValue(
+                            collection, "", entry.getKey(), entry.getValue(), resolver, resolve, warnings));
                 }
             }
             env.add("data", data);
@@ -161,14 +160,9 @@ public final class InsomniaCollectionExporter {
             if (folderEnvironment != null && !folderEnvironment.isEmpty()) {
                 JsonObject environment = new JsonObject();
                 for (Map.Entry<String, String> entry : new java.util.TreeMap<>(folderEnvironment).entrySet()) {
-                    com.google.gson.JsonElement typed = burp.parser.InsomniaEnvironmentValueTypes.recalled(
-                            collection, burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path),
-                            entry.getKey(), entry.getValue());
-                    if (typed != null && !resolve) environment.add(entry.getKey(), typed);
-                    else {
-                        environment.addProperty(entry.getKey(), CollectionExportSupport.resolve(entry.getValue(), resolver, resolve));
-                        warnJsonLookingEnvironmentString(collection, child.path, entry.getKey(), entry.getValue(), typed, warnings);
-                    }
+                    environment.add(entry.getKey(), environmentValue(collection,
+                            burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path), entry.getKey(),
+                            entry.getValue(), resolver, resolve, warnings));
                 }
                 group.add("environment", environment);
             }
@@ -194,6 +188,45 @@ public final class InsomniaCollectionExporter {
         } catch (RuntimeException ignored) {
             // Ordinary string.
         }
+    }
+
+    private static JsonElement environmentValue(ApiCollection collection, String scope, String key,
+                                                String sourceText, VariableResolver resolver, boolean resolve,
+                                                List<String> warnings) {
+        JsonElement sourceType = burp.parser.InsomniaEnvironmentValueTypes.recalledSource(
+                collection, scope, key);
+        String resolved = CollectionExportSupport.resolve(sourceText, resolver, resolve);
+        if (sourceType != null) {
+            if (!resolve) {
+                JsonElement exact = burp.parser.InsomniaEnvironmentValueTypes.recalled(
+                        collection, scope, key, sourceText);
+                if (exact != null) return exact;
+            } else {
+                try {
+                    JsonElement parsed = JsonParser.parseString(resolved != null ? resolved : "");
+                    if (sameEnvironmentCategory(sourceType, parsed)) return parsed;
+                } catch (RuntimeException ignored) {
+                    // The resolved representation is no longer valid for its imported type.
+                }
+                addWarning(warnings, "Insomnia export represented resolved environment value '"
+                        + safeText(key) + "' in " + (scope == null || scope.isBlank() ? "the base environment"
+                        : "folder '" + safeText(scope) + "'")
+                        + " as a string because it no longer matched its imported JSON type.");
+            }
+        }
+        warnJsonLookingEnvironmentString(collection, scope, key, sourceText, sourceType, warnings);
+        return new com.google.gson.JsonPrimitive(resolved != null ? resolved : "");
+    }
+
+    private static boolean sameEnvironmentCategory(JsonElement source, JsonElement candidate) {
+        if (source == null || candidate == null) return false;
+        if (source.isJsonObject()) return candidate.isJsonObject();
+        if (source.isJsonArray()) return candidate.isJsonArray();
+        if (source.isJsonNull()) return candidate.isJsonNull();
+        if (!source.isJsonPrimitive() || !candidate.isJsonPrimitive()) return false;
+        if (source.getAsJsonPrimitive().isBoolean()) return candidate.getAsJsonPrimitive().isBoolean();
+        if (source.getAsJsonPrimitive().isNumber()) return candidate.getAsJsonPrimitive().isNumber();
+        return candidate.getAsJsonPrimitive().isString();
     }
 
     private static void addCollectionScriptWarnings(ApiCollection collection, List<String> warnings) {

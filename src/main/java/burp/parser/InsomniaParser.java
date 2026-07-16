@@ -190,6 +190,33 @@ public class InsomniaParser implements CollectionParser {
                 ScriptPhase.POST_RESPONSE, "after_response_script", order);
         addFolderScriptElement(resource.get("responseHooks"), target, collection, folderPath,
                 ScriptPhase.POST_RESPONSE, "responseHooks", order);
+        parseFolderScriptContainer(resource.get("script"), target, collection, folderPath, "script", order);
+        parseFolderScriptContainer(resource.get("scripts"), target, collection, folderPath, "scripts", order);
+    }
+
+    private void parseFolderScriptContainer(JsonElement element, List<ScriptBlock> target,
+                                            ApiCollection collection, String folderPath,
+                                            String sourcePath, int[] order) {
+        if (element == null || element.isJsonNull()) return;
+        if (!element.isJsonObject()) {
+            warn(collection, folderPath, "Unknown folder script object shape at '"
+                    + sourcePath + "'; no source was recovered.");
+            return;
+        }
+        boolean recognized = false;
+        for (Map.Entry<String, JsonElement> entry : element.getAsJsonObject().entrySet()) {
+            ScriptPhase phase = PRE_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.PRE_REQUEST
+                    : POST_SCRIPT_KEYS.contains(entry.getKey()) ? ScriptPhase.POST_RESPONSE : null;
+            if (phase != null) {
+                recognized = true;
+                addFolderScriptElement(entry.getValue(), target, collection, folderPath, phase,
+                        sourcePath + "." + entry.getKey(), order);
+            }
+        }
+        if (!recognized && !element.getAsJsonObject().entrySet().isEmpty()) {
+            warn(collection, folderPath, "Unknown folder script object shape at '"
+                    + sourcePath + "'; no source was recovered.");
+        }
     }
 
     private void addFolderScriptElement(JsonElement element, List<ScriptBlock> target,

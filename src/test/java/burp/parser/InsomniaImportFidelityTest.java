@@ -4,6 +4,7 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
+import burp.scripts.ScriptScope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -180,6 +181,30 @@ class InsomniaImportFidelityTest {
         assertThat(collection.importedRequestCount).isEqualTo(1);
         assertThat(collection.skippedRequestCount).isEqualTo(1);
         assertThat(collection.importWarnings).anyMatch(w -> w.contains("Bad"));
+    }
+
+    @Test
+    void folderScriptContainersRecoverRecognizedShapesAndWarnWithoutSourceForUnknownShapes() throws Exception {
+        ApiCollection collection = parse("""
+                {"__type":"export","resources":[
+                  {"_type":"workspace","_id":"wrk","name":"W"},
+                  {"_type":"request_group","_id":"good","parentId":"wrk","name":"Good",
+                   "script":{"pre":"before();","after":{"code":"after();","disabled":true}}},
+                  {"_type":"request_group","_id":"bad","parentId":"wrk","name":"Bad",
+                   "scripts":{"metadata":"DO_NOT_EXPORT_SCRIPT_SECRET"}}
+                ]}
+                """);
+        assertThat(collection.folderScriptBlocks.get("Good")).hasSize(2).allSatisfy(block -> {
+            assertThat(block.scope).isEqualTo(ScriptScope.FOLDER);
+            assertThat(block.dialect).isEqualTo(ScriptDialect.INSOMNIA);
+        });
+        assertThat(collection.folderScriptBlocks.get("Good")).extracting(block -> block.phase)
+                .containsExactly(ScriptPhase.PRE_REQUEST, ScriptPhase.POST_RESPONSE);
+        assertThat(collection.folderScriptBlocks.get("Good").get(1).enabled).isFalse();
+        assertThat(collection.importWarnings).anySatisfy(warning -> {
+            assertThat(warning).contains("Bad", "scripts", "no source was recovered");
+            assertThat(warning).doesNotContain("DO_NOT_EXPORT_SCRIPT_SECRET");
+        });
     }
 
     private ApiRequest onlyRequest(String body) throws Exception {

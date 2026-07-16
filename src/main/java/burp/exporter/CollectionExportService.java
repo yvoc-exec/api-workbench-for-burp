@@ -56,7 +56,8 @@ public final class CollectionExportService {
                 }
             });
             int unresolved = options.resolveVariablesUsingActiveEnvironment
-                    ? ExportVariableResolutionService.collectUnresolvedIssues(collection, options.activeEnvironment, options.exportOnlyVariables).size()
+                    ? ExportVariableResolutionService.collectUnresolvedIssues(collection, options.activeEnvironment,
+                    options.exportOnlyVariables, options.format).size()
                     : 0;
             int requestCount = collection.requests != null ? collection.requests.size() : 0;
             return new ExportResult(output, options.format.displayName(), requestCount, 0, unresolved, warnings);

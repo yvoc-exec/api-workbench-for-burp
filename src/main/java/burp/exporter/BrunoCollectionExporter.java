@@ -137,6 +137,11 @@ public final class BrunoCollectionExporter {
                                   Map<ApiRequest, Integer> requestOrder) throws IOException {
         Set<String> used = new LinkedHashSet<>();
         for (String reserved : RESERVED_NAMES) used.add(reserved.toLowerCase(Locale.ROOT));
+        if (node.path == null || node.path.isBlank()) {
+            // Bruno owns this root segment for environment files. A user
+            // folder must never be placed inside that namespace.
+            used.add("environments");
+        }
         Map<CollectionExportTree.FolderNode, String> childDirs = new LinkedHashMap<>();
         for (CollectionExportTree.FolderNode child : node.children.values()) {
             String segment = allocateName(child.name, "folder", null, used, warnings);

@@ -62,6 +62,26 @@ class InsomniaScopedScriptAndQueryTransportTest {
         assertThat(values.get("looks").isJsonPrimitive()).isTrue();assertThat(values.get("looks").getAsString()).isEqualTo("{\"a\":1}");
     }
 
+    @Test
+    void resolvedStructuredEnvironmentValuesRetainSourceCategoriesOrWarnAsStrings() throws Exception {
+        JsonObject root=new JsonObject();root.addProperty("__type","export");root.addProperty("__export_format",4);JsonArray resources=new JsonArray();
+        JsonObject workspace=new JsonObject();workspace.addProperty("_id","wrk");workspace.addProperty("_type","workspace");workspace.addProperty("name","W");resources.add(workspace);
+        JsonObject env=new JsonObject();env.addProperty("_id","env");env.addProperty("_type","environment");env.addProperty("parentId","wrk");env.addProperty("name","Base");JsonObject data=new JsonObject();
+        data.add("object",JsonParser.parseString("{\"v\":\"{{word}}\"}"));data.add("array",JsonParser.parseString("[\"{{word}}\"]"));data.addProperty("number",42);data.addProperty("boolean",true);data.add("null",JsonNull.INSTANCE);data.addProperty("looks","{\"a\":1}");data.add("invalid",JsonParser.parseString("{\"v\":\"{{bad}}\"}"));env.add("data",data);resources.add(env);
+        JsonObject folder=new JsonObject();folder.addProperty("_id","fld");folder.addProperty("_type","request_group");folder.addProperty("parentId","wrk");folder.addProperty("name","F");JsonObject folderData=new JsonObject();folderData.add("object",JsonParser.parseString("{\"v\":\"{{word}}\"}"));folder.add("environment",folderData);resources.add(folder);root.add("resources",resources);
+        Path file=tempDir.resolve("resolved-types.json");Files.writeString(file,root.toString());ApiCollection imported=new InsomniaParser().parse(file.toFile());
+        EnvironmentProfile profile=new EnvironmentProfile();profile.variables.put("word","resolved");profile.variables.put("bad","\"");
+        CollectionExportOptions options=new CollectionExportOptions(CollectionExportFormat.INSOMNIA_JSON,tempDir.resolve("out.json"),true,profile,Map.of());
+        List<String>warnings=new ArrayList<>();JsonObject exported=InsomniaCollectionExporter.build(imported,options,warnings);
+        JsonObject values=resource(exported,"environment","W Environment").getAsJsonObject("data");
+        assertThat(values.get("object").isJsonObject()).isTrue();assertThat(values.get("array").isJsonArray()).isTrue();
+        assertThat(values.get("number").isJsonPrimitive()).isTrue();assertThat(values.get("number").getAsJsonPrimitive().isNumber()).isTrue();
+        assertThat(values.get("boolean").getAsJsonPrimitive().isBoolean()).isTrue();assertThat(values.get("null").isJsonNull()).isTrue();
+        assertThat(values.get("looks").getAsString()).isEqualTo("{\"a\":1}");assertThat(values.get("invalid").isJsonPrimitive()).isTrue();
+        assertThat(resource(exported,"request_group","F").getAsJsonObject("environment").get("object").isJsonObject()).isTrue();
+        assertThat(warnings).anyMatch(w->w.contains("invalid")&&w.contains("no longer matched")&&!w.contains("{{bad}}"));
+    }
+
     private static ApiRequest.Parameter parameter(String key,String value,boolean present,boolean disabled){ApiRequest.Parameter p=new ApiRequest.Parameter("query",key,value);p.valuePresent=present;p.disabled=disabled;return p;}
     private static ScriptBlock block(String source,ScriptPhase phase,ScriptScope scope,int order){ScriptBlock b=ScriptBlock.of(source,ScriptDialect.INSOMNIA,phase,scope);b.order=order;return b;}
     private static JsonObject resource(JsonObject root,String type,String name){for(JsonElement e:root.getAsJsonArray("resources")){JsonObject o=e.getAsJsonObject();if(type.equals(o.get("_type").getAsString())&&name.equals(o.get("name").getAsString()))return o;}throw new AssertionError();}
