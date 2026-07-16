@@ -7,7 +7,9 @@ import burp.parser.VariableResolver;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptPhase;
 import burp.ui.tree.RequestTreePathService;
+import burp.utils.AuthInheritanceResolver;
 import burp.utils.RequestParameterSupport;
+import com.google.gson.GsonBuilder;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -15,368 +17,518 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public final class BrunoCollectionExporter {
+    private static final Set<String> STANDARD_METHODS = Set.of(
+            "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT");
+    private static final Set<String> SUPPORTED_AUTH = Set.of("none", "basic", "bearer", "apikey", "oauth2");
+    private static final Set<String> RESERVED_NAMES = Set.of(
+            "bruno.json", "collection.bru", "folder.bru", "_collection.bru", "_folder.bru");
+
     private BrunoCollectionExporter() {
     }
 
-    public static void write(ApiCollection collection, CollectionExportOptions options, OutputStream outputStream, List<String> warnings) throws IOException {
+    public static void write(ApiCollection collection,
+                             CollectionExportOptions options,
+                             OutputStream outputStream,
+                             List<String> warnings) throws IOException {
         boolean resolve = options != null && options.resolveVariablesUsingActiveEnvironment;
         EnvironmentProfile activeEnvironment = options != null ? options.activeEnvironment : null;
         Map<String, String> exportOnly = options != null ? options.exportOnlyVariables : Map.of();
+        String collectionName = collection != null ? collection.name : null;
+        String rootSegment = archiveSegment(collectionName, "collection");
+        if (collectionName != null && !collectionName.equals(rootSegment)) {
+            ExportWarningSupport.add(warnings, "Bruno export normalized an unsafe collection archive label '"
+                    + ExportWarningSupport.label(collectionName) + "'.");
+        }
+        String rootDir = rootSegment + "/";
+        LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
 
+        if (collection != null) {
+            entries.put(rootDir + "bruno.json", gsonBytes(brunoJson(collection)));
+            VariableResolver collectionResolver = CollectionExportSupport.buildResolver(
+                    collection, null, resolve ? activeEnvironment : null, exportOnly);
+            entries.put(rootDir + "collection.bru", textBytes(renderCollectionMetadata(
+                    collection, collectionResolver, resolve, warnings)));
+            appendCollectionEnvironment(entries, rootDir, collection, collectionResolver, resolve, warnings);
+            CollectionExportTree.FolderNode tree = CollectionExportTree.build(collection);
+            Map<ApiRequest, Integer> requestOrder = new java.util.IdentityHashMap<>();
+            int sequence = 1;
+            for (ApiRequest request : collection.requests != null ? collection.requests : List.<ApiRequest>of()) {
+                if (request != null) requestOrder.put(request, sequence++);
+            }
+            writeNode(entries, collection, tree, rootDir, activeEnvironment,
+                    exportOnly, resolve, warnings, requestOrder);
+        }
+
+        validateEntries(entries.keySet());
         try (ZipOutputStream zip = new ZipOutputStream(outputStream, StandardCharsets.UTF_8)) {
             zip.setLevel(java.util.zip.Deflater.BEST_COMPRESSION);
-            String rootName = ExportFileNamePolicy.sanitizeBaseName(collection != null && collection.name != null ? collection.name : "collection");
-            String rootDir = rootName + "/";
-            putDirectory(zip, rootDir);
-
-            if (collection != null) {
-                writeBrunoJson(zip, rootDir, collection, activeEnvironment, exportOnly, resolve, warnings);
-                writeCollectionVarsFile(zip, rootDir, collection, activeEnvironment, exportOnly, resolve, warnings);
-
-                CollectionExportTree.FolderNode tree = CollectionExportTree.build(collection);
-                writeFolders(zip, rootDir, collection, tree, activeEnvironment, exportOnly, resolve, warnings);
+            for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+                ZipEntry zipEntry = new ZipEntry(entry.getKey());
+                zipEntry.setTime(0L);
+                zip.putNextEntry(zipEntry);
+                zip.write(entry.getValue());
+                zip.closeEntry();
             }
         }
     }
 
-    private static void writeBrunoJson(ZipOutputStream zip,
-                                       String rootDir,
-                                       ApiCollection collection,
-                                       EnvironmentProfile activeEnvironment,
-                                       Map<String, String> exportOnly,
-                                       boolean resolve,
-                                       List<String> warnings) throws IOException {
-        Map<String, Object> root = new LinkedHashMap<>();
-        root.put("name", collection.name != null ? collection.name : "Collection");
-        if (collection.environment != null && !collection.environment.isEmpty()) {
-            root.put("vars", collection.environment);
-            root.put("env", collection.environment);
-        }
-            writeJsonEntry(zip, rootDir + "bruno.json", root);
+    private static Map<String, Object> brunoJson(ApiCollection collection) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("version", "1");
+        json.put("name", collection.name != null ? collection.name : "Collection");
+        json.put("type", "collection");
+        return json;
     }
 
-    private static void writeCollectionVarsFile(ZipOutputStream zip,
-                                                String rootDir,
-                                                ApiCollection collection,
-                                                EnvironmentProfile activeEnvironment,
-                                                Map<String, String> exportOnly,
-                                                boolean resolve,
-                                                List<String> warnings) throws IOException {
-        if (collection.variables == null || collection.variables.isEmpty()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append("vars {\n");
-        VariableResolver resolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
-        for (ApiRequest.Variable variable : collection.variables) {
-            if (variable == null || variable.key == null) {
-                continue;
-            }
-            sb.append("  ").append(variable.enabled ? "" : "~")
-                    .append(renderBruDictionaryKey(variable.key)).append(": ");
-            sb.append(renderBruScalarValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
-                    ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
-                    : "")).append("\n");
-        }
-        sb.append("}\n");
-        writeTextEntry(zip, rootDir + "_collection.bru", sb.toString());
+    private static String renderCollectionMetadata(ApiCollection collection,
+                                                   VariableResolver resolver,
+                                                   boolean resolve,
+                                                   List<String> warnings) throws IOException {
+        StringBuilder out = new StringBuilder();
+        if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, null, warnings);
+        appendVariables(out, collection.variables, resolver, resolve,
+                "collection '" + ExportWarningSupport.label(collection.name) + "'", warnings);
+        appendAuthBlock(out, collection.auth, "collection '" + ExportWarningSupport.label(collection.name) + "'",
+                resolver, resolve, warnings);
+        return out.toString();
     }
 
-    private static void writeFolders(ZipOutputStream zip,
-                                     String rootDir,
-                                     ApiCollection collection,
-                                     CollectionExportTree.FolderNode node,
-                                     EnvironmentProfile activeEnvironment,
-                                     Map<String, String> exportOnly,
-                                     boolean resolve,
-                                     List<String> warnings) throws IOException {
+    private static void appendCollectionEnvironment(Map<String, byte[]> entries,
+                                                    String rootDir,
+                                                    ApiCollection collection,
+                                                    VariableResolver resolver,
+                                                    boolean resolve,
+                                                    List<String> warnings) throws IOException {
+        if (collection.environment == null || collection.environment.isEmpty()) return;
+        StringBuilder out = new StringBuilder("vars {\n");
+        Set<String> keys = BrunoFormatSupport.newKeySet();
+        for (Map.Entry<String, String> entry : collection.environment.entrySet()) {
+            if (entry.getKey() == null) continue;
+            String key = BrunoFormatSupport.uniqueRenderedKey(entry.getKey(), keys,
+                    "collection environment", warnings);
+            String value = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
+            BrunoFormatSupport.appendDictionaryEntry(out, "  ", "", key,
+                    value != null ? value : "", "collection environment", warnings);
+        }
+        out.append("}\n");
+        entries.put(rootDir + "environments/Environment.bru", textBytes(out.toString()));
+    }
+
+    private static void writeNode(Map<String, byte[]> entries,
+                                  ApiCollection collection,
+                                  CollectionExportTree.FolderNode node,
+                                  String archiveDir,
+                                  EnvironmentProfile activeEnvironment,
+                                  Map<String, String> exportOnly,
+                                  boolean resolve,
+                                  List<String> warnings,
+                                  Map<ApiRequest, Integer> requestOrder) throws IOException {
+        Set<String> used = new LinkedHashSet<>();
+        for (String reserved : RESERVED_NAMES) used.add(reserved.toLowerCase(Locale.ROOT));
+        Map<CollectionExportTree.FolderNode, String> childDirs = new LinkedHashMap<>();
         for (CollectionExportTree.FolderNode child : node.children.values()) {
-            String folderDir = rootDir + child.path + "/";
-            putDirectory(zip, folderDir);
-            writeFolderVars(zip, folderDir, collection, child, activeEnvironment, exportOnly, resolve, warnings);
-            writeFolders(zip, rootDir, collection, child, activeEnvironment, exportOnly, resolve, warnings);
+            String segment = allocateName(child.name, "folder", null, used, warnings);
+            String childDir = archiveDir + segment + "/";
+            childDirs.put(child, childDir);
+            VariableResolver resolver = CollectionExportSupport.buildResolver(collection,
+                    dummyRequestForFolder(child.path), resolve ? activeEnvironment : null, exportOnly);
+            entries.put(childDir + "folder.bru", textBytes(renderFolderMetadata(
+                    collection, child, resolver, resolve, warnings)));
         }
-
-        int index = 1;
-        Map<String, Integer> nameCounts = new LinkedHashMap<>();
         for (ApiRequest request : node.requests) {
-            if (request == null) {
-                continue;
-            }
-            VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
-            String fileNameBase = ExportFileNamePolicy.sanitizeBaseName(request.name != null ? request.name : "request");
-            int count = nameCounts.getOrDefault(fileNameBase, 0) + 1;
-            nameCounts.put(fileNameBase, count);
-            if (count > 1) {
-                fileNameBase = fileNameBase + "_" + count;
-            }
-            String filePath = rootDir + normalizeFolderPath(node.path) + (node.path == null || node.path.isBlank() ? "" : "/") + fileNameBase + ".bru";
-            writeRequestFile(zip, filePath, request, resolver, resolve, index++, warnings);
+            if (request == null) continue;
+            String fileName = allocateName(request.name, "request", ".bru", used, warnings);
+            VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request,
+                    resolve ? activeEnvironment : null, exportOnly);
+            if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, request, warnings);
+            entries.put(archiveDir + fileName, textBytes(renderRequest(
+                    request, resolver, resolve, requestOrder.getOrDefault(request, 1), warnings)));
+        }
+        for (Map.Entry<CollectionExportTree.FolderNode, String> child : childDirs.entrySet()) {
+            writeNode(entries, collection, child.getKey(), child.getValue(), activeEnvironment,
+                    exportOnly, resolve, warnings, requestOrder);
         }
     }
 
-    private static void writeFolderVars(ZipOutputStream zip,
-                                        String folderDir,
-                                        ApiCollection collection,
-                                        CollectionExportTree.FolderNode node,
-                                        EnvironmentProfile activeEnvironment,
-                                        Map<String, String> exportOnly,
-                                        boolean resolve,
-                                        List<String> warnings) throws IOException {
+    private static String renderFolderMetadata(ApiCollection collection,
+                                               CollectionExportTree.FolderNode node,
+                                               VariableResolver resolver,
+                                               boolean resolve,
+                                               List<String> warnings) throws IOException {
+        StringBuilder out = new StringBuilder();
         String folderPath = RequestTreePathService.normalizeFolderPath(node.path);
         Map<String, String> vars = collection.folderVars != null ? collection.folderVars.get(folderPath) : null;
-        if (vars == null || vars.isEmpty()) {
-            return;
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append("vars {\n");
-        VariableResolver resolver = CollectionExportSupport.buildResolver(collection, dummyRequestForFolder(folderPath), activeEnvironment, exportOnly);
-        for (Map.Entry<String, String> entry : vars.entrySet()) {
-            if (entry.getKey() == null) {
-                continue;
+        if (vars != null && !vars.isEmpty()) {
+            out.append("vars:pre-request {\n");
+            Set<String> keys = BrunoFormatSupport.newKeySet();
+            for (Map.Entry<String, String> entry : vars.entrySet()) {
+                if (entry.getKey() == null) continue;
+                String key = BrunoFormatSupport.uniqueRenderedKey(entry.getKey(), keys,
+                        "folder '" + ExportWarningSupport.label(folderPath) + "' variables", warnings);
+                String value = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
+                BrunoFormatSupport.appendDictionaryEntry(out, "  ", "", key, value != null ? value : "",
+                        "folder '" + ExportWarningSupport.label(folderPath) + "' variable", warnings);
             }
-            sb.append("  ").append(renderBruDictionaryKey(entry.getKey())).append(": ");
-            sb.append(renderBruScalarValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
-                    ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
-                    : "")).append("\n");
+            out.append("}\n\n");
         }
-        sb.append("}\n");
-        writeTextEntry(zip, folderDir + "_folder.bru", sb.toString());
+        String mode = collection.folderAuthModes != null ? collection.folderAuthModes.get(folderPath) : null;
+        if (mode != null && !"inherit".equalsIgnoreCase(mode)) {
+            ApiRequest.Auth auth = collection.folderAuth != null ? collection.folderAuth.get(folderPath) : null;
+            if ("none".equalsIgnoreCase(mode)) auth = noneAuth();
+            appendAuthBlock(out, auth, "folder '" + ExportWarningSupport.label(folderPath) + "'",
+                    resolver, resolve, warnings);
+        }
+        return out.toString();
     }
 
-    private static void writeRequestFile(ZipOutputStream zip,
-                                         String filePath,
-                                         ApiRequest request,
-                                         VariableResolver resolver,
-                                         boolean resolve,
-                                         int seq,
-                                         List<String> warnings) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("meta {\n");
-        sb.append("  name: ").append(renderBruScalarValue(request.name != null ? request.name : "Request")).append("\n");
-        sb.append("  type: http\n");
-        sb.append("  seq: ").append(request.sequenceOrder > 0 ? request.sequenceOrder : seq).append("\n");
-        sb.append("}\n\n");
+    private static String renderRequest(ApiRequest request,
+                                        VariableResolver resolver,
+                                        boolean resolve,
+                                        int sequence,
+                                        List<String> warnings) throws IOException {
+        String requestLabel = "request '" + ExportWarningSupport.label(request.name) + "'";
+        String method = request.method != null && !request.method.isEmpty() ? request.method : "GET";
+        validateMethod(method, requestLabel);
+        String bodySelector = bodySelector(request.body);
+        AuthSelection authSelection = requestAuthSelection(request, warnings);
+        StringBuilder out = new StringBuilder();
+        out.append("meta {\n");
+        appendSimpleEntry(out, "name", request.name != null ? request.name : "Request", requestLabel, warnings);
+        out.append("  type: http\n");
+        out.append("  seq: ").append(sequence).append("\n");
+        out.append("}\n\n");
 
-        String method = request.method != null ? request.method.toLowerCase(java.util.Locale.ROOT) : "get";
+        String methodBlock = STANDARD_METHODS.contains(method.toUpperCase(Locale.ROOT))
+                ? method.toLowerCase(Locale.ROOT) : "http";
+        out.append(methodBlock).append(" {\n");
+        if ("http".equals(methodBlock)) appendSimpleEntry(out, "method", method, requestLabel + " method", warnings);
         String exportedUrl = RequestParameterSupport.materializeUrl(
-                request.url, request.parameters, resolve ? resolver : null);
-        sb.append(method).append(" {\n");
-        sb.append("  url: ").append(renderBruScalarValue(exportedUrl != null ? exportedUrl : "")).append("\n");
-        sb.append("}\n\n");
+                request.url, brunoTransportParameters(request, resolver, resolve, warnings),
+                resolve ? resolver : null);
+        appendSimpleEntry(out, "url", exportedUrl != null ? exportedUrl : "", requestLabel + " URL", warnings);
+        out.append("  body: ").append(bodySelector).append("\n");
+        if (authSelection.selector != null) out.append("  auth: ").append(authSelection.selector).append("\n");
+        out.append("}\n\n");
 
-        appendParameterBlocks(sb, request, resolver, resolve, warnings);
-
-        boolean synthesizeContentType = request.body != null
-                && request.body.contentType != null && !request.body.contentType.isBlank()
-                && !hasEnabledHeader(request.headers, "Content-Type");
-        if ((request.headers != null && !request.headers.isEmpty()) || synthesizeContentType) {
-            sb.append("headers {\n");
-            for (ApiRequest.Header header : request.headers != null ? request.headers : List.<ApiRequest.Header>of()) {
-                if (header == null || header.key == null || header.key.isBlank()) {
-                    continue;
-                }
-                if (CollectionExportSupport.isTransportHeader(header.key)) {
-                    continue;
-                }
-                String prefix = header.disabled ? "~" : "";
-                sb.append("  ").append(prefix).append(renderBruDictionaryKey(header.key)).append(": ")
-                        .append(renderBruScalarValue(CollectionExportSupport.resolve(header.value, resolver, resolve) != null
-                                ? CollectionExportSupport.resolve(header.value, resolver, resolve)
-                                : ""))
-                        .append("\n");
-            }
-            if (synthesizeContentType) {
-                sb.append("  Content-Type: ")
-                        .append(renderBruScalarValue(request.body.contentType)).append("\n");
-            }
-            sb.append("}\n\n");
+        appendParameterBlocks(out, request, resolver, resolve, warnings);
+        appendHeaders(out, request, resolver, resolve, warnings);
+        appendTypedBody(out, request, resolver, resolve, warnings);
+        if (authSelection.auth != null && !"none".equals(authSelection.selector)) {
+            appendAuthBlock(out, authSelection.auth, requestLabel, resolver, resolve, warnings);
         }
-
-        appendTypedBody(sb, request, resolver, resolve, warnings);
-
-        String authBlock = renderAuthBlock(request, resolver, resolve);
-        if (authBlock != null && !authBlock.isBlank()) {
-            sb.append(authBlock).append("\n\n");
-        }
-
-        appendScriptBlock(sb, "script:pre-request", request, ScriptPhase.PRE_REQUEST,
-                request.preRequestScripts, resolver, resolve, warnings);
-        appendScriptBlock(sb, "script:post-response", request, ScriptPhase.POST_RESPONSE,
-                request.postResponseScripts, resolver, resolve, warnings);
-        appendScriptBlock(sb, "test", request, ScriptPhase.TEST,
-                null, resolver, resolve, warnings);
-
-        if (request.variables != null && !request.variables.isEmpty()) {
-            sb.append("vars {\n");
-            for (ApiRequest.Variable variable : request.variables) {
-                if (variable == null || variable.key == null) {
-                    continue;
-                }
-                sb.append("  ").append(variable.enabled ? "" : "~")
-                        .append(renderBruDictionaryKey(variable.key)).append(": ")
-                        .append(renderBruScalarValue(CollectionExportSupport.resolve(variable.value, resolver, resolve) != null
-                                ? CollectionExportSupport.resolve(variable.value, resolver, resolve)
-                                : ""))
-                        .append("\n");
-            }
-            sb.append("}\n");
-        }
-
-        writeTextEntry(zip, filePath, sb.toString());
+        appendScripts(out, request, resolver, resolve, warnings);
+        appendVariables(out, request.variables, resolver, resolve, requestLabel, warnings);
+        return out.toString();
     }
 
-    private static void appendParameterBlocks(StringBuilder sb, ApiRequest request,
-                                              VariableResolver resolver, boolean resolve,
-                                              List<String> warnings) {
+    private static void appendSimpleEntry(StringBuilder out, String key, String value,
+                                          String context, List<String> warnings) throws IOException {
+        BrunoFormatSupport.appendDictionaryEntry(out, "  ", "", key,
+                BrunoFormatSupport.sanitizeText(value, context, warnings), context, warnings);
+    }
+
+    private static void appendParameterBlocks(StringBuilder out,
+                                              ApiRequest request,
+                                              VariableResolver resolver,
+                                              boolean resolve,
+                                              List<String> warnings) throws IOException {
         List<ApiRequest.Parameter> query = new ArrayList<>();
         List<ApiRequest.Parameter> path = new ArrayList<>();
+        Set<String> unsupported = new LinkedHashSet<>();
         if (request.parameters != null) {
             for (ApiRequest.Parameter parameter : request.parameters) {
                 if (parameter == null) continue;
                 if (parameter.isQuery()) query.add(parameter);
                 else if ("path".equalsIgnoreCase(parameter.location)) path.add(parameter);
+                if (parameter.required) unsupported.add("required");
+                if (parameter.style != null && !parameter.style.isBlank()) unsupported.add("style");
+                if (parameter.explode != null) unsupported.add("explode");
+                if (parameter.allowReserved) unsupported.add("allowReserved");
+                if (parameter.source != null && !parameter.source.isBlank()) unsupported.add("source");
+                if (parameter.type != null && !parameter.type.isBlank()) unsupported.add("type");
             }
         }
-        appendParameterBlock(sb, "params:query", query, request, resolver, resolve, warnings, ParameterKind.QUERY);
-        appendParameterBlock(sb, "params:path", path, request, resolver, resolve, warnings, ParameterKind.PATH);
+        appendParameterBlock(out, "params:query", query, request, resolver, resolve, warnings, true);
+        appendParameterBlock(out, "params:path", path, request, resolver, resolve, warnings, false);
+        if (!unsupported.isEmpty()) {
+            ExportWarningSupport.add(warnings, "Bruno export for request '" + ExportWarningSupport.label(request.name)
+                    + "' omitted unsupported parameter metadata: " + String.join(", ", unsupported) + ".");
+        }
     }
 
-    private static void appendParameterBlock(StringBuilder sb, String name,
+    private static List<ApiRequest.Parameter> brunoTransportParameters(ApiRequest request,
+                                                                       VariableResolver resolver,
+                                                                       boolean resolve,
+                                                                       List<String> warnings) {
+        List<ApiRequest.Parameter> copy = burp.utils.RequestParameterSupport.copyParameters(request.parameters);
+        Set<String> usedKeys = BrunoFormatSupport.newKeySet();
+        for (ApiRequest.Parameter parameter : copy) {
+            if (parameter == null || !parameter.isQuery()) continue;
+            String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+            String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
+            parameter.key = BrunoFormatSupport.uniqueKeyText(key, usedKeys, "query parameter", warnings);
+            parameter.value = BrunoFormatSupport.normalizePhysicalLines(
+                    BrunoFormatSupport.sanitizeText(value, "query parameter value", warnings));
+            parameter.rawKey = null;
+            parameter.rawValue = null;
+        }
+        return copy;
+    }
+
+    private static void appendParameterBlock(StringBuilder out,
+                                             String blockName,
                                              List<ApiRequest.Parameter> parameters,
-                                             ApiRequest request, VariableResolver resolver,
-                                             boolean resolve, List<String> warnings,
-                                             ParameterKind kind) {
+                                             ApiRequest request,
+                                             VariableResolver resolver,
+                                             boolean resolve,
+                                             List<String> warnings,
+                                             boolean query) throws IOException {
         List<ApiRequest.Parameter> emitted = new ArrayList<>();
         for (ApiRequest.Parameter parameter : parameters) {
-            if (kind == ParameterKind.PATH || parameter.valuePresent || parameter.disabled) {
+            if (!query || parameter.valuePresent || parameter.disabled) {
                 emitted.add(parameter);
+            } else if (parameter.description != null && !parameter.description.isBlank()) {
+                ExportWarningSupport.add(warnings, "Bruno export could not attach the description of enabled bare query parameter '"
+                        + ExportWarningSupport.label(parameter.key) + "' in request '"
+                        + ExportWarningSupport.label(request.name) + "'.");
             }
         }
         if (emitted.isEmpty()) return;
-        sb.append(name).append(" {\n");
+        out.append(blockName).append(" {\n");
+        Set<String> keys = BrunoFormatSupport.newKeySet();
         for (ApiRequest.Parameter parameter : emitted) {
-            if (kind == ParameterKind.QUERY && !parameter.valuePresent && parameter.disabled) {
-                addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
-                        + "' cannot preserve disabled bare query parameter '" + safeKey(parameter.key)
-                        + "'; exported it as disabled explicit-empty.");
-            } else if (kind == ParameterKind.PATH && !parameter.valuePresent) {
-                addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
-                        + "' cannot preserve bare path parameter '" + safeKey(parameter.key)
-                        + "'; exported it as explicit-empty.");
+            if (!parameter.valuePresent) {
+                String kind = query ? "disabled bare query" : "bare path";
+                ExportWarningSupport.add(warnings, "Bruno export for request '"
+                        + ExportWarningSupport.label(request.name) + "' cannot preserve " + kind
+                        + " parameter '" + ExportWarningSupport.label(parameter.key)
+                        + "'; exported it as " + (query ? "disabled " : "") + "explicit-empty.");
             }
-            String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+            if (parameter.description != null && !parameter.description.isBlank()) {
+                String description = BrunoFormatSupport.sanitizeText(
+                        CollectionExportSupport.resolve(parameter.description, resolver, resolve),
+                        "parameter description", warnings);
+                if (description.indexOf('\n') < 0 && description.indexOf('\r') < 0
+                        && description.indexOf(')') < 0) {
+                    out.append("  @description(").append(description).append(")\n");
+                } else {
+                    ExportWarningSupport.add(warnings, "Bruno export omitted a multiline parameter description for request '"
+                            + ExportWarningSupport.label(request.name) + "'.");
+                }
+            }
+            String keyValue = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+            String key = BrunoFormatSupport.uniqueRenderedKey(keyValue, keys,
+                    "parameter block in request '" + ExportWarningSupport.label(request.name) + "'", warnings);
             String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
-            sb.append("  ").append(parameter.disabled ? "~" : "")
-                    .append(renderBruDictionaryKey(key)).append(": ")
-                    .append(renderBruScalarValue(value != null ? value : ""))
-                    .append("\n");
+            BrunoFormatSupport.appendDictionaryEntry(out, "  ", parameter.disabled ? "~" : "", key,
+                    value != null ? value : "", "parameter in request '"
+                            + ExportWarningSupport.label(request.name) + "'", warnings);
         }
-        sb.append("}\n\n");
+        out.append("}\n\n");
     }
 
-    private static void appendTypedBody(StringBuilder sb, ApiRequest request,
+    private static void appendHeaders(StringBuilder out, ApiRequest request,
+                                      VariableResolver resolver, boolean resolve,
+                                      List<String> warnings) throws IOException {
+        boolean synthesizeContentType = request.body != null
+                && request.body.contentType != null && !request.body.contentType.isBlank()
+                && !hasEnabledHeader(request.headers, "Content-Type");
+        if ((request.headers == null || request.headers.isEmpty()) && !synthesizeContentType) return;
+        out.append("headers {\n");
+        Set<String> keys = BrunoFormatSupport.newKeySet();
+        for (ApiRequest.Header header : request.headers != null ? request.headers : List.<ApiRequest.Header>of()) {
+            if (header == null || header.key == null || header.key.isBlank()
+                    || CollectionExportSupport.isTransportHeader(header.key)) continue;
+            String renderedKey = BrunoFormatSupport.uniqueRenderedKey(
+                    CollectionExportSupport.resolve(header.key, resolver, resolve), keys,
+                    "headers in request '" + ExportWarningSupport.label(request.name) + "'", warnings);
+            String value = CollectionExportSupport.resolve(header.value, resolver, resolve);
+            BrunoFormatSupport.appendDictionaryEntry(out, "  ", header.disabled ? "~" : "", renderedKey,
+                    value != null ? value : "", "header in request '"
+                            + ExportWarningSupport.label(request.name) + "'", warnings);
+        }
+        if (synthesizeContentType) {
+            String key = BrunoFormatSupport.uniqueRenderedKey("Content-Type", keys, "headers", warnings);
+            BrunoFormatSupport.appendDictionaryEntry(out, "  ", "", key, request.body.contentType,
+                    "content type", warnings);
+        }
+        out.append("}\n\n");
+    }
+
+    private static void appendTypedBody(StringBuilder out, ApiRequest request,
                                         VariableResolver resolver, boolean resolve,
-                                        List<String> warnings) {
+                                        List<String> warnings) throws IOException {
         ApiRequest.Body body = request.body;
-        if (body == null || body.mode == null || "none".equalsIgnoreCase(body.mode)) return;
-        String mode = body.mode.toLowerCase(java.util.Locale.ROOT);
-        if ("graphql".equals(mode)) {
-            appendContentBlock(sb, "body:graphql", CollectionExportSupport.resolve(
-                    body.graphql != null ? body.graphql.query : "", resolver, resolve));
-            appendContentBlock(sb, "body:graphql:vars", CollectionExportSupport.resolve(
-                    body.graphql != null ? body.graphql.variables : "{}", resolver, resolve));
-            return;
+        String selector = bodySelector(body);
+        if ("none".equals(selector)) return;
+        switch (selector) {
+            case "graphql" -> {
+                BrunoFormatSupport.appendTextBlock(out, "body:graphql", CollectionExportSupport.resolve(
+                        body.graphql != null ? body.graphql.query : "", resolver, resolve),
+                        "GraphQL query for request '" + ExportWarningSupport.label(request.name) + "'", warnings);
+                BrunoFormatSupport.appendTextBlock(out, "body:graphql:vars", CollectionExportSupport.resolve(
+                        body.graphql != null ? body.graphql.variables : "{}", resolver, resolve),
+                        "GraphQL variables for request '" + ExportWarningSupport.label(request.name) + "'", warnings);
+            }
+            case "form-urlencoded" -> appendFieldBody(out, "body:form-urlencoded", body.urlencoded,
+                    false, request, resolver, resolve, warnings);
+            case "multipart-form" -> appendFieldBody(out, "body:multipart-form", body.formdata,
+                    true, request, resolver, resolve, warnings);
+            case "file" -> appendFileBody(out, request, resolver, resolve, warnings);
+            case "json", "text", "xml" -> BrunoFormatSupport.appendTextBlock(out, "body:" + selector,
+                    CollectionExportSupport.resolve(body.raw, resolver, resolve),
+                    "body for request '" + ExportWarningSupport.label(request.name) + "'", warnings);
+            default -> { }
         }
-        if ("urlencoded".equals(mode)) {
-            appendFieldBody(sb, "body:form-urlencoded", body.urlencoded, false,
-                    request, resolver, resolve, warnings);
-            return;
-        }
-        if ("formdata".equals(mode)) {
-            appendFieldBody(sb, "body:multipart-form", body.formdata, true,
-                    request, resolver, resolve, warnings);
-            return;
-        }
-        String type = "body:text";
-        String contentType = body.contentType != null ? body.contentType.toLowerCase(java.util.Locale.ROOT) : "";
-        if (contentType.contains("json")) type = "body:json";
-        else if (contentType.contains("xml")) type = "body:xml";
-        appendContentBlock(sb, type, CollectionExportSupport.resolve(body.raw, resolver, resolve));
     }
 
-    private static void appendFieldBody(StringBuilder sb, String name,
-                                        List<ApiRequest.Body.FormField> fields, boolean multipart,
-                                        ApiRequest request, VariableResolver resolver,
-                                        boolean resolve, List<String> warnings) {
-        sb.append(name).append(" {\n");
+    private static void appendFileBody(StringBuilder out, ApiRequest request,
+                                       VariableResolver resolver, boolean resolve,
+                                       List<String> warnings) throws IOException {
+        String path = CollectionExportSupport.resolve(request.body.raw, resolver, resolve);
+        if (!BrunoFormatSupport.isSafeFilePath(path != null ? path : "")) {
+            throw new IOException("Bruno export cannot represent the file body path for request '"
+                    + ExportWarningSupport.label(request.name) + "'.");
+        }
+        out.append("body:file {\n  file: @file(").append(path != null ? path : "").append(')');
+        if (request.body.contentType != null && !request.body.contentType.isBlank()) {
+            String contentType = BrunoFormatSupport.sanitizeText(request.body.contentType,
+                    "file body content type", warnings);
+            if (contentType.indexOf(')') >= 0 || contentType.indexOf('\n') >= 0) {
+                throw new IOException("Bruno export cannot represent the file body content type for request '"
+                        + ExportWarningSupport.label(request.name) + "'.");
+            }
+            out.append(" @contentType(").append(contentType).append(')');
+        }
+        out.append("\n}\n\n");
+    }
+
+    private static void appendFieldBody(StringBuilder out,
+                                        String block,
+                                        List<ApiRequest.Body.FormField> fields,
+                                        boolean multipart,
+                                        ApiRequest request,
+                                        VariableResolver resolver,
+                                        boolean resolve,
+                                        List<String> warnings) throws IOException {
+        out.append(block).append(" {\n");
+        Set<String> keys = BrunoFormatSupport.newKeySet();
         if (fields != null) {
             for (ApiRequest.Body.FormField field : fields) {
                 if (field == null || field.key == null) continue;
-                String key = CollectionExportSupport.resolve(field.key, resolver, resolve);
-                sb.append("  ").append(field.disabled ? "~" : "")
-                        .append(renderBruDictionaryKey(key)).append(": ");
+                String renderedKey = BrunoFormatSupport.uniqueRenderedKey(
+                        CollectionExportSupport.resolve(field.key, resolver, resolve), keys,
+                        "body fields in request '" + ExportWarningSupport.label(request.name) + "'", warnings);
                 boolean file = multipart && (field.fileUpload || "file".equalsIgnoreCase(field.type));
-                if (file && field.filePath != null && !field.filePath.isBlank()) {
+                String prefix = field.disabled ? "~" : "";
+                if (file) {
                     String path = CollectionExportSupport.resolve(field.filePath, resolver, resolve);
-                    if (isSafeBruFilePath(path)) {
-                        sb.append("@file(").append(path).append(')');
+                    if (path != null && BrunoFormatSupport.isSafeFilePath(path)) {
+                        out.append("  ").append(prefix).append(renderedKey).append(": @file(")
+                                .append(path).append(")\n");
+                        String canonicalValue = "@file(" + path + ")";
+                        if (field.value != null && !field.value.isEmpty()
+                                && !canonicalValue.equals(field.value)) {
+                            ExportWarningSupport.add(warnings, "Bruno export omitted the retained text value for multipart file field '"
+                                    + ExportWarningSupport.label(field.key) + "' in request '"
+                                    + ExportWarningSupport.label(request.name) + "'.");
+                        }
+                    } else if (field.value != null && BrunoFormatSupport.isSafeFilePath(field.value)) {
+                        ExportWarningSupport.add(warnings, "Bruno export retained file field '"
+                                + ExportWarningSupport.label(field.key) + "' for request '"
+                                + ExportWarningSupport.label(request.name)
+                                + "' as text because its file path is not safely representable.");
+                        BrunoFormatSupport.appendDictionaryEntry(out, "  ", prefix, renderedKey,
+                                CollectionExportSupport.resolve(field.value, resolver, resolve),
+                                "multipart fallback field", warnings);
                     } else {
-                        addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
-                                + "' retained file field '" + safeKey(field.key)
-                                + "' as text because its path contains an unsafe control character.");
-                        String value = CollectionExportSupport.resolve(field.value, resolver, resolve);
-                        sb.append(renderBruScalarValue(value != null ? value : ""));
+                        throw new IOException("Bruno export cannot safely represent a multipart file field for request '"
+                                + ExportWarningSupport.label(request.name) + "'.");
                     }
                 } else {
-                    if (file) {
-                        addWarning(warnings, "Bruno export for request '" + safeRequestName(request)
-                                + "' retained file field '" + safeKey(field.key)
-                                + "' as text because it has no usable path.");
-                    }
                     String value = CollectionExportSupport.resolve(field.value, resolver, resolve);
-                    sb.append(renderBruScalarValue(value != null ? value : ""));
+                    BrunoFormatSupport.appendDictionaryEntry(out, "  ", prefix, renderedKey,
+                            value != null ? value : "", "body field in request '"
+                                    + ExportWarningSupport.label(request.name) + "'", warnings);
                 }
-                sb.append("\n");
             }
         }
-        sb.append("}\n\n");
+        out.append("}\n\n");
     }
 
-    private static void appendContentBlock(StringBuilder sb, String name, String source) {
-        sb.append(name).append(" {\n");
-        appendIndented(sb, source != null ? source : "");
-        sb.append("}\n\n");
+    private static void appendVariables(StringBuilder out,
+                                        List<ApiRequest.Variable> variables,
+                                        VariableResolver resolver,
+                                        boolean resolve,
+                                        String context,
+                                        List<String> warnings) throws IOException {
+        if (variables == null || variables.isEmpty()) return;
+        out.append("vars:pre-request {\n");
+        Set<String> keys = BrunoFormatSupport.newKeySet();
+        for (ApiRequest.Variable variable : variables) {
+            if (variable == null || variable.key == null) continue;
+            String type = variable.type == null || variable.type.isBlank()
+                    ? "string" : variable.type.toLowerCase(Locale.ROOT);
+            if (!Set.of("string", "number", "boolean", "object").contains(type)) {
+                ExportWarningSupport.add(warnings, "Bruno export represented unsupported variable type '"
+                        + ExportWarningSupport.label(type) + "' as string in " + context + ".");
+                type = "string";
+            }
+            if (!"string".equals(type)) out.append("  @").append(type).append('\n');
+            String key = BrunoFormatSupport.uniqueRenderedKey(
+                    CollectionExportSupport.resolve(variable.key, resolver, resolve), keys,
+                    context + " variables", warnings);
+            String value = CollectionExportSupport.resolve(variable.value, resolver, resolve);
+            BrunoFormatSupport.appendDictionaryEntry(out, "  ", variable.enabled ? "" : "~", key,
+                    value != null ? value : "", context + " variable", warnings);
+        }
+        out.append("}\n\n");
     }
 
-    private static void appendScriptBlock(StringBuilder sb, String blockName,
+    private static void appendScripts(StringBuilder out,
+                                      ApiRequest request,
+                                      VariableResolver resolver,
+                                      boolean resolve,
+                                      List<String> warnings) {
+        appendScriptPhase(out, "script:pre-request", request, ScriptPhase.PRE_REQUEST,
+                request.preRequestScripts, resolver, resolve, warnings);
+        appendScriptPhase(out, "script:post-response", request, ScriptPhase.POST_RESPONSE,
+                request.postResponseScripts, resolver, resolve, warnings);
+        appendScriptPhase(out, "tests", request, ScriptPhase.TEST,
+                null, resolver, resolve, warnings);
+    }
+
+    private static void appendScriptPhase(StringBuilder out, String blockName,
                                           ApiRequest request, ScriptPhase phase,
                                           List<ApiRequest.Script> legacy,
                                           VariableResolver resolver, boolean resolve,
                                           List<String> warnings) {
         List<String> sources = new ArrayList<>();
-        boolean hasPhaseBlocks = false;
+        boolean hasBlocks = false;
         if (request.scriptBlocks != null) {
             List<ScriptBlock> sorted = new ArrayList<>(request.scriptBlocks);
             sorted.sort(Comparator.comparingInt(block -> block != null ? block.order : Integer.MAX_VALUE));
             for (ScriptBlock block : sorted) {
                 if (block == null || block.phase != phase) continue;
-                hasPhaseBlocks = true;
+                hasBlocks = true;
                 if (!block.enabled) {
-                    addWarning(warnings, "Bruno export omitted disabled " + phase
-                            + " script for request '" + safeRequestName(request) + "'.");
+                    ExportWarningSupport.add(warnings, "Bruno export omitted disabled " + phase
+                            + " script for request '" + ExportWarningSupport.label(request.name) + "'.");
                 } else if (block.source != null && !block.source.isBlank()) {
                     sources.add(CollectionExportSupport.resolve(block.source, resolver, resolve));
                 }
             }
         }
-        if (!hasPhaseBlocks && legacy != null) {
+        if (!hasBlocks && legacy != null) {
             for (ApiRequest.Script script : legacy) {
                 if (script != null && script.exec != null && !script.exec.isBlank()) {
                     sources.add(CollectionExportSupport.resolve(script.exec, resolver, resolve));
@@ -384,15 +536,140 @@ public final class BrunoCollectionExporter {
             }
         }
         sources.removeIf(source -> source == null || source.isBlank());
-        if (sources.isEmpty()) return;
-        sb.append(blockName).append(" {\n");
-        appendIndented(sb, String.join("\n\n", sources));
-        sb.append("}\n\n");
+        if (!sources.isEmpty()) BrunoFormatSupport.appendTextBlock(out, blockName, String.join("\n\n", sources),
+                phase + " script for request '" + ExportWarningSupport.label(request.name) + "'", warnings);
     }
 
-    private static void appendIndented(StringBuilder sb, String source) {
-        for (String line : source.split("\\R", -1)) {
-            sb.append("  ").append(line).append("\n");
+    private static void appendAuthBlock(StringBuilder out,
+                                        ApiRequest.Auth auth,
+                                        String context,
+                                        VariableResolver resolver,
+                                        boolean resolve,
+                                        List<String> warnings) throws IOException {
+        if (auth == null || auth.type == null || auth.type.isBlank() || "inherit".equalsIgnoreCase(auth.type)) return;
+        String type = auth.type.toLowerCase(Locale.ROOT);
+        if ("noauth".equals(type)) type = "none";
+        if (!SUPPORTED_AUTH.contains(type)) {
+            ExportWarningSupport.add(warnings, "Bruno export represented unsupported auth type '"
+                    + ExportWarningSupport.label(type) + "' as none for " + context + ".");
+            out.append("auth:none {\n}\n\n");
+            return;
+        }
+        out.append("auth:").append(type).append(" {\n");
+        if (!"none".equals(type)) {
+            Map<String, String> mapped = canonicalAuthProperties(type, auth.properties, context, warnings);
+            Set<String> keys = BrunoFormatSupport.newKeySet();
+            for (Map.Entry<String, String> entry : mapped.entrySet()) {
+                String key = BrunoFormatSupport.uniqueRenderedKey(entry.getKey(), keys, context + " auth", warnings);
+                String value = CollectionExportSupport.resolve(entry.getValue(), resolver, resolve);
+                BrunoFormatSupport.appendDictionaryEntry(out, "  ", "", key, value != null ? value : "",
+                        context + " auth property", warnings);
+            }
+        }
+        out.append("}\n\n");
+    }
+
+    private static Map<String, String> canonicalAuthProperties(String type,
+                                                               Map<String, String> source,
+                                                               String context,
+                                                               List<String> warnings) {
+        Map<String, String> input = source != null ? source : Map.of();
+        LinkedHashMap<String, String> mapped = new LinkedHashMap<>();
+        Set<String> consumed = new LinkedHashSet<>();
+        switch (type) {
+            case "basic" -> {
+                mapAuth(mapped, consumed, input, "username", "username", "user");
+                mapAuth(mapped, consumed, input, "password", "password", "pass");
+            }
+            case "bearer" -> mapAuth(mapped, consumed, input, "token", "token", "value", "access_token");
+            case "apikey" -> {
+                mapAuth(mapped, consumed, input, "key", "key", "name", "keyname");
+                mapAuth(mapped, consumed, input, "value", "value", "keyvalue", "token");
+                String placement = first(input, "in", "placement", "location");
+                consumed.addAll(List.of("in", "placement", "location"));
+                mapped.put("placement", "queryParams".equalsIgnoreCase(placement) ? "query"
+                        : placement != null ? placement : "header");
+            }
+            case "oauth2" -> {
+                mapAuth(mapped, consumed, input, "grant_type", "grantType", "grant_type", "grant");
+                mapAuth(mapped, consumed, input, "access_token_url", "accessTokenUrl", "access_token_url");
+                mapAuth(mapped, consumed, input, "authorization_url", "authorizationUrl", "authorization_url");
+                mapAuth(mapped, consumed, input, "callback_url", "redirectUri", "callback_url", "redirect_uri");
+                mapAuth(mapped, consumed, input, "client_id", "clientId", "client_id");
+                mapAuth(mapped, consumed, input, "client_secret", "clientSecret", "client_secret");
+                mapAuth(mapped, consumed, input, "scope", "scope");
+                mapAuth(mapped, consumed, input, "username", "username");
+                mapAuth(mapped, consumed, input, "password", "password");
+                mapAuth(mapped, consumed, input, "access_token", "accessToken", "access_token", "token");
+            }
+            default -> { }
+        }
+        Set<String> unsupported = new java.util.TreeSet<>();
+        for (String key : input.keySet()) {
+            if (key != null && !consumed.contains(key)) unsupported.add(key);
+        }
+        if (!unsupported.isEmpty()) {
+            ExportWarningSupport.add(warnings, "Bruno export omitted unsupported auth properties for "
+                    + context + ": " + String.join(", ", unsupported) + ".");
+        }
+        return mapped;
+    }
+
+    private static void mapAuth(Map<String, String> target, Set<String> consumed,
+                                Map<String, String> source, String targetKey, String... candidates) {
+        String value = first(source, candidates);
+        for (String candidate : candidates) consumed.add(candidate);
+        if (value != null) target.put(targetKey, value);
+    }
+
+    private static String first(Map<String, String> source, String... keys) {
+        for (String key : keys) {
+            if (source.containsKey(key) && source.get(key) != null) return source.get(key);
+        }
+        return null;
+    }
+
+    private static AuthSelection requestAuthSelection(ApiRequest request, List<String> warnings) {
+        String mode = AuthInheritanceResolver.normalizeAuthOverrideMode(request.authOverrideMode, request);
+        if ("inherit".equals(mode)) return new AuthSelection(null, null);
+        if ("none".equals(mode) || request.authExplicitlyDisabled) return new AuthSelection("none", noneAuth());
+        ApiRequest.Auth auth = request.explicitAuth != null ? request.explicitAuth : request.auth;
+        String type = auth != null && auth.type != null ? auth.type.toLowerCase(Locale.ROOT) : "none";
+        if ("noauth".equals(type)) type = "none";
+        if (!SUPPORTED_AUTH.contains(type)) {
+            ExportWarningSupport.add(warnings, "Bruno export represented unsupported auth type '"
+                    + ExportWarningSupport.label(type) + "' as none for request '"
+                    + ExportWarningSupport.label(request.name) + "'.");
+            return new AuthSelection("none", noneAuth());
+        }
+        return new AuthSelection(type, auth);
+    }
+
+    private static String bodySelector(ApiRequest.Body body) {
+        if (body == null || body.mode == null || body.mode.isBlank() || "none".equalsIgnoreCase(body.mode)) return "none";
+        return switch (body.mode.toLowerCase(Locale.ROOT)) {
+            case "graphql" -> "graphql";
+            case "urlencoded" -> "form-urlencoded";
+            case "formdata" -> "multipart-form";
+            case "file" -> "file";
+            case "raw" -> {
+                String contentType = body.contentType != null ? body.contentType.toLowerCase(Locale.ROOT) : "";
+                if (contentType.contains("json")) yield "json";
+                if (contentType.contains("xml")) yield "xml";
+                yield "text";
+            }
+            default -> "text";
+        };
+    }
+
+    private static void validateMethod(String method, String context) throws IOException {
+        if (method == null || method.isEmpty()) throw new IOException("Bruno export requires an HTTP method for " + context + ".");
+        String separators = "()<>@,;:\\\"/[]?={} \t";
+        for (int i = 0; i < method.length(); i++) {
+            char ch = method.charAt(i);
+            if (ch <= 0x20 || ch >= 0x7f || separators.indexOf(ch) >= 0 || Character.isSurrogate(ch)) {
+                throw new IOException("Bruno export rejected an invalid HTTP method for " + context + ".");
+            }
         }
     }
 
@@ -405,135 +682,79 @@ public final class BrunoCollectionExporter {
         return false;
     }
 
-    private static String renderBruDictionaryKey(String key) {
-        String value = key != null ? key : "";
-        if (value.matches("[A-Za-z0-9_.-]+") && !value.startsWith("~")) {
-            return value;
+    private static String allocateName(String raw,
+                                       String fallback,
+                                       String extension,
+                                       Set<String> used,
+                                       List<String> warnings) {
+        String base = archiveSegment(raw, fallback);
+        if (raw != null && !raw.equals(base)) {
+            ExportWarningSupport.add(warnings, "Bruno export normalized an unsafe archive entry label '"
+                    + ExportWarningSupport.label(raw) + "'.");
         }
-        return "\"" + escapeBruQuotedText(value) + "\"";
+        String candidate = extension != null ? base + extension : base;
+        int suffix = 2;
+        while (RESERVED_NAMES.contains(candidate.toLowerCase(Locale.ROOT))
+                || !used.add(candidate.toLowerCase(Locale.ROOT))) {
+            candidate = base + "_" + suffix++ + (extension != null ? extension : "");
+        }
+        if (!(extension != null ? base + extension : base).equals(candidate)) {
+            ExportWarningSupport.add(warnings, "Bruno export renamed a colliding archive entry '"
+                    + ExportWarningSupport.label(raw) + "'.");
+        }
+        return candidate;
     }
 
-    private static String renderBruScalarValue(String value) {
-        if (value == null) return "";
-        boolean quote = value.isEmpty() ? false
-                : !value.equals(value.strip())
-                || value.chars().anyMatch(ch -> Character.isWhitespace(ch)
-                || ch == ':' || ch == '#' || ch == '/' || ch == '\"' || ch == '\''
-                || ch == '\\' || ch == '{' || ch == '}' || ch < 0x20 || ch == 0x7f);
-        return quote ? "\"" + escapeBruQuotedText(value) + "\"" : value;
-    }
-
-    private static String escapeBruQuotedText(String value) {
-        StringBuilder escaped = new StringBuilder();
-        for (int i = 0; value != null && i < value.length(); i++) {
+    private static String archiveSegment(String raw, String fallback) {
+        String value = ExportFileNamePolicy.sanitizeBaseName(raw != null ? raw : fallback);
+        if (value.equals(".") || value.equals("..") || value.isBlank()) value = fallback;
+        value = value.replace('/', '_').replace('\\', '_').replace(':', '_');
+        StringBuilder safe = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
-            switch (ch) {
-                case '\\' -> escaped.append("\\\\");
-                case '\"' -> escaped.append("\\\"");
-                case '\n' -> escaped.append("\\n");
-                case '\r' -> escaped.append("\\r");
-                case '\t' -> escaped.append("\\t");
-                case '\b' -> escaped.append("\\b");
-                case '\f' -> escaped.append("\\f");
-                default -> {
-                    if (ch < 0x20 || ch == 0x7f) escaped.append(String.format("\\u%04X", (int) ch));
-                    else escaped.append(ch);
+            if (ch < 0x20 || ch == 0x7f || Character.isSurrogate(ch)) safe.append('_');
+            else safe.append(ch);
+        }
+        return safe.toString().isBlank() ? fallback : safe.toString();
+    }
+
+    private static void validateEntries(Set<String> paths) throws IOException {
+        Set<String> seen = new LinkedHashSet<>();
+        for (String path : paths) {
+            if (path == null || path.isBlank() || path.startsWith("/") || path.startsWith("\\")
+                    || path.indexOf('\\') >= 0 || path.matches("^[A-Za-z]:.*")) {
+                throw new IOException("Bruno export generated an unsafe archive entry.");
+            }
+            for (String segment : path.split("/", -1)) {
+                if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                    throw new IOException("Bruno export generated an unsafe archive entry.");
+                }
+                for (int i = 0; i < segment.length(); i++) {
+                    char ch = segment.charAt(i);
+                    if (ch < 0x20 || ch == 0x7f || Character.isSurrogate(ch)) {
+                        throw new IOException("Bruno export generated an unsafe archive entry.");
+                    }
                 }
             }
-        }
-        return escaped.toString();
-    }
-
-    private static boolean isSafeBruFilePath(String path) {
-        if (path == null) return false;
-        for (int i = 0; i < path.length(); i++) {
-            char ch = path.charAt(i);
-            if (ch < 0x20 || ch == 0x7f) return false;
-        }
-        return true;
-    }
-
-    private static String safeRequestName(ApiRequest request) {
-        return request != null && request.name != null ? request.name.replaceAll("[\\r\\n]", " ") : "Request";
-    }
-
-    private static String safeKey(String key) {
-        return key != null ? key.replaceAll("[\\r\\n]", " ") : "";
-    }
-
-    private static void addWarning(List<String> warnings, String warning) {
-        if (warnings != null && warning != null && !warning.isBlank() && !warnings.contains(warning)) {
-            warnings.add(warning);
-        }
-    }
-
-    private static String renderAuthBlock(ApiRequest request, VariableResolver resolver, boolean resolve) {
-        if (request == null) {
-            return null;
-        }
-        if (request.auth == null || request.auth.type == null || request.auth.type.isBlank()) {
-            return null;
-        }
-        if (!request.hasAuth()) {
-            if (request.authExplicitlyDisabled || "none".equalsIgnoreCase(request.authOverrideMode)) {
-                return "auth {\n  mode: none\n}";
-            }
-            return null;
-        }
-        String type = request.auth.type.toLowerCase(java.util.Locale.ROOT);
-        StringBuilder sb = new StringBuilder();
-        sb.append("auth {\n");
-        sb.append("  mode: ").append(renderBruScalarValue(type)).append("\n");
-        if (request.auth.properties != null) {
-            List<Map.Entry<String, String>> properties = new ArrayList<>(request.auth.properties.entrySet());
-            properties.removeIf(entry -> entry.getKey() == null || entry.getKey().isBlank());
-            properties.sort(Map.Entry.comparingByKey());
-            for (Map.Entry<String, String> entry : properties) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    continue;
-                }
-                sb.append("  ").append(renderBruDictionaryKey(entry.getKey())).append(": ")
-                        .append(renderBruScalarValue(CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
-                                ? CollectionExportSupport.resolve(entry.getValue(), resolver, resolve)
-                                : ""))
-                        .append("\n");
+            if (!seen.add(path.toLowerCase(Locale.ROOT))) {
+                throw new IOException("Bruno export generated duplicate archive entries.");
             }
         }
-        sb.append("}");
-        return sb.toString();
     }
 
-    private static void writeJsonEntry(ZipOutputStream zip, String path, Map<String, Object> data) throws IOException {
-        ZipEntry entry = new ZipEntry(path);
-        entry.setTime(0L);
-        zip.putNextEntry(entry);
-        byte[] bytes = new com.google.gson.GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(data).getBytes(StandardCharsets.UTF_8);
-        zip.write(bytes);
-        zip.closeEntry();
+    private static byte[] gsonBytes(Map<String, Object> value) {
+        return new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create()
+                .toJson(value).getBytes(StandardCharsets.UTF_8);
     }
 
-    private static void writeTextEntry(ZipOutputStream zip, String path, String text) throws IOException {
-        ZipEntry entry = new ZipEntry(path);
-        entry.setTime(0L);
-        zip.putNextEntry(entry);
-        byte[] bytes = text != null ? text.getBytes(StandardCharsets.UTF_8) : new byte[0];
-        zip.write(bytes);
-        zip.closeEntry();
+    private static byte[] textBytes(String value) {
+        return (value != null ? value : "").getBytes(StandardCharsets.UTF_8);
     }
 
-    private static void putDirectory(ZipOutputStream zip, String dir) throws IOException {
-        if (dir == null || dir.isBlank()) {
-            return;
-        }
-        String normalized = dir.endsWith("/") ? dir : dir + "/";
-        ZipEntry entry = new ZipEntry(normalized);
-        entry.setTime(0L);
-        zip.putNextEntry(entry);
-        zip.closeEntry();
-    }
-
-    private static String normalizeFolderPath(String path) {
-        return RequestTreePathService.normalizeFolderPath(path);
+    private static ApiRequest.Auth noneAuth() {
+        ApiRequest.Auth auth = new ApiRequest.Auth();
+        auth.type = "none";
+        return auth;
     }
 
     private static ApiRequest dummyRequestForFolder(String folderPath) {
@@ -543,5 +764,5 @@ public final class BrunoCollectionExporter {
         return request;
     }
 
-    private enum ParameterKind { QUERY, PATH }
+    private record AuthSelection(String selector, ApiRequest.Auth auth) { }
 }

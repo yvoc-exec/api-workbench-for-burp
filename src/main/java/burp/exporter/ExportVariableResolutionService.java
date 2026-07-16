@@ -5,8 +5,8 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.UnresolvedVariableIssue;
 import burp.parser.VariableResolver;
-import burp.utils.RuntimeResolverFactory;
 import burp.utils.UnresolvedVariableAnalyzer;
+import burp.utils.RequestPathResolver;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,19 +28,61 @@ public final class ExportVariableResolutionService {
                                                   ApiRequest request,
                                                   EnvironmentProfile activeEnvironment,
                                                   Map<String, String> exportOnlyVariables) {
-        Map<String, String> overlay = new LinkedHashMap<>();
-        if (activeEnvironment != null) {
-            overlay.putAll(activeEnvironment.toRuntimeOverlay());
+        VariableResolver resolver = new VariableResolver();
+        if (collection != null && collection.environment != null) {
+            resolver.addAll(collection.environment);
+        }
+        if (collection != null && collection.variables != null) {
+            for (ApiRequest.Variable variable : collection.variables) {
+                if (variable != null && variable.enabled && variable.key != null && variable.value != null) {
+                    resolver.addCustomVariable(variable.key, variable.value);
+                }
+            }
+        }
+        if (collection != null && request != null && collection.folderVars != null) {
+            for (String ancestor : RequestPathResolver.getAncestorFolderPaths(collection, request)) {
+                Map<String, String> folder = collection.folderVars.get(ancestor);
+                if (folder != null) resolver.addAll(folder);
+            }
+        }
+        if (request != null && request.variables != null) {
+            for (ApiRequest.Variable variable : request.variables) {
+                if (variable != null && variable.enabled && variable.key != null && variable.value != null) {
+                    resolver.addCustomVariable(variable.key, variable.value);
+                }
+            }
+        }
+        if (activeEnvironment != null && activeEnvironment.variables != null) {
+            resolver.addAll(activeEnvironment.variables);
         }
         if (exportOnlyVariables != null && !exportOnlyVariables.isEmpty()) {
-            overlay.putAll(exportOnlyVariables);
+            resolver.addAll(exportOnlyVariables);
         }
-        return RuntimeResolverFactory.build(
-                collection,
-                request,
-                RuntimeResolverFactory.Options.withRuntimeVariableOverlay(overlay)
-                        .withCollectionRuntimeLayers(false)
-        );
+        return resolver;
+    }
+
+    static void addDuplicateEnabledVariableWarnings(ApiCollection collection,
+                                                     ApiRequest request,
+                                                     List<String> warnings) {
+        warnDuplicates(collection != null ? collection.variables : null, "collection", warnings);
+        warnDuplicates(request != null ? request.variables : null,
+                request != null ? "request '" + ExportWarningSupport.label(request.name) + "'" : "request",
+                warnings);
+    }
+
+    private static void warnDuplicates(List<ApiRequest.Variable> variables,
+                                       String scope,
+                                       List<String> warnings) {
+        Set<String> enabled = new java.util.LinkedHashSet<>();
+        if (variables == null) return;
+        for (ApiRequest.Variable variable : variables) {
+            if (variable == null || !variable.enabled || variable.key == null) continue;
+            if (!enabled.add(variable.key)) {
+                ExportWarningSupport.add(warnings, "Export resolution collapsed duplicate enabled variable '"
+                        + ExportWarningSupport.label(variable.key) + "' in " + scope
+                        + " using the last occurrence.");
+            }
+        }
     }
 
     public static List<UnresolvedVariableIssue> collectUnresolvedIssues(ApiCollection collection,
@@ -56,8 +98,8 @@ public final class ExportVariableResolutionService {
             return issues;
         }
         Map<String, String> overlay = new LinkedHashMap<>();
-        if (activeEnvironment != null) {
-            overlay.putAll(activeEnvironment.toRuntimeOverlay());
+        if (activeEnvironment != null && activeEnvironment.variables != null) {
+            overlay.putAll(activeEnvironment.variables);
         }
         if (exportOnlyVariables != null && !exportOnlyVariables.isEmpty()) {
             overlay.putAll(exportOnlyVariables);

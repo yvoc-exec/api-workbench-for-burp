@@ -36,6 +36,8 @@ public class InsomniaParser implements CollectionParser {
     private static final String[] SCRIPT_SOURCE_PROPERTIES = {"script", "code", "source", "text", "value"};
     private static final Set<String> PRE_SCRIPT_KEYS = Set.of("pre", "request", "preRequest", "before");
     private static final Set<String> POST_SCRIPT_KEYS = Set.of("post", "response", "postResponse", "after", "afterResponse");
+    private static final Set<String> TRANSPORT_HEADERS = Set.of(
+            "host", "content-length", "transfer-encoding", "connection", "proxy-connection");
 
     @Override
     public boolean canParse(File file) {
@@ -108,6 +110,16 @@ public class InsomniaParser implements CollectionParser {
             String id = string(resource, "_id", "");
             folderNames.put(id, string(resource, "name", ""));
             folderParents.put(id, string(resource, "parentId", ""));
+            if (hasAny(resource, "preRequestScript", "pre_request_script", "requestHooks",
+                    "afterResponseScript", "after_response_script", "responseHooks", "script", "scripts")) {
+                warn(collection, buildResourceLabel(resource, "folder"),
+                        "Folder scripts could not be retained in the collection model.");
+            }
+            JsonArray folderHeaders = array(resource, "headers");
+            if (folderHeaders != null && !folderHeaders.isEmpty()) {
+                warn(collection, buildResourceLabel(resource, "folder"),
+                        "Folder headers could not be retained in the collection model.");
+            }
             JsonObject authObject = object(resource, "authentication");
             ApiRequest.Auth auth = parseAuth(authObject, collection,
                     buildResourceLabel(resource, "folder"));
@@ -124,6 +136,17 @@ public class InsomniaParser implements CollectionParser {
             if (auth != null && !path.isBlank()) {
                 AuthInheritanceResolver.setFolderAuth(collection, path,
                         AuthInheritanceResolver.normalizeParsedAuthMode(auth), auth);
+            }
+            JsonObject folderResource = resourceById(resources, folderId);
+            JsonObject environment = object(folderResource, "environment");
+            if (environment != null && !path.isBlank()) {
+                Map<String, String> values = collection.folderVars.computeIfAbsent(path, ignored -> new LinkedHashMap<>());
+                for (Map.Entry<String, JsonElement> entry : environment.entrySet()) {
+                    if (entry.getValue() != null && !entry.getValue().isJsonNull()) {
+                        values.put(entry.getKey(), entry.getValue().isJsonPrimitive()
+                                ? entry.getValue().getAsString() : entry.getValue().toString());
+                    }
+                }
             }
         }
 
@@ -217,6 +240,19 @@ public class InsomniaParser implements CollectionParser {
         }
         request.parameters = QueryParameterImportSupport.reconcileStructuredQueryWithRawUrl(
                 request.url, structured, "insomnia:url.raw", "insomnia:url.raw-unmatched");
+        JsonArray pathRows = array(resource, "pathParameters");
+        if (pathRows != null) {
+            for (JsonElement element : pathRows) {
+                if (element == null || !element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                ApiRequest.Parameter parameter = new ApiRequest.Parameter("path",
+                        row.has("name") ? string(row, "name", "") : string(row, "key", ""),
+                        string(row, "value", ""));
+                parameter.valuePresent = true;
+                parameter.source = "insomnia:pathParameters";
+                request.parameters.add(parameter);
+            }
+        }
         request.url = RequestParameterSupport.materializeUrl(request.url, request.parameters, null);
     }
 
@@ -230,8 +266,11 @@ public class InsomniaParser implements CollectionParser {
                 continue;
             }
             JsonObject header = element.getAsJsonObject();
+            String name = header.has("name") ? string(header, "name", "") : string(header, "key", "");
+            if (TRANSPORT_HEADERS.contains(name.trim().toLowerCase(Locale.ROOT))) continue;
             request.headers.add(new ApiRequest.Header(
-                    string(header, "name", ""), string(header, "value", ""),
+                    name,
+                    string(header, "value", ""),
                     bool(header, "disabled", false)));
         }
     }
@@ -329,6 +368,11 @@ public class InsomniaParser implements CollectionParser {
         if (object == null) {
             return null;
         }
+        if (bool(object, "disabled", false)) {
+            ApiRequest.Auth none = new ApiRequest.Auth();
+            none.type = "none";
+            return none;
+        }
         String originalType = string(object, "type", null);
         if (originalType == null || originalType.isBlank()) {
             return null;
@@ -354,6 +398,9 @@ public class InsomniaParser implements CollectionParser {
                 auth.properties.put("in", "query");
             } else if ("header".equalsIgnoreCase(addTo)) {
                 auth.properties.put("in", "header");
+            } else if ("cookie".equalsIgnoreCase(addTo)) {
+                warn(collection, label,
+                        "API-key cookie placement was retained but runtime application is unsupported.");
             }
         }
         if (!SUPPORTED_AUTH.contains(normalized)) {
@@ -545,8 +592,8 @@ public class InsomniaParser implements CollectionParser {
         if (collection == null || reason == null || reason.isBlank()) {
             return;
         }
-        String safePath = DiagnosticSanitizer.sanitizeText(path != null ? path : "unknown resource");
-        String safeReason = DiagnosticSanitizer.sanitizeText(reason);
+        String safePath = sanitizeWarningLabel(DiagnosticSanitizer.sanitizeText(path != null ? path : "unknown resource"));
+        String safeReason = sanitizeWarningLabel(DiagnosticSanitizer.sanitizeText(reason));
         String message = "Insomnia import warning for \"" + safePath + "\": " + safeReason;
         collection.importWarnings.add(message);
         DiagnosticStore.getInstance().record(DiagnosticEvent.of(
@@ -557,10 +604,35 @@ public class InsomniaParser implements CollectionParser {
                 .withDetails(message));
     }
 
+    private String sanitizeWarningLabel(String value) {
+        if (value == null) return "";
+        return value.replaceAll("[\\r\\n\\u0085\\u2028\\u2029\\x00-\\x09\\x0B\\x0C\\x0E-\\x1F\\x7F]", " ")
+                .replaceAll("\\s+", " ").trim();
+    }
+
+    private static boolean hasAny(JsonObject object, String... names) {
+        if (object == null || names == null) return false;
+        for (String name : names) {
+            if (name != null && object.has(name)) return true;
+        }
+        return false;
+    }
+
     private static JsonObject firstResource(JsonArray resources, String type) {
         for (JsonElement element : resources) {
             if (element != null && element.isJsonObject()
                     && type.equals(string(element.getAsJsonObject(), "_type", ""))) {
+                return element.getAsJsonObject();
+            }
+        }
+        return null;
+    }
+
+    private static JsonObject resourceById(JsonArray resources, String id) {
+        if (resources == null || id == null) return null;
+        for (JsonElement element : resources) {
+            if (element != null && element.isJsonObject()
+                    && id.equals(string(element.getAsJsonObject(), "_id", null))) {
                 return element.getAsJsonObject();
             }
         }

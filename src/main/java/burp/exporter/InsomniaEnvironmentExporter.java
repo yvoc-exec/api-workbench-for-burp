@@ -12,19 +12,28 @@ public final class InsomniaEnvironmentExporter {
 
     public static JsonObject build(EnvironmentProfile profile, List<String> warnings) {
         JsonObject root = new JsonObject();
+        root.addProperty("__type", "export");
+        root.addProperty("__export_format", 4);
+        root.addProperty("__export_source", "api-workbench-for-burp");
         JsonArray resources = new JsonArray();
-        JsonObject env = new JsonObject();
-        env.addProperty("_id", ExportIds.environmentId(profile));
-        env.addProperty("_type", "environment");
-        env.addProperty("name", profile != null && profile.name != null ? profile.name : "Environment");
+        ExportIds.Allocator ids = new ExportIds.Allocator();
+        String workspaceId = ids.allocate("wrk_" + ExportIds.slug(profile != null ? profile.displayName() : "environment"), "wrk_environment");
+        JsonObject workspace = new JsonObject();
+        workspace.addProperty("_id", workspaceId);
+        workspace.addProperty("_type", "workspace");
+        workspace.addProperty("name", profile != null ? profile.displayName() : "Environment");
+        resources.add(workspace);
 
+        JsonObject env = new JsonObject();
+        env.addProperty("_id", ids.allocate(ExportIds.environmentId(profile), "env_environment"));
+        env.addProperty("_type", "environment");
+        env.addProperty("parentId", workspaceId);
+        env.addProperty("name", profile != null ? profile.displayName() : "Environment");
         JsonObject data = new JsonObject();
         if (profile != null && profile.variables != null) {
             for (var entry : profile.variables.entrySet()) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    if (warnings != null) {
-                        warnings.add("Skipped blank environment variable key.");
-                    }
+                    ExportWarningSupport.add(warnings, "Insomnia environment export skipped a blank variable key.");
                     continue;
                 }
                 data.addProperty(entry.getKey(), entry.getValue() != null ? entry.getValue() : "");

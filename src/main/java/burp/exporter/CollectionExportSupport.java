@@ -86,6 +86,24 @@ final class CollectionExportSupport {
         return out;
     }
 
+    static JsonArray toInsomniaHeadersArray(List<ApiRequest.Header> headers,
+                                            VariableResolver resolver,
+                                            boolean resolve) {
+        JsonArray out = new JsonArray();
+        if (headers == null) return out;
+        for (ApiRequest.Header header : headers) {
+            if (header == null || header.key == null || header.key.isBlank()
+                    || isTransportHeader(header.key)) continue;
+            JsonObject object = new JsonObject();
+            object.addProperty("name", resolve(header.key, resolver, resolve));
+            object.addProperty("value", resolve(header.value, resolver, resolve) != null
+                    ? resolve(header.value, resolver, resolve) : "");
+            object.addProperty("disabled", header.disabled);
+            out.add(object);
+        }
+        return out;
+    }
+
     static boolean isTransportHeader(String headerName) {
         if (headerName == null) {
             return false;
@@ -219,8 +237,12 @@ final class CollectionExportSupport {
                 out.addProperty(entry.getKey(), resolve(entry.getValue(), resolver, resolve) != null ? resolve(entry.getValue(), resolver, resolve) : "");
             }
         }
-        if ("apikey".equals(type) && out.has("placement") && !out.has("addTo")) {
-            out.addProperty("addTo", out.get("placement").getAsString());
+        if ("apikey".equals(type)) {
+            String placement = firstNonBlank(auth.properties, "in", "placement", "addTo");
+            if (placement != null) {
+                out.addProperty("addTo", "query".equalsIgnoreCase(placement)
+                        || "queryParams".equalsIgnoreCase(placement) ? "queryParams" : placement);
+            }
         }
         return out;
     }
@@ -427,9 +449,8 @@ final class CollectionExportSupport {
                             obj.addProperty("type", "file");
                             if (field.filePath != null) {
                                 obj.addProperty("fileName", resolve(field.filePath, resolver, resolve) != null ? resolve(field.filePath, resolver, resolve) : "");
-                            } else if (field.value != null && !field.value.isBlank()) {
-                                obj.addProperty("value", resolve(field.value, resolver, resolve));
                             }
+                            if (field.value != null) obj.addProperty("value", resolve(field.value, resolver, resolve));
                         } else {
                             obj.addProperty("type", field.type != null && !field.type.isBlank() ? field.type : "text");
                             obj.addProperty("value", resolve(field.value, resolver, resolve) != null ? resolve(field.value, resolver, resolve) : "");

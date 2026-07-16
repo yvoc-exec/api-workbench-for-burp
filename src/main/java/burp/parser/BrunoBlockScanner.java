@@ -422,20 +422,11 @@ final class BrunoBlockScanner {
     }
 
     private static int findQuotedDictionaryKeyEnd(String source, int keyStart, int lineEnd) {
-        boolean escaped = false;
         for (int i = keyStart + 1; i < lineEnd; i++) {
-            char ch = source.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (ch == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (ch == '"') {
-                return i;
-            }
+            if (source.charAt(i) != '"') continue;
+            int cursor = i + 1;
+            while (cursor < lineEnd && Character.isWhitespace(source.charAt(cursor))) cursor++;
+            if (cursor < lineEnd && source.charAt(cursor) == ':') return i;
         }
         return -1;
     }

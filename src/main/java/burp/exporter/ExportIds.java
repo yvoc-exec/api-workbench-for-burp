@@ -8,6 +8,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 final class ExportIds {
     private ExportIds() {
@@ -26,6 +28,19 @@ final class ExportIds {
                 ? request.id
                 : (request != null && request.name != null ? request.name : "request") + ":" + index;
         return "req_" + shortHash(seed);
+    }
+
+    static final class Allocator {
+        private final Set<String> used = new LinkedHashSet<>();
+
+        String allocate(String desired, String fallback) {
+            String base = desired != null && !desired.isBlank() ? desired : fallback;
+            if (base == null || base.isBlank()) base = "res_item";
+            String candidate = base;
+            int suffix = 2;
+            while (!used.add(candidate)) candidate = base + "_" + suffix++;
+            return candidate;
+        }
     }
 
     static String environmentId(EnvironmentProfile profile) {

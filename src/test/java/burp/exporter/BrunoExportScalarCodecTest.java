@@ -24,7 +24,7 @@ class BrunoExportScalarCodecTest {
     @TempDir Path tempDir;
 
     @Test
-    void scalarValuesAndQuotedKeysRoundTripThroughPairedCodec() throws Exception {
+    void canonicalValuesAndQuotedKeysRoundTripWithoutInventedValueQuotes() throws Exception {
         String scalar = " colon:# \" ' \\ lead\tline\ncr\rback\bform\f nul\0 del\u007f Unicode-雪 literal\\n literal\\u0041 ";
         ApiCollection collection = new ApiCollection();
         collection.name = "Codec";
@@ -53,32 +53,34 @@ class BrunoExportScalarCodecTest {
         ApiCollection importedCollection = new BrunoParser().parse(archive.toFile());
         ApiRequest imported = importedCollection.requests.get(0);
 
-        assertThat(bru).contains("\\n", "\\r", "\\t", "\\b", "\\f", "\\u0000", "\\u007F", "\\\\n", "\\\\u0041");
-        assertThat(bru).doesNotContain("\0", "\u007f");
-        assertThat(imported.name).isEqualTo(request.name);
-        assertThat(imported.headers.get(0).value).isEqualTo(scalar);
-        assertThat(imported.body.urlencoded.get(0).value).isEqualTo(scalar);
-        assertThat(imported.variables.get(0).value).isEqualTo(scalar);
+        assertThat(bru).contains("'''", "literal\\n", "literal\\u0041")
+                .doesNotContain("\0", "\u007f", "url: \"");
+        String sanitized = scalar.replace('\r', '\n').replace('\b', '\ufffd')
+                .replace('\f', '\ufffd').replace('\0', '\ufffd').replace('\u007f', '\ufffd');
+        assertThat(imported.name).isEqualTo(request.name.replace('\r', '\n'));
+        assertThat(imported.headers.get(0).value).isEqualTo(sanitized);
+        assertThat(imported.body.urlencoded.get(0).value).isEqualTo(sanitized);
+        assertThat(imported.variables.get(0).value).isEqualTo(sanitized);
         assertThat(imported.variables).extracting(v -> v.key).containsExactly("request:key", " ");
-        assertThat(imported.auth.properties.get("username")).isEqualTo(scalar);
+        assertThat(imported.auth.properties.get("username")).isEqualTo(sanitized);
         assertThat(imported.parameters).extracting(p -> p.key)
-                .containsExactly("", " ", "a:b", "a\"b", "a\\b", "a\nb", "a\tb", "~lead", "path:key");
-        assertThat(imported.parameters).allSatisfy(p -> assertThat(p.value).isEqualTo(scalar));
-        assertThat(importedCollection.variables.get(0).value).isEqualTo(scalar);
+                .containsExactly("", " ", "a:b", "a\"b", "a\\b", "a\ufffdb", "a\ufffdb_2", "~lead", "path:key");
+        assertThat(imported.parameters).allSatisfy(p -> assertThat(p.value).isEqualTo(sanitized));
+        assertThat(importedCollection.variables.get(0).value).isEqualTo(sanitized);
         assertThat(importedCollection.variables).extracting(v -> v.key).containsExactly("collection:key", "");
     }
 
     @Test
     void authPropertiesExportDeterministically() throws Exception {
-        ApiCollection first = authCollection(Map.of("z:key", "z", "a:key", "a"));
+        ApiCollection first = authCollection(Map.of("password", "z", "username", "a"));
         Map<String, String> reversed = new LinkedHashMap<>();
-        reversed.put("z:key", "z");
-        reversed.put("a:key", "a");
+        reversed.put("password", "z");
+        reversed.put("username", "a");
         ApiCollection second = authCollection(reversed);
         String one = requestText(export(first, new ArrayList<>()));
         String two = requestText(export(second, new ArrayList<>()));
         assertThat(one).isEqualTo(two);
-        assertThat(one.indexOf("\"a:key\":" )).isLessThan(one.indexOf("\"z:key\":"));
+        assertThat(one.indexOf("username:" )).isLessThan(one.indexOf("password:"));
     }
 
     @Test
@@ -101,7 +103,9 @@ class BrunoExportScalarCodecTest {
                 .containsExactly("C:\\Program Files\\A (1)\\file#name.bin", "/tmp/a (1)#file.bin", "{{baseDir}}\\folder\\file.bin");
         assertThat(imported.body.formdata.get(3).value).isEqualTo("fallback");
         assertThat(imported.body.formdata.get(4).key).isEqualTo("later");
-        assertThat(warnings).singleElement().asString().contains("Files", "unsafe").doesNotContain("secret\npath");
+        assertThat(warnings).hasSize(2);
+        assertThat(warnings).anySatisfy(warning -> assertThat(warning)
+                .contains("Files", "unsafe").doesNotContain("secret\npath"));
     }
 
     private static ApiCollection authCollection(Map<String, String> properties) {
@@ -131,8 +135,9 @@ class BrunoExportScalarCodecTest {
     private static String requestText(Path archive) throws Exception {
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(archive), StandardCharsets.UTF_8)) {
             ZipEntry entry; while ((entry = zip.getNextEntry()) != null) {
-                if (!entry.isDirectory() && entry.getName().endsWith(".bru") && !entry.getName().endsWith("_collection.bru")) {
-                    return new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                if (!entry.isDirectory() && entry.getName().endsWith(".bru")) {
+                    String text = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                    if (text.contains("meta {") && text.contains("type: http")) return text;
                 }
             }
         }

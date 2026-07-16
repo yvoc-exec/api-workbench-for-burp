@@ -33,7 +33,7 @@ class BrunoCollectionExporterTest {
         Map<String, String> entries = readZipEntries(output);
         assertThat(entries.keySet()).contains(
                 "APIM/bruno.json",
-                "APIM/_collection.bru",
+                "APIM/collection.bru",
                 "APIM/Auth/Auth.bru",
                 "APIM/Auth/OAuth/OAuth.bru",
                 "APIM/Users/users_{id}.bru"
@@ -44,14 +44,14 @@ class BrunoCollectionExporterTest {
         assertThat(loginBru).contains("post {");
         assertThat(loginBru).contains("headers {");
         assertThat(loginBru).contains("body:json {");
-        assertThat(loginBru).contains("auth {");
+        assertThat(loginBru).contains("auth:");
         assertThat(loginBru).contains("script:pre-request {");
         assertThat(loginBru).contains("script:post-response {");
         assertThat(loginBru).contains("resolved-password");
 
-        String collectionVars = entries.get("APIM/_collection.bru");
-        assertThat(collectionVars).contains("vars {");
-        assertThat(collectionVars).contains("base_url: \"https://api.example.test\"");
+        String collectionVars = entries.get("APIM/collection.bru");
+        assertThat(collectionVars).contains("vars:pre-request {");
+        assertThat(collectionVars).contains("base_url: https://api.example.test");
     }
 
     private static Map<String, String> readZipEntries(Path output) throws IOException {

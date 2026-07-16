@@ -61,7 +61,7 @@ class BrunoCollectionRoundTripTest {
         String all = String.join("\n", entries.values());
         assertThat(all).contains("params:query {", "params:path {", "body:form-urlencoded {",
                 "body:multipart-form {", "@file(", "script:pre-request {",
-                "script:post-response {", "test {");
+                "script:post-response {", "tests {");
         assertThat(all).doesNotContain("# file");
     }
 
@@ -104,7 +104,7 @@ class BrunoCollectionRoundTripTest {
         ApiRequest imported = new BrunoParser().parse(archive.toFile()).requests.get(0);
 
         assertThat(bru).contains("params:path {", "id: ", "\"\": ", "~\" \": ");
-        assertThat(warnings).filteredOn(w -> w.contains("bare path parameter")).hasSize(3);
+        assertThat(warnings).filteredOn(w -> w.contains("bare path parameter")).hasSize(2);
         assertThat(imported.parameters).extracting(p -> p.location).containsOnly("path");
         assertThat(imported.parameters).extracting(p -> p.key).containsExactly("id", "id", "id", "id", "", " ");
         assertThat(imported.parameters).extracting(p -> p.valuePresent).containsOnly(true);

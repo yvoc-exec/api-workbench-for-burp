@@ -18,8 +18,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class InsomniaCollectionExporter {
+    private static final Set<String> SUPPORTED_AUTH = Set.of(
+            "none", "noauth", "basic", "bearer", "apikey", "oauth2");
     private InsomniaCollectionExporter() {
     }
 
@@ -32,9 +35,12 @@ public final class InsomniaCollectionExporter {
         root.addProperty("__export_format", 4);
         root.addProperty("__export_source", "api-workbench-for-burp");
         JsonArray resources = new JsonArray();
+        ExportIds.Allocator idAllocator = new ExportIds.Allocator();
+        long[] sortKey = {-1000000000L};
 
-        String workspaceId = collection != null && collection.id != null && !collection.id.isBlank()
+        String desiredWorkspaceId = collection != null && collection.id != null && !collection.id.isBlank()
                 ? collection.id : ExportIds.workspaceId(collection);
+        String workspaceId = idAllocator.allocate(desiredWorkspaceId, ExportIds.workspaceId(collection));
         JsonObject workspace = new JsonObject();
         workspace.addProperty("_id", workspaceId);
         workspace.addProperty("_type", "workspace");
@@ -46,7 +52,9 @@ public final class InsomniaCollectionExporter {
 
         if (collection != null) {
             JsonObject env = new JsonObject();
-            env.addProperty("_id", ExportIds.environmentId(activeEnvironment != null ? activeEnvironment : new EnvironmentProfile()));
+            env.addProperty("_id", idAllocator.allocate(
+                    ExportIds.environmentId(activeEnvironment != null ? activeEnvironment : new EnvironmentProfile()),
+                    "env_base"));
             env.addProperty("_type", "environment");
             env.addProperty("parentId", workspaceId);
             env.addProperty("name", collection.name != null ? collection.name + " Environment" : "Environment");
@@ -76,9 +84,7 @@ public final class InsomniaCollectionExporter {
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
             for (Map.Entry<String, String> entry : merged.entrySet()) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    if (warnings != null) {
-                        warnings.add("Skipped blank environment variable key.");
-                    }
+                    addWarning(warnings, "Insomnia export skipped a blank environment variable key.");
                     continue;
                 }
                 data.addProperty(entry.getKey(), CollectionExportSupport.resolve(entry.getValue(), resolver, resolve) != null
@@ -91,7 +97,15 @@ public final class InsomniaCollectionExporter {
 
         CollectionExportTree.FolderNode tree = CollectionExportTree.build(collection);
         if (collection != null) {
-            writeFolderResources(resources, collection, tree, workspaceId, activeEnvironment, exportOnly, resolve, warnings);
+            if (collection.auth != null && collection.auth.type != null && !collection.auth.type.isBlank()) {
+                addWarning(warnings, "Insomnia export represented collection authentication on top-level request resources.");
+            }
+            Map<String, String> folderIds = new LinkedHashMap<>();
+            folderIds.put("", workspaceId);
+            writeFolderResources(resources, collection, tree, workspaceId, true, activeEnvironment,
+                    exportOnly, resolve, warnings, idAllocator, sortKey, folderIds);
+            writeRequestResources(resources, collection, workspaceId, folderIds, activeEnvironment,
+                    exportOnly, resolve, warnings, idAllocator, sortKey);
         }
 
         root.add("resources", resources);
@@ -107,43 +121,87 @@ public final class InsomniaCollectionExporter {
                                              ApiCollection collection,
                                              CollectionExportTree.FolderNode node,
                                              String parentId,
+                                             boolean topLevel,
                                              EnvironmentProfile activeEnvironment,
                                              Map<String, String> exportOnly,
                                              boolean resolve,
-                                             List<String> warnings) {
+                                             List<String> warnings,
+                                             ExportIds.Allocator idAllocator,
+                                             long[] sortKey,
+                                             Map<String, String> folderIds) {
         for (CollectionExportTree.FolderNode child : node.children.values()) {
-            String folderId = ExportIds.folderId(child.path);
+            String desiredFolderId = ExportIds.folderId(child.path);
+            String folderId = idAllocator.allocate(desiredFolderId, desiredFolderId);
             JsonObject group = new JsonObject();
             group.addProperty("_id", folderId);
             group.addProperty("_type", "request_group");
             group.addProperty("name", child.name);
             group.addProperty("parentId", parentId);
+            group.addProperty("metaSortKey", sortKey[0]++);
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, dummyRequestForFolder(child.path), activeEnvironment, exportOnly);
-            JsonObject auth = folderAuth(collection, child.path, resolver, resolve);
+            JsonObject auth = folderAuth(collection, child.path, resolver, resolve, warnings);
+            if (auth == null && topLevel && collection.auth != null) {
+                auth = insomniaAuth(collection.auth, resolver, resolve,
+                        "top-level folder '" + safeText(child.path) + "'", warnings);
+            }
             if (auth != null) {
                 group.add("authentication", auth);
             }
+            Map<String, String> folderEnvironment = collection.folderVars != null
+                    ? collection.folderVars.get(burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path)) : null;
+            if (folderEnvironment != null && !folderEnvironment.isEmpty()) {
+                JsonObject environment = new JsonObject();
+                new java.util.TreeMap<>(folderEnvironment).forEach(environment::addProperty);
+                group.add("environment", environment);
+            }
             resources.add(group);
-            writeFolderResources(resources, collection, child, folderId, activeEnvironment, exportOnly, resolve, warnings);
+            folderIds.put(burp.utils.AuthInheritanceResolver.normalizeFolderPath(child.path), folderId);
+            writeFolderResources(resources, collection, child, folderId, false, activeEnvironment,
+                    exportOnly, resolve, warnings, idAllocator, sortKey, folderIds);
         }
+    }
 
+    private static void writeRequestResources(JsonArray resources,
+                                              ApiCollection collection,
+                                              String workspaceId,
+                                              Map<String, String> folderIds,
+                                              EnvironmentProfile activeEnvironment,
+                                              Map<String, String> exportOnly,
+                                              boolean resolve,
+                                              List<String> warnings,
+                                              ExportIds.Allocator idAllocator,
+                                              long[] sortKey) {
         int requestIndex = 0;
-        for (ApiRequest request : node.requests) {
+        for (ApiRequest request : collection.requests != null ? collection.requests : List.<ApiRequest>of()) {
             if (request == null) {
                 continue;
             }
-            String requestId = ExportIds.requestId(request, requestIndex++);
+            String desiredRequestId = request.id != null && !request.id.isBlank()
+                    ? request.id : ExportIds.requestId(request, requestIndex);
+            String requestId = idAllocator.allocate(desiredRequestId,
+                    ExportIds.requestId(request, requestIndex));
+            if (!requestId.equals(desiredRequestId)) {
+                addWarning(warnings, "Insomnia export disambiguated a duplicate resource ID for request '"
+                        + safeRequestName(request) + "'.");
+            }
+            requestIndex++;
+            String folderPath = burp.utils.RequestPathResolver.getRequestFolderPath(collection, request);
+            folderPath = burp.utils.AuthInheritanceResolver.normalizeFolderPath(folderPath);
+            String parentId = folderIds.getOrDefault(folderPath, workspaceId);
+            boolean topLevel = folderPath.isEmpty();
             JsonObject resource = new JsonObject();
             resource.addProperty("_id", requestId);
             resource.addProperty("_type", "request");
             resource.addProperty("parentId", parentId);
+            resource.addProperty("metaSortKey", sortKey[0]++);
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
+            if (resolve) ExportVariableResolutionService.addDuplicateEnabledVariableWarnings(collection, request, warnings);
             resource.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
             resource.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
             resource.addProperty("url", RequestParameterSupport.materializeUrl(
                     request.url, request.parameters, resolve ? resolver : null));
             addParameters(resource, request, resolver, resolve, warnings);
-            JsonArray headers = CollectionExportSupport.toHeadersArray(request.headers, resolver, resolve);
+            JsonArray headers = CollectionExportSupport.toInsomniaHeadersArray(request.headers, resolver, resolve);
             if (!headers.isEmpty()) {
                 resource.add("headers", headers);
             }
@@ -153,7 +211,11 @@ public final class InsomniaCollectionExporter {
                 addBodyWarnings(request, warnings);
                 addBodyApproximationWarnings(request, resolver, resolve, warnings);
             }
-            JsonObject auth = requestAuth(request, resolver, resolve);
+            JsonObject auth = requestAuth(request, resolver, resolve, warnings);
+            if (auth == null && topLevel && collection.auth != null) {
+                auth = insomniaAuth(collection.auth, resolver, resolve,
+                        "root request '" + safeRequestName(request) + "'", warnings);
+            }
             if (auth != null) {
                 resource.add("authentication", auth);
             }
@@ -161,6 +223,10 @@ public final class InsomniaCollectionExporter {
                 resource.addProperty("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
             }
             addScripts(resource, request, resolver, resolve, warnings);
+            if (request.variables != null && !request.variables.isEmpty()) {
+                addWarning(warnings, "Insomnia export omitted " + request.variables.size()
+                        + " request variables for request '" + safeRequestName(request) + "'.");
+            }
             resources.add(resource);
         }
     }
@@ -169,14 +235,41 @@ public final class InsomniaCollectionExporter {
                                       VariableResolver resolver, boolean resolve,
                                       List<String> warnings) {
         JsonArray parameters = new JsonArray();
+        JsonArray pathParameters = new JsonArray();
+        java.util.Set<String> pathApproximation = new java.util.LinkedHashSet<>();
+        java.util.Set<String> queryApproximation = new java.util.LinkedHashSet<>();
         if (request.parameters != null) {
             for (ApiRequest.Parameter parameter : request.parameters) {
                 if (parameter == null) continue;
                 if (!parameter.isQuery()) {
-                    addWarning(warnings, "Insomnia export for request '" + safeRequestName(request)
-                            + "' cannot represent parameter location '" + safeText(parameter.location) + "'.");
+                    if (!"path".equalsIgnoreCase(parameter.location)) {
+                        addWarning(warnings, "Insomnia export for request '" + safeRequestName(request)
+                                + "' cannot represent parameter location '" + safeText(parameter.location) + "'.");
+                        continue;
+                    }
+                    if (parameter.disabled) pathApproximation.add("disabled");
+                    if (!parameter.valuePresent) pathApproximation.add("bare");
+                    if (parameter.description != null && !parameter.description.isBlank()) pathApproximation.add("description");
+                    if (parameter.type != null && !parameter.type.isBlank()) pathApproximation.add("type");
+                    if (parameter.required) pathApproximation.add("required");
+                    if (parameter.style != null && !parameter.style.isBlank()) pathApproximation.add("style");
+                    if (parameter.explode != null) pathApproximation.add("explode");
+                    if (parameter.allowReserved) pathApproximation.add("allowReserved");
+                    if (!parameter.disabled) {
+                        JsonObject pathRow = new JsonObject();
+                        String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+                        String value = CollectionExportSupport.resolve(parameter.value, resolver, resolve);
+                        pathRow.addProperty("name", key != null ? key : "");
+                        pathRow.addProperty("value", value != null ? value : "");
+                        pathParameters.add(pathRow);
+                    }
                     continue;
                 }
+                if (parameter.required) queryApproximation.add("required");
+                if (parameter.style != null && !parameter.style.isBlank()) queryApproximation.add("style");
+                if (parameter.explode != null) queryApproximation.add("explode");
+                if (parameter.allowReserved) queryApproximation.add("allowReserved");
+                if (parameter.source != null && !parameter.source.isBlank()) queryApproximation.add("source");
                 JsonObject row = new JsonObject();
                 String key = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
                 row.addProperty("name", key != null ? key : "");
@@ -195,6 +288,15 @@ public final class InsomniaCollectionExporter {
             }
         }
         if (!parameters.isEmpty()) resource.add("parameters", parameters);
+        if (!pathParameters.isEmpty()) resource.add("pathParameters", pathParameters);
+        if (!pathApproximation.isEmpty()) {
+            addWarning(warnings, "Insomnia export approximated path parameter metadata for request '"
+                    + safeRequestName(request) + "': " + String.join(", ", pathApproximation) + ".");
+        }
+        if (!queryApproximation.isEmpty()) {
+            addWarning(warnings, "Insomnia export omitted unsupported query parameter metadata for request '"
+                    + safeRequestName(request) + "': " + String.join(", ", queryApproximation) + ".");
+        }
     }
 
     private static void addScripts(JsonObject resource, ApiRequest request,
@@ -325,26 +427,35 @@ public final class InsomniaCollectionExporter {
     }
 
     private static String safeText(String value) {
-        return value != null ? value.replaceAll("[\\r\\n]", " ") : "";
+        return ExportWarningSupport.label(value);
     }
 
     private static void addWarning(List<String> warnings, String warning) {
-        if (warnings != null && warning != null && !warning.isBlank() && !warnings.contains(warning)) {
-            warnings.add(warning);
-        }
+        ExportWarningSupport.add(warnings, warning);
     }
 
-    private static JsonObject requestAuth(ApiRequest request, VariableResolver resolver, boolean resolve) {
-        if (request == null || request.auth == null) {
+    private static JsonObject requestAuth(ApiRequest request, VariableResolver resolver, boolean resolve,
+                                          List<String> warnings) {
+        if (request == null) {
             return null;
         }
-        if (request.authOverrideMode != null && "inherit".equalsIgnoreCase(request.authOverrideMode) && request.authInherited) {
+        String mode = burp.utils.AuthInheritanceResolver.normalizeAuthOverrideMode(
+                request.authOverrideMode, request);
+        if ("inherit".equals(mode)) {
             return null;
         }
-        return CollectionExportSupport.authToInsomnia(request.auth, resolver, resolve);
+        if ("none".equals(mode) || request.authExplicitlyDisabled) {
+            JsonObject none = new JsonObject();
+            none.addProperty("type", "none");
+            return none;
+        }
+        ApiRequest.Auth auth = request.explicitAuth != null ? request.explicitAuth : request.auth;
+        return insomniaAuth(auth, resolver, resolve,
+                "request '" + safeRequestName(request) + "'", warnings);
     }
 
-    private static JsonObject folderAuth(ApiCollection collection, String folderPath, VariableResolver resolver, boolean resolve) {
+    private static JsonObject folderAuth(ApiCollection collection, String folderPath, VariableResolver resolver,
+                                         boolean resolve, List<String> warnings) {
         if (collection == null || folderPath == null || collection.folderAuthModes == null) {
             return null;
         }
@@ -353,8 +464,51 @@ public final class InsomniaCollectionExporter {
         if (mode == null || "inherit".equalsIgnoreCase(mode)) {
             return null;
         }
+        if ("none".equalsIgnoreCase(mode)) {
+            JsonObject none = new JsonObject();
+            none.addProperty("type", "none");
+            return none;
+        }
         ApiRequest.Auth auth = collection.folderAuth != null ? collection.folderAuth.get(normalized) : null;
+        return insomniaAuth(auth, resolver, resolve,
+                "folder '" + safeText(folderPath) + "'", warnings);
+    }
+
+    private static JsonObject insomniaAuth(ApiRequest.Auth auth,
+                                           VariableResolver resolver,
+                                           boolean resolve,
+                                           String context,
+                                           List<String> warnings) {
+        if (auth != null && auth.type != null && !auth.type.isBlank()) {
+            String type = auth.type.toLowerCase(java.util.Locale.ROOT);
+            if (!SUPPORTED_AUTH.contains(type)) {
+                addWarning(warnings, "Insomnia export retained unsupported authentication type '"
+                        + safeText(type) + "' for " + context + "; runtime application may be unsupported.");
+            }
+            if (("apikey".equals(type) || "api_key".equals(type)) && auth.properties != null) {
+                String placement = firstNonBlank(auth.properties, "in", "placement", "addTo");
+                if (placement != null && !isSupportedApiKeyPlacement(placement)) {
+                    addWarning(warnings, "Insomnia export retained unsupported API-key placement '"
+                            + safeText(placement) + "' for " + context + ".");
+                }
+            }
+        }
         return CollectionExportSupport.authToInsomnia(auth, resolver, resolve);
+    }
+
+    private static String firstNonBlank(Map<String, String> values, String... keys) {
+        if (values == null) return null;
+        for (String key : keys) {
+            String value = values.get(key);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
+    }
+
+    private static boolean isSupportedApiKeyPlacement(String value) {
+        return "header".equalsIgnoreCase(value)
+                || "query".equalsIgnoreCase(value)
+                || "queryParams".equalsIgnoreCase(value);
     }
 
     private static ApiRequest dummyRequestForFolder(String folderPath) {

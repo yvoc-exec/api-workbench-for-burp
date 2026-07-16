@@ -113,28 +113,38 @@ class EnvironmentExportServiceTest {
     @Test
     void exportsInsomniaEnvironmentResources() throws Exception {
         EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
+        profile.runtimeVariables.put("runtime", "DO_NOT_EXPORT_RUNTIME_TOKEN");
+        profile.oauth2.config.put("accessToken", "DO_NOT_EXPORT_RUNTIME_TOKEN");
         Path output = tempDir.resolve("uat.insomnia.environment.json");
 
         service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.INSOMNIA_JSON, output));
 
         JsonObject root = JsonParser.parseString(Files.readString(output)).getAsJsonObject();
-        assertThat(root.getAsJsonArray("resources")).hasSize(1);
-        JsonObject env = root.getAsJsonArray("resources").get(0).getAsJsonObject();
+        assertThat(root.getAsJsonArray("resources")).hasSize(2);
+        JsonObject workspace = root.getAsJsonArray("resources").get(0).getAsJsonObject();
+        JsonObject env = root.getAsJsonArray("resources").get(1).getAsJsonObject();
+        assertThat(workspace.get("_type").getAsString()).isEqualTo("workspace");
+        assertThat(env.get("parentId").getAsString()).isEqualTo(workspace.get("_id").getAsString());
         assertThat(env.get("_type").getAsString()).isEqualTo("environment");
         assertThat(env.getAsJsonObject("data").get("base_url").getAsString()).isEqualTo("https://api.example.test");
+        assertThat(root.toString()).doesNotContain("DO_NOT_EXPORT_RUNTIME_TOKEN");
     }
 
     @Test
     void exportsBrunoEnvironmentVarsBlock() throws Exception {
         EnvironmentProfile profile = ExportTestFixtures.activeEnvironment();
         profile.variables.put("quoted", "hello world");
+        profile.variables.put("multiline", " line one\n  line two ");
+        profile.runtimeVariables.put("runtime", "DO_NOT_EXPORT_RUNTIME_TOKEN");
         Path output = tempDir.resolve("uat.bru");
 
         service.exportEnvironment(profile, new EnvironmentExportOptions(EnvironmentExportFormat.BRUNO_BRU, output));
 
         String text = Files.readString(output);
         assertThat(text).contains("vars {");
-        assertThat(text).contains("base_url: \"https://api.example.test\"");
-        assertThat(text).contains("quoted: \"hello world\"");
+        assertThat(text).contains("base_url: https://api.example.test");
+        assertThat(text).contains("quoted: hello world");
+        assertThat(text).contains("multiline: '''", "    line one", "     line two ", "  '''")
+                .doesNotContain("DO_NOT_EXPORT_RUNTIME_TOKEN");
     }
 }
