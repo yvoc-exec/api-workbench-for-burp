@@ -82,12 +82,17 @@ public class OpenApiParser implements CollectionParser {
             AuthInheritanceResolver.recomputeCollectionAuth(collection);
             return collection;
         }
+        Map<String, Object> unmodeledPathItems = new LinkedHashMap<>();
         for (Map.Entry<String, Object> pathEntry : castMap(rawPaths).entrySet()) {
             if (!(pathEntry.getValue() instanceof Map<?, ?> rawPathItem)) continue;
             Map<String, Object> pathItem = castMap(rawPathItem);
+            int declaredOperations = 0;
+            int importedOperations = 0;
             for (Map.Entry<String, Object> operationEntry : pathItem.entrySet()) {
                 String method = operationEntry.getKey().toLowerCase(Locale.ROOT);
-                if (!HTTP_METHODS.contains(method) || !(operationEntry.getValue() instanceof Map<?, ?> rawOperation)) continue;
+                if (!HTTP_METHODS.contains(method)) continue;
+                declaredOperations++;
+                if (!(operationEntry.getValue() instanceof Map<?, ?> rawOperation)) continue;
                 try {
                     ApiRequest request = parseOperation(
                             method.toUpperCase(Locale.ROOT), pathEntry.getKey(), pathItem,
@@ -95,11 +100,21 @@ public class OpenApiParser implements CollectionParser {
                             securitySchemes, defaultSecurity, warnings);
                     request.sourceCollection = collection.name;
                     collection.requests.add(request);
-                } catch (RuntimeException e) {
-                    OpenApiWarningSupport.add(warnings, "unsupported retained field: operation import failed " + method.toUpperCase(Locale.ROOT));
+                    importedOperations++;
+                } catch (RuntimeException ignored) {
+                    // Retained below when every directly declared operation fails.
                 }
             }
+            if (declaredOperations == 0 || importedOperations == 0) {
+                unmodeledPathItems.put(pathEntry.getKey(), pathItem);
+            }
+            if (declaredOperations > 0 && importedOperations == 0) {
+                OpenApiWarningSupport.add(warnings, "unsupported retained field: all operations failed for path "
+                        + OpenApiWarningSupport.label(pathEntry.getKey()));
+            }
         }
+        if (!unmodeledPathItems.isEmpty()) OpenApiMetadataSupport.putCanonical(
+                collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_UNMODELED_PATH_ITEMS, unmodeledPathItems);
         AuthInheritanceResolver.recomputeCollectionAuth(collection);
         return collection;
     }

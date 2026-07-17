@@ -40,6 +40,7 @@ public final class OpenApiMetadataSupport {
     public static final String DOCUMENT_INFO = "openapi.document.info";
     public static final String DOCUMENT_EXTERNAL_DOCS = "openapi.document.externalDocs";
     public static final String DOCUMENT_WEBHOOKS = "openapi.document.webhooks";
+    public static final String DOCUMENT_UNMODELED_PATH_ITEMS = "openapi.document.unmodeledPathItems";
     public static final String DOCUMENT_COMPONENTS = "openapi.document.components";
     public static final String DOCUMENT_SWAGGER_STRUCTURES = "openapi.swagger2.documentStructures";
     public static final String PATH_ITEM_SERVERS = "openapi.pathItem.servers";

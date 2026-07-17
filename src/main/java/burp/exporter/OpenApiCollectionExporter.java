@@ -97,7 +97,11 @@ public final class OpenApiCollectionExporter {
             }
         }
 
-        Map<String, Object> paths = new LinkedHashMap<>();
+        Map<String, Object> paths = collection != null ? OpenApiMetadataSupport.parseObject(
+                metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_UNMODELED_PATH_ITEMS))
+                : new LinkedHashMap<>();
+        Set<String> retainedUnmodeledPaths = new LinkedHashSet<>(paths.keySet());
+        Set<String> modeledPaths = new LinkedHashSet<>();
         List<PathServerRecord> pathServerRecords = new ArrayList<>();
         if (collection != null && collection.requests != null) {
             int index = 0;
@@ -115,6 +119,10 @@ public final class OpenApiCollectionExporter {
                         && request.sourceMetadata.containsKey(OpenApiMetadataSupport.EFFECTIVE_SERVER_LEVEL)
                         && retainedPathTemplate != null && retainedPathTemplate.startsWith("/")
                         ? convertPathTemplate(retainedPathTemplate) : parsed.path;
+                if (modeledPaths.add(path) && retainedUnmodeledPaths.contains(path)) {
+                    paths.put(path, new LinkedHashMap<>());
+                    addWarning(warnings, "modeled path replaced retained unmodeled Path Item: " + safeName(path));
+                }
                 Map<String, Object> pathItem = (Map<String, Object>) paths.computeIfAbsent(path, key -> new LinkedHashMap<>());
                 mergeExtensions(pathItem, OpenApiMetadataSupport.parseObject(
                         metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_EXTENSIONS)));
@@ -619,6 +627,7 @@ public final class OpenApiCollectionExporter {
         if (node instanceof Map<?, ?> raw) {
             Map<String, Object> map = castMap(raw);
             for (Map.Entry<String, Object> entry : map.entrySet()) {
+                if (isExtensionKey(entry.getKey())) continue;
                 if ("schema".equals(entry.getKey()) && schemaRequires31(entry.getValue())) return true;
                 if ("schemas".equals(entry.getKey()) && entry.getValue() instanceof Map<?, ?> schemas) {
                     for (Object schema : schemas.values()) if (schemaRequires31(schema)) return true;
@@ -677,7 +686,9 @@ public final class OpenApiCollectionExporter {
             Map<String, Object> normalized = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : copy.entrySet()) {
                 String key = entry.getKey();
-                if ("schema".equals(key)) {
+                if (isExtensionKey(key)) {
+                    normalized.put(key, copyOpaqueExtensionValue(entry.getValue()));
+                } else if ("schema".equals(key)) {
                     normalized.put(entry.getKey(), normalizeSchemaNode(entry.getValue(), openApi31, warnings, context + " schema"));
                 } else if ("schemas".equals(key) && entry.getValue() instanceof Map<?, ?> schemas) {
                     Map<String, Object> normalizedSchemas = new LinkedHashMap<>();
@@ -714,8 +725,8 @@ public final class OpenApiCollectionExporter {
         if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
         Map<String, Object> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-            normalized.put(entry.getKey(), entry.getKey().startsWith("x-")
-                    ? normalizeOpenApiNode(entry.getValue(), openApi31, warnings, context)
+            normalized.put(entry.getKey(), isExtensionKey(entry.getKey())
+                    ? copyOpaqueExtensionValue(entry.getValue())
                     : normalizePathItemNode(entry.getValue(), openApi31, warnings,
                             context + " " + safeName(entry.getKey())));
         }
@@ -730,16 +741,19 @@ public final class OpenApiCollectionExporter {
         Map<String, Object> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, Object> callback : castMap(raw).entrySet()) {
             Object value = callback.getValue();
-            if (callback.getKey().startsWith("x-") || !(value instanceof Map<?, ?> callbackRaw)
-                    || callbackRaw.containsKey("$ref")) {
+            if (isExtensionKey(callback.getKey())) {
+                normalized.put(callback.getKey(), copyOpaqueExtensionValue(value));
+                continue;
+            }
+            if (!(value instanceof Map<?, ?> callbackRaw) || callbackRaw.containsKey("$ref")) {
                 normalized.put(callback.getKey(), normalizeOpenApiNode(value, openApi31, warnings,
                         context + " " + safeName(callback.getKey())));
                 continue;
             }
             Map<String, Object> expressions = new LinkedHashMap<>();
             for (Map.Entry<String, Object> expression : castMap(callbackRaw).entrySet()) {
-                expressions.put(expression.getKey(), expression.getKey().startsWith("x-")
-                        ? normalizeOpenApiNode(expression.getValue(), openApi31, warnings, context)
+                expressions.put(expression.getKey(), isExtensionKey(expression.getKey())
+                        ? copyOpaqueExtensionValue(expression.getValue())
                         : normalizePathItemNode(expression.getValue(), openApi31, warnings,
                                 context + " expression"));
             }
@@ -756,8 +770,10 @@ public final class OpenApiCollectionExporter {
         Map<String, Object> source = pathItemSiblingSubset(castMap(raw), warnings, context);
         Map<String, Object> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : source.entrySet()) {
-            normalized.put(entry.getKey(), normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
-                    context + " " + safeName(entry.getKey())));
+            normalized.put(entry.getKey(), isExtensionKey(entry.getKey())
+                    ? copyOpaqueExtensionValue(entry.getValue())
+                    : normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
+                            context + " " + safeName(entry.getKey())));
         }
         return normalized;
     }
@@ -772,7 +788,7 @@ public final class OpenApiCollectionExporter {
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = entry.getKey();
             if ("$ref".equals(key) || Set.of("summary", "description", "servers", "parameters").contains(key)
-                    || methods.contains(key) || key.startsWith("x-")) copy.put(key, entry.getValue());
+                    || methods.contains(key) || isExtensionKey(key)) copy.put(key, entry.getValue());
             else ignored.add(key);
         }
         if (!ignored.isEmpty()) addWarning(warnings, "ignored Path Item fields in " + context + ": "
@@ -791,7 +807,9 @@ public final class OpenApiCollectionExporter {
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
-            if (Set.of("items", "additionalProperties", "not", "unevaluatedProperties", "unevaluatedItems").contains(key)) {
+            if (isExtensionKey(key)) {
+                copy.put(key, copyOpaqueExtensionValue(value));
+            } else if (Set.of("items", "additionalProperties", "not", "unevaluatedProperties", "unevaluatedItems").contains(key)) {
                 copy.put(key, normalizeSchemaNode(value, openApi31, warnings, context + " " + safeName(key)));
             } else if (Set.of("properties", "dependentSchemas").contains(key) && value instanceof Map<?, ?> children) {
                 Map<String, Object> normalized = new LinkedHashMap<>();
@@ -834,7 +852,9 @@ public final class OpenApiCollectionExporter {
         if (node instanceof Map<?, ?> raw) {
             Map<String, Object> copy = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-                if ("$ref".equals(entry.getKey())) {
+                if (isExtensionKey(entry.getKey())) {
+                    copy.put(entry.getKey(), copyOpaqueExtensionValue(entry.getValue()));
+                } else if ("$ref".equals(entry.getKey())) {
                     if (entry.getValue() instanceof String ref && ref.startsWith("#")
                             && jsonPointerExists(root, ref.substring(1))) {
                         copy.put("$ref", ref);
@@ -1008,6 +1028,9 @@ public final class OpenApiCollectionExporter {
     private static boolean referencesAreValidInternal(Object node, Map<String, Object> referenceDocument) {
         if (node instanceof Map<?, ?> raw) {
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
+                if (isExtensionKey(entry.getKey())) {
+                    continue;
+                }
                 if ("$ref".equals(entry.getKey())) {
                     if (!(entry.getValue() instanceof String ref) || !ref.startsWith("#")
                             || !jsonPointerExists(referenceDocument, ref.substring(1))) return false;
@@ -1043,18 +1066,40 @@ public final class OpenApiCollectionExporter {
         if (value instanceof Map<?, ?> raw) {
             Map<String, Object> copy = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-                if ("$ref".equals(entry.getKey())) {
+                if (isExtensionKey(entry.getKey())) {
+                    copy.put(entry.getKey(), copyOpaqueExtensionValue(entry.getValue()));
+                } else if ("$ref".equals(entry.getKey())) {
                     addWarning(warnings, "unrepresentable reference omitted from " + context);
-                    continue;
+                } else {
+                    copy.put(entry.getKey(), portableSchemaNode(entry.getValue(), warnings,
+                            context + " " + safeName(entry.getKey())));
                 }
-                copy.put(entry.getKey(), portableSchemaNode(entry.getValue(), warnings,
-                        context + " " + safeName(entry.getKey())));
             }
             return copy;
         }
         if (value instanceof List<?> list) {
             List<Object> copy = new ArrayList<>(list.size());
             for (Object item : list) copy.add(portableSchemaNode(item, warnings, context));
+            return copy;
+        }
+        return value;
+    }
+
+    private static boolean isExtensionKey(String key) {
+        return key != null && key.regionMatches(true, 0, "x-", 0, 2);
+    }
+
+    private static Object copyOpaqueExtensionValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(String.valueOf(entry.getKey()), copyOpaqueExtensionValue(entry.getValue()));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(copyOpaqueExtensionValue(item));
             return copy;
         }
         return value;

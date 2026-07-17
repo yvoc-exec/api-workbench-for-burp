@@ -563,6 +563,108 @@ class OpenApiFidelityRoundTripTest {
     }
 
     @Test
+    void retainsUnmodeledRootPathItemsAndKeepsExtensionValuesOpaque() throws Exception {
+        String opaque = "{$ref: vendor-value, mode: keep, paths: {arbitrary: {$ref: opaque, other: true}}, "
+                + "schemas: {vendor: {$ref: opaque, type: [vendor, data]}}}";
+        Path source = tempDir.resolve("unmodeled-and-opaque.yaml");
+        Files.writeString(source, """
+                openapi: 3.1.0
+                info: {title: Retained, version: '1'}
+                servers: [{url: https://example.test}]
+                x-document: %s
+                components:
+                  schemas:
+                    Value: {type: string, x-schema: %s}
+                  pathItems:
+                    Base: {get: {responses: {'200': {description: base}}}}
+                paths:
+                  /alias: {$ref: '#/components/pathItems/Base'}
+                  /blocked: {$ref: 'https://BLOCKED-CANARY.invalid/path-item'}
+                  /dangling: {$ref: '#/components/pathItems/BLOCKED-CANARY'}
+                  /metadata:
+                    summary: retained
+                    description: retained-description
+                    servers: [{url: https://metadata.example.test}]
+                    parameters: [{name: q, in: query, schema: {type: string}}]
+                    x-path: %s
+                  /failed: {get: true}
+                  /collision:
+                    $ref: '#/components/pathItems/Base'
+                    summary: stale
+                    x-stale: %s
+                  /opaque:
+                    x-path: %s
+                    post:
+                      x-operation: %s
+                      parameters:
+                        - name: q
+                          in: query
+                          schema: {$ref: '#/components/schemas/Value', x-schema: %s}
+                          x-parameter: %s
+                      requestBody:
+                        x-request-body: %s
+                        content:
+                          application/json:
+                            schema: {$ref: '#/components/schemas/Value'}
+                            example: value
+                      responses: {'200': {description: ok}}
+                """.formatted(opaque, opaque, opaque, opaque, opaque, opaque, opaque, opaque, opaque));
+
+        ApiCollection imported = new OpenApiParser().parse(source.toFile());
+        Map<String, Object> retained = burp.utils.OpenApiMetadataSupport.parseObject(
+                imported.sourceMetadata.get("openapi.document.unmodeledPathItems"));
+        assertThat(retained.keySet()).containsExactly("/alias", "/blocked", "/dangling", "/metadata", "/failed", "/collision");
+        assertThat(imported.importWarnings.stream().filter(w -> w.contains("all operations failed"))).hasSize(1);
+
+        ApiRequest collision = new ApiRequest();
+        collision.name = "Current collision";
+        collision.method = "POST";
+        collision.url = "https://example.test/collision";
+        imported.requests.add(collision);
+
+        Path nativeFile = tempDir.resolve("unmodeled-and-opaque-native.json");
+        Files.writeString(nativeFile, new GsonBuilder().create().toJson(ApiWorkbenchCollectionExporter.build(
+                imported, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>())));
+        ApiCollection nativeRoundTrip = new ApiWorkbenchCollectionParser().parse(nativeFile.toFile());
+        assertThat(nativeRoundTrip.sourceMetadata.get("openapi.document.unmodeledPathItems"))
+                .isEqualTo(imported.sourceMetadata.get("openapi.document.unmodeledPathItems"));
+
+        ArrayList<String> warnings = new ArrayList<>();
+        Map<String, Object> exported = OpenApiCollectionExporter.build(
+                nativeRoundTrip, options(CollectionExportFormat.OPENAPI_JSON), warnings);
+        Map<String, Object> paths = cast(exported.get("paths"));
+        assertThat(cast(paths.get("/alias"))).containsOnly(entry("$ref", "#/components/pathItems/Base"));
+        assertThat(cast(paths.get("/blocked"))).isEmpty();
+        assertThat(cast(paths.get("/dangling"))).isEmpty();
+        assertThat(paths).containsKeys("/blocked", "/dangling", "/failed");
+        assertThat(cast(paths.get("/metadata"))).containsKeys(
+                "summary", "description", "servers", "parameters", "x-path");
+        assertThat(cast(paths.get("/collision"))).containsKey("post")
+                .doesNotContainKeys("$ref", "summary", "x-stale");
+        assertThat(warnings.stream().filter(w -> w.contains("modeled path replaced retained"))).hasSize(1);
+
+        Map<String, Object> expectedOpaque = opaqueExtensionValue();
+        assertThat(exported.get("x-document")).isEqualTo(expectedOpaque);
+        Map<String, Object> opaquePath = cast(paths.get("/opaque"));
+        assertThat(opaquePath.get("x-path")).isEqualTo(expectedOpaque);
+        Map<String, Object> operation = cast(opaquePath.get("post"));
+        assertThat(operation.get("x-operation")).isEqualTo(expectedOpaque);
+        Map<String, Object> parameter = cast(((List<?>) operation.get("parameters")).get(0));
+        assertThat(parameter.get("x-parameter")).isEqualTo(expectedOpaque);
+        assertThat(cast(parameter.get("schema")).get("x-schema")).isEqualTo(expectedOpaque);
+        assertThat(cast(operation.get("requestBody")).get("x-request-body")).isEqualTo(expectedOpaque);
+        assertThat(cast(cast(cast(exported.get("components")).get("schemas")).get("Value")).get("x-schema"))
+                .isEqualTo(expectedOpaque);
+
+        assertThat(collectRefs(exported)).contains("#/components/pathItems/Base", "#/components/schemas/Value")
+                .allMatch(ref -> ref.startsWith("#"));
+        assertInternalRefsResolve(exported);
+        assertThat(warnings).allMatch(w -> !w.contains("BLOCKED-CANARY")
+                && !w.contains("vendor-value") && !w.contains("opaque")
+                && !w.contains("\r") && !w.contains("\n"));
+    }
+
+    @Test
     void editedEndpointsOverrideStaleServerAndPathMetadata() throws Exception {
         Path source = tempDir.resolve("edited-endpoints.yaml");
         Files.writeString(source, """
@@ -631,6 +733,21 @@ class OpenApiFidelityRoundTripTest {
         return new RequestBuilder(null).buildRequest(request, resolver);
     }
 
+    private static Map<String, Object> opaqueExtensionValue() {
+        Map<String, Object> arbitrary = new LinkedHashMap<>();
+        arbitrary.put("$ref", "opaque");
+        arbitrary.put("other", true);
+        Map<String, Object> vendor = new LinkedHashMap<>();
+        vendor.put("$ref", "opaque");
+        vendor.put("type", List.of("vendor", "data"));
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("$ref", "vendor-value");
+        value.put("mode", "keep");
+        value.put("paths", Map.of("arbitrary", arbitrary));
+        value.put("schemas", Map.of("vendor", vendor));
+        return value;
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> cast(Object value) {
         return (Map<String, Object>) value;
@@ -655,6 +772,7 @@ class OpenApiFidelityRoundTripTest {
         if (node instanceof Map<?, ?> map) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
+                if (key.regionMatches(true, 0, "x-", 0, 2)) continue;
                 if ("schema".equals(key)) walkSchema(entry.getValue(), assertion);
                 else if ("schemas".equals(key) && entry.getValue() instanceof Map<?, ?> schemas) {
                     schemas.values().forEach(schema -> walkSchema(schema, assertion));
@@ -681,7 +799,9 @@ class OpenApiFidelityRoundTripTest {
         List<String> refs = new ArrayList<>();
         if (node instanceof Map<?, ?> map) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                if ("$ref".equals(String.valueOf(entry.getKey())) && entry.getValue() != null) refs.add(String.valueOf(entry.getValue()));
+                String key = String.valueOf(entry.getKey());
+                if (key.regionMatches(true, 0, "x-", 0, 2)) continue;
+                if ("$ref".equals(key) && entry.getValue() != null) refs.add(String.valueOf(entry.getValue()));
                 else refs.addAll(collectRefs(entry.getValue()));
             }
         } else if (node instanceof List<?> list) for (Object item : list) refs.addAll(collectRefs(item));
