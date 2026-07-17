@@ -1,6 +1,8 @@
 package burp.parser;
 
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
+import burp.utils.OpenApiMetadataSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -68,6 +70,48 @@ class OpenApiImportSafetyTest {
         aliasYaml.append("]\n      responses: {'200': {description: ok}}\n");
         Files.writeString(aliases, aliasYaml);
         assertThat(new OpenApiParser().canParse(aliases.toFile())).isFalse();
+    }
+
+    @Test
+    void retainsUnrepresentedStandardStructuresWithoutLeakingTheirValuesToWarnings() throws Exception {
+        String canary = "STANDARD-SECRET-CANARY";
+        Path file = tempDir.resolve("retained.yaml");
+        Files.writeString(file, """
+                openapi: 3.0.3
+                info: {title: T, version: '1', license: {name: retained}}
+                tags: [{name: retained-tag}]
+                externalDocs: {url: https://docs.example.test}
+                components:
+                  links: {Unused: {operationId: later}}
+                paths:
+                  /x:
+                    x-path: retained
+                    servers: [{url: https://path.example.test}]
+                    get:
+                      tags: [retained-tag]
+                      externalDocs: {url: https://operation.example.test}
+                      deprecated: true
+                      callbacks: {later: {}}
+                      responses:
+                        '200': {description: ok, x-secret: STANDARD-SECRET-CANARY}
+                """);
+        ApiCollection collection = new OpenApiParser().parse(file.toFile());
+        ApiRequest request = collection.requests.get(0);
+        assertThat(collection.sourceMetadata).containsKeys(
+                OpenApiMetadataSupport.DOCUMENT_INFO,
+                OpenApiMetadataSupport.DOCUMENT_TAGS,
+                OpenApiMetadataSupport.DOCUMENT_EXTERNAL_DOCS,
+                OpenApiMetadataSupport.DOCUMENT_COMPONENTS);
+        assertThat(request.sourceMetadata).containsKeys(
+                OpenApiMetadataSupport.PATH_ITEM_SERVERS,
+                OpenApiMetadataSupport.PATH_ITEM_EXTENSIONS,
+                OpenApiMetadataSupport.OPERATION_TAGS,
+                OpenApiMetadataSupport.OPERATION_EXTERNAL_DOCS,
+                OpenApiMetadataSupport.OPERATION_DEPRECATED,
+                OpenApiMetadataSupport.OPERATION_RESPONSES,
+                OpenApiMetadataSupport.OPERATION_CALLBACKS);
+        assertThat(request.sourceMetadata.get(OpenApiMetadataSupport.OPERATION_RESPONSES)).contains(canary);
+        assertThat(collection.importWarnings).allMatch(w -> !w.contains(canary));
     }
 
     private Path spec(String name, String title) throws Exception {

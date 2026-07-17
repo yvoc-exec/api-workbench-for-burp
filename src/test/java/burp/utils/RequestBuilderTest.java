@@ -150,6 +150,47 @@ class RequestBuilderTest {
     }
 
     @Test
+    void multipartTextMetadataCannotInjectHeadersOrBoundaries() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST"; req.url = "https://example.test/upload";
+        req.body = new ApiRequest.Body(); req.body.mode = "formdata";
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(
+                "meta\"\\\r\nX-Name-Injected: yes\r\n--evil", "ordinary-value");
+        field.contentType = "text/plain\r\nX-Injected: yes";
+        req.body.formdata.add(field);
+
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+        String body = new String(parsed.body, StandardCharsets.UTF_8);
+        assertThat(body).doesNotContain("\r\nX-Injected:", "\r\nX-Name-Injected:", "--evil\r\n");
+        assertThat(body).contains("name=\"meta\\\"\\\\X-Name-Injected: yes--evil\"")
+                .contains("Content-Type: application/octet-stream\r\n\r\nordinary-value");
+        assertThat(body.lines().filter(line -> line.startsWith("Content-Disposition:"))).hasSize(1);
+        assertThat(body.lines().filter(line -> line.startsWith("Content-Type:"))).hasSize(1);
+    }
+
+    @Test
+    void multipartFileMetadataCannotInjectAndFileBytesRemainExact() throws Exception {
+        Path upload = Files.createTempFile(Path.of("target"), "multipart-safe-", ".bin").toAbsolutePath();
+        byte[] bytes = new byte[]{0, 1, 2, 13, 10, 127, (byte) 255};
+        Files.write(upload, bytes);
+        upload.toFile().deleteOnExit();
+        ApiRequest req = new ApiRequest();
+        req.method = "POST"; req.url = "https://example.test/upload";
+        req.body = new ApiRequest.Body(); req.body.mode = "formdata";
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("file\r\nX-Name: yes", "");
+        field.fileUpload = true; field.filePath = upload.toString();
+        field.contentType = "application/octet-stream\r\nX-Injected: yes";
+        req.body.formdata.add(field);
+
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+        String body = new String(parsed.body, StandardCharsets.ISO_8859_1);
+        assertThat(body).doesNotContain("\r\nX-Injected:", "\r\nX-Name:");
+        assertThat(body.lines().filter(line -> line.startsWith("Content-Disposition:"))).hasSize(1);
+        assertThat(body.lines().filter(line -> line.startsWith("Content-Type:"))).hasSize(1);
+        assertThat(parsed.body).containsSubsequence(bytes);
+    }
+
+    @Test
     void parameterHeaderWinsOverDefaultsAndAuthentication() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

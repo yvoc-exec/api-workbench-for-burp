@@ -580,6 +580,7 @@ public class RequestBuilder {
                 if (body.formdata != null) {
                     String existingContentType = hs.get("Content-Type");
                     String boundary = resolveMultipartBoundary(existingContentType);
+                    boundary = safeMultipartBoundary(boundary);
                     if (boundary == null || boundary.isBlank()) {
                         boundary = "----WebKitFormBoundary" + Long.toHexString(System.currentTimeMillis());
                     }
@@ -665,17 +666,17 @@ public class RequestBuilder {
                 // Security: Validate file path to prevent path traversal
                 validateSafeFile(file, uploadPath);
                 String filename = file.getName();
-                baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"; filename=\"" + filename + "\"\r\n").getBytes(StandardCharsets.UTF_8));
-                String contentType = field.contentType;
-                if (contentType == null || contentType.isBlank()) contentType = java.nio.file.Files.probeContentType(file.toPath());
-                if (contentType == null) contentType = "application/octet-stream";
-                baos.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                writeMultipartHeader(baos, "Content-Disposition", "form-data; name=\""
+                        + multipartQuoted(resolvedKey) + "\"; filename=\"" + multipartQuoted(filename) + "\"");
+                writeMultipartHeader(baos, "Content-Type", safeMultipartContentType(field.contentType, file));
+                baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
                 baos.write(java.nio.file.Files.readAllBytes(file.toPath()));
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
             } else {
-                baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"\r\n").getBytes(StandardCharsets.UTF_8));
-                if (field.contentType != null && !field.contentType.isBlank()) {
-                    baos.write(("Content-Type: " + field.contentType.replace("\r", " ").replace("\n", " ") + "\r\n").getBytes(StandardCharsets.UTF_8));
+                writeMultipartHeader(baos, "Content-Disposition", "form-data; name=\""
+                        + multipartQuoted(resolvedKey) + "\"");
+                if (field.contentType != null) {
+                    writeMultipartHeader(baos, "Content-Type", safeMultipartContentType(field.contentType, null));
                 }
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
                 baos.write(resolvedValue.getBytes(StandardCharsets.UTF_8));
@@ -684,6 +685,62 @@ public class RequestBuilder {
         }
         baos.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         return baos.toByteArray();
+    }
+
+    private static void writeMultipartHeader(ByteArrayOutputStream output,
+                                             String name,
+                                             String value) throws java.io.IOException {
+        output.write((name + ": " + stripMultipartControls(value) + "\r\n")
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String multipartQuoted(String value) {
+        return stripMultipartControls(value).replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String stripMultipartControls(String value) {
+        if (value == null) return "";
+        StringBuilder safe = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isISOControl(c)) continue;
+            safe.append(c);
+        }
+        return safe.toString();
+    }
+
+    private static String safeMultipartContentType(String imported, File file) {
+        String candidate = imported != null ? imported.trim() : null;
+        if (isValidMultipartContentType(candidate)) return candidate;
+        if (file != null) {
+            try {
+                String probed = java.nio.file.Files.probeContentType(file.toPath());
+                if (isValidMultipartContentType(probed)) return probed;
+            } catch (Exception ignored) {
+                // Fall through to a non-disclosing fixed default.
+            }
+        }
+        return "application/octet-stream";
+    }
+
+    private static boolean isValidMultipartContentType(String value) {
+        if (value == null || value.isBlank() || !value.equals(stripMultipartControls(value))) return false;
+        String[] parts = value.split(";", -1);
+        if (!parts[0].trim().matches("[A-Za-z0-9!#$&^_.+\\-]+/[A-Za-z0-9!#$&^_.+\\-]+")) return false;
+        for (int i = 1; i < parts.length; i++) {
+            String parameter = parts[i].trim();
+            int equals = parameter.indexOf('=');
+            if (equals <= 0 || !parameter.substring(0, equals).trim().matches("[A-Za-z0-9!#$&^_.+\\-]+")) return false;
+            String parameterValue = parameter.substring(equals + 1).trim();
+            if (parameterValue.isEmpty() || parameterValue.indexOf(':') >= 0) return false;
+        }
+        return true;
+    }
+
+    private static String safeMultipartBoundary(String boundary) {
+        if (boundary == null || boundary.isBlank()) return null;
+        String safe = stripMultipartControls(boundary).trim();
+        return safe.matches("[A-Za-z0-9'()+_,./:=?\\-]{1,70}") ? safe : null;
     }
 
     private byte[] buildFileBody(ApiRequest.Body body, VariableResolver resolver) throws Exception {

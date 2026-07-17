@@ -106,6 +106,39 @@ class OpenApiReferenceResolutionTest {
                 .anyMatch(w -> w.contains("document count"));
     }
 
+    @Test
+    void resolvesRelativeStructuredSchemaSemanticsAndStoresPortableNestedTree() throws Exception {
+        Files.writeString(tempDir.resolve("structured.yaml"), """
+                Scalar: {type: string, format: uuid, default: abc}
+                Array: {type: array, format: external-array, items: {$ref: '#/Scalar'}}
+                Object:
+                  allOf:
+                    - {type: object, properties: {values: {$ref: '#/Array'}}}
+                    - {type: object, properties: {name: {$ref: '#/Scalar'}}}
+                """);
+        ApiCollection collection = parse("root.yaml", """
+                openapi: 3.0.3
+                info: {title: T, version: '1'}
+                paths:
+                  /x:
+                    get:
+                      parameters:
+                        - name: values
+                          in: query
+                          style: form
+                          explode: true
+                          example: [one, two]
+                          schema: {$ref: 'structured.yaml#/Array'}
+                      responses: {'200': {description: ok}}
+                """);
+        var parameter = collection.requests.get(0).parameters.get(0);
+        assertThat(parameter.type).isEqualTo("array");
+        assertThat(parameter.format).isEqualTo("external-array");
+        assertThat(parameter.value).isEqualTo("[\"one\",\"two\"]");
+        assertThat(parameter.sourceMetadata.get("openapi.resolvedSchema"))
+                .contains("external-array").doesNotContain("$ref");
+    }
+
     private ApiCollection parse(String name, String yaml) throws Exception {
         Path file = tempDir.resolve(name);
         Files.writeString(file, yaml);

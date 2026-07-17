@@ -41,24 +41,30 @@ public final class OpenApiValueSupport {
         if (parameter == null) return new SelectedValue(null, null, null, "none");
         Object schema = parameter.get("schema");
         if (schema == null && parameter.containsKey("type")) schema = swaggerSchema(parameter);
-        String type = effectiveType(schema);
-        String format = effectiveFormat(schema);
+        Map<String, Object> content = parameter.get("content") instanceof Map<?, ?> rawContent
+                ? castMap(rawContent) : Map.of();
+        List<String> orderedContent = orderedMediaTypes(content);
+        Map<String, Object> selectedMedia = !orderedContent.isEmpty()
+                && content.get(orderedContent.get(0)) instanceof Map<?, ?> media
+                ? castMap(media) : null;
+        Object effectiveSchema = selectedMedia != null ? selectedMedia.get("schema") : schema;
+        Object resolvedSchema = references != null
+                ? references.resolveSchemaNode(effectiveSchema, context + " schema") : effectiveSchema;
+        String type = effectiveType(resolvedSchema);
+        String format = effectiveFormat(resolvedSchema);
         if (parameter.containsKey("example")) return selected(parameter.get("example"), type, format, "parameter.example");
         ValueChoice examples = chooseExample(parameter.get("examples"), references, warnings, context);
         if (examples.present) return selected(examples.value, type, format, "parameter.examples");
-        if (parameter.get("content") instanceof Map<?, ?> rawContent && !rawContent.isEmpty()) {
-            Map<String, Object> content = castMap(rawContent);
-            List<String> ordered = orderedMediaTypes(content);
-            if (ordered.size() > 1) OpenApiWarningSupport.add(warnings, "multiple parameter content types: " + String.join(", ", ordered));
-            Object mediaNode = content.get(ordered.get(0));
-            if (mediaNode instanceof Map<?, ?> media) {
-                SelectedValue selected = selectMediaValue(castMap(media), references, warnings, context);
-                return new SelectedValue(selected.value, selected.type, selected.format, "parameter.content." + selected.source);
-            }
+        if (selectedMedia != null) {
+            if (orderedContent.size() > 1) OpenApiWarningSupport.add(
+                    warnings, "multiple parameter content types: " + String.join(", ", orderedContent));
+            SelectedValue selected = selectMediaValue(selectedMedia, references, warnings, context);
+            return new SelectedValue(selected.value, selected.type, selected.format,
+                    "parameter.content." + selected.source);
         }
         if (parameter.containsKey("x-example")) return selected(parameter.get("x-example"), type, format, "parameter.x-example");
         if (parameter.containsKey("default")) return selected(parameter.get("default"), type, format, "parameter.default");
-        return selectSchemaValue(schema, references, warnings, context, "schema");
+        return selectSchemaValue(resolvedSchema, references, warnings, context, "schema");
     }
 
     public static SelectedValue selectMediaValue(Map<String, Object> media,
@@ -67,12 +73,14 @@ public final class OpenApiValueSupport {
                                                  String context) {
         if (media == null) return new SelectedValue(null, null, null, "none");
         Object schema = media.get("schema");
-        String type = effectiveType(schema);
-        String format = effectiveFormat(schema);
+        Object resolvedSchema = references != null
+                ? references.resolveSchemaNode(schema, context + " schema") : schema;
+        String type = effectiveType(resolvedSchema);
+        String format = effectiveFormat(resolvedSchema);
         if (media.containsKey("example")) return selected(media.get("example"), type, format, "media.example");
         ValueChoice examples = chooseExample(media.get("examples"), references, warnings, context);
         if (examples.present) return selected(examples.value, type, format, "media.examples");
-        return selectSchemaValue(schema, references, warnings, context, "schema");
+        return selectSchemaValue(resolvedSchema, references, warnings, context, "schema");
     }
 
     public static Object generateSchemaValue(Object schema,

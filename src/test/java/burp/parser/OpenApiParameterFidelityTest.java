@@ -2,6 +2,7 @@ package burp.parser;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -123,6 +124,47 @@ class OpenApiParameterFidelityTest {
         assertThat(collection.importWarnings).anyMatch(w -> w.contains("duplicate parameter identity: path-level"))
                 .anyMatch(w -> w.contains("duplicate parameter identity: operation-level"))
                 .anyMatch(w -> w.contains("operation parameter override"));
+    }
+
+    @Test
+    void referencedStructuredSchemasKeepSemanticsForEveryTransportLocation() throws Exception {
+        ApiRequest request = parse("""
+                openapi: 3.0.3
+                info: {title: T, version: '1'}
+                components:
+                  schemas:
+                    Values: {type: array, format: csv-array, items: {type: string}}
+                    Object: {type: object, format: named-object, additionalProperties: {type: string}}
+                paths:
+                  /x/{ids}:
+                    get:
+                      parameters:
+                        - {name: tags, in: query, style: form, explode: true, example: [a, b], schema: {$ref: '#/components/schemas/Values'}}
+                        - {name: filter, in: query, style: deepObject, explode: true, example: {a: '1'}, schema: {$ref: '#/components/schemas/Object'}}
+                        - {name: ids, in: path, required: true, style: simple, explode: false, example: [one, two], schema: {$ref: '#/components/schemas/Values'}}
+                        - {name: X-Object, in: header, style: simple, explode: true, example: {a: '1', b: '2'}, schema: {$ref: '#/components/schemas/Object'}}
+                        - {name: ignored, in: cookie, style: form, explode: true, example: {c: '3', d: '4'}, schema: {$ref: '#/components/schemas/Object'}}
+                        - name: contentValues
+                          in: query
+                          content:
+                            application/json:
+                              schema: {$ref: '#/components/schemas/Values'}
+                              example: [x, y]
+                      responses: {'200': {description: ok}}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.type)
+                .containsExactly("array", "object", "array", "object", "object", "array");
+        assertThat(request.parameters).extracting(p -> p.format)
+                .containsExactly("csv-array", "named-object", "csv-array", "named-object", "named-object", "csv-array");
+        assertThat(request.parameters).extracting(p -> p.value)
+                .containsExactly("[\"a\",\"b\"]", "{\"a\":\"1\"}", "[\"one\",\"two\"]",
+                        "{\"a\":\"1\",\"b\":\"2\"}", "{\"c\":\"3\",\"d\":\"4\"}", "[\"x\",\"y\"]");
+
+        String raw = new String(new RequestBuilder(null).buildRequest(request, new VariableResolver()));
+        assertThat(raw).startsWith("GET /x/one,two?tags=a&tags=b&filter[a]=1&contentValues=x&contentValues=y HTTP/1.1\r\n")
+                .contains("\r\nX-Object: a=1,b=2\r\n")
+                .contains("\r\nCookie: c=3; d=4\r\n");
     }
 
     private ApiCollection parse(String yaml) throws Exception {

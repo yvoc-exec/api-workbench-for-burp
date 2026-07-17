@@ -40,7 +40,8 @@ public final class OpenApiCollectionExporter {
                 collection.sourceMetadata != null ? collection.sourceMetadata.get(OpenApiMetadataSupport.DOCUMENT_EXTENSIONS) : null));
         warnUnsupported(warnings, collection != null ? collection.sourceMetadata : null, "openapi.document.unsupported", "document");
 
-        Map<String, Object> info = new LinkedHashMap<>();
+        Map<String, Object> info = collection != null ? OpenApiMetadataSupport.parseObject(
+                metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_INFO)) : new LinkedHashMap<>();
         VariableResolver rootResolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
         info.put("title", collection != null && collection.name != null ? CollectionExportSupport.resolve(collection.name, rootResolver, resolve) : "API Workbench Collection");
         info.put("version", collection != null && collection.version != null && !collection.version.isBlank() ? collection.version : "1.0.0");
@@ -48,6 +49,16 @@ public final class OpenApiCollectionExporter {
             info.put("description", CollectionExportSupport.resolve(collection.description, rootResolver, resolve));
         }
         root.put("info", info);
+        if (collection != null) {
+            Object tags = OpenApiMetadataSupport.parseCanonicalJson(
+                    metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_TAGS));
+            if (tags instanceof List<?>) root.put("tags", tags);
+            Object externalDocs = OpenApiMetadataSupport.parseCanonicalJson(
+                    metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_EXTERNAL_DOCS));
+            if (externalDocs instanceof Map<?, ?>) root.put("externalDocs", externalDocs);
+            warnStandardStructures(warnings, collection.sourceMetadata,
+                    OpenApiMetadataSupport.DOCUMENT_SWAGGER_STRUCTURES, "document");
+        }
 
         List<Object> retainedServers = collection != null && collection.sourceMetadata != null
                 ? OpenApiMetadataSupport.parseArray(collection.sourceMetadata.get(OpenApiMetadataSupport.DOCUMENT_SERVERS))
@@ -63,8 +74,11 @@ public final class OpenApiCollectionExporter {
             root.put("servers", servers);
         }
 
-        Map<String, Object> components = new LinkedHashMap<>();
-        Map<String, Object> securitySchemes = new LinkedHashMap<>();
+        Map<String, Object> components = collection != null ? OpenApiMetadataSupport.parseObject(
+                metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_COMPONENTS)) : new LinkedHashMap<>();
+        components = portableSchemaMap(components, warnings, "retained component field");
+        Map<String, Object> securitySchemes = components.get("securitySchemes") instanceof Map<?, ?> retainedSecurity
+                ? castMap(retainedSecurity) : new LinkedHashMap<>();
         List<Map<String, Object>> globalSecurity = new ArrayList<>();
         if (collection != null && collection.auth != null) {
             String schemeName = "collectionAuth";
@@ -80,6 +94,7 @@ public final class OpenApiCollectionExporter {
         }
 
         Map<String, Object> paths = new LinkedHashMap<>();
+        List<PathServerRecord> pathServerRecords = new ArrayList<>();
         if (collection != null && collection.requests != null) {
             int index = 0;
             for (ApiRequest request : collection.requests) {
@@ -90,8 +105,21 @@ public final class OpenApiCollectionExporter {
                 String exportUrl = RequestParameterSupport.materializePostmanRawUrl(
                         request.url, request.parameters, resolve ? resolver : null);
                 ParsedUrl parsed = parseUrl(exportUrl, warnings, request.name);
-                String path = parsed.path;
+                String retainedPathTemplate = metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_TEMPLATE);
+                String path = request.sourceMetadata != null
+                        && request.sourceMetadata.containsKey(OpenApiMetadataSupport.EFFECTIVE_SERVER_LEVEL)
+                        && retainedPathTemplate != null && retainedPathTemplate.startsWith("/")
+                        ? convertPathTemplate(retainedPathTemplate) : parsed.path;
                 Map<String, Object> pathItem = (Map<String, Object>) paths.computeIfAbsent(path, key -> new LinkedHashMap<>());
+                mergeExtensions(pathItem, OpenApiMetadataSupport.parseObject(
+                        metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_EXTENSIONS)));
+                Map<String, Object> pathStructures = OpenApiMetadataSupport.parseObject(
+                        metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_STRUCTURES));
+                for (Map.Entry<String, Object> structure : pathStructures.entrySet()) {
+                    if (Set.of("summary", "description").contains(structure.getKey())) {
+                        pathItem.putIfAbsent(structure.getKey(), structure.getValue());
+                    }
+                }
                 String method = request.method != null ? request.method.toLowerCase(Locale.ROOT) : "get";
                 Map<String, Object> operation = new LinkedHashMap<>();
                 warnUnsupported(warnings, request.sourceMetadata, "openapi.operation.unsupported", "operation");
@@ -102,6 +130,9 @@ public final class OpenApiCollectionExporter {
                             request.sourceMetadata.get(OpenApiMetadataSupport.OPERATION_CALLBACKS));
                     if (!callbacks.isEmpty()) operation.put("callbacks", callbacks);
                 }
+                putRetainedOperationFields(operation, request.sourceMetadata);
+                warnStandardStructures(warnings, request.sourceMetadata,
+                        OpenApiMetadataSupport.OPERATION_SWAGGER_STRUCTURES, "operation");
                 String operationId = slugOperationId(request.name, method, path, index++);
                 operation.put("operationId", operationId);
                 if (request.name != null) {
@@ -122,14 +153,23 @@ public final class OpenApiCollectionExporter {
                 if (security != null) {
                     operation.put("security", security);
                 }
-                Map<String, Object> responses = new LinkedHashMap<>();
-                Map<String, Object> response = new LinkedHashMap<>();
-                response.put("description", "Default response");
-                responses.put("default", response);
-                operation.put("responses", responses);
+                if (!operation.containsKey("responses")) {
+                    Map<String, Object> responses = new LinkedHashMap<>();
+                    Map<String, Object> response = new LinkedHashMap<>();
+                    response.put("description", "Default response");
+                    responses.put("default", response);
+                    operation.put("responses", responses);
+                }
+                List<Object> operationServers = OpenApiMetadataSupport.parseArray(
+                        metadata(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_SERVERS));
+                if (!operationServers.isEmpty()) operation.put("servers", operationServers);
+                List<Object> pathServers = OpenApiMetadataSupport.parseArray(
+                        metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_SERVERS));
+                pathServerRecords.add(new PathServerRecord(path, operation, pathServers, !operationServers.isEmpty()));
                 pathItem.put(method, operation);
             }
         }
+        applyPathServers(paths, pathServerRecords, warnings);
         root.put("paths", paths);
 
         if (!securitySchemes.isEmpty()) {
@@ -141,7 +181,7 @@ public final class OpenApiCollectionExporter {
         if (!globalSecurity.isEmpty()) {
             root.put("security", globalSecurity);
         }
-        return root;
+        return portableSchemaMap(root, warnings, "retained OpenAPI field");
     }
 
     public static void writeJson(ApiCollection collection, CollectionExportOptions options, Writer writer, List<String> warnings) throws IOException {
@@ -225,6 +265,7 @@ public final class OpenApiCollectionExporter {
                 metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT));
         if (retainedContent.isEmpty()) retainedContent = OpenApiMetadataSupport.parseObject(
                 metadata(parameter.sourceMetadata, OpenApiMetadataSupport.CONTENT));
+        retainedContent = portableContent(retainedContent, warnings, "parameter content");
         Object currentValue = typedParameterValue(parameter, resolver, resolve);
         if (!retainedContent.isEmpty()) {
             List<String> mediaTypes = OpenApiValueSupport.orderedMediaTypes(retainedContent);
@@ -232,9 +273,15 @@ public final class OpenApiCollectionExporter {
                 String selected = mediaTypes.get(0);
                 Map<String, Object> media = retainedContent.get(selected) instanceof Map<?, ?> raw
                         ? castMap(raw) : new LinkedHashMap<>();
-                if (media.get("schema") instanceof Map<?, ?> rawSchema && rawSchema.containsKey("$ref")) {
-                    media.put("schema", schemaForParameter(parameter, currentValue));
+                Map<String, Object> mediaSchema = media.get("schema") instanceof Map<?, ?> rawSchema
+                        ? castMap(rawSchema) : new LinkedHashMap<>();
+                String modeledType = parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string";
+                if (!mediaSchema.containsKey("type")
+                        || !modeledType.equals(OpenApiValueSupport.effectiveType(mediaSchema))) {
+                    mediaSchema.put("type", modeledType);
                 }
+                if (parameter.format != null && !parameter.format.isBlank()) mediaSchema.put("format", parameter.format);
+                media.put("schema", mediaSchema);
                 if (parameter.valuePresent) media.put("example", currentValue);
                 retainedContent.put(selected, media);
             }
@@ -244,9 +291,13 @@ public final class OpenApiCollectionExporter {
                     metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA));
             if (schema.isEmpty()) schema = OpenApiMetadataSupport.parseObject(
                     metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
+            schema = portableSchemaMap(schema, warnings, "parameter schema");
             if (schema.isEmpty()) schema = new LinkedHashMap<>();
             schema.remove("$ref");
-            schema.put("type", parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string");
+            String modeledType = parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string";
+            if (!schema.containsKey("type") || !modeledType.equals(OpenApiValueSupport.effectiveType(schema))) {
+                schema.put("type", modeledType);
+            }
             if (parameter.format != null && !parameter.format.isBlank()) schema.put("format", parameter.format);
             mergeExtensions(schema, OpenApiMetadataSupport.parseObject(
                     metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS)));
@@ -276,6 +327,7 @@ public final class OpenApiCollectionExporter {
                 metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_RESOLVED_CONTENT));
         if (content.isEmpty()) content = OpenApiMetadataSupport.parseObject(
                 metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_CONTENT));
+        content = portableContent(content, warnings, "request body content");
         String mode = request.body.mode.toLowerCase(Locale.ROOT);
         String selectedMedia = metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_SELECTED_MEDIA_TYPE);
         if (selectedMedia == null || selectedMedia.isBlank()) {
@@ -294,11 +346,11 @@ public final class OpenApiCollectionExporter {
         mergeExtensions(media, OpenApiMetadataSupport.parseObject(
                 metadata(request.body.sourceMetadata, OpenApiMetadataSupport.MEDIA_EXTENSIONS)));
         if ("urlencoded".equals(mode)) {
-            media.put("schema", formSchema(request.body.urlencoded, resolver, resolve));
+            media.put("schema", formSchema(request.body.urlencoded, resolver, resolve, warnings));
             putEncoding(media, request.body.urlencoded);
             putDisabledProperties(media, request.body.urlencoded, warnings);
         } else if ("formdata".equals(mode)) {
-            media.put("schema", formSchema(request.body.formdata, resolver, resolve));
+            media.put("schema", formSchema(request.body.formdata, resolver, resolve, warnings));
             putEncoding(media, request.body.formdata);
             putDisabledProperties(media, request.body.formdata, warnings);
         } else if ("file".equals(mode)) {
@@ -371,7 +423,10 @@ public final class OpenApiCollectionExporter {
         return List.of(secReq);
     }
 
-    private static Map<String, Object> formSchema(List<ApiRequest.Body.FormField> fields, VariableResolver resolver, boolean resolve) {
+    private static Map<String, Object> formSchema(List<ApiRequest.Body.FormField> fields,
+                                                  VariableResolver resolver,
+                                                  boolean resolve,
+                                                  List<String> warnings) {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         Map<String, Object> properties = new LinkedHashMap<>();
@@ -388,9 +443,15 @@ public final class OpenApiCollectionExporter {
                     property.put("type", "string");
                     property.put("format", "binary");
                 } else {
-                    property = OpenApiMetadataSupport.parseObject(metadata(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
+                    property = OpenApiMetadataSupport.parseObject(metadata(field.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA));
+                    if (property.isEmpty()) property = OpenApiMetadataSupport.parseObject(
+                            metadata(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
+                    property = portableSchemaMap(property, warnings, "form property schema " + safeName(key));
                     if (property.isEmpty()) property = new LinkedHashMap<>();
-                    property.put("type", field.type != null && !field.type.isBlank() ? field.type : "string");
+                    String modeledType = field.type != null && !field.type.isBlank() ? field.type : "string";
+                    if (!property.containsKey("type") || !modeledType.equals(OpenApiValueSupport.effectiveType(property))) {
+                        property.put("type", modeledType);
+                    }
                     property.put("example", typedFormValue(field, resolver, resolve));
                 }
                 if (field.description != null && !field.description.isBlank()) property.put("description", field.description);
@@ -509,8 +570,116 @@ public final class OpenApiCollectionExporter {
         return raw;
     }
 
+    private static Map<String, Object> portableContent(Map<String, Object> content,
+                                                       List<String> warnings,
+                                                       String context) {
+        Map<String, Object> portable = new LinkedHashMap<>();
+        if (content == null) return portable;
+        for (Map.Entry<String, Object> entry : content.entrySet()) {
+            if (!(entry.getValue() instanceof Map<?, ?> rawMedia)) {
+                portable.put(entry.getKey(), entry.getValue());
+                continue;
+            }
+            Map<String, Object> media = castMap(rawMedia);
+            if (media.containsKey("schema")) {
+                Object schema = portableSchemaNode(media.get("schema"), warnings,
+                        context + " schema " + safeName(entry.getKey()));
+                if (schema instanceof Map<?, ?> || schema instanceof Boolean) media.put("schema", schema);
+                else media.remove("schema");
+            }
+            portable.put(entry.getKey(), media);
+        }
+        return portable;
+    }
+
+    private static Map<String, Object> portableSchemaMap(Map<String, Object> schema,
+                                                         List<String> warnings,
+                                                         String context) {
+        Object portable = portableSchemaNode(schema, warnings, context);
+        return portable instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
+    }
+
+    private static Object portableSchemaNode(Object value,
+                                             List<String> warnings,
+                                             String context) {
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
+                if ("$ref".equals(entry.getKey())) {
+                    addWarning(warnings, "unrepresentable reference omitted from " + context);
+                    continue;
+                }
+                copy.put(entry.getKey(), portableSchemaNode(entry.getValue(), warnings,
+                        context + " " + safeName(entry.getKey())));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(portableSchemaNode(item, warnings, context));
+            return copy;
+        }
+        return value;
+    }
+
     private static String metadata(Map<String, String> metadata, String key) {
         return metadata != null ? metadata.get(key) : null;
+    }
+
+    private static void putRetainedOperationFields(Map<String, Object> operation,
+                                                   Map<String, String> metadata) {
+        putRetained(operation, "tags", metadata, OpenApiMetadataSupport.OPERATION_TAGS, List.class);
+        putRetained(operation, "externalDocs", metadata, OpenApiMetadataSupport.OPERATION_EXTERNAL_DOCS, Map.class);
+        putRetained(operation, "deprecated", metadata, OpenApiMetadataSupport.OPERATION_DEPRECATED, Boolean.class);
+        putRetained(operation, "responses", metadata, OpenApiMetadataSupport.OPERATION_RESPONSES, Map.class);
+    }
+
+    private static void putRetained(Map<String, Object> target,
+                                    String field,
+                                    Map<String, String> metadata,
+                                    String metadataKey,
+                                    Class<?> expected) {
+        Object retained = OpenApiMetadataSupport.parseCanonicalJson(metadata(metadata, metadataKey));
+        if (retained != null && expected.isInstance(retained)) target.put(field, retained);
+    }
+
+    private static void applyPathServers(Map<String, Object> paths,
+                                         List<PathServerRecord> records,
+                                         List<String> warnings) {
+        Map<String, List<PathServerRecord>> byPath = new LinkedHashMap<>();
+        for (PathServerRecord record : records) byPath.computeIfAbsent(record.path, ignored -> new ArrayList<>()).add(record);
+        for (Map.Entry<String, List<PathServerRecord>> entry : byPath.entrySet()) {
+            List<PathServerRecord> pathRecords = entry.getValue();
+            String shared = null;
+            boolean common = true;
+            boolean any = false;
+            for (PathServerRecord record : pathRecords) {
+                String canonical = OpenApiMetadataSupport.canonicalJson(record.pathServers);
+                if (!record.pathServers.isEmpty()) any = true;
+                if (shared == null) shared = canonical;
+                else if (!shared.equals(canonical)) common = false;
+            }
+            if (common && any && paths.get(entry.getKey()) instanceof Map<?, ?> rawPathItem) {
+                @SuppressWarnings("unchecked") Map<String, Object> direct = (Map<String, Object>) rawPathItem;
+                direct.put("servers", pathRecords.get(0).pathServers);
+            } else if (any) {
+                for (PathServerRecord record : pathRecords) {
+                    if (!record.pathServers.isEmpty() && !record.explicitOperationServers) {
+                        record.operation.put("servers", record.pathServers);
+                    }
+                }
+                addWarning(warnings, "path-item servers approximated at operation level");
+            }
+        }
+    }
+
+    private static void warnStandardStructures(List<String> warnings,
+                                               Map<String, String> metadata,
+                                               String metadataKey,
+                                               String context) {
+        Map<String, Object> retained = OpenApiMetadataSupport.parseObject(metadata(metadata, metadataKey));
+        if (!retained.isEmpty()) addWarning(warnings, "unsupported retained field omitted from " + context + ": "
+                + String.join(", ", retained.keySet().stream().map(OpenApiCollectionExporter::safeName).toList()));
     }
 
     private static void mergeExtensions(Map<String, Object> target, Map<String, Object> extensions) {
@@ -791,4 +960,9 @@ public final class OpenApiCollectionExporter {
         List<Map<String, Object>> queryParameters = List.of();
         List<Map<String, Object>> pathParameters = List.of();
     }
+
+    private record PathServerRecord(String path,
+                                    Map<String, Object> operation,
+                                    List<Object> pathServers,
+                                    boolean explicitOperationServers) {}
 }

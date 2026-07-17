@@ -59,6 +59,17 @@ public class OpenApiParser implements CollectionParser {
         if (spec.get("servers") instanceof List<?> servers) {
             OpenApiMetadataSupport.putCanonical(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_SERVERS, servers);
         }
+        retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_TAGS, spec, "tags");
+        retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_INFO, spec, "info");
+        retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_EXTERNAL_DOCS, spec, "externalDocs");
+        if (spec.get("components") instanceof Map<?, ?> components) {
+            OpenApiMetadataSupport.putCanonical(collection.sourceMetadata,
+                    OpenApiMetadataSupport.DOCUMENT_COMPONENTS, components);
+        }
+        Map<String, Object> swaggerStructures = selectedFields(spec,
+                Set.of("consumes", "produces", "definitions", "parameters", "responses", "securityDefinitions"));
+        if (!swaggerStructures.isEmpty()) OpenApiMetadataSupport.putCanonical(collection.sourceMetadata,
+                OpenApiMetadataSupport.DOCUMENT_SWAGGER_STRUCTURES, swaggerStructures);
 
         Map<String, Map<String, Object>> securitySchemes = extractSecuritySchemes(spec, references, warnings);
         List<Map<String, Object>> defaultSecurity = listOfMaps(spec.get("security"));
@@ -107,12 +118,36 @@ public class OpenApiParser implements CollectionParser {
         request.method = method;
         request.name = string(operation.get("operationId"), method + " " + path);
         request.path = path;
+        request.sourceMetadata.put(OpenApiMetadataSupport.PATH_TEMPLATE, path);
         String summary = string(operation.get("summary"), "");
         String description = string(operation.get("description"), "");
         request.description = summary.isBlank() ? description : summary + (description.isBlank() ? "" : "\n" + description);
-        request.url = joinBaseUrlAndPath(baseUrl, convertPathTemplate(path));
+        ServerSelection server = effectiveServer(operation, pathItem, spec, swagger, baseUrl);
+        request.url = joinBaseUrlAndPath(server.url, convertPathTemplate(path));
+        if (("operation".equals(server.level) || "pathItem".equals(server.level)) && server.definition != null) {
+            addRequestServerVariables(request, server.definition);
+        }
         request.parameters.addAll(RequestParameterSupport.parseQueryParameters(request.url, "openapi:server"));
         putExtensions(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_EXTENSIONS, operation);
+        putExtensions(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_EXTENSIONS, pathItem);
+        Map<String, Object> pathStructures = selectedFields(pathItem, Set.of("summary", "description", "$ref"));
+        if (!pathStructures.isEmpty()) OpenApiMetadataSupport.putCanonical(request.sourceMetadata,
+                OpenApiMetadataSupport.PATH_ITEM_STRUCTURES, pathStructures);
+        if (pathItem.get("servers") instanceof List<?> servers) OpenApiMetadataSupport.putCanonical(
+                request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_SERVERS, servers);
+        if (operation.get("servers") instanceof List<?> servers) OpenApiMetadataSupport.putCanonical(
+                request.sourceMetadata, OpenApiMetadataSupport.OPERATION_SERVERS, servers);
+        request.sourceMetadata.put(OpenApiMetadataSupport.EFFECTIVE_SERVER_LEVEL, server.level);
+        retainStandard(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_TAGS, operation, "tags");
+        retainStandard(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_EXTERNAL_DOCS, operation, "externalDocs");
+        retainStandard(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_DEPRECATED, operation, "deprecated");
+        retainStandard(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_RESPONSES, operation, "responses");
+        Map<String, Object> operationSwagger = selectedFields(operation, Set.of("consumes", "produces"));
+        if (!operationSwagger.isEmpty()) OpenApiMetadataSupport.putCanonical(request.sourceMetadata,
+                OpenApiMetadataSupport.OPERATION_SWAGGER_STRUCTURES, operationSwagger);
+        retainUnsupported(request.sourceMetadata, "openapi.pathItem.unsupported", pathItem,
+                union(HTTP_METHODS, Set.of("parameters", "servers", "$ref", "summary", "description")),
+                warnings, method + " path item");
         retainUnsupported(request.sourceMetadata, "openapi.operation.unsupported", operation,
                 Set.of("tags", "summary", "description", "externalDocs", "operationId", "parameters",
                         "requestBody", "responses", "callbacks", "deprecated", "security", "servers", "consumes", "produces"),
@@ -262,7 +297,7 @@ public class OpenApiParser implements CollectionParser {
         if (def.ref != null) parameter.sourceMetadata.put(OpenApiMetadataSupport.REF, def.ref);
         if (source.containsKey("schema")) {
             OpenApiMetadataSupport.putCanonical(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA, source.get("schema"));
-            Object resolvedSchema = references.resolveSchemaNode(source.get("schema"), context + " parameter schema");
+            Object resolvedSchema = references.resolveSchemaTree(source.get("schema"), context + " parameter schema");
             if (resolvedSchema != null) OpenApiMetadataSupport.putCanonical(
                     parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA, resolvedSchema);
         }
@@ -329,8 +364,9 @@ public class OpenApiParser implements CollectionParser {
                                          List<String> warnings,
                                          String context) {
         OpenApiMetadataSupport.putCanonical(body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_CONTENT, content);
+        Map<String, Object> portableContent = resolvedContent(content, references, context + " request body content");
         OpenApiMetadataSupport.putCanonical(body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_RESOLVED_CONTENT,
-                resolvedContent(content, references, context + " request body content"));
+                portableContent);
         List<String> mediaTypes = OpenApiValueSupport.orderedMediaTypes(content);
         if (mediaTypes.isEmpty()) {
             body.mode = "raw";
@@ -347,15 +383,18 @@ public class OpenApiParser implements CollectionParser {
         putExtensions(body.sourceMetadata, OpenApiMetadataSupport.MEDIA_EXTENSIONS, media);
         if (media.containsKey("encoding")) OpenApiMetadataSupport.putCanonical(
                 body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_ENCODING, media.get("encoding"));
-        Object schema = references.resolveSchemaNode(media.get("schema"), context + " request body schema");
+        Map<String, Object> portableMedia = portableContent.get(mediaType) instanceof Map<?, ?> rawPortable
+                ? castMap(rawPortable) : new LinkedHashMap<>();
+        Object originalSchema = media.get("schema");
+        Object schema = portableMedia.get("schema");
         OpenApiValueSupport.SelectedValue selected = OpenApiValueSupport.selectMediaValue(media, references, warnings, context + " request body");
         String lower = mediaType.toLowerCase(Locale.ROOT);
         if ("application/x-www-form-urlencoded".equals(lower)) {
             body.mode = "urlencoded";
-            body.urlencoded = formFields(schema, media, false, references, warnings, context);
+            body.urlencoded = formFields(originalSchema, schema, media, false, references, warnings, context);
         } else if ("multipart/form-data".equals(lower)) {
             body.mode = "formdata";
-            body.formdata = formFields(schema, media, true, references, warnings, context);
+            body.formdata = formFields(originalSchema, schema, media, true, references, warnings, context);
         } else if (isWholeBodyBinary(mediaType, schema)) {
             body.mode = "file";
             body.filePath = "";
@@ -375,22 +414,27 @@ public class OpenApiParser implements CollectionParser {
         }
     }
 
-    private List<ApiRequest.Body.FormField> formFields(Object schema,
+    private List<ApiRequest.Body.FormField> formFields(Object originalSchema,
+                                                      Object resolvedSchema,
                                                       Map<String, Object> media,
                                                       boolean multipart,
                                                       OpenApiReferenceResolver references,
                                                       List<String> warnings,
                                                       String context) {
         List<ApiRequest.Body.FormField> fields = new ArrayList<>();
-        if (!(schema instanceof Map<?, ?> rawSchema)) return fields;
+        if (!(resolvedSchema instanceof Map<?, ?> rawSchema)) return fields;
         Map<String, Object> schemaMap = castMap(rawSchema);
         if (!(schemaMap.get("properties") instanceof Map<?, ?> rawProperties)) return fields;
         Map<String, Object> properties = castMap(rawProperties);
+        Object shallowOriginalSchema = references.resolveSchemaNode(originalSchema, context + " form schema");
+        Map<String, Object> originalProperties = shallowOriginalSchema instanceof Map<?, ?> originalMap
+                && originalMap.get("properties") instanceof Map<?, ?> originalRawProperties
+                ? castMap(originalRawProperties) : Map.of();
         Set<String> required = stringSet(schemaMap.get("required"));
         Set<String> disabledProperties = stringSet(media.get("x-api-workbench-disabled-properties"));
         Map<String, Object> encodings = media.get("encoding") instanceof Map<?, ?> raw ? castMap(raw) : Map.of();
         for (Map.Entry<String, Object> entry : properties.entrySet()) {
-            Object resolved = references.resolveSchemaNode(entry.getValue(), context + " form field");
+            Object resolved = entry.getValue();
             Map<String, Object> property = resolved instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
             if (Boolean.TRUE.equals(property.get("readOnly"))) continue;
             Object value = OpenApiValueSupport.generateSchemaValue(resolved, references, warnings, context + " form field");
@@ -400,7 +444,9 @@ public class OpenApiParser implements CollectionParser {
             field.disabled = disabledProperties.contains(entry.getKey());
             field.description = nullableString(property.get("description"));
             field.source = "openapi:requestBody.property";
-            OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA, entry.getValue());
+            Object originalProperty = originalProperties.getOrDefault(entry.getKey(), entry.getValue());
+            OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA, originalProperty);
+            OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA, resolved);
             putExtensions(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS, property);
             if (encodings.get(entry.getKey()) instanceof Map<?, ?> rawEncoding) {
                 Map<String, Object> encoding = castMap(rawEncoding);
@@ -476,6 +522,9 @@ public class OpenApiParser implements CollectionParser {
                 field.source = def.source;
                 applySwaggerFieldCollectionFormat(field, param, warnings);
                 OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA, schema);
+                Object resolvedSchema = references.resolveSchemaTree(schema, context + " form field");
+                if (resolvedSchema != null) OpenApiMetadataSupport.putCanonical(
+                        field.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA, resolvedSchema);
                 if (multipart && ("file".equalsIgnoreCase(field.type) || isFileSchema(castMap((Map<?, ?>) schema), null))) {
                     field.type = "file";
                     field.fileUpload = true;
@@ -622,17 +671,73 @@ public class OpenApiParser implements CollectionParser {
                         }
                     }
                 }
-                String url = nullableString(server.get("url"));
+                String url = serverUrl(server);
                 if (url != null) return url;
             }
         }
-        if (swagger && spec.get("host") != null) {
+        if (swagger && (spec.get("host") != null || spec.get("basePath") != null || spec.get("schemes") != null)) {
             List<String> schemes = stringList(spec.get("schemes"));
             String scheme = schemes.isEmpty() ? "https" : schemes.get(0).toLowerCase(Locale.ROOT);
             if (!Set.of("http", "https").contains(scheme)) scheme = "https";
-            return scheme + "://" + string(spec.get("host"), "localhost") + string(spec.get("basePath"), "");
+            String url = scheme + "://" + string(spec.get("host"), "localhost") + string(spec.get("basePath"), "");
+            OpenApiMetadataSupport.putCanonical(collection.sourceMetadata,
+                    OpenApiMetadataSupport.DOCUMENT_SERVERS, List.of(Map.of("url", url)));
+            return url;
         }
         return "http://localhost";
+    }
+
+    private ServerSelection effectiveServer(Map<String, Object> operation,
+                                            Map<String, Object> pathItem,
+                                            Map<String, Object> spec,
+                                            boolean swagger,
+                                            String rootBaseUrl) {
+        if (!swagger) {
+            ServerSelection operationServer = firstServer(operation.get("servers"), "operation");
+            if (operationServer != null) return operationServer;
+            ServerSelection pathServer = firstServer(pathItem.get("servers"), "pathItem");
+            if (pathServer != null) return pathServer;
+            ServerSelection rootServer = firstServer(spec.get("servers"), "root");
+            if (rootServer != null) return rootServer;
+        }
+        return new ServerSelection(rootBaseUrl != null ? rootBaseUrl : "http://localhost",
+                swagger ? "swagger" : "fallback", null);
+    }
+
+    private ServerSelection firstServer(Object rawServers, String level) {
+        if (!(rawServers instanceof List<?> servers)) return null;
+        for (Object item : servers) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> server = castMap(raw);
+            String url = serverUrl(server);
+            if (url != null && !url.isBlank()) return new ServerSelection(url, level, server);
+        }
+        return null;
+    }
+
+    private String serverUrl(Map<String, Object> server) {
+        String url = nullableString(server != null ? server.get("url") : null);
+        if (url == null) return null;
+        if (server.get("variables") instanceof Map<?, ?> rawVariables) {
+            for (String name : castMap(rawVariables).keySet()) {
+                if (name != null && !name.isBlank()) url = url.replace("{" + name + "}", "{{" + name + "}}");
+            }
+        }
+        return url;
+    }
+
+    private void addRequestServerVariables(ApiRequest request, Map<String, Object> server) {
+        if (!(server.get("variables") instanceof Map<?, ?> rawVariables)) return;
+        for (Map.Entry<String, Object> entry : castMap(rawVariables).entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank()) continue;
+            ApiRequest.Variable variable = new ApiRequest.Variable();
+            variable.key = entry.getKey();
+            variable.type = "default";
+            variable.enabled = true;
+            variable.value = entry.getValue() instanceof Map<?, ?> definition && definition.containsKey("default")
+                    ? string(definition.get("default"), "") : "{{" + entry.getKey() + "}}";
+            request.variables.add(variable);
+        }
     }
 
     private static String identity(Map<String, Object> parameter) {
@@ -737,6 +842,31 @@ public class OpenApiParser implements CollectionParser {
         if (!extensions.isEmpty()) OpenApiMetadataSupport.putCanonical(metadata, key, extensions);
     }
 
+    private static void retainStandard(Map<String, String> metadata,
+                                       String metadataKey,
+                                       Map<String, Object> source,
+                                       String field) {
+        if (source != null && source.containsKey(field)) {
+            OpenApiMetadataSupport.putCanonical(metadata, metadataKey, source.get(field));
+        }
+    }
+
+    private static Map<String, Object> selectedFields(Map<String, Object> source, Set<String> fields) {
+        Map<String, Object> selected = new LinkedHashMap<>();
+        if (source == null || fields == null) return selected;
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            if (fields.contains(entry.getKey())) selected.put(entry.getKey(), entry.getValue());
+        }
+        return selected;
+    }
+
+    private static Set<String> union(Set<String> left, Set<String> right) {
+        Set<String> union = new LinkedHashSet<>();
+        if (left != null) union.addAll(left);
+        if (right != null) union.addAll(right);
+        return union;
+    }
+
     private static void retainUnsupported(Map<String, String> metadata,
                                           String key,
                                           Map<String, Object> source,
@@ -765,7 +895,7 @@ public class OpenApiParser implements CollectionParser {
             Map<String, Object> media = entry.getValue() instanceof Map<?, ?> raw
                     ? castMap(raw) : new LinkedHashMap<>();
             if (media.containsKey("schema")) {
-                Object schema = references.resolveSchemaNode(media.get("schema"), context);
+                Object schema = references.resolveSchemaTree(media.get("schema"), context);
                 if (schema != null) media.put("schema", schema); else media.remove("schema");
             }
             if (media.get("examples") instanceof Map<?, ?> rawExamples) {
@@ -822,6 +952,7 @@ public class OpenApiParser implements CollectionParser {
     private record ParameterDef(Map<String, Object> resolved, Map<String, Object> original,
                                 String source, String ref, boolean pathLevel) {}
     private record StyleDefaults(String style, Boolean explode) {}
+    private record ServerSelection(String url, String level, Map<String, Object> definition) {}
 
     @Override public String getFormatName() { return "OpenAPI"; }
     @Override public String[] getSupportedExtensions() { return new String[]{"json", "yaml", "yml"}; }

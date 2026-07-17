@@ -21,6 +21,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /** Parse-operation-local, bounded resolver for internal and safe local OpenAPI references. */
 public final class OpenApiReferenceResolver {
@@ -86,6 +88,16 @@ public final class OpenApiReferenceResolver {
         return null;
     }
 
+    /**
+     * Produces a portable schema tree by recursively inlining every supported
+     * schema reference. Failed or recursive branches are retained as safe
+     * partial schemas with no active dangling {@code $ref}.
+     */
+    public Object resolveSchemaTree(Object candidate, String context) {
+        if (candidate == null) return null;
+        return portableSchema(candidate, ownerOf(candidate), context, 0, new LinkedHashSet<>());
+    }
+
     public Object resolveExampleNode(Object candidate, String context) {
         if (candidate == null) return null;
         Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context);
@@ -133,6 +145,124 @@ public final class OpenApiReferenceResolver {
             return merged;
         }
         return resolved;
+    }
+
+    private Object portableSchema(Object candidate,
+                                  Path owner,
+                                  String context,
+                                  int depth,
+                                  Set<String> active) {
+        if (candidate == null || candidate instanceof String || candidate instanceof Number
+                || candidate instanceof Boolean) return candidate;
+        if (depth >= MAX_REFERENCE_DEPTH) {
+            warn("reference cycle or limit", context);
+            return new LinkedHashMap<String, Object>();
+        }
+        if (candidate instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(portableSchema(item, ownerOfOr(item, owner), context, depth + 1, active));
+            return copy;
+        }
+        if (!(candidate instanceof Map<?, ?> raw)) return candidate;
+        Map<String, Object> map = castMap(raw);
+        Path mapOwner = ownerOfOr(candidate, owner);
+        Object rawRef = map.get("$ref");
+        Map<String, Object> base = new LinkedHashMap<>();
+        if (rawRef instanceof String ref && !ref.isBlank()) {
+            if (resolutions >= MAX_REFERENCE_RESOLUTIONS) {
+                warn("reference cycle or limit", context);
+            } else {
+                ResolutionTarget target = target(ref, mapOwner, context);
+                if (target != null) {
+                    String identity = target.document + "#" + target.pointer;
+                    if (!active.add(identity)) {
+                        warn("reference cycle or limit", context);
+                    } else {
+                        resolutions++;
+                        Object selected = pointer(target.root, target.pointer);
+                        if (selected == Missing.INSTANCE) {
+                            warn("blocked or unresolved reference (missing target)", context);
+                        } else {
+                            Object resolved = portableSchema(selected, target.document, context, depth + 1, active);
+                            if (resolved instanceof Map<?, ?> resolvedMap) base.putAll(castMap(resolvedMap));
+                            else if (resolved instanceof Boolean bool) return bool;
+                        }
+                        active.remove(identity);
+                    }
+                }
+            }
+        }
+
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String key = entry.getKey();
+            if ("$ref".equals(key)) continue;
+            Object value = entry.getValue();
+            base.put(key, portableSchemaKeyword(key, value, mapOwner, context, depth, active));
+        }
+        return base;
+    }
+
+    private Object portableSchemaKeyword(String key,
+                                         Object value,
+                                         Path owner,
+                                         String context,
+                                         int depth,
+                                         Set<String> active) {
+        if (value == null) return null;
+        if (Set.of("items", "additionalProperties", "not").contains(key)) {
+            return portableSchema(value, ownerOfOr(value, owner), context, depth + 1, active);
+        }
+        if (Set.of("prefixItems", "allOf", "oneOf", "anyOf").contains(key) && value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(portableSchema(item, ownerOfOr(item, owner), context, depth + 1, active));
+            return copy;
+        }
+        if (Set.of("properties", "dependentSchemas").contains(key) && value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : castMap(rawMap).entrySet()) {
+                copy.put(entry.getKey(), portableSchema(entry.getValue(), ownerOfOr(entry.getValue(), owner),
+                        context + " " + OpenApiWarningSupport.label(entry.getKey()), depth + 1, active));
+            }
+            return copy;
+        }
+        if ("content".equals(key) && value instanceof Map<?, ?> rawContent) {
+            Map<String, Object> content = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> mediaEntry : castMap(rawContent).entrySet()) {
+                if (!(mediaEntry.getValue() instanceof Map<?, ?> rawMedia)) {
+                    content.put(mediaEntry.getKey(), deepCopy(mediaEntry.getValue()));
+                    continue;
+                }
+                Map<String, Object> media = new LinkedHashMap<>();
+                for (Map.Entry<String, Object> field : castMap(rawMedia).entrySet()) {
+                    media.put(field.getKey(), "schema".equals(field.getKey())
+                            ? portableSchema(field.getValue(), ownerOfOr(field.getValue(), owner), context,
+                                    depth + 1, active)
+                            : deepCopy(field.getValue()));
+                }
+                content.put(mediaEntry.getKey(), media);
+            }
+            return content;
+        }
+        return deepCopy(value);
+    }
+
+    private Path ownerOfOr(Object value, Path fallback) {
+        Path owner = owners.get(value);
+        return owner != null ? owner : fallback;
+    }
+
+    private static Object deepCopy(Object value) {
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) copy.put(entry.getKey(), deepCopy(entry.getValue()));
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(deepCopy(item));
+            return copy;
+        }
+        return value;
     }
 
     private ResolutionTarget target(String ref, Path owner, String context) {

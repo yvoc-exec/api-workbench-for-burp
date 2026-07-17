@@ -3,6 +3,7 @@ package burp.parser;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.utils.AuthInheritanceResolver;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -293,6 +294,65 @@ class OpenApiParserTest {
         assertThat(collection.requests.get(249).parameters)
                 .filteredOn(parameter -> "header".equals(parameter.location))
                 .extracting(parameter -> parameter.key).contains("trace");
+    }
+
+    @Test
+    void effectiveServersUseOperationPathRootPrecedenceWithScopedVariables() throws Exception {
+        Path file = createTempSpecFile("""
+                openapi: 3.0.3
+                info: {title: Servers, version: '1'}
+                servers:
+                  - url: https://{root}.example.test/api
+                    variables: {root: {default: www}}
+                paths:
+                  /items:
+                    servers:
+                      - url: http://{tenant}.example.test:8080/base
+                        variables: {tenant: {default: path}}
+                    get: {operationId: pathServer, responses: {'200': {description: ok}}}
+                    post:
+                      operationId: operationServer
+                      servers:
+                        - url: https://{tenant}.example.test:9443/op
+                          variables: {tenant: {default: operation}}
+                      responses: {'200': {description: ok}}
+                  /root:
+                    get: {operationId: rootServer, responses: {'200': {description: ok}}}
+                  /unresolved:
+                    get:
+                      servers:
+                        - url: https://{missing}.example.test
+                          variables: {missing: {description: no default}}
+                      responses: {'200': {description: ok}}
+                """);
+        ApiCollection collection = new OpenApiParser().parse(file.toFile());
+        ApiRequest path = collection.requests.get(0);
+        ApiRequest operation = collection.requests.get(1);
+        ApiRequest root = collection.requests.get(2);
+        ApiRequest unresolved = collection.requests.get(3);
+
+        assertThat(path.url).isEqualTo("http://{{tenant}}.example.test:8080/base/items");
+        assertThat(operation.url).isEqualTo("https://{{tenant}}.example.test:9443/op/items");
+        assertThat(root.url).isEqualTo("https://{{root}}.example.test/api/root");
+        assertThat(unresolved.url).isEqualTo("https://{{missing}}.example.test/unresolved");
+        assertThat(path.variables).extracting(v -> v.key + "=" + v.value).containsExactly("tenant=path");
+        assertThat(operation.variables).extracting(v -> v.key + "=" + v.value).containsExactly("tenant=operation");
+        assertThat(unresolved.variables).extracting(v -> v.value).containsExactly("{{missing}}");
+
+        assertBuiltServer(collection, path, "GET /base/items HTTP/1.1", "Host: path.example.test:8080");
+        assertBuiltServer(collection, operation, "POST /op/items HTTP/1.1", "Host: operation.example.test:9443");
+        assertBuiltServer(collection, root, "GET /api/root HTTP/1.1", "Host: www.example.test");
+    }
+
+    private static void assertBuiltServer(ApiCollection collection,
+                                          ApiRequest request,
+                                          String requestLine,
+                                          String host) throws Exception {
+        VariableResolver resolver = new VariableResolver();
+        resolver.addAll(collection.environment);
+        resolver.addRequestVariables(request);
+        String raw = new String(new RequestBuilder(null).buildRequest(request, resolver), StandardCharsets.UTF_8);
+        assertThat(raw).startsWith(requestLine + "\r\n").contains("\r\n" + host + "\r\n");
     }
 
     private Path createTempSpecFile(String content) throws Exception {
