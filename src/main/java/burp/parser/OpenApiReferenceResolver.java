@@ -46,6 +46,7 @@ public final class OpenApiReferenceResolver {
     private long totalBytes;
     private int externalDocuments;
     private int resolutions;
+    private boolean openApi31;
 
     public OpenApiReferenceResolver(File rootFile, List<String> warnings) {
         this.rootFile = rootFile;
@@ -59,6 +60,8 @@ public final class OpenApiReferenceResolver {
         rootDirectory = rootPath.getParent();
         Map<String, Object> root = loadDocument(rootPath, false);
         if (root == null) throw new IOException("OpenAPI document root must be a map");
+        String featureVersion = root.get("openapi") != null ? String.valueOf(root.get("openapi")) : "";
+        openApi31 = featureVersion.startsWith("3.1");
         return root;
     }
 
@@ -66,7 +69,7 @@ public final class OpenApiReferenceResolver {
                                              String expectedKind,
                                              String context) {
         if (candidate == null) return null;
-        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context);
+        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context, ReferenceKind.ORDINARY);
         if (!(resolved instanceof Map<?, ?> map)) {
             warn("blocked or unresolved reference", context);
             return null;
@@ -82,7 +85,7 @@ public final class OpenApiReferenceResolver {
     public Object resolveSchemaNode(Object candidate, String context) {
         if (candidate == null) return null;
         if (candidate instanceof Boolean) return candidate;
-        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context);
+        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context, ReferenceKind.SCHEMA);
         if (resolved instanceof Map<?, ?> || resolved instanceof Boolean) return resolved;
         warn("blocked or unresolved reference (schema)", context);
         return null;
@@ -100,7 +103,7 @@ public final class OpenApiReferenceResolver {
 
     public Object resolveExampleNode(Object candidate, String context) {
         if (candidate == null) return null;
-        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context);
+        Object resolved = resolveNode(candidate, ownerOf(candidate), new ArrayDeque<>(), 0, context, ReferenceKind.ORDINARY);
         if (resolved instanceof Map<?, ?>) return resolved;
         warn("blocked or unresolved reference (example)", context);
         return null;
@@ -110,7 +113,8 @@ public final class OpenApiReferenceResolver {
                                Path owner,
                                Deque<String> chain,
                                int depth,
-                               String context) {
+                               String context,
+                               ReferenceKind kind) {
         if (!(candidate instanceof Map<?, ?> raw)) return candidate;
         Map<String, Object> map = castMap(raw);
         Object rawRef = map.get("$ref");
@@ -128,23 +132,61 @@ public final class OpenApiReferenceResolver {
         }
         resolutions++;
         chain.addLast(identity);
-        Object selected = pointer(target.root, target.pointer);
-        if (selected == Missing.INSTANCE) {
-            chain.removeLast();
-            warn("blocked or unresolved reference (missing target)", context);
-            return null;
-        }
-        Object resolved = resolveNode(selected, target.document, chain, depth + 1, context);
-        chain.removeLast();
-        if (resolved instanceof Map<?, ?> resolvedMap && map.size() > 1) {
-            Map<String, Object> merged = new LinkedHashMap<>(castMap(resolvedMap));
-            for (Map.Entry<String, Object> entry : map.entrySet()) {
-                if (!"$ref".equals(entry.getKey())) merged.put(entry.getKey(), entry.getValue());
+        try {
+            Object selected = pointer(target.root, target.pointer);
+            if (selected == Missing.INSTANCE) {
+                warn("blocked or unresolved reference (missing target)", context);
+                return null;
             }
-            indexOwners(merged, target.document);
-            return merged;
+            Object resolved = resolveNode(selected, target.document, chain, depth + 1, context, kind);
+            Map<String, Object> allowed = allowedReferenceSiblings(map, kind, context);
+            if (resolved instanceof Map<?, ?> resolvedMap && !allowed.isEmpty()) {
+                Map<String, Object> merged = new LinkedHashMap<>(castMap(resolvedMap));
+                merged.putAll(allowed);
+                indexOwners(merged, target.document);
+                return merged;
+            }
+            if (resolved instanceof Boolean bool && !allowed.isEmpty()) {
+                return bool ? new LinkedHashMap<>(allowed) : Boolean.FALSE;
+            }
+            return resolved;
+        } finally {
+            chain.removeLast();
         }
-        return resolved;
+    }
+
+    public Map<String, Object> ignoredReferenceSiblings(Map<String, Object> candidate, boolean schema) {
+        Map<String, Object> ignored = new LinkedHashMap<>();
+        if (candidate == null || !candidate.containsKey("$ref")) return ignored;
+        ReferenceKind kind = schema ? ReferenceKind.SCHEMA : ReferenceKind.ORDINARY;
+        for (Map.Entry<String, Object> entry : candidate.entrySet()) {
+            if (!"$ref".equals(entry.getKey()) && !isAllowedSibling(entry.getKey(), kind)) {
+                ignored.put(entry.getKey(), deepCopy(entry.getValue()));
+            }
+        }
+        return ignored;
+    }
+
+    private Map<String, Object> allowedReferenceSiblings(Map<String, Object> map,
+                                                         ReferenceKind kind,
+                                                         String context) {
+        Map<String, Object> allowed = new LinkedHashMap<>();
+        List<String> ignored = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if ("$ref".equals(entry.getKey())) continue;
+            if (isAllowedSibling(entry.getKey(), kind)) allowed.put(entry.getKey(), entry.getValue());
+            else ignored.add(entry.getKey());
+        }
+        if (!ignored.isEmpty()) OpenApiWarningSupport.add(warnings,
+                "ignored reference siblings: " + String.join(", ", ignored.stream()
+                        .map(OpenApiWarningSupport::label).toList()) + " in " + OpenApiWarningSupport.label(context));
+        return allowed;
+    }
+
+    private boolean isAllowedSibling(String key, ReferenceKind kind) {
+        if (kind == ReferenceKind.SCHEMA && openApi31) return true;
+        return kind == ReferenceKind.ORDINARY && openApi31
+                && ("summary".equals(key) || "description".equals(key));
     }
 
     private Object portableSchema(Object candidate,
@@ -168,7 +210,9 @@ public final class OpenApiReferenceResolver {
         Path mapOwner = ownerOfOr(candidate, owner);
         Object rawRef = map.get("$ref");
         Map<String, Object> base = new LinkedHashMap<>();
-        if (rawRef instanceof String ref && !ref.isBlank()) {
+        boolean resolvedReference = rawRef instanceof String ref && !ref.isBlank();
+        if (resolvedReference) {
+            String ref = (String) rawRef;
             if (resolutions >= MAX_REFERENCE_RESOLUTIONS) {
                 warn("reference cycle or limit", context);
             } else {
@@ -178,22 +222,32 @@ public final class OpenApiReferenceResolver {
                     if (!active.add(identity)) {
                         warn("reference cycle or limit", context);
                     } else {
-                        resolutions++;
-                        Object selected = pointer(target.root, target.pointer);
-                        if (selected == Missing.INSTANCE) {
-                            warn("blocked or unresolved reference (missing target)", context);
-                        } else {
-                            Object resolved = portableSchema(selected, target.document, context, depth + 1, active);
-                            if (resolved instanceof Map<?, ?> resolvedMap) base.putAll(castMap(resolvedMap));
-                            else if (resolved instanceof Boolean bool) return bool;
+                        try {
+                            resolutions++;
+                            Object selected = pointer(target.root, target.pointer);
+                            if (selected == Missing.INSTANCE) {
+                                warn("blocked or unresolved reference (missing target)", context);
+                            } else {
+                                Object resolved = portableSchema(selected, target.document, context, depth + 1, active);
+                                if (resolved instanceof Map<?, ?> resolvedMap) base.putAll(castMap(resolvedMap));
+                                else if (resolved instanceof Boolean bool) {
+                                    Map<String, Object> siblings = allowedReferenceSiblings(
+                                            map, ReferenceKind.SCHEMA, context);
+                                    if (!bool || siblings.isEmpty()) return bool;
+                                    base.putAll(siblings);
+                                }
+                            }
+                        } finally {
+                            active.remove(identity);
                         }
-                        active.remove(identity);
                     }
                 }
             }
         }
 
-        for (Map.Entry<String, Object> entry : map.entrySet()) {
+        Map<String, Object> allowedSiblings = resolvedReference
+                ? allowedReferenceSiblings(map, ReferenceKind.SCHEMA, context) : map;
+        for (Map.Entry<String, Object> entry : allowedSiblings.entrySet()) {
             String key = entry.getKey();
             if ("$ref".equals(key)) continue;
             Object value = entry.getValue();
@@ -430,5 +484,6 @@ public final class OpenApiReferenceResolver {
     }
 
     private enum Missing { INSTANCE }
+    private enum ReferenceKind { ORDINARY, SCHEMA }
     private record ResolutionTarget(Path document, Map<String, Object> root, String pointer) {}
 }

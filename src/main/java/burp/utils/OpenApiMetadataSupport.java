@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /** Lossless canonical JSON storage for format-specific OpenAPI source structures. */
 public final class OpenApiMetadataSupport {
@@ -45,6 +47,8 @@ public final class OpenApiMetadataSupport {
     public static final String OPERATION_SERVERS = "openapi.operation.servers";
     public static final String EFFECTIVE_SERVER_LEVEL = "openapi.effectiveServerLevel";
     public static final String PATH_TEMPLATE = "openapi.pathTemplate";
+    public static final String ENDPOINT_FINGERPRINT = "openapi.endpointFingerprint";
+    public static final String REF_IGNORED_SIBLINGS = "openapi.ref.ignoredSiblings";
     public static final String OPERATION_TAGS = "openapi.operation.tags";
     public static final String OPERATION_EXTERNAL_DOCS = "openapi.operation.externalDocs";
     public static final String OPERATION_DEPRECATED = "openapi.operation.deprecated";
@@ -103,6 +107,18 @@ public final class OpenApiMetadataSupport {
 
     public static void putCanonical(Map<String, String> metadata, String key, Object value) {
         if (metadata != null && key != null) metadata.put(key, canonicalJson(value));
+    }
+
+    public static String endpointFingerprint(String authoredUrl) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((authoredUrl != null ? authoredUrl : "").getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte value : digest) hex.append(String.format("%02x", value & 0xff));
+            return hex.toString();
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     private static Object deepCopy(Object value) {

@@ -180,6 +180,8 @@ public class OpenApiParser implements CollectionParser {
             parseOasRequestBody(request, operation.get("requestBody"), references, warnings, method);
         }
         applySecurity(request, operation, securitySchemes, defaultSecurity);
+        request.sourceMetadata.put(OpenApiMetadataSupport.ENDPOINT_FINGERPRINT,
+                OpenApiMetadataSupport.endpointFingerprint(request.url));
         return request;
     }
 
@@ -295,17 +297,28 @@ public class OpenApiParser implements CollectionParser {
         parameter.sourceMetadata.put(OpenApiMetadataSupport.VALUE_SOURCE, selected.source);
 
         if (def.ref != null) parameter.sourceMetadata.put(OpenApiMetadataSupport.REF, def.ref);
+        retainIgnoredReferenceSiblings(parameter.sourceMetadata, "parameter", def.original, false, references);
         if (source.containsKey("schema")) {
             OpenApiMetadataSupport.putCanonical(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA, source.get("schema"));
+            if (source.get("schema") instanceof Map<?, ?> rawSchema) retainIgnoredReferenceSiblings(
+                    parameter.sourceMetadata, "schema", castMap(rawSchema), true, references);
             Object resolvedSchema = references.resolveSchemaTree(source.get("schema"), context + " parameter schema");
             if (resolvedSchema != null) OpenApiMetadataSupport.putCanonical(
                     parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA, resolvedSchema);
         }
         if (source.containsKey("content")) {
             OpenApiMetadataSupport.putCanonical(parameter.sourceMetadata, OpenApiMetadataSupport.CONTENT, source.get("content"));
-            if (source.get("content") instanceof Map<?, ?> rawContent) OpenApiMetadataSupport.putCanonical(
-                    parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT,
-                    resolvedContent(castMap(rawContent), references, context + " parameter content"));
+            if (source.get("content") instanceof Map<?, ?> rawContent) {
+                Map<String, Object> content = castMap(rawContent);
+                List<String> mediaTypes = OpenApiValueSupport.orderedMediaTypes(content);
+                if (!mediaTypes.isEmpty() && content.get(mediaTypes.get(0)) instanceof Map<?, ?> rawMedia
+                        && rawMedia.get("schema") instanceof Map<?, ?> rawMediaSchema) {
+                    retainIgnoredReferenceSiblings(parameter.sourceMetadata, "schema",
+                            castMap(rawMediaSchema), true, references);
+                }
+                OpenApiMetadataSupport.putCanonical(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT,
+                        resolvedContent(content, references, context + " parameter content"));
+            }
         }
         if (source.containsKey("schema") && source.containsKey("content")) {
             OpenApiWarningSupport.add(warnings, "multiple parameter content types: schema and content; content selected");
@@ -344,6 +357,7 @@ public class OpenApiParser implements CollectionParser {
         body.description = nullableString(bodyObject.get("description"));
         body.source = ref != null ? "openapi:referenced-requestBody" : "openapi:requestBody";
         if (ref != null) body.sourceMetadata.put(OpenApiMetadataSupport.REF, ref);
+        retainIgnoredReferenceSiblings(body.sourceMetadata, "requestBody", original, false, references);
         putExtensions(body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_EXTENSIONS, bodyObject);
         retainUnsupported(body.sourceMetadata, "openapi.requestBody.unsupported", bodyObject,
                 Set.of("description", "required", "content"), warnings, "request body");
@@ -386,6 +400,8 @@ public class OpenApiParser implements CollectionParser {
         Map<String, Object> portableMedia = portableContent.get(mediaType) instanceof Map<?, ?> rawPortable
                 ? castMap(rawPortable) : new LinkedHashMap<>();
         Object originalSchema = media.get("schema");
+        if (originalSchema instanceof Map<?, ?> rawSchema) retainIgnoredReferenceSiblings(
+                body.sourceMetadata, "schema", castMap(rawSchema), true, references);
         Object schema = portableMedia.get("schema");
         OpenApiValueSupport.SelectedValue selected = OpenApiValueSupport.selectMediaValue(media, references, warnings, context + " request body");
         String lower = mediaType.toLowerCase(Locale.ROOT);
@@ -446,6 +462,8 @@ public class OpenApiParser implements CollectionParser {
             field.source = "openapi:requestBody.property";
             Object originalProperty = originalProperties.getOrDefault(entry.getKey(), entry.getValue());
             OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA, originalProperty);
+            if (originalProperty instanceof Map<?, ?> rawOriginalProperty) retainIgnoredReferenceSiblings(
+                    field.sourceMetadata, "schema", castMap(rawOriginalProperty), true, references);
             OpenApiMetadataSupport.putCanonical(field.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA, resolved);
             putExtensions(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS, property);
             if (encodings.get(entry.getKey()) instanceof Map<?, ?> rawEncoding) {
@@ -849,6 +867,20 @@ public class OpenApiParser implements CollectionParser {
         if (source != null && source.containsKey(field)) {
             OpenApiMetadataSupport.putCanonical(metadata, metadataKey, source.get(field));
         }
+    }
+
+    private static void retainIgnoredReferenceSiblings(Map<String, String> metadata,
+                                                       String slot,
+                                                       Map<String, Object> candidate,
+                                                       boolean schema,
+                                                       OpenApiReferenceResolver references) {
+        if (metadata == null || candidate == null || references == null) return;
+        Map<String, Object> ignored = references.ignoredReferenceSiblings(candidate, schema);
+        if (ignored.isEmpty()) return;
+        Map<String, Object> retained = OpenApiMetadataSupport.parseObject(
+                metadata.get(OpenApiMetadataSupport.REF_IGNORED_SIBLINGS));
+        retained.put(slot, ignored);
+        OpenApiMetadataSupport.putCanonical(metadata, OpenApiMetadataSupport.REF_IGNORED_SIBLINGS, retained);
     }
 
     private static Map<String, Object> selectedFields(Map<String, Object> source, Set<String> fields) {

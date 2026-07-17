@@ -44,7 +44,9 @@ public final class OpenApiCollectionExporter {
                 metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_INFO)) : new LinkedHashMap<>();
         VariableResolver rootResolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
         info.put("title", collection != null && collection.name != null ? CollectionExportSupport.resolve(collection.name, rootResolver, resolve) : "API Workbench Collection");
-        info.put("version", collection != null && collection.version != null && !collection.version.isBlank() ? collection.version : "1.0.0");
+        Object retainedInfoVersion = info.get("version");
+        info.put("version", retainedInfoVersion != null && !String.valueOf(retainedInfoVersion).isBlank()
+                ? String.valueOf(retainedInfoVersion) : "1.0.0");
         if (collection != null && collection.description != null && !collection.description.isBlank()) {
             info.put("description", CollectionExportSupport.resolve(collection.description, rootResolver, resolve));
         }
@@ -76,7 +78,6 @@ public final class OpenApiCollectionExporter {
 
         Map<String, Object> components = collection != null ? OpenApiMetadataSupport.parseObject(
                 metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_COMPONENTS)) : new LinkedHashMap<>();
-        components = portableSchemaMap(components, warnings, "retained component field");
         Map<String, Object> securitySchemes = components.get("securitySchemes") instanceof Map<?, ?> retainedSecurity
                 ? castMap(retainedSecurity) : new LinkedHashMap<>();
         List<Map<String, Object>> globalSecurity = new ArrayList<>();
@@ -105,8 +106,9 @@ public final class OpenApiCollectionExporter {
                 String exportUrl = RequestParameterSupport.materializePostmanRawUrl(
                         request.url, request.parameters, resolve ? resolver : null);
                 ParsedUrl parsed = parseUrl(exportUrl, warnings, request.name);
+                boolean endpointUnchanged = endpointUnchanged(collection, request);
                 String retainedPathTemplate = metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_TEMPLATE);
-                String path = request.sourceMetadata != null
+                String path = endpointUnchanged && request.sourceMetadata != null
                         && request.sourceMetadata.containsKey(OpenApiMetadataSupport.EFFECTIVE_SERVER_LEVEL)
                         && retainedPathTemplate != null && retainedPathTemplate.startsWith("/")
                         ? convertPathTemplate(retainedPathTemplate) : parsed.path;
@@ -141,11 +143,15 @@ public final class OpenApiCollectionExporter {
                 if (request.description != null && !request.description.isBlank()) {
                     operation.put("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
                 }
-                List<Map<String, Object>> parameters = buildParameters(request, parsed, resolver, resolve, warnings);
+                Map<String, Object> referenceDocument = new LinkedHashMap<>();
+                referenceDocument.put("components", components);
+                List<Map<String, Object>> parameters = buildParameters(
+                        request, parsed, resolver, resolve, warnings, referenceDocument);
                 if (!parameters.isEmpty()) {
                     operation.put("parameters", parameters);
                 }
-                Map<String, Object> requestBody = buildRequestBody(request, resolver, resolve, warnings);
+                Map<String, Object> requestBody = buildRequestBody(
+                        request, resolver, resolve, warnings, referenceDocument);
                 if (requestBody != null) {
                     operation.put("requestBody", requestBody);
                 }
@@ -162,10 +168,18 @@ public final class OpenApiCollectionExporter {
                 }
                 List<Object> operationServers = OpenApiMetadataSupport.parseArray(
                         metadata(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_SERVERS));
-                if (!operationServers.isEmpty()) operation.put("servers", operationServers);
+                if (endpointUnchanged && !operationServers.isEmpty()) operation.put("servers", operationServers);
+                if (!endpointUnchanged) {
+                    String currentServer = parsed.origin != null && !parsed.origin.isBlank()
+                            ? parsed.origin : "http://localhost";
+                    operation.put("servers", List.of(Map.of("url", currentServer)));
+                    addWarning(warnings, "edited endpoint exported with operation-level server approximation");
+                }
                 List<Object> pathServers = OpenApiMetadataSupport.parseArray(
                         metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_SERVERS));
-                pathServerRecords.add(new PathServerRecord(path, operation, pathServers, !operationServers.isEmpty()));
+                pathServerRecords.add(new PathServerRecord(path, operation,
+                        endpointUnchanged ? pathServers : List.of(),
+                        !endpointUnchanged || !operationServers.isEmpty()));
                 pathItem.put(method, operation);
             }
         }
@@ -181,7 +195,10 @@ public final class OpenApiCollectionExporter {
         if (!globalSecurity.isEmpty()) {
             root.put("security", globalSecurity);
         }
-        return portableSchemaMap(root, warnings, "retained OpenAPI field");
+        String sourceVersion = collection != null ? metadata(collection.sourceMetadata, OpenApiMetadataSupport.SOURCE_VERSION) : null;
+        boolean openApi31 = (sourceVersion != null && sourceVersion.startsWith("3.1")) || artifactRequires31(root);
+        root.put("openapi", openApi31 ? "3.1.0" : "3.0.3");
+        return sanitizeArtifactReferences(normalizeReferenceSiblings(root, openApi31, warnings), warnings);
     }
 
     public static void writeJson(ApiCollection collection, CollectionExportOptions options, Writer writer, List<String> warnings) throws IOException {
@@ -201,12 +218,13 @@ public final class OpenApiCollectionExporter {
                                                              ParsedUrl parsed,
                                                              VariableResolver resolver,
                                                              boolean resolve,
-                                                             List<String> warnings) {
+                                                             List<String> warnings,
+                                                             Map<String, Object> referenceDocument) {
         List<Map<String, Object>> parameters = new ArrayList<>();
         if (request != null && request.parameters != null && !request.parameters.isEmpty()) {
             for (ApiRequest.Parameter parameter : request.parameters) {
                 if (parameter == null || parameter.key == null || parameter.key.isBlank()) continue;
-                parameters.add(modeledParameter(parameter, resolver, resolve, warnings));
+                parameters.add(modeledParameter(parameter, resolver, resolve, warnings, referenceDocument));
             }
             return parameters;
         }
@@ -244,7 +262,8 @@ public final class OpenApiCollectionExporter {
     private static Map<String, Object> modeledParameter(ApiRequest.Parameter parameter,
                                                         VariableResolver resolver,
                                                         boolean resolve,
-                                                        List<String> warnings) {
+                                                        List<String> warnings,
+                                                        Map<String, Object> referenceDocument) {
         Map<String, Object> out = new LinkedHashMap<>();
         String name = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
         String location = parameter.location == null || parameter.location.isBlank()
@@ -261,11 +280,13 @@ public final class OpenApiCollectionExporter {
         if (!supported) addWarning(warnings, "unsupported parameter location: " + safeName(location));
         warnUnsupported(warnings, parameter.sourceMetadata, OpenApiMetadataSupport.UNSUPPORTED, "parameter");
 
-        Map<String, Object> retainedContent = OpenApiMetadataSupport.parseObject(
-                metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT));
-        if (retainedContent.isEmpty()) retainedContent = OpenApiMetadataSupport.parseObject(
+        Map<String, Object> originalContent = OpenApiMetadataSupport.parseObject(
                 metadata(parameter.sourceMetadata, OpenApiMetadataSupport.CONTENT));
-        retainedContent = portableContent(retainedContent, warnings, "parameter content");
+        Map<String, Object> resolvedContent = OpenApiMetadataSupport.parseObject(
+                metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT));
+        Map<String, Object> retainedContent = retainedContentForExport(
+                originalContent, resolvedContent, parameter.sourceMetadata,
+                referenceDocument, warnings, "parameter content");
         Object currentValue = typedParameterValue(parameter, resolver, resolve);
         if (!retainedContent.isEmpty()) {
             List<String> mediaTypes = OpenApiValueSupport.orderedMediaTypes(retainedContent);
@@ -287,18 +308,26 @@ public final class OpenApiCollectionExporter {
             }
             out.put("content", retainedContent);
         } else {
-            Map<String, Object> schema = OpenApiMetadataSupport.parseObject(
-                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA));
-            if (schema.isEmpty()) schema = OpenApiMetadataSupport.parseObject(
-                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
-            schema = portableSchemaMap(schema, warnings, "parameter schema");
-            if (schema.isEmpty()) schema = new LinkedHashMap<>();
-            schema.remove("$ref");
-            String modeledType = parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string";
-            if (!schema.containsKey("type") || !modeledType.equals(OpenApiValueSupport.effectiveType(schema))) {
-                schema.put("type", modeledType);
+            Object retainedSchema = retainedSchemaForExport(parameter.sourceMetadata,
+                    referenceDocument, warnings, "parameter schema");
+            if (retainedSchema instanceof Boolean) {
+                out.put("schema", retainedSchema);
+                if (parameter.valuePresent) out.put("example", currentValue);
+                mergeExtensions(out, OpenApiMetadataSupport.parseObject(
+                        metadata(parameter.sourceMetadata, OpenApiMetadataSupport.EXTENSIONS)));
+                if (parameter.disabled || !supported) out.put("x-disabled", true);
+                return out;
             }
-            if (parameter.format != null && !parameter.format.isBlank()) schema.put("format", parameter.format);
+            Map<String, Object> schema = retainedSchema instanceof Map<?, ?> rawSchema
+                    ? castMap(rawSchema) : new LinkedHashMap<>();
+            if (schema.isEmpty()) schema = new LinkedHashMap<>();
+            if (!schema.containsKey("$ref")) {
+                String modeledType = parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string";
+                if (!schema.containsKey("type") || !modeledType.equals(OpenApiValueSupport.effectiveType(schema))) {
+                    schema.put("type", modeledType);
+                }
+                if (parameter.format != null && !parameter.format.isBlank()) schema.put("format", parameter.format);
+            }
             mergeExtensions(schema, OpenApiMetadataSupport.parseObject(
                     metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS)));
             out.put("schema", schema);
@@ -313,7 +342,8 @@ public final class OpenApiCollectionExporter {
     private static Map<String, Object> buildRequestBody(ApiRequest request,
                                                         VariableResolver resolver,
                                                         boolean resolve,
-                                                        List<String> warnings) {
+                                                        List<String> warnings,
+                                                        Map<String, Object> referenceDocument) {
         if (request == null || request.body == null || request.body.mode == null || "none".equalsIgnoreCase(request.body.mode)) {
             return null;
         }
@@ -323,11 +353,13 @@ public final class OpenApiCollectionExporter {
         if (request.body.description != null && !request.body.description.isBlank()) requestBody.put("description", request.body.description);
         mergeExtensions(requestBody, OpenApiMetadataSupport.parseObject(
                 metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_EXTENSIONS)));
-        Map<String, Object> content = OpenApiMetadataSupport.parseObject(
-                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_RESOLVED_CONTENT));
-        if (content.isEmpty()) content = OpenApiMetadataSupport.parseObject(
+        Map<String, Object> originalContent = OpenApiMetadataSupport.parseObject(
                 metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_CONTENT));
-        content = portableContent(content, warnings, "request body content");
+        Map<String, Object> resolvedContent = OpenApiMetadataSupport.parseObject(
+                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_RESOLVED_CONTENT));
+        Map<String, Object> content = retainedContentForExport(
+                originalContent, resolvedContent, request.body.sourceMetadata,
+                referenceDocument, warnings, "request body content");
         String mode = request.body.mode.toLowerCase(Locale.ROOT);
         String selectedMedia = metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_SELECTED_MEDIA_TYPE);
         if (selectedMedia == null || selectedMedia.isBlank()) {
@@ -371,7 +403,7 @@ public final class OpenApiCollectionExporter {
             media.put("schema", schema);
         } else {
             String raw = resolve ? CollectionExportSupport.resolve(request.body.raw, resolver, true) : request.body.raw;
-            media.put("schema", schemaFromRaw(raw, selectedMedia));
+            if (!media.containsKey("schema")) media.put("schema", schemaFromRaw(raw, selectedMedia));
             media.put("example", typedRawValue(raw, selectedMedia));
         }
         content.put(selectedMedia, media);
@@ -570,6 +602,247 @@ public final class OpenApiCollectionExporter {
         return raw;
     }
 
+    private static boolean artifactRequires31(Map<String, Object> root) {
+        return scanOpenApiFor31(root, false);
+    }
+
+    private static boolean scanOpenApiFor31(Object node, boolean schemaContext) {
+        if (schemaContext) return schemaRequires31(node);
+        if (node instanceof Map<?, ?> raw) {
+            Map<String, Object> map = castMap(raw);
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                if ("schema".equals(entry.getKey()) && schemaRequires31(entry.getValue())) return true;
+                if ("schemas".equals(entry.getKey()) && entry.getValue() instanceof Map<?, ?> schemas) {
+                    for (Object schema : schemas.values()) if (schemaRequires31(schema)) return true;
+                }
+                if (scanOpenApiFor31(entry.getValue(), false)) return true;
+            }
+        } else if (node instanceof List<?> list) {
+            for (Object item : list) if (scanOpenApiFor31(item, false)) return true;
+        }
+        return false;
+    }
+
+    private static boolean schemaRequires31(Object schema) {
+        if (schema instanceof Boolean) return true;
+        if (!(schema instanceof Map<?, ?> raw)) return false;
+        Map<String, Object> map = castMap(raw);
+        if (map.get("type") instanceof List<?>) return true;
+        if (map.keySet().stream().anyMatch(Set.of("$schema", "const", "contentEncoding", "contentMediaType",
+                "prefixItems", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems")::contains)) return true;
+        for (String key : List.of("items", "additionalProperties", "not", "unevaluatedProperties", "unevaluatedItems")) {
+            if (schemaRequires31(map.get(key))) return true;
+        }
+        for (String key : List.of("properties", "dependentSchemas")) {
+            if (map.get(key) instanceof Map<?, ?> children) {
+                for (Object child : children.values()) if (schemaRequires31(child)) return true;
+            }
+        }
+        for (String key : List.of("prefixItems", "allOf", "oneOf", "anyOf")) {
+            if (map.get(key) instanceof List<?> children) {
+                for (Object child : children) if (schemaRequires31(child)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static Map<String, Object> sanitizeArtifactReferences(Map<String, Object> root,
+                                                                  List<String> warnings) {
+        Object sanitized = sanitizeReferenceNode(root, root, warnings, "OpenAPI field");
+        return sanitized instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
+    }
+
+    private static Map<String, Object> normalizeReferenceSiblings(Map<String, Object> root,
+                                                                  boolean openApi31,
+                                                                  List<String> warnings) {
+        Object normalized = normalizeOpenApiNode(root, openApi31, warnings, "OpenAPI field");
+        return normalized instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
+    }
+
+    private static Object normalizeOpenApiNode(Object node,
+                                               boolean openApi31,
+                                               List<String> warnings,
+                                               String context) {
+        if (node instanceof Map<?, ?> raw) {
+            Map<String, Object> source = castMap(raw);
+            Map<String, Object> copy = referenceSiblingSubset(source, openApi31, false, warnings, context);
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : copy.entrySet()) {
+                if ("schema".equals(entry.getKey())) {
+                    normalized.put(entry.getKey(), normalizeSchemaNode(entry.getValue(), openApi31, warnings, context + " schema"));
+                } else if ("schemas".equals(entry.getKey()) && entry.getValue() instanceof Map<?, ?> schemas) {
+                    Map<String, Object> normalizedSchemas = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> schema : castMap(schemas).entrySet()) {
+                        normalizedSchemas.put(schema.getKey(), normalizeSchemaNode(
+                                schema.getValue(), openApi31, warnings, context + " schema"));
+                    }
+                    normalized.put(entry.getKey(), normalizedSchemas);
+                } else {
+                    normalized.put(entry.getKey(), normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
+                            context + " " + safeName(entry.getKey())));
+                }
+            }
+            return normalized;
+        }
+        if (node instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(normalizeOpenApiNode(item, openApi31, warnings, context));
+            return copy;
+        }
+        return node;
+    }
+
+    private static Object normalizeSchemaNode(Object node,
+                                              boolean openApi31,
+                                              List<String> warnings,
+                                              String context) {
+        if (node instanceof Boolean) return node;
+        if (!(node instanceof Map<?, ?> raw)) return node;
+        Map<String, Object> source = referenceSiblingSubset(castMap(raw), openApi31, true, warnings, context);
+        Map<String, Object> copy = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (Set.of("items", "additionalProperties", "not", "unevaluatedProperties", "unevaluatedItems").contains(key)) {
+                copy.put(key, normalizeSchemaNode(value, openApi31, warnings, context + " " + safeName(key)));
+            } else if (Set.of("properties", "dependentSchemas").contains(key) && value instanceof Map<?, ?> children) {
+                Map<String, Object> normalized = new LinkedHashMap<>();
+                for (Map.Entry<String, Object> child : castMap(children).entrySet()) {
+                    normalized.put(child.getKey(), normalizeSchemaNode(child.getValue(), openApi31, warnings, context));
+                }
+                copy.put(key, normalized);
+            } else if (Set.of("prefixItems", "allOf", "oneOf", "anyOf").contains(key) && value instanceof List<?> children) {
+                List<Object> normalized = new ArrayList<>();
+                for (Object child : children) normalized.add(normalizeSchemaNode(child, openApi31, warnings, context));
+                copy.put(key, normalized);
+            } else copy.put(key, value);
+        }
+        return copy;
+    }
+
+    private static Map<String, Object> referenceSiblingSubset(Map<String, Object> source,
+                                                              boolean openApi31,
+                                                              boolean schema,
+                                                              List<String> warnings,
+                                                              String context) {
+        if (!source.containsKey("$ref")) return source;
+        Set<String> allowed = schema && openApi31 ? source.keySet()
+                : openApi31 ? Set.of("$ref", "summary", "description") : Set.of("$ref");
+        Map<String, Object> copy = new LinkedHashMap<>();
+        List<String> ignored = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            if (allowed.contains(entry.getKey())) copy.put(entry.getKey(), entry.getValue());
+            else ignored.add(entry.getKey());
+        }
+        if (!ignored.isEmpty()) addWarning(warnings, "ignored reference siblings in " + context + ": "
+                + String.join(", ", ignored.stream().map(OpenApiCollectionExporter::safeName).toList()));
+        return copy;
+    }
+
+    private static Object sanitizeReferenceNode(Object node,
+                                                Map<String, Object> root,
+                                                List<String> warnings,
+                                                String context) {
+        if (node instanceof Map<?, ?> raw) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
+                if ("$ref".equals(entry.getKey())) {
+                    if (entry.getValue() instanceof String ref && ref.startsWith("#")
+                            && jsonPointerExists(root, ref.substring(1))) {
+                        copy.put("$ref", ref);
+                    } else {
+                        addWarning(warnings, "blocked or dangling reference omitted from " + context);
+                    }
+                } else {
+                    copy.put(entry.getKey(), sanitizeReferenceNode(entry.getValue(), root, warnings,
+                            context + " " + safeName(entry.getKey())));
+                }
+            }
+            return copy;
+        }
+        if (node instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(sanitizeReferenceNode(item, root, warnings, context));
+            return copy;
+        }
+        return node;
+    }
+
+    private static boolean jsonPointerExists(Object root, String pointer) {
+        if (pointer == null || pointer.isEmpty()) return true;
+        if (!pointer.startsWith("/")) return false;
+        Object current = root;
+        for (String raw : pointer.substring(1).split("/", -1)) {
+            String token = raw.replace("~1", "/").replace("~0", "~");
+            if (current instanceof Map<?, ?> map) {
+                if (!map.containsKey(token)) return false;
+                current = map.get(token);
+            } else if (current instanceof List<?> list) {
+                try {
+                    int index = Integer.parseInt(token);
+                    if (index < 0 || index >= list.size()) return false;
+                    current = list.get(index);
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+            } else return false;
+        }
+        return true;
+    }
+
+    private static boolean endpointUnchanged(ApiCollection collection, ApiRequest request) {
+        if (request == null) return true;
+        String fingerprint = metadata(request.sourceMetadata, OpenApiMetadataSupport.ENDPOINT_FINGERPRINT);
+        if (fingerprint != null && !fingerprint.isBlank()) {
+            return fingerprint.equals(OpenApiMetadataSupport.endpointFingerprint(request.url));
+        }
+        String level = metadata(request.sourceMetadata, OpenApiMetadataSupport.EFFECTIVE_SERVER_LEVEL);
+        String path = metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_TEMPLATE);
+        if (level == null || path == null) return true;
+        List<Object> servers = switch (level) {
+            case "operation" -> OpenApiMetadataSupport.parseArray(
+                    metadata(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_SERVERS));
+            case "pathItem" -> OpenApiMetadataSupport.parseArray(
+                    metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_SERVERS));
+            default -> collection != null ? OpenApiMetadataSupport.parseArray(
+                    metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_SERVERS)) : List.of();
+        };
+        String server = firstRetainedServerUrl(servers);
+        if (server == null) return true;
+        return normalizeEndpoint(joinServerAndPath(server, path)).equals(normalizeEndpoint(request.url));
+    }
+
+    private static String firstRetainedServerUrl(List<Object> servers) {
+        if (servers == null) return null;
+        for (Object item : servers) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> server = castMap(raw);
+            Object rawUrl = server.get("url");
+            if (rawUrl == null) continue;
+            String url = String.valueOf(rawUrl);
+            if (server.get("variables") instanceof Map<?, ?> variables) {
+                for (Object key : variables.keySet()) if (key != null) {
+                    String name = String.valueOf(key);
+                    url = url.replace("{" + name + "}", "{{" + name + "}}");
+                }
+            }
+            return url;
+        }
+        return null;
+    }
+
+    private static String joinServerAndPath(String server, String path) {
+        String base = server != null ? server : "";
+        String suffix = path != null ? path : "";
+        if (!suffix.startsWith("/")) suffix = "/" + suffix;
+        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        return base + suffix;
+    }
+
+    private static String normalizeEndpoint(String value) {
+        return value == null ? "" : value.trim().replaceAll("(?<!:)/{2,}", "/");
+    }
+
     private static Map<String, Object> portableContent(Map<String, Object> content,
                                                        List<String> warnings,
                                                        String context) {
@@ -590,6 +863,83 @@ public final class OpenApiCollectionExporter {
             portable.put(entry.getKey(), media);
         }
         return portable;
+    }
+
+    private static Object retainedSchemaForExport(Map<String, String> metadata,
+                                                  Map<String, Object> referenceDocument,
+                                                  List<String> warnings,
+                                                  String context) {
+        Object originalNode = OpenApiMetadataSupport.parseCanonicalJson(
+                metadata(metadata, OpenApiMetadataSupport.SCHEMA));
+        if (originalNode instanceof Boolean) return originalNode;
+        Map<String, Object> original = originalNode instanceof Map<?, ?> rawOriginal
+                ? castMap(rawOriginal) : new LinkedHashMap<>();
+        removeIgnoredReferenceSiblings(original, metadata, "schema");
+        if (!original.isEmpty() && referencesAreValidInternal(original, referenceDocument)) return original;
+        Object resolvedNode = OpenApiMetadataSupport.parseCanonicalJson(
+                metadata(metadata, OpenApiMetadataSupport.RESOLVED_SCHEMA));
+        if (resolvedNode instanceof Boolean) return resolvedNode;
+        Map<String, Object> resolved = resolvedNode instanceof Map<?, ?> rawResolved
+                ? castMap(rawResolved) : new LinkedHashMap<>();
+        if (!resolved.isEmpty()) return portableSchemaMap(resolved, warnings, context);
+        return portableSchemaMap(original, warnings, context);
+    }
+
+    private static Map<String, Object> retainedContentForExport(Map<String, Object> original,
+                                                                Map<String, Object> resolved,
+                                                                Map<String, String> metadata,
+                                                                Map<String, Object> referenceDocument,
+                                                                List<String> warnings,
+                                                                String context) {
+        if (original == null || original.isEmpty()) return portableContent(resolved, warnings, context);
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : original.entrySet()) {
+            Map<String, Object> media = entry.getValue() instanceof Map<?, ?> raw
+                    ? castMap(raw) : new LinkedHashMap<>();
+            if (media.get("schema") instanceof Map<?, ?> rawSchema) {
+                Map<String, Object> schema = castMap(rawSchema);
+                removeIgnoredReferenceSiblings(schema, metadata, "schema");
+                media.put("schema", schema);
+            }
+            if (media.containsKey("schema") && !referencesAreValidInternal(media.get("schema"), referenceDocument)) {
+                Map<String, Object> resolvedMedia = resolved != null && resolved.get(entry.getKey()) instanceof Map<?, ?> rawResolved
+                        ? castMap(rawResolved) : new LinkedHashMap<>();
+                if (resolvedMedia.containsKey("schema")) media.put("schema",
+                        portableSchemaNode(resolvedMedia.get("schema"), warnings,
+                                context + " schema " + safeName(entry.getKey())));
+                else media.remove("schema");
+            }
+            result.put(entry.getKey(), media);
+        }
+        if (resolved != null) for (Map.Entry<String, Object> entry : resolved.entrySet()) {
+            result.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+        return result;
+    }
+
+    private static boolean referencesAreValidInternal(Object node, Map<String, Object> referenceDocument) {
+        if (node instanceof Map<?, ?> raw) {
+            for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
+                if ("$ref".equals(entry.getKey())) {
+                    if (!(entry.getValue() instanceof String ref) || !ref.startsWith("#")
+                            || !jsonPointerExists(referenceDocument, ref.substring(1))) return false;
+                } else if (!referencesAreValidInternal(entry.getValue(), referenceDocument)) return false;
+            }
+        } else if (node instanceof List<?> list) {
+            for (Object item : list) if (!referencesAreValidInternal(item, referenceDocument)) return false;
+        }
+        return true;
+    }
+
+    private static void removeIgnoredReferenceSiblings(Map<String, Object> schema,
+                                                       Map<String, String> metadata,
+                                                       String slot) {
+        if (schema == null || !schema.containsKey("$ref")) return;
+        Map<String, Object> ignoredSlots = OpenApiMetadataSupport.parseObject(
+                metadata(metadata, OpenApiMetadataSupport.REF_IGNORED_SIBLINGS));
+        if (ignoredSlots.get(slot) instanceof Map<?, ?> ignored) {
+            for (Object key : ignored.keySet()) if (key != null) schema.remove(String.valueOf(key));
+        }
     }
 
     private static Map<String, Object> portableSchemaMap(Map<String, Object> schema,

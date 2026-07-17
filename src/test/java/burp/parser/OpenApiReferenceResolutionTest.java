@@ -139,6 +139,95 @@ class OpenApiReferenceResolutionTest {
                 .contains("external-array").doesNotContain("$ref");
     }
 
+    @Test
+    void appliesVersionSpecificReferenceSiblingRulesAndRetainsIgnoredKeys() throws Exception {
+        ApiCollection oas30 = parse("siblings-30.yaml", """
+                openapi: 3.0.3
+                info: {title: S30, version: '1'}
+                components:
+                  schemas:
+                    Values: {type: array, items: {type: string}}
+                  parameters:
+                    Q:
+                      name: q
+                      in: query
+                      description: target
+                      schema: {$ref: '#/components/schemas/Values', type: string}
+                paths:
+                  /x:
+                    get:
+                      parameters:
+                        - {$ref: '#/components/parameters/Q', name: illegal, in: header, description: sibling}
+                      responses: {'200': {description: ok}}
+                """);
+        var parameter30 = oas30.requests.get(0).parameters.get(0);
+        assertThat(parameter30.key).isEqualTo("q");
+        assertThat(parameter30.location).isEqualTo("query");
+        assertThat(parameter30.description).isEqualTo("target");
+        assertThat(parameter30.type).isEqualTo("array");
+        assertThat(parameter30.sourceMetadata.get("openapi.ref.ignoredSiblings"))
+                .contains("name", "in", "description", "type");
+        assertThat(oas30.importWarnings).anyMatch(w -> w.contains("ignored reference siblings")
+                && w.contains("name") && w.contains("in"));
+
+        Files.writeString(tempDir.resolve("external-parameter.yaml"), """
+                name: ext
+                in: query
+                description: target
+                schema: {type: string}
+                """);
+        ApiCollection oas31 = parse("siblings-31.yaml", """
+                openapi: 3.1.0
+                info: {title: S31, version: '1'}
+                components:
+                  schemas:
+                    Value: {type: string}
+                  parameters:
+                    Q: {name: q, in: query, description: target, schema: {$ref: '#/components/schemas/Value', const: fixed}}
+                paths:
+                  /x:
+                    get:
+                      parameters:
+                        - {$ref: '#/components/parameters/Q', summary: allowed, description: override, name: illegal, in: header}
+                        - {$ref: 'external-parameter.yaml', description: external-override, name: illegal-external}
+                      responses: {'200': {description: ok}}
+                """);
+        assertThat(oas31.requests.get(0).parameters).extracting(p -> p.key + ":" + p.location + ":" + p.description)
+                .containsExactly("q:query:override", "ext:query:external-override");
+        assertThat(oas31.requests.get(0).parameters.get(0).type).isEqualTo("string");
+        assertThat(oas31.requests.get(0).parameters.get(0).sourceMetadata.get("openapi.resolvedSchema"))
+                .contains("const");
+        assertThat(oas31.requests.get(0).parameters.get(0).sourceMetadata.get("openapi.ref.ignoredSiblings"))
+                .contains("name", "in").doesNotContain("summary", "description");
+    }
+
+    @Test
+    void repeatedTrueAndFalseSchemaReferencesRemainIndependent() throws Exception {
+        ApiCollection collection = parse("boolean-reuse.yaml", """
+                openapi: 3.1.0
+                info: {title: Boolean, version: '1'}
+                components:
+                  schemas: {Always: true, Never: false}
+                paths:
+                  /x:
+                    post:
+                      requestBody:
+                        content:
+                          application/json:
+                            schema:
+                              type: object
+                              properties:
+                                a: {$ref: '#/components/schemas/Always'}
+                                b: {$ref: '#/components/schemas/Always'}
+                                f1: {$ref: '#/components/schemas/Never'}
+                                f2: {$ref: '#/components/schemas/Never'}
+                      responses: {'200': {description: ok}}
+                """);
+        assertThat(collection.requests.get(0).body.raw)
+                .isEqualTo("{\"a\":{},\"b\":{},\"f1\":null,\"f2\":null}");
+        assertThat(collection.importWarnings).noneMatch(w -> w.contains("reference cycle or limit"));
+    }
+
     private ApiCollection parse(String name, String yaml) throws Exception {
         Path file = tempDir.resolve(name);
         Files.writeString(file, yaml);
