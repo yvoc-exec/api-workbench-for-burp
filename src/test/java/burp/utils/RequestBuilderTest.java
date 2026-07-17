@@ -97,6 +97,26 @@ class RequestBuilderTest {
     }
 
     @Test
+    void parameterHeaderWinsOverDefaultsAndAuthentication() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "GET";
+        req.url = "http://example.com/api";
+        ApiRequest.Parameter accept = new ApiRequest.Parameter("header", "Accept", "application/parameter");
+        accept.valuePresent = true;
+        ApiRequest.Parameter authorization = new ApiRequest.Parameter("header", "Authorization", "Parameter token");
+        authorization.valuePresent = true;
+        req.parameters.add(accept);
+        req.parameters.add(authorization);
+        req.auth = new ApiRequest.Auth();
+        req.auth.type = "bearer";
+        req.auth.properties.put("token", "generated");
+
+        String raw = new String(builder.buildRequest(req, resolver), StandardCharsets.UTF_8);
+        assertThat(raw).contains("Accept: application/parameter", "Authorization: Parameter token")
+                .doesNotContain("Bearer generated", "Accept: application/json");
+    }
+
+    @Test
     void cookieAuthAppendsGeneratedCookieHeader() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

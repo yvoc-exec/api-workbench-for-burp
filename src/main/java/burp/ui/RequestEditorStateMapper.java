@@ -43,6 +43,7 @@ final class RequestEditorStateMapper {
     static final int PARAM_EXPLODE_MODEL_COLUMN = 11;
     static final int PARAM_ALLOW_RESERVED_MODEL_COLUMN = 12;
     static final int PARAM_EXISTING_ROW_MODEL_COLUMN = 13;
+    static final int PARAM_LOCATION_MODEL_COLUMN = 14;
 
     static final int BODY_KEY_MODEL_COLUMN = 0;
     static final int BODY_VALUE_MODEL_COLUMN = 1;
@@ -133,13 +134,14 @@ final class RequestEditorStateMapper {
         ctx.urlField.setText(req.url != null ? req.url : "");
 
         ctx.paramsModel.setRowCount(0);
-        if (RequestParameterSupport.hasQueryParameters(req.parameters)) {
+        if (req.parameters != null) {
             for (ApiRequest.Parameter parameter : req.parameters) {
-                if (parameter != null && parameter.isQuery()) {
+                if (parameter != null) {
                     addParameterRow(ctx.paramsModel, parameter);
                 }
             }
-        } else {
+        }
+        if (!RequestParameterSupport.hasQueryParameters(req.parameters)) {
             parseQueryToTable(req.url, ctx.paramsModel);
         }
         ensureStarterRow(ctx.paramsModel);
@@ -213,11 +215,11 @@ final class RequestEditorStateMapper {
         req.description = currentRequest.description;
         req.disabled = currentRequest.disabled;
         req.variables = copyVariables(currentRequest.variables);
-        req.parameters = existingNonQueryParameters(currentRequest.parameters);
+        req.parameters = new ArrayList<>();
         if (isUnchangedLegacyQueryView(currentRequest, ctx.urlField.getText(), ctx.paramsModel)) {
             req.url = currentRequest.url;
         } else {
-            req.parameters.addAll(parametersFromTable(ctx.paramsModel));
+            req.parameters = parametersFromTable(ctx.paramsModel);
             req.url = RequestParameterSupport.materializeUrl(
                     ctx.urlField.getText(),
                     req.parameters,
@@ -430,6 +432,7 @@ final class RequestEditorStateMapper {
             row[PARAM_TYPE_MODEL_COLUMN] = null;
             row[PARAM_STYLE_MODEL_COLUMN] = null;
             row[PARAM_EXPLODE_MODEL_COLUMN] = null;
+            row[PARAM_LOCATION_MODEL_COLUMN] = "query";
         } else if (isBodyModel(model)) {
             row[BODY_ENABLED_MODEL_COLUMN] = Boolean.TRUE;
             row[BODY_TYPE_MODEL_COLUMN] = "text";
@@ -451,6 +454,7 @@ final class RequestEditorStateMapper {
         String type = nullableTableString(model, row, PARAM_TYPE_MODEL_COLUMN);
         String source = nullableTableString(model, row, PARAM_SOURCE_MODEL_COLUMN);
         String style = nullableTableString(model, row, PARAM_STYLE_MODEL_COLUMN);
+        String location = nullableTableString(model, row, PARAM_LOCATION_MODEL_COLUMN);
         return tableString(model, row, PARAM_KEY_MODEL_COLUMN).isEmpty()
                 && tableString(model, row, PARAM_VALUE_MODEL_COLUMN).isEmpty()
                 && Boolean.TRUE.equals(model.getValueAt(row, PARAM_ENABLED_MODEL_COLUMN))
@@ -463,7 +467,8 @@ final class RequestEditorStateMapper {
                 && (source == null || source.isEmpty() || "workbench".equals(source))
                 && (style == null || style.isEmpty())
                 && model.getValueAt(row, PARAM_EXPLODE_MODEL_COLUMN) == null
-                && !Boolean.TRUE.equals(model.getValueAt(row, PARAM_ALLOW_RESERVED_MODEL_COLUMN));
+                && !Boolean.TRUE.equals(model.getValueAt(row, PARAM_ALLOW_RESERVED_MODEL_COLUMN))
+                && (location == null || location.isEmpty() || "query".equals(location));
     }
 
     private static boolean isUntouchedNewBodyRow(DefaultTableModel model, int row) {
@@ -492,12 +497,14 @@ final class RequestEditorStateMapper {
 
     private static boolean isParamsModel(DefaultTableModel model) {
         return model != null
-                && model.getColumnCount() == 14
+                && model.getColumnCount() == 15
                 && "Style".equals(String.valueOf(model.getColumnName(PARAM_STYLE_MODEL_COLUMN)))
                 && "Explode".equals(String.valueOf(model.getColumnName(PARAM_EXPLODE_MODEL_COLUMN)))
                 && "Allow Reserved".equals(String.valueOf(model.getColumnName(PARAM_ALLOW_RESERVED_MODEL_COLUMN)))
                 && "Existing Row".equals(String.valueOf(
-                        model.getColumnName(PARAM_EXISTING_ROW_MODEL_COLUMN)));
+                        model.getColumnName(PARAM_EXISTING_ROW_MODEL_COLUMN)))
+                && "Location".equals(String.valueOf(
+                        model.getColumnName(PARAM_LOCATION_MODEL_COLUMN)));
     }
 
     private static boolean isBodyModel(DefaultTableModel model) {
@@ -614,7 +621,8 @@ final class RequestEditorStateMapper {
                 parameter.style,
                 parameter.explode,
                 parameter.allowReserved,
-                Boolean.TRUE
+                Boolean.TRUE,
+                RequestParameterSupport.normalizeLocation(parameter.location)
         });
     }
 
@@ -637,21 +645,12 @@ final class RequestEditorStateMapper {
         };
     }
 
-    private static List<ApiRequest.Parameter> existingNonQueryParameters(List<ApiRequest.Parameter> existing) {
-        List<ApiRequest.Parameter> parameters = new ArrayList<>();
-        for (ApiRequest.Parameter parameter : RequestParameterSupport.copyParameters(existing)) {
-            if (parameter != null && !parameter.isQuery()) {
-                parameters.add(parameter);
-            }
-        }
-        return parameters;
-    }
-
     private static boolean isUnchangedLegacyQueryView(ApiRequest currentRequest,
                                                        String editorUrl,
                                                        DefaultTableModel paramsModel) {
         if (currentRequest == null
                 || RequestParameterSupport.hasQueryParameters(currentRequest.parameters)
+                || (currentRequest.parameters != null && !currentRequest.parameters.isEmpty())
                 || !Objects.equals(editorUrl, currentRequest.url)) {
             return false;
         }
@@ -702,7 +701,11 @@ final class RequestEditorStateMapper {
             if (fullModel ? isUntouchedNewParameterRow(model, row) : key.trim().isEmpty()) {
                 continue;
             }
-            ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
+            String location = fullModel
+                    ? RequestParameterSupport.normalizeLocation(
+                            nullableTableString(model, row, PARAM_LOCATION_MODEL_COLUMN))
+                    : "query";
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter(location, key, value);
             if (fullModel) {
                 Object enabledValue = model.getValueAt(row, PARAM_ENABLED_MODEL_COLUMN);
                 parameter.disabled = Boolean.FALSE.equals(enabledValue);

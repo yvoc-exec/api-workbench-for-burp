@@ -90,7 +90,16 @@ public class PostmanParser implements CollectionParser {
                 ApiRequest.Variable cv = new ApiRequest.Variable();
                 cv.key = getString(var, "key", "");
                 cv.value = extractVariableValue(var, "value");
-                cv.type = getString(var, "type", "string");
+                cv.type = getString(var, "type", null);
+                cv.enabled = true;
+                if (var.has("enabled") && var.get("enabled").isJsonPrimitive()
+                        && var.getAsJsonPrimitive("enabled").isBoolean()) {
+                    cv.enabled = var.get("enabled").getAsBoolean();
+                }
+                if (var.has("disabled") && !var.get("disabled").isJsonNull()
+                        && var.get("disabled").getAsBoolean()) {
+                    cv.enabled = false;
+                }
                 collection.variables.add(cv);
             }
         }
@@ -527,8 +536,10 @@ public class PostmanParser implements CollectionParser {
         }
 
         List<ApiRequest.Parameter> rawParameters = RequestParameterSupport.parseQueryParameters(raw, "postman:url.raw");
+        List<ApiRequest.Parameter> pathParameters = parsePostmanPathRows(urlObj.get("variable"));
         boolean hasStructuredQuery = urlObj.has("query") && urlObj.get("query").isJsonArray();
         if (!hasStructuredQuery) {
+            rawParameters.addAll(pathParameters);
             return new ParsedPostmanUrl(
                     RequestParameterSupport.materializeUrl(authoredUrl, rawParameters, null),
                     rawParameters);
@@ -553,6 +564,7 @@ public class PostmanParser implements CollectionParser {
                 parameters.add(unmatched);
             }
         }
+        parameters.addAll(pathParameters);
         return new ParsedPostmanUrl(
                 RequestParameterSupport.materializeUrl(authoredUrl, parameters, null),
                 parameters);
@@ -635,6 +647,35 @@ public class PostmanParser implements CollectionParser {
             parameter.type = getString(param, "type", null);
             parameter.description = parsePostmanDescription(param.get("description"));
             parameter.source = "postman:url.query";
+            parameters.add(parameter);
+        }
+        return parameters;
+    }
+
+    private List<ApiRequest.Parameter> parsePostmanPathRows(JsonElement variableElement) {
+        List<ApiRequest.Parameter> parameters = new ArrayList<>();
+        if (variableElement == null || !variableElement.isJsonArray()) {
+            return parameters;
+        }
+        for (JsonElement elem : variableElement.getAsJsonArray()) {
+            if (elem == null || !elem.isJsonObject()) {
+                continue;
+            }
+            JsonObject variable = elem.getAsJsonObject();
+            String key = getString(variable, "key", "");
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            boolean valuePresent = variable.has("value") && !variable.get("value").isJsonNull();
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter(
+                    "path", key, getString(variable, "value", ""));
+            parameter.valuePresent = valuePresent;
+            parameter.disabled = variable.has("disabled")
+                    && !variable.get("disabled").isJsonNull()
+                    && variable.get("disabled").getAsBoolean();
+            parameter.type = getString(variable, "type", null);
+            parameter.description = parsePostmanDescription(variable.get("description"));
+            parameter.source = "postman:url.variable";
             parameters.add(parameter);
         }
         return parameters;

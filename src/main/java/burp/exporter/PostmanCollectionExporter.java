@@ -47,29 +47,40 @@ public final class PostmanCollectionExporter {
 
         JsonArray variables = new JsonArray();
         if (collection != null) {
-            Map<String, String> merged = new LinkedHashMap<>();
+            Map<String, ApiRequest.Variable> merged = new LinkedHashMap<>();
             if (collection.environment != null) {
-                merged.putAll(collection.environment);
+                for (Map.Entry<String, String> entry : collection.environment.entrySet()) {
+                    ApiRequest.Variable variable = new ApiRequest.Variable();
+                    variable.key = entry.getKey();
+                    variable.value = entry.getValue();
+                    variable.type = "default";
+                    variable.enabled = true;
+                    merged.put(variable.key, variable);
+                }
             }
             if (collection.variables != null) {
                 for (ApiRequest.Variable variable : collection.variables) {
                     if (variable == null || variable.key == null || variable.key.isBlank()) {
                         continue;
                     }
-                    merged.put(variable.key, variable.value != null ? variable.value : "");
+                    merged.put(variable.key, variable);
                 }
             }
-            for (Map.Entry<String, String> entry : merged.entrySet()) {
+            for (Map.Entry<String, ApiRequest.Variable> entry : merged.entrySet()) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
                     continue;
                 }
+                ApiRequest.Variable variable = entry.getValue();
                 JsonObject item = new JsonObject();
                 item.addProperty("key", entry.getKey());
-                item.addProperty("value", CollectionExportSupport.resolve(entry.getValue(), rootResolver, resolve) != null
-                        ? CollectionExportSupport.resolve(entry.getValue(), rootResolver, resolve)
+                String variableValue = variable != null ? variable.value : null;
+                item.addProperty("value", CollectionExportSupport.resolve(variableValue, rootResolver, resolve) != null
+                        ? CollectionExportSupport.resolve(variableValue, rootResolver, resolve)
                         : "");
-                item.addProperty("type", "default");
-                item.addProperty("enabled", true);
+                item.addProperty("type", variable != null && variable.type != null && !variable.type.isBlank()
+                        ? variable.type
+                        : "default");
+                item.addProperty("enabled", variable == null || variable.enabled);
                 variables.add(item);
             }
         }
@@ -167,7 +178,11 @@ public final class PostmanCollectionExporter {
     private static JsonElement requestUrlToPostman(ApiRequest request,
                                                    VariableResolver resolver,
                                                    boolean resolve) {
-        if (request == null || !RequestParameterSupport.hasQueryParameters(request.parameters)) {
+        boolean hasQuery = request != null
+                && RequestParameterSupport.hasParametersAtLocation(request.parameters, "query");
+        boolean hasPath = request != null
+                && RequestParameterSupport.hasParametersAtLocation(request.parameters, "path");
+        if (request == null || (!hasQuery && !hasPath)) {
             return new com.google.gson.JsonPrimitive(request != null && request.url != null
                     ? CollectionExportSupport.resolve(request.url, resolver, resolve)
                     : "");
@@ -176,29 +191,48 @@ public final class PostmanCollectionExporter {
         JsonObject url = new JsonObject();
         url.addProperty("raw", RequestParameterSupport.materializeUrl(
                 request.url != null ? request.url : "", request.parameters, materializationResolver));
-        JsonArray query = new JsonArray();
-        for (ApiRequest.Parameter parameter : request.parameters) {
-            if (parameter == null || !parameter.isQuery()) {
-                continue;
+        if (hasQuery) {
+            JsonArray query = new JsonArray();
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (!RequestParameterSupport.isLocation(parameter, "query")) {
+                    continue;
+                }
+                JsonObject row = parameterToPostmanUrlRow(parameter, resolver, resolve);
+                query.add(row);
             }
-            JsonObject row = new JsonObject();
-            row.addProperty("key", CollectionExportSupport.resolve(parameter.key, resolver, resolve));
-            if (parameter.valuePresent) {
-                row.addProperty("value", CollectionExportSupport.resolve(parameter.value, resolver, resolve));
-            }
-            if (parameter.disabled) {
-                row.addProperty("disabled", true);
-            }
-            if (parameter.description != null && !parameter.description.isBlank()) {
-                row.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
-            }
-            if (parameter.type != null && !parameter.type.isBlank()) {
-                row.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
-            }
-            query.add(row);
+            url.add("query", query);
         }
-        url.add("query", query);
+        if (hasPath) {
+            JsonArray variables = new JsonArray();
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (!RequestParameterSupport.isLocation(parameter, "path")) {
+                    continue;
+                }
+                variables.add(parameterToPostmanUrlRow(parameter, resolver, resolve));
+            }
+            url.add("variable", variables);
+        }
         return url;
+    }
+
+    private static JsonObject parameterToPostmanUrlRow(ApiRequest.Parameter parameter,
+                                                        VariableResolver resolver,
+                                                        boolean resolve) {
+        JsonObject row = new JsonObject();
+        row.addProperty("key", CollectionExportSupport.resolve(parameter.key, resolver, resolve));
+        if (parameter.valuePresent) {
+            row.addProperty("value", CollectionExportSupport.resolve(parameter.value, resolver, resolve));
+        }
+        if (parameter.disabled) {
+            row.addProperty("disabled", true);
+        }
+        if (parameter.description != null && !parameter.description.isBlank()) {
+            row.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
+        }
+        if (parameter.type != null && !parameter.type.isBlank()) {
+            row.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
+        }
+        return row;
     }
 
     private static JsonObject requestAuth(ApiCollection collection, ApiRequest request, VariableResolver resolver, boolean resolve) {

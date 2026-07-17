@@ -131,6 +131,26 @@ class RequestParameterSupportTest {
                 .isEqualTo("https://example.test/a?&k=v&");
     }
 
+    @Test
+    void normalizesSupportedAndUnknownLocationsWithoutLosingMetadata() {
+        ApiRequest.Parameter unknown = new ApiRequest.Parameter("  Vendor-Custom  ", "k", "v");
+        assertThat(RequestParameterSupport.normalizeLocation(null)).isEqualTo("query");
+        assertThat(RequestParameterSupport.normalizeLocation("  ")).isEqualTo("query");
+        assertThat(RequestParameterSupport.normalizeLocation(" HEADER ")).isEqualTo("header");
+        assertThat(RequestParameterSupport.normalizeLocation(unknown.location)).isEqualTo("vendor-custom");
+        assertThat(RequestParameterSupport.isLocation(unknown, "VENDOR-CUSTOM")).isTrue();
+        assertThat(RequestParameterSupport.hasParametersAtLocation(List.of(unknown), "header")).isFalse();
+    }
+
+    @Test
+    void materializeRequestUrlReplacesOnlyCompletePathPlaceholders() {
+        ApiRequest.Parameter id = new ApiRequest.Parameter("path", "id", "42");
+        id.valuePresent = true;
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "https://id.example/{id}/{{id}}/:id/prefix:id?x=:id#id", List.of(id), null))
+                .isEqualTo("https://id.example/42/42/42/prefix:id?x=:id#id");
+    }
+
     private static ApiRequest.Parameter parameter(String key, String value, boolean valuePresent) {
         ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
         parameter.valuePresent = valuePresent;

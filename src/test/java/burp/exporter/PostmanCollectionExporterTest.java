@@ -2,16 +2,25 @@ package burp.exporter;
 
 import burp.models.ApiCollection;
 import burp.models.EnvironmentProfile;
+import burp.models.ApiRequest;
+import burp.parser.PostmanParser;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PostmanCollectionExporterTest {
+    @TempDir
+    Path tempDir;
 
     @Test
     void buildsNestedFoldersRequestsAuthBodyAndScriptsWithoutResolvingPlaceholders() {
@@ -69,6 +78,55 @@ class PostmanCollectionExporterTest {
                 .isEqualTo("https://api.example.test/login");
         assertThat(loginRequest.getAsJsonObject("request").getAsJsonObject("body").getAsJsonPrimitive("raw").getAsString())
                 .contains("resolved-password");
+    }
+
+    @Test
+    void pathAndQueryRowsAndCollectionVariableMetadataRoundTripThroughPostman() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "C";
+        collection.environment.put("collision", "environment");
+        ApiRequest.Variable variable = new ApiRequest.Variable();
+        variable.key = "collision";
+        variable.value = "collection";
+        variable.type = "secret";
+        variable.enabled = false;
+        collection.variables.add(variable);
+        ApiRequest request = new ApiRequest();
+        request.name = "R";
+        request.method = "GET";
+        request.url = "https://example.test/users/:id";
+        ApiRequest.Parameter query = new ApiRequest.Parameter("query", "flag", "");
+        query.valuePresent = false;
+        query.description = "bare query";
+        ApiRequest.Parameter path = new ApiRequest.Parameter("path", "id", "42");
+        path.valuePresent = true;
+        path.disabled = true;
+        path.description = "identifier";
+        path.type = "string";
+        request.parameters.add(query);
+        request.parameters.add(path);
+        collection.requests.add(request);
+
+        JsonObject root = PostmanCollectionExporter.build(collection, new CollectionExportOptions(
+                CollectionExportFormat.POSTMAN_JSON, null, false, null, Map.of()), new ArrayList<>());
+        JsonObject url = root.getAsJsonArray("item").get(0).getAsJsonObject()
+                .getAsJsonObject("request").getAsJsonObject("url");
+        assertThat(url.get("raw").getAsString()).isEqualTo("https://example.test/users/:id?flag");
+        assertThat(url.getAsJsonArray("query")).hasSize(1);
+        assertThat(url.getAsJsonArray("variable")).hasSize(1);
+        assertThat(url.getAsJsonArray("variable").get(0).getAsJsonObject().get("disabled").getAsBoolean()).isTrue();
+        assertThat(root.getAsJsonArray("variable")).hasSize(1);
+        assertThat(root.getAsJsonArray("variable").get(0).getAsJsonObject().get("value").getAsString())
+                .isEqualTo("collection");
+
+        Path file = tempDir.resolve("round-trip.json");
+        Files.writeString(file, root.toString(), StandardCharsets.UTF_8);
+        ApiCollection reparsed = new PostmanParser().parse(file.toFile());
+        assertThat(reparsed.requests.get(0).parameters).extracting(p -> p.location)
+                .containsExactly("query", "path");
+        assertThat(reparsed.requests.get(0).url).contains("/users/:id");
+        assertThat(reparsed.variables.get(0).type).isEqualTo("secret");
+        assertThat(reparsed.variables.get(0).enabled).isFalse();
     }
 
     private static JsonObject postmanFolder(JsonArray items, String name) {

@@ -410,6 +410,43 @@ class PostmanParserTest {
     }
 
     @Test
+    void importsOrderedPostmanPathVariablesWithMetadataAndValuePresence() throws Exception {
+        ApiRequest request = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "item":[{"name":"R","request":{"method":"GET","url":{
+                   "raw":"https://example.test/users/:id/{bare}",
+                   "variable":[
+                     {"key":"id","value":"42","type":"string","description":{"content":"identifier"}},
+                     {"key":"bare","disabled":true},
+                     {"key":"empty","value":""}
+                   ]}}}]}
+                """).requests.get(0);
+
+        assertThat(request.parameters).extracting(p -> p.location).containsExactly("path", "path", "path");
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("id", "bare", "empty");
+        assertThat(request.parameters).extracting(p -> p.valuePresent).containsExactly(true, false, true);
+        assertThat(request.parameters).extracting(p -> p.disabled).containsExactly(false, true, false);
+        assertThat(request.parameters.get(0).description).isEqualTo("identifier");
+        assertThat(request.parameters.get(0).type).isEqualTo("string");
+        assertThat(request.parameters).extracting(p -> p.source).containsOnly("postman:url.variable");
+        assertThat(request.url).isEqualTo("https://example.test/users/:id/{bare}");
+    }
+
+    @Test
+    void importsCollectionVariableTypeAndEnabledState() throws Exception {
+        ApiCollection collection = parsePostman("""
+                {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                 "variable":[
+                   {"key":"secret","value":"x","type":"secret","enabled":false},
+                   {"key":"disabled","value":"y","type":"number","disabled":true},
+                   {"key":"active","value":"z"}],"item":[]}
+                """);
+        assertThat(collection.variables).extracting(v -> v.key).containsExactly("secret", "disabled", "active");
+        assertThat(collection.variables).extracting(v -> v.type).containsExactly("secret", "number", null);
+        assertThat(collection.variables).extracting(v -> v.enabled).containsExactly(false, false, true);
+    }
+
+    @Test
     void disabledStructuredQueryConsumesMatchingRawWithoutReactivation() throws Exception {
         ApiRequest request = parsePostman("""
                 {"info":{"name":"C","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},

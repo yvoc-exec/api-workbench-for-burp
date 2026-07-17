@@ -105,6 +105,54 @@ class RequestEditorParameterFidelityTest {
     }
 
     @Test
+    void allLocationsLoadAndBuildWhilePathTemplateRemainsAuthored() throws Exception {
+        ApiRequest request = request();
+        request.url = "https://example.test/users/:id?old=1";
+        for (String location : new String[]{"query", "path", "header", "cookie", "Vendor-Custom"}) {
+            ApiRequest.Parameter parameter = new ApiRequest.Parameter(location, location, "value");
+            parameter.valuePresent = true;
+            parameter.rawKey = "raw-" + location;
+            parameter.rawValue = "raw-value";
+            parameter.required = true;
+            parameter.type = "string";
+            parameter.description = "description";
+            parameter.source = "test";
+            parameter.style = "form";
+            parameter.explode = Boolean.FALSE;
+            parameter.allowReserved = true;
+            request.parameters.add(parameter);
+        }
+
+        ApiRequest built = editWithoutChanges(request);
+
+        assertThat(built.parameters).extracting(p -> p.location)
+                .containsExactly("query", "path", "header", "cookie", "vendor-custom");
+        for (int i = 0; i < built.parameters.size(); i++) {
+            assertThat(built.parameters.get(i)).usingRecursiveComparison()
+                    .ignoringFields("location")
+                    .isEqualTo(request.parameters.get(i));
+        }
+        assertThat(built.url).startsWith("https://example.test/users/:id?");
+    }
+
+    @Test
+    void changingLocationMovesTransportWithoutLosingHiddenMetadata() throws Exception {
+        ApiRequest request = requestWithDistinctParameterMetadata();
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            paramsModel(panel).setValueAt("header", 0,
+                    RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN);
+            return panel.buildRequestFromUI();
+        });
+
+        assertThat(built.parameters.get(0).location).isEqualTo("header");
+        assertParameterMetadata(built.parameters.get(0), "first", "form", Boolean.TRUE,
+                true, "first-source", "f%69rst", "%6Fne", "first description", true, "string");
+        assertThat(built.url).isEqualTo("https://example.test/a?s%65cond=t%77o");
+    }
+
+    @Test
     void deletingQueryRowDoesNotTransferSerializationMetadata() throws Exception {
         ApiRequest request = requestWithDistinctParameterMetadata();
 

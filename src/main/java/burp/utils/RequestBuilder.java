@@ -103,7 +103,7 @@ public class RequestBuilder {
         }
 
         // Resolve URL and parse target robustly
-        String resolvedUrl = RequestParameterSupport.materializeUrl(
+        String resolvedUrl = RequestParameterSupport.materializeRequestUrl(
                 request.url,
                 request.parameters,
                 resolver);
@@ -116,9 +116,11 @@ public class RequestBuilder {
 
         if (policy.exactHttp()) {
             applyExplicitHeaders(request, headers, resolver, true);
+            applyParameterHeadersAndCookies(request, headers, resolver, true);
             body = buildBody(request.body, headers, request.name, resolver, false, false);
         } else {
             applyExplicitHeaders(request, headers, resolver, false);
+            applyParameterHeadersAndCookies(request, headers, resolver, false);
 
             if (policy.shouldApplyDefaultHeaders(request)) {
                 if (!policy.isSuppressed(request, "accept")) {
@@ -328,31 +330,104 @@ public class RequestBuilder {
         }
     }
 
+    private void applyParameterHeadersAndCookies(ApiRequest request,
+                                                 HeaderStore headers,
+                                                 VariableResolver resolver,
+                                                 boolean exactHttp) {
+        if (request == null || request.parameters == null) {
+            return;
+        }
+        Set<String> connectionNominated = exactHttp
+                ? Collections.emptySet()
+                : collectConnectionNominatedHeaders(request, resolver);
+        for (ApiRequest.Parameter parameter : request.parameters) {
+            if (!RequestParameterSupport.isLocation(parameter, "header")
+                    || parameter.disabled
+                    || parameter.key == null
+                    || parameter.key.isBlank()) {
+                continue;
+            }
+            String key = resolve(resolver, parameter.key);
+            String value = parameter.valuePresent
+                    ? resolve(resolver, parameter.value != null ? parameter.value : "")
+                    : "";
+            if (isAllowedAuthoredHeader(key, exactHttp, connectionNominated)) {
+                headers.addAuthored(key.trim(), value);
+            }
+        }
+
+        List<String> cookies = new ArrayList<>();
+        for (ApiRequest.Parameter parameter : request.parameters) {
+            if (!RequestParameterSupport.isLocation(parameter, "cookie")
+                    || parameter.disabled
+                    || parameter.key == null
+                    || parameter.key.isBlank()) {
+                continue;
+            }
+            String key = resolve(resolver, parameter.key);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            String value = resolve(resolver, parameter.value != null ? parameter.value : "");
+            cookies.add(parameter.valuePresent ? key + "=" + value : key);
+        }
+        if (!cookies.isEmpty() && isAllowedAuthoredHeader("Cookie", exactHttp, connectionNominated)) {
+            headers.addAuthored("Cookie", String.join("; ", cookies));
+        }
+    }
+
+    private boolean isAllowedAuthoredHeader(String key,
+                                            boolean exactHttp,
+                                            Set<String> connectionNominated) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+        String lower = key.trim().toLowerCase(Locale.ROOT);
+        return exactHttp || (!SAFE_FORBIDDEN_AUTHORED_HEADER_NAMES.contains(lower)
+                && !connectionNominated.contains(lower)
+                && !"postman-token".equals(lower));
+    }
+
     private Set<String> collectConnectionNominatedHeaders(ApiRequest request, VariableResolver resolver) {
         Set<String> nominated = new LinkedHashSet<>();
-        if (request == null || request.headers == null) {
+        if (request == null) {
             return nominated;
         }
-        for (ApiRequest.Header header : request.headers) {
-            if (header == null || header.disabled || header.key == null || header.value == null) {
-                continue;
-            }
-            String key = resolve(resolver, header.key);
-            if (key == null || !"connection".equalsIgnoreCase(key.trim())) {
-                continue;
-            }
-            String value = resolve(resolver, header.value);
-            if (value == null) {
-                continue;
-            }
-            for (String token : value.split(",")) {
-                String name = token != null ? token.trim().toLowerCase(Locale.ROOT) : "";
-                if (!name.isEmpty() && !"connection".equals(name)) {
-                    nominated.add(name);
+        if (request.headers != null) {
+            for (ApiRequest.Header header : request.headers) {
+                if (header == null || header.disabled || header.key == null || header.value == null) {
+                    continue;
                 }
+                collectConnectionNominations(
+                        resolve(resolver, header.key), resolve(resolver, header.value), nominated);
+            }
+        }
+        if (request.parameters != null) {
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (!RequestParameterSupport.isLocation(parameter, "header")
+                        || parameter.disabled
+                        || parameter.key == null) {
+                    continue;
+                }
+                String value = parameter.valuePresent
+                        ? resolve(resolver, parameter.value != null ? parameter.value : "")
+                        : "";
+                collectConnectionNominations(resolve(resolver, parameter.key), value, nominated);
             }
         }
         return nominated;
+    }
+
+    private void collectConnectionNominations(String key, String value, Set<String> nominated) {
+        if (key == null || !"connection".equalsIgnoreCase(key.trim()) || value == null) {
+            return;
+        }
+        for (String token : value.split(",")) {
+            String name = token != null ? token.trim().toLowerCase(Locale.ROOT) : "";
+            if (!name.isEmpty() && !"connection".equals(name)) {
+                nominated.add(name);
+            }
+        }
     }
 
     /**

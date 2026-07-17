@@ -334,7 +334,7 @@ public class RequestEditorPanel extends JPanel {
         paramsModel = new DefaultTableModel(new Object[]{
                 "Key", "Value", "Enabled", "Description", "Raw Key", "Raw Value",
                 "Value Present", "Required", "Type", "Source", "Style", "Explode", "Allow Reserved",
-                "Existing Row"
+                "Existing Row", "Location"
         }, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -350,19 +350,32 @@ public class RequestEditorPanel extends JPanel {
         };
         paramsTable = RequestEditorTableSupport.createEditableTable(paramsModel);
         paramsTable.moveColumn(RequestEditorStateMapper.PARAM_ENABLED_MODEL_COLUMN, 0);
+        paramsTable.moveColumn(
+                paramsTable.convertColumnIndexToView(RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN), 1);
         paramsTable.getColumnModel().getColumn(0).setHeaderValue("Enabled");
         paramsTable.getColumnModel().getColumn(0).setPreferredWidth(70);
         paramsTable.getColumnModel().getColumn(0).setMaxWidth(90);
         paramsTable.getColumnModel().getColumn(0).setMinWidth(64);
         paramsTable.getColumnModel().getColumn(0).setCellRenderer(paramsTable.getDefaultRenderer(Boolean.class));
-        for (int viewColumn = 13; viewColumn >= 4; viewColumn--) {
-            paramsTable.removeColumn(paramsTable.getColumnModel().getColumn(viewColumn));
+        for (int viewColumn = paramsTable.getColumnCount() - 1; viewColumn >= 0; viewColumn--) {
+            int modelColumn = paramsTable.convertColumnIndexToModel(viewColumn);
+            if (modelColumn != RequestEditorStateMapper.PARAM_ENABLED_MODEL_COLUMN
+                    && modelColumn != RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN
+                    && modelColumn != RequestEditorStateMapper.PARAM_KEY_MODEL_COLUMN
+                    && modelColumn != RequestEditorStateMapper.PARAM_VALUE_MODEL_COLUMN
+                    && modelColumn != RequestEditorStateMapper.PARAM_DESCRIPTION_MODEL_COLUMN) {
+                paramsTable.removeColumn(paramsTable.getColumnModel().getColumn(viewColumn));
+            }
         }
+        int locationViewColumn = paramsTable.convertColumnIndexToView(
+                RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN);
+        paramsTable.getColumnModel().getColumn(locationViewColumn).setCellEditor(
+                new DefaultCellEditor(new JComboBox<>(new String[]{"query", "path", "header", "cookie"})));
         panel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
         panel.add(RequestEditorTableSupport.createAddRemovePanel(paramsTable, paramsModel,
                 () -> new Object[]{
                         "", "", Boolean.TRUE, "", null, null, Boolean.FALSE,
-                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE
+                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE, "query"
                 }),
                 BorderLayout.SOUTH);
         RequestEditorStateMapper.ensureStarterRow(paramsModel);

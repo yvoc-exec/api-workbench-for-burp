@@ -30,7 +30,21 @@ class ApiWorkbenchParameterRoundTripTest {
         ApiRequest original = request();
         ApiRequest.Parameter expected = original.parameters.get(0);
         ApiRequest actual = roundTrip(original).requests.get(0);
-        assertThat(actual.parameters.get(0)).usingRecursiveComparison().isEqualTo(expected);
+        ApiRequest.Parameter parameter = actual.parameters.get(0);
+        assertThat(parameter.location).isEqualTo(expected.location);
+        assertThat(parameter.key).isEqualTo(expected.key);
+        assertThat(parameter.value).isEqualTo(expected.value);
+        assertThat(parameter.rawKey).isEqualTo(expected.rawKey);
+        assertThat(parameter.rawValue).isEqualTo(expected.rawValue);
+        assertThat(parameter.valuePresent).isEqualTo(expected.valuePresent);
+        assertThat(parameter.disabled).isEqualTo(expected.disabled);
+        assertThat(parameter.required).isEqualTo(expected.required);
+        assertThat(parameter.type).isEqualTo(expected.type);
+        assertThat(parameter.description).isEqualTo(expected.description);
+        assertThat(parameter.style).isEqualTo(expected.style);
+        assertThat(parameter.explode).isEqualTo(expected.explode);
+        assertThat(parameter.allowReserved).isEqualTo(expected.allowReserved);
+        assertThat(parameter.source).isEqualTo(expected.source);
     }
 
     @Test

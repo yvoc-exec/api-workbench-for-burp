@@ -42,6 +42,36 @@ class RequestEditorPanelTest {
         assertThat(headersModel(panel).getColumnCount()).isEqualTo(3);
         assertThat(headersModel(panel).getColumnName(RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo("Enabled");
         assertThat(headersModel(panel).getValueAt(0, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.TRUE);
+        assertThat(paramsModel(panel).getColumnCount()).isEqualTo(15);
+        assertThat(paramsModel(panel).getValueAt(0, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
+                .isEqualTo("query");
+        assertThat(java.util.stream.IntStream.range(0, paramsTable(panel).getColumnCount())
+                .mapToObj(paramsTable(panel)::getColumnName))
+                .containsExactly("Enabled", "Location", "Key", "Value", "Description");
+        assertThat(paramsTable(panel).getColumnModel().getColumn(1).getCellEditor())
+                .isInstanceOf(DefaultCellEditor.class);
+    }
+
+    @Test
+    void passiveLoadingAllParameterLocationsDoesNotDirtyEditor() throws Exception {
+        RequestEditorPanel panel = new RequestEditorPanel();
+        ApiRequest request = minimalRequest();
+        request.parameters.add(new ApiRequest.Parameter("query", "q", "1"));
+        request.parameters.add(new ApiRequest.Parameter("path", "id", "2"));
+        request.parameters.add(new ApiRequest.Parameter("header", "X-Test", "3"));
+        request.parameters.add(new ApiRequest.Parameter("cookie", "session", "4"));
+
+        panel.loadRequest(request);
+
+        assertThat(panel.isDirty()).isFalse();
+        assertThat(paramsModel(panel).getValueAt(0, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
+                .isEqualTo("query");
+        assertThat(paramsModel(panel).getValueAt(1, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
+                .isEqualTo("path");
+        assertThat(paramsModel(panel).getValueAt(2, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
+                .isEqualTo("header");
+        assertThat(paramsModel(panel).getValueAt(3, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
+                .isEqualTo("cookie");
     }
 
     @Test
@@ -1363,6 +1393,12 @@ class RequestEditorPanelTest {
         Field f = RequestEditorPanel.class.getDeclaredField("paramsModel");
         f.setAccessible(true);
         return (DefaultTableModel) f.get(panel);
+    }
+
+    private static JTable paramsTable(RequestEditorPanel panel) throws Exception {
+        Field f = RequestEditorPanel.class.getDeclaredField("paramsTable");
+        f.setAccessible(true);
+        return (JTable) f.get(panel);
     }
 
     private static DefaultTableModel headersModel(RequestEditorPanel panel) throws Exception {
