@@ -72,6 +72,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         collection.description = getString(collectionObj, "description", "");
         collection.format = getString(collectionObj, "format", "api-workbench");
         collection.version = getString(collectionObj, "version", "");
+        collection.sourceMetadata = parseMetadataMap(collectionObj.getAsJsonObject("sourceMetadata"));
         collection.folderPaths = parseStringList(collectionObj.getAsJsonArray("folderPaths"));
         collection.variables = parseVariables(collectionObj.getAsJsonArray("variables"));
         collection.environment = parseStringMap(collectionObj.getAsJsonObject("environment"));
@@ -147,6 +148,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.sourceCollection = firstNonBlank(getString(obj, "sourceCollection", ""), collectionName);
             request.method = firstNonBlank(getString(obj, "method"), "GET");
             request.url = getString(obj, "url", "");
+            request.sourceMetadata = parseMetadataMap(obj.getAsJsonObject("sourceMetadata"));
             request.parameters = parseParameters(obj.getAsJsonArray("parameters"));
             request.description = getString(obj, "description", "");
             request.editorMaterialized = getBoolean(obj, "editorMaterialized", false);
@@ -195,6 +197,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             parameter.disabled = getBoolean(obj, "disabled", false);
             parameter.required = getBoolean(obj, "required", false);
             parameter.type = getString(obj, "type", null);
+            parameter.format = getString(obj, "format", null);
             parameter.description = getString(obj, "description", null);
             parameter.style = getString(obj, "style", null);
             parameter.explode = obj.has("explode") && !obj.get("explode").isJsonNull()
@@ -202,6 +205,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
                     : null;
             parameter.allowReserved = getBoolean(obj, "allowReserved", false);
             parameter.source = getString(obj, "source", null);
+            parameter.sourceMetadata = parseMetadataMap(obj.getAsJsonObject("sourceMetadata"));
             parameters.add(parameter);
         }
         return parameters;
@@ -267,6 +271,11 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
 
         body.raw = getString(bodyObj, "raw", null);
         body.contentType = getString(bodyObj, "contentType", null);
+        body.required = getBoolean(bodyObj, "required", false);
+        body.description = getString(bodyObj, "description", null);
+        body.filePath = getString(bodyObj, "filePath", null);
+        body.source = getString(bodyObj, "source", null);
+        body.sourceMetadata = parseMetadataMap(bodyObj.getAsJsonObject("sourceMetadata"));
         if (bodyObj.has("urlencoded") && bodyObj.get("urlencoded").isJsonArray()) {
             body.urlencoded = parseFormFields(bodyObj.getAsJsonArray("urlencoded"));
         }
@@ -300,6 +309,15 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             field.fileUpload = getBoolean(obj, "fileUpload", false);
             field.filePath = getString(obj, "filePath", getString(obj, "src", null));
             field.disabled = getBoolean(obj, "disabled", false);
+            field.required = getBoolean(obj, "required", false);
+            field.description = getString(obj, "description", null);
+            field.contentType = getString(obj, "contentType", null);
+            field.style = getString(obj, "style", null);
+            field.explode = obj.has("explode") && !obj.get("explode").isJsonNull()
+                    ? obj.get("explode").getAsBoolean() : null;
+            field.allowReserved = getBoolean(obj, "allowReserved", false);
+            field.source = getString(obj, "source", null);
+            field.sourceMetadata = parseMetadataMap(obj.getAsJsonObject("sourceMetadata"));
             if (!field.fileUpload && "file".equalsIgnoreCase(field.type)) {
                 field.fileUpload = true;
             }
@@ -454,6 +472,25 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
                 continue;
             }
             map.put(entry.getKey(), toStringValue(entry.getValue()));
+        }
+        return map;
+    }
+
+    private Map<String, String> parseMetadataMap(JsonObject object) {
+        Map<String, String> map = new LinkedHashMap<>();
+        if (object == null) return map;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            JsonElement value = entry.getValue();
+            if (entry.getKey() == null || entry.getKey().isBlank() || value == null
+                    || value.isJsonNull() || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isString()) {
+                continue;
+            }
+            try {
+                map.put(entry.getKey(), value.getAsString());
+            } catch (RuntimeException ignored) {
+                // Skip malformed entries independently.
+            }
         }
         return map;
     }

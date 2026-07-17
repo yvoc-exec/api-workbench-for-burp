@@ -4,7 +4,10 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.parser.VariableResolver;
+import burp.parser.OpenApiValueSupport;
 import burp.utils.HttpUtils;
+import burp.utils.OpenApiMetadataSupport;
+import burp.utils.RequestParameterSupport;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.yaml.snakeyaml.DumperOptions;
@@ -33,6 +36,9 @@ public final class OpenApiCollectionExporter {
 
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("openapi", "3.0.3");
+        if (collection != null) mergeExtensions(root, OpenApiMetadataSupport.parseObject(
+                collection.sourceMetadata != null ? collection.sourceMetadata.get(OpenApiMetadataSupport.DOCUMENT_EXTENSIONS) : null));
+        warnUnsupported(warnings, collection != null ? collection.sourceMetadata : null, "openapi.document.unsupported", "document");
 
         Map<String, Object> info = new LinkedHashMap<>();
         VariableResolver rootResolver = CollectionExportSupport.buildResolver(collection, null, activeEnvironment, exportOnly);
@@ -43,8 +49,13 @@ public final class OpenApiCollectionExporter {
         }
         root.put("info", info);
 
+        List<Object> retainedServers = collection != null && collection.sourceMetadata != null
+                ? OpenApiMetadataSupport.parseArray(collection.sourceMetadata.get(OpenApiMetadataSupport.DOCUMENT_SERVERS))
+                : List.of();
         ParsedUrl commonOrigin = commonOrigin(collection, activeEnvironment, exportOnly, resolve);
-        if (commonOrigin != null && commonOrigin.origin != null && !commonOrigin.origin.isBlank()) {
+        if (!retainedServers.isEmpty()) {
+            root.put("servers", retainedServers);
+        } else if (commonOrigin != null && commonOrigin.origin != null && !commonOrigin.origin.isBlank()) {
             List<Map<String, Object>> servers = new ArrayList<>();
             Map<String, Object> server = new LinkedHashMap<>();
             server.put("url", commonOrigin.origin);
@@ -76,11 +87,21 @@ public final class OpenApiCollectionExporter {
                     continue;
                 }
                 VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
-                ParsedUrl parsed = parseUrl(CollectionExportSupport.resolve(request.url, resolver, resolve), warnings, request.name);
+                String exportUrl = RequestParameterSupport.materializePostmanRawUrl(
+                        request.url, request.parameters, resolve ? resolver : null);
+                ParsedUrl parsed = parseUrl(exportUrl, warnings, request.name);
                 String path = parsed.path;
                 Map<String, Object> pathItem = (Map<String, Object>) paths.computeIfAbsent(path, key -> new LinkedHashMap<>());
                 String method = request.method != null ? request.method.toLowerCase(Locale.ROOT) : "get";
                 Map<String, Object> operation = new LinkedHashMap<>();
+                warnUnsupported(warnings, request.sourceMetadata, "openapi.operation.unsupported", "operation");
+                mergeExtensions(operation, OpenApiMetadataSupport.parseObject(
+                        request.sourceMetadata != null ? request.sourceMetadata.get(OpenApiMetadataSupport.OPERATION_EXTENSIONS) : null));
+                if (request.sourceMetadata != null && request.sourceMetadata.containsKey(OpenApiMetadataSupport.OPERATION_CALLBACKS)) {
+                    Map<String, Object> callbacks = OpenApiMetadataSupport.parseObject(
+                            request.sourceMetadata.get(OpenApiMetadataSupport.OPERATION_CALLBACKS));
+                    if (!callbacks.isEmpty()) operation.put("callbacks", callbacks);
+                }
                 String operationId = slugOperationId(request.name, method, path, index++);
                 operation.put("operationId", operationId);
                 if (request.name != null) {
@@ -89,11 +110,11 @@ public final class OpenApiCollectionExporter {
                 if (request.description != null && !request.description.isBlank()) {
                     operation.put("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
                 }
-                List<Map<String, Object>> parameters = buildParameters(request, parsed, resolver, resolve);
+                List<Map<String, Object>> parameters = buildParameters(request, parsed, resolver, resolve, warnings);
                 if (!parameters.isEmpty()) {
                     operation.put("parameters", parameters);
                 }
-                Map<String, Object> requestBody = buildRequestBody(request, resolver, resolve);
+                Map<String, Object> requestBody = buildRequestBody(request, resolver, resolve, warnings);
                 if (requestBody != null) {
                     operation.put("requestBody", requestBody);
                 }
@@ -136,8 +157,19 @@ public final class OpenApiCollectionExporter {
         yaml.dump(build(collection, options, warnings), writer);
     }
 
-    private static List<Map<String, Object>> buildParameters(ApiRequest request, ParsedUrl parsed, VariableResolver resolver, boolean resolve) {
+    private static List<Map<String, Object>> buildParameters(ApiRequest request,
+                                                             ParsedUrl parsed,
+                                                             VariableResolver resolver,
+                                                             boolean resolve,
+                                                             List<String> warnings) {
         List<Map<String, Object>> parameters = new ArrayList<>();
+        if (request != null && request.parameters != null && !request.parameters.isEmpty()) {
+            for (ApiRequest.Parameter parameter : request.parameters) {
+                if (parameter == null || parameter.key == null || parameter.key.isBlank()) continue;
+                parameters.add(modeledParameter(parameter, resolver, resolve, warnings));
+            }
+            return parameters;
+        }
         if (parsed != null && parsed.queryParameters != null) {
             parameters.addAll(parsed.queryParameters);
         }
@@ -169,24 +201,114 @@ public final class OpenApiCollectionExporter {
         return parameters;
     }
 
-    private static Map<String, Object> buildRequestBody(ApiRequest request, VariableResolver resolver, boolean resolve) {
+    private static Map<String, Object> modeledParameter(ApiRequest.Parameter parameter,
+                                                        VariableResolver resolver,
+                                                        boolean resolve,
+                                                        List<String> warnings) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        String name = CollectionExportSupport.resolve(parameter.key, resolver, resolve);
+        String location = parameter.location == null || parameter.location.isBlank()
+                ? "query" : parameter.location.trim().toLowerCase(Locale.ROOT);
+        boolean supported = Set.of("query", "path", "header", "cookie").contains(location);
+        out.put("name", name);
+        out.put("in", location);
+        if (parameter.description != null && !parameter.description.isBlank()) out.put("description", parameter.description);
+        out.put("required", "path".equals(location) || parameter.required);
+        if (parameter.style != null && !parameter.style.isBlank()) out.put("style", parameter.style);
+        if (parameter.explode != null) out.put("explode", parameter.explode);
+        if ("query".equals(location) && parameter.allowReserved) out.put("allowReserved", true);
+        if (parameter.disabled || !supported) out.put("x-disabled", true);
+        if (!supported) addWarning(warnings, "unsupported parameter location: " + safeName(location));
+        warnUnsupported(warnings, parameter.sourceMetadata, OpenApiMetadataSupport.UNSUPPORTED, "parameter");
+
+        Map<String, Object> retainedContent = OpenApiMetadataSupport.parseObject(
+                metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_CONTENT));
+        if (retainedContent.isEmpty()) retainedContent = OpenApiMetadataSupport.parseObject(
+                metadata(parameter.sourceMetadata, OpenApiMetadataSupport.CONTENT));
+        Object currentValue = typedParameterValue(parameter, resolver, resolve);
+        if (!retainedContent.isEmpty()) {
+            List<String> mediaTypes = OpenApiValueSupport.orderedMediaTypes(retainedContent);
+            if (!mediaTypes.isEmpty()) {
+                String selected = mediaTypes.get(0);
+                Map<String, Object> media = retainedContent.get(selected) instanceof Map<?, ?> raw
+                        ? castMap(raw) : new LinkedHashMap<>();
+                if (media.get("schema") instanceof Map<?, ?> rawSchema && rawSchema.containsKey("$ref")) {
+                    media.put("schema", schemaForParameter(parameter, currentValue));
+                }
+                if (parameter.valuePresent) media.put("example", currentValue);
+                retainedContent.put(selected, media);
+            }
+            out.put("content", retainedContent);
+        } else {
+            Map<String, Object> schema = OpenApiMetadataSupport.parseObject(
+                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.RESOLVED_SCHEMA));
+            if (schema.isEmpty()) schema = OpenApiMetadataSupport.parseObject(
+                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
+            if (schema.isEmpty()) schema = new LinkedHashMap<>();
+            schema.remove("$ref");
+            schema.put("type", parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string");
+            if (parameter.format != null && !parameter.format.isBlank()) schema.put("format", parameter.format);
+            mergeExtensions(schema, OpenApiMetadataSupport.parseObject(
+                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS)));
+            out.put("schema", schema);
+            if (parameter.valuePresent) out.put("example", currentValue);
+        }
+        mergeExtensions(out, OpenApiMetadataSupport.parseObject(
+                metadata(parameter.sourceMetadata, OpenApiMetadataSupport.EXTENSIONS)));
+        if (parameter.disabled || !supported) out.put("x-disabled", true);
+        return out;
+    }
+
+    private static Map<String, Object> buildRequestBody(ApiRequest request,
+                                                        VariableResolver resolver,
+                                                        boolean resolve,
+                                                        List<String> warnings) {
         if (request == null || request.body == null || request.body.mode == null || "none".equalsIgnoreCase(request.body.mode)) {
             return null;
         }
         Map<String, Object> requestBody = new LinkedHashMap<>();
-        requestBody.put("required", true);
-        Map<String, Object> content = new LinkedHashMap<>();
+        warnUnsupported(warnings, request.body.sourceMetadata, "openapi.requestBody.unsupported", "request body");
+        requestBody.put("required", request.body.required);
+        if (request.body.description != null && !request.body.description.isBlank()) requestBody.put("description", request.body.description);
+        mergeExtensions(requestBody, OpenApiMetadataSupport.parseObject(
+                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_EXTENSIONS)));
+        Map<String, Object> content = OpenApiMetadataSupport.parseObject(
+                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_RESOLVED_CONTENT));
+        if (content.isEmpty()) content = OpenApiMetadataSupport.parseObject(
+                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_CONTENT));
         String mode = request.body.mode.toLowerCase(Locale.ROOT);
+        String selectedMedia = metadata(request.body.sourceMetadata, OpenApiMetadataSupport.REQUEST_BODY_SELECTED_MEDIA_TYPE);
+        if (selectedMedia == null || selectedMedia.isBlank()) {
+            selectedMedia = request.body.contentType != null && !request.body.contentType.isBlank()
+                    ? request.body.contentType
+                    : switch (mode) {
+                        case "urlencoded" -> "application/x-www-form-urlencoded";
+                        case "formdata" -> "multipart/form-data";
+                        case "file" -> "application/octet-stream";
+                        case "graphql" -> "application/json";
+                        default -> "text/plain";
+                    };
+        }
+        Map<String, Object> media = content.get(selectedMedia) instanceof Map<?, ?> raw
+                ? castMap(raw) : new LinkedHashMap<>();
+        mergeExtensions(media, OpenApiMetadataSupport.parseObject(
+                metadata(request.body.sourceMetadata, OpenApiMetadataSupport.MEDIA_EXTENSIONS)));
         if ("urlencoded".equals(mode)) {
-            Map<String, Object> media = new LinkedHashMap<>();
             media.put("schema", formSchema(request.body.urlencoded, resolver, resolve));
-            content.put("application/x-www-form-urlencoded", media);
+            putEncoding(media, request.body.urlencoded);
+            putDisabledProperties(media, request.body.urlencoded, warnings);
         } else if ("formdata".equals(mode)) {
-            Map<String, Object> media = new LinkedHashMap<>();
             media.put("schema", formSchema(request.body.formdata, resolver, resolve));
-            content.put("multipart/form-data", media);
+            putEncoding(media, request.body.formdata);
+            putDisabledProperties(media, request.body.formdata, warnings);
+        } else if ("file".equals(mode)) {
+            Map<String, Object> schema = new LinkedHashMap<>();
+            schema.put("type", "string");
+            schema.put("format", "binary");
+            media.put("schema", schema);
+            media.remove("example");
+            addWarning(warnings, "binary body local file path intentionally omitted");
         } else if ("graphql".equals(mode)) {
-            Map<String, Object> media = new LinkedHashMap<>();
             Map<String, Object> schema = new LinkedHashMap<>();
             schema.put("type", "object");
             Map<String, Object> props = new LinkedHashMap<>();
@@ -195,15 +317,12 @@ public final class OpenApiCollectionExporter {
             schema.put("properties", props);
             schema.put("required", List.of("query"));
             media.put("schema", schema);
-            content.put("application/json", media);
         } else {
-            String contentType = request.body.contentType != null && !request.body.contentType.isBlank()
-                    ? request.body.contentType
-                    : "text/plain";
-            Map<String, Object> media = new LinkedHashMap<>();
-            media.put("schema", schemaFromRaw(resolve ? CollectionExportSupport.resolve(request.body.raw, resolver, true) : request.body.raw, contentType));
-            content.put(contentType, media);
+            String raw = resolve ? CollectionExportSupport.resolve(request.body.raw, resolver, true) : request.body.raw;
+            media.put("schema", schemaFromRaw(raw, selectedMedia));
+            media.put("example", typedRawValue(raw, selectedMedia));
         }
+        content.put(selectedMedia, media);
         requestBody.put("content", content);
         return requestBody;
     }
@@ -263,8 +382,22 @@ public final class OpenApiCollectionExporter {
                     continue;
                 }
                 String key = CollectionExportSupport.resolve(field.key, resolver, resolve);
-                properties.put(key, stringSchema(CollectionExportSupport.resolve(field.value, resolver, resolve)));
-                required.add(key);
+                Map<String, Object> property;
+                if (field.fileUpload || "file".equalsIgnoreCase(field.type)) {
+                    property = new LinkedHashMap<>();
+                    property.put("type", "string");
+                    property.put("format", "binary");
+                } else {
+                    property = OpenApiMetadataSupport.parseObject(metadata(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA));
+                    if (property.isEmpty()) property = new LinkedHashMap<>();
+                    property.put("type", field.type != null && !field.type.isBlank() ? field.type : "string");
+                    property.put("example", typedFormValue(field, resolver, resolve));
+                }
+                if (field.description != null && !field.description.isBlank()) property.put("description", field.description);
+                mergeExtensions(property, OpenApiMetadataSupport.parseObject(
+                        metadata(field.sourceMetadata, OpenApiMetadataSupport.SCHEMA_EXTENSIONS)));
+                properties.put(key, property);
+                if (field.required) required.add(key);
             }
         }
         schema.put("properties", properties);
@@ -272,6 +405,149 @@ public final class OpenApiCollectionExporter {
             schema.put("required", required);
         }
         return schema;
+    }
+
+    private static void putEncoding(Map<String, Object> media, List<ApiRequest.Body.FormField> fields) {
+        Map<String, Object> encoding = new LinkedHashMap<>();
+        if (fields != null) {
+            for (ApiRequest.Body.FormField field : fields) {
+                if (field == null || field.key == null || field.key.isBlank()) continue;
+                Map<String, Object> item = OpenApiMetadataSupport.parseObject(
+                        metadata(field.sourceMetadata, "openapi.encoding"));
+                if (field.contentType != null && !field.contentType.isBlank()) item.put("contentType", field.contentType);
+                if (field.style != null && !field.style.isBlank()) item.put("style", field.style);
+                if (field.explode != null) item.put("explode", field.explode);
+                if (field.allowReserved) item.put("allowReserved", true);
+                retainSafeEncoding(item);
+                if (!item.isEmpty()) encoding.put(field.key, item);
+            }
+        }
+        if (!encoding.isEmpty()) media.put("encoding", encoding);
+    }
+
+    private static void retainSafeEncoding(Map<String, Object> encoding) {
+        encoding.keySet().removeIf(key -> !Set.of("contentType", "style", "explode", "allowReserved", "headers").contains(key)
+                && !key.toLowerCase(Locale.ROOT).startsWith("x-"));
+        // Per-part headers are retained natively but intentionally not emitted by runtime/export.
+        encoding.remove("headers");
+    }
+
+    private static void putDisabledProperties(Map<String, Object> media,
+                                              List<ApiRequest.Body.FormField> fields,
+                                              List<String> warnings) {
+        List<String> disabled = new ArrayList<>();
+        if (fields != null) for (ApiRequest.Body.FormField field : fields) {
+            if (field != null && field.disabled && field.key != null && !field.key.isBlank()) disabled.add(field.key);
+        }
+        if (!disabled.isEmpty()) {
+            media.put("x-api-workbench-disabled-properties", disabled);
+            addWarning(warnings, "disabled form properties approximated: " + String.join(", ", disabled.stream().map(OpenApiCollectionExporter::safeName).toList()));
+        }
+    }
+
+    private static Object typedParameterValue(ApiRequest.Parameter parameter, VariableResolver resolver, boolean resolve) {
+        String value = resolve ? CollectionExportSupport.resolve(parameter.value, resolver, true) : parameter.value;
+        if (value == null) return null;
+        String valueSource = metadata(parameter.sourceMetadata, OpenApiMetadataSupport.VALUE_SOURCE);
+        if ("null".equals(value) && valueSource != null) {
+            Object original = OpenApiMetadataSupport.parseCanonicalJson(
+                    metadata(parameter.sourceMetadata, OpenApiMetadataSupport.EXAMPLE));
+            if (original == null && "null".equals(metadata(parameter.sourceMetadata, OpenApiMetadataSupport.EXAMPLE))) return null;
+        }
+        if ("array".equalsIgnoreCase(parameter.type) || "object".equalsIgnoreCase(parameter.type)) {
+            Object parsed = OpenApiMetadataSupport.parseCanonicalJson(value);
+            if (("array".equalsIgnoreCase(parameter.type) && parsed instanceof List<?>)
+                    || ("object".equalsIgnoreCase(parameter.type) && parsed instanceof Map<?, ?>)) return parsed;
+        }
+        return scalarByType(value, parameter.type);
+    }
+
+    private static Map<String, Object> schemaForParameter(ApiRequest.Parameter parameter, Object value) {
+        Map<String, Object> schema;
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            schema = jsonToSchema(value);
+        } else {
+            schema = new LinkedHashMap<>();
+            schema.put("type", parameter.type != null && !parameter.type.isBlank() ? parameter.type : "string");
+        }
+        if (parameter.format != null && !parameter.format.isBlank()) schema.put("format", parameter.format);
+        return schema;
+    }
+
+    private static Object typedFormValue(ApiRequest.Body.FormField field, VariableResolver resolver, boolean resolve) {
+        String value = resolve ? CollectionExportSupport.resolve(field.value, resolver, true) : field.value;
+        if (value == null) return null;
+        if ("array".equalsIgnoreCase(field.type) || "object".equalsIgnoreCase(field.type)) {
+            Object parsed = OpenApiMetadataSupport.parseCanonicalJson(value);
+            if (parsed != null) return parsed;
+        }
+        return scalarByType(value, field.type);
+    }
+
+    private static Object scalarByType(String value, String type) {
+        if (type == null) return value;
+        try {
+            return switch (type.toLowerCase(Locale.ROOT)) {
+                case "integer" -> Long.parseLong(value);
+                case "number" -> Double.parseDouble(value);
+                case "boolean" -> Boolean.parseBoolean(value);
+                case "null" -> null;
+                default -> value;
+            };
+        } catch (RuntimeException e) {
+            return value;
+        }
+    }
+
+    private static Object typedRawValue(String raw, String contentType) {
+        if (raw == null) return "";
+        String lower = contentType != null ? contentType.toLowerCase(Locale.ROOT) : "";
+        if (lower.equals("application/json") || (lower.startsWith("application/") && lower.endsWith("+json"))) {
+            Object parsed = OpenApiMetadataSupport.parseCanonicalJson(raw);
+            if (parsed != null || "null".equals(raw.trim())) return parsed;
+        }
+        return raw;
+    }
+
+    private static String metadata(Map<String, String> metadata, String key) {
+        return metadata != null ? metadata.get(key) : null;
+    }
+
+    private static void mergeExtensions(Map<String, Object> target, Map<String, Object> extensions) {
+        if (target == null || extensions == null) return;
+        for (Map.Entry<String, Object> entry : extensions.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().toLowerCase(Locale.ROOT).startsWith("x-")) {
+                target.put(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    private static Map<String, Object> castMap(Map<?, ?> raw) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) if (entry.getKey() != null) result.put(String.valueOf(entry.getKey()), entry.getValue());
+        return result;
+    }
+
+    private static void addWarning(List<String> warnings, String warning) {
+        if (warnings == null || warning == null) return;
+        String safe = warning.replaceAll("[\\r\\n\\u0000-\\u001f\\u007f]", " ").replaceAll("\\s+", " ").trim();
+        if (safe.length() > 160) safe = safe.substring(0, 160);
+        if (!safe.isBlank() && !warnings.contains(safe)) warnings.add(safe);
+    }
+
+    private static void warnUnsupported(List<String> warnings,
+                                        Map<String, String> metadata,
+                                        String key,
+                                        String context) {
+        Map<String, Object> retained = OpenApiMetadataSupport.parseObject(metadata(metadata, key));
+        if (!retained.isEmpty()) addWarning(warnings, "unsupported retained field omitted from " + context + ": "
+                + String.join(", ", retained.keySet().stream().map(OpenApiCollectionExporter::safeName).toList()));
+    }
+
+    private static String safeName(String value) {
+        if (value == null) return "";
+        String safe = value.replaceAll("[\\r\\n\\u0000-\\u001f\\u007f]", " ").trim();
+        return safe.length() > 80 ? safe.substring(0, 80) : safe;
     }
 
     private static Map<String, Object> schemaFromRaw(String raw, String contentType) {
@@ -431,7 +707,8 @@ public final class OpenApiCollectionExporter {
                 continue;
             }
             VariableResolver resolver = CollectionExportSupport.buildResolver(collection, request, activeEnvironment, exportOnly);
-            ParsedUrl parsed = parseUrl(CollectionExportSupport.resolve(request.url, resolver, resolve), null, request.name);
+            ParsedUrl parsed = parseUrl(RequestParameterSupport.materializePostmanRawUrl(
+                    request.url, request.parameters, resolve ? resolver : null), null, request.name);
             if (parsed.origin == null || parsed.origin.isBlank()) {
                 return null;
             }

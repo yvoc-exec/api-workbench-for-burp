@@ -23,6 +23,8 @@ public class ApiRequest {
     public String method;
     public String url;
     public String description;
+    /** Format-specific request metadata retained without participating in transport. */
+    public Map<String, String> sourceMetadata = new LinkedHashMap<>();
     public List<Parameter> parameters = new ArrayList<>();
     public List<Header> headers = new ArrayList<>();
     public Body body;
@@ -71,11 +73,13 @@ public class ApiRequest {
         public boolean disabled;
         public boolean required;
         public String type;
+        public String format;
         public String description;
         public String style;
         public Boolean explode;
         public boolean allowReserved;
         public String source;
+        public Map<String, String> sourceMetadata = new LinkedHashMap<>();
 
         public Parameter() {
         }
@@ -103,6 +107,11 @@ public class ApiRequest {
         public String mode;       // raw, urlencoded, formdata, graphql, file, none
         public String raw;
         public String contentType;
+        public boolean required;
+        public String description;
+        public String filePath;
+        public String source;
+        public Map<String, String> sourceMetadata = new LinkedHashMap<>();
         public List<FormField> formdata = new ArrayList<>();
         public List<FormField> urlencoded = new ArrayList<>();
         public GraphQL graphql;
@@ -114,6 +123,14 @@ public class ApiRequest {
             public boolean fileUpload;
             public String filePath;
             public boolean disabled;
+            public boolean required;
+            public String description;
+            public String contentType;
+            public String style;
+            public Boolean explode;
+            public boolean allowReserved;
+            public String source;
+            public Map<String, String> sourceMetadata = new LinkedHashMap<>();
             public FormField(String key, String value) { this.key = key; this.value = value; }
         }
 
@@ -160,6 +177,7 @@ public class ApiRequest {
         target.method = method;
         target.url = url;
         target.description = description;
+        target.sourceMetadata = sourceMetadata != null ? new LinkedHashMap<>(sourceMetadata) : new LinkedHashMap<>();
         target.parameters = copyParameters(parameters);
         target.headers = copyHeaders(headers);
         target.body = copyBody(body);
@@ -329,6 +347,7 @@ public class ApiRequest {
         canonical.append("B:").append(source.mode != null ? source.mode : "").append('\n');
         canonical.append(source.raw != null ? source.raw : "").append('\n');
         canonical.append(source.contentType != null ? source.contentType : "").append('\n');
+        canonical.append(source.filePath != null ? source.filePath : "").append('\n');
         if (source.graphql != null) {
             canonical.append(source.graphql.query != null ? source.graphql.query : "").append('\n');
             canonical.append(source.graphql.variables != null ? source.graphql.variables : "").append('\n');
@@ -354,6 +373,11 @@ public class ApiRequest {
             canonical.append(field != null && field.filePath != null ? field.filePath : "");
             canonical.append('|');
             canonical.append(field != null && field.disabled);
+            canonical.append('|');
+            canonical.append(field != null && field.style != null ? field.style : "").append('|');
+            canonical.append(field != null && field.explode != null ? field.explode : "null").append('|');
+            canonical.append(field != null && field.allowReserved).append('|');
+            canonical.append(field != null && field.contentType != null ? field.contentType : "");
             canonical.append('\n');
         }
     }
@@ -423,11 +447,14 @@ public class ApiRequest {
             item.disabled = parameter.disabled;
             item.required = parameter.required;
             item.type = parameter.type;
+            item.format = parameter.format;
             item.description = parameter.description;
             item.style = parameter.style;
             item.explode = parameter.explode;
             item.allowReserved = parameter.allowReserved;
             item.source = parameter.source;
+            item.sourceMetadata = parameter.sourceMetadata != null
+                    ? new LinkedHashMap<>(parameter.sourceMetadata) : new LinkedHashMap<>();
             copy.add(item);
         }
         return copy;
@@ -441,6 +468,12 @@ public class ApiRequest {
         copy.mode = source.mode;
         copy.raw = source.raw;
         copy.contentType = source.contentType;
+        copy.required = source.required;
+        copy.description = source.description;
+        copy.filePath = source.filePath;
+        copy.source = source.source;
+        copy.sourceMetadata = source.sourceMetadata != null
+                ? new LinkedHashMap<>(source.sourceMetadata) : new LinkedHashMap<>();
         if (source.graphql != null) {
             copy.graphql = new Body.GraphQL();
             copy.graphql.query = source.graphql.query;
@@ -466,6 +499,15 @@ public class ApiRequest {
             formField.fileUpload = field.fileUpload;
             formField.filePath = field.filePath;
             formField.disabled = field.disabled;
+            formField.required = field.required;
+            formField.description = field.description;
+            formField.contentType = field.contentType;
+            formField.style = field.style;
+            formField.explode = field.explode;
+            formField.allowReserved = field.allowReserved;
+            formField.source = field.source;
+            formField.sourceMetadata = field.sourceMetadata != null
+                    ? new LinkedHashMap<>(field.sourceMetadata) : new LinkedHashMap<>();
             copy.add(formField);
         }
         return copy;

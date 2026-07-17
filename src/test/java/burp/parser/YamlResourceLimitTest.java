@@ -54,7 +54,8 @@ class YamlResourceLimitTest {
         assertThat(collection.requests).hasSize(1);
         assertThat(collection.requests.get(0).body.raw)
                 .contains("\"name\"")
-                .contains("recursive");
+                .contains("\"child\":null");
         assertThat(collection.requests.get(0).body.raw.length()).isLessThan(2000);
+        assertThat(collection.importWarnings).anyMatch(warning -> warning.contains("reference cycle or limit"));
     }
 }

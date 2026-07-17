@@ -41,6 +41,7 @@ public final class ApiWorkbenchCollectionExporter {
             if (collection.version != null) {
                 col.addProperty("version", collection.version);
             }
+            col.add("sourceMetadata", mapToJson(collection.sourceMetadata, null, false));
 
             JsonArray folderPaths = new JsonArray();
             if (collection.folderPaths != null) {
@@ -91,6 +92,7 @@ public final class ApiWorkbenchCollectionExporter {
         out.addProperty("sourceCollection", request.sourceCollection != null ? request.sourceCollection : "");
         out.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
         out.addProperty("url", CollectionExportSupport.resolve(request.url, resolver, resolve) != null ? CollectionExportSupport.resolve(request.url, resolver, resolve) : "");
+        out.add("sourceMetadata", mapToJson(request.sourceMetadata, null, false));
         out.add("parameters", parametersToJson(request.parameters, resolver, resolve));
         if (request.description != null) {
             out.addProperty("description", CollectionExportSupport.resolve(request.description, resolver, resolve));
@@ -147,6 +149,7 @@ public final class ApiWorkbenchCollectionExporter {
             item.addProperty("disabled", parameter.disabled);
             item.addProperty("required", parameter.required);
             item.addProperty("type", CollectionExportSupport.resolve(parameter.type, resolver, resolve));
+            item.addProperty("format", CollectionExportSupport.resolve(parameter.format, resolver, resolve));
             item.addProperty("description", CollectionExportSupport.resolve(parameter.description, resolver, resolve));
             item.addProperty("style", CollectionExportSupport.resolve(parameter.style, resolver, resolve));
             if (parameter.explode != null) {
@@ -154,6 +157,7 @@ public final class ApiWorkbenchCollectionExporter {
             }
             item.addProperty("allowReserved", parameter.allowReserved);
             item.addProperty("source", parameter.source);
+            item.add("sourceMetadata", mapToJson(parameter.sourceMetadata, null, false));
             out.add(item);
         }
         return out;
@@ -198,6 +202,11 @@ public final class ApiWorkbenchCollectionExporter {
         if (body.contentType != null) {
             out.addProperty("contentType", CollectionExportSupport.resolve(body.contentType, resolver, resolve));
         }
+        out.addProperty("required", body.required);
+        if (body.description != null) out.addProperty("description", body.description);
+        if (body.filePath != null) out.addProperty("filePath", CollectionExportSupport.resolve(body.filePath, resolver, resolve));
+        if (body.source != null) out.addProperty("source", body.source);
+        out.add("sourceMetadata", mapToJson(body.sourceMetadata, null, false));
         if (body.urlencoded != null) {
             JsonArray arr = new JsonArray();
             for (ApiRequest.Body.FormField field : body.urlencoded) {
@@ -215,6 +224,7 @@ public final class ApiWorkbenchCollectionExporter {
                     obj.addProperty("filePath", CollectionExportSupport.resolve(field.filePath, resolver, resolve));
                 }
                 obj.addProperty("disabled", field.disabled);
+                addFormFieldMetadata(obj, field);
                 arr.add(obj);
             }
             out.add("urlencoded", arr);
@@ -236,6 +246,7 @@ public final class ApiWorkbenchCollectionExporter {
                     obj.addProperty("filePath", CollectionExportSupport.resolve(field.filePath, resolver, resolve));
                 }
                 obj.addProperty("disabled", field.disabled);
+                addFormFieldMetadata(obj, field);
                 arr.add(obj);
             }
             out.add("formdata", arr);
@@ -251,6 +262,17 @@ public final class ApiWorkbenchCollectionExporter {
             out.add("graphql", gql);
         }
         return out;
+    }
+
+    private static void addFormFieldMetadata(JsonObject obj, ApiRequest.Body.FormField field) {
+        obj.addProperty("required", field.required);
+        if (field.description != null) obj.addProperty("description", field.description);
+        if (field.contentType != null) obj.addProperty("contentType", field.contentType);
+        if (field.style != null) obj.addProperty("style", field.style);
+        if (field.explode != null) obj.addProperty("explode", field.explode);
+        obj.addProperty("allowReserved", field.allowReserved);
+        if (field.source != null) obj.addProperty("source", field.source);
+        obj.add("sourceMetadata", mapToJson(field.sourceMetadata, null, false));
     }
 
     private static JsonArray headersToJson(List<ApiRequest.Header> headers, VariableResolver resolver, boolean resolve) {

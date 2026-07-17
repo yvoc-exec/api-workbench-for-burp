@@ -349,7 +349,7 @@ public class RequestBuilder {
             }
             String key = resolve(resolver, parameter.key);
             String value = parameter.valuePresent
-                    ? resolve(resolver, parameter.value != null ? parameter.value : "")
+                    ? RequestParameterSupport.serializeHeaderValue(parameter, resolver)
                     : "";
             if (isAllowedAuthoredHeader(key, exactHttp, connectionNominated)) {
                 headers.addAuthored(key.trim(), value);
@@ -368,8 +368,7 @@ public class RequestBuilder {
             if (key == null || key.isBlank()) {
                 continue;
             }
-            String value = resolve(resolver, parameter.value != null ? parameter.value : "");
-            cookies.add(parameter.valuePresent ? key + "=" + value : key);
+            cookies.addAll(RequestParameterSupport.serializeCookieParts(parameter, resolver));
         }
         if (!cookies.isEmpty() && isAllowedAuthoredHeader("Cookie", exactHttp, connectionNominated)) {
             headers.addAuthored("Cookie", String.join("; ", cookies));
@@ -410,7 +409,7 @@ public class RequestBuilder {
                     continue;
                 }
                 String value = parameter.valuePresent
-                        ? resolve(resolver, parameter.value != null ? parameter.value : "")
+                        ? RequestParameterSupport.serializeHeaderValue(parameter, resolver)
                         : "";
                 collectConnectionNominations(resolve(resolver, parameter.key), value, nominated);
             }
@@ -551,10 +550,9 @@ public class RequestBuilder {
                         if (param == null || param.disabled || param.key == null) {
                             continue;
                         }
-                        String key = URLEncoder.encode(resolver.resolve(param.key), StandardCharsets.UTF_8);
-                        String value = param.value != null ?
-                                URLEncoder.encode(resolver.resolve(param.value), StandardCharsets.UTF_8) : "";
-                        params.add(key + "=" + value);
+                        params.addAll(RequestParameterSupport.serializeFormPairs(
+                                param.key, param.value, param.type, param.style,
+                                param.explode, param.allowReserved, resolver));
                     }
                     if (synthesizeHeaders && allowContentTypeHeader) {
                         enforceContentType(hs, "application/x-www-form-urlencoded", requestName);
@@ -562,6 +560,19 @@ public class RequestBuilder {
                     result = String.join("&", params).getBytes(StandardCharsets.UTF_8);
                 } else {
                     result = new byte[0];
+                }
+                break;
+
+            case "file":
+                result = buildFileBody(body, resolver);
+                if (synthesizeHeaders && allowContentTypeHeader) {
+                    String contentType = body.contentType;
+                    if (contentType == null || contentType.isBlank()) {
+                        String rawPath = body.filePath != null && !body.filePath.isBlank() ? body.filePath : body.raw;
+                        File file = rawPath != null ? new File(resolve(resolver, rawPath)) : null;
+                        contentType = file != null ? java.nio.file.Files.probeContentType(file.toPath()) : null;
+                    }
+                    enforceContentType(hs, contentType != null ? contentType : "application/octet-stream", requestName);
                 }
                 break;
 
@@ -652,27 +663,49 @@ public class RequestBuilder {
 
             if (file != null && file.exists() && file.isFile()) {
                 // Security: Validate file path to prevent path traversal
-                Path canonicalPath = file.getCanonicalFile().toPath();
-                Path canonicalBase = new java.io.File(".").getCanonicalFile().toPath();
-                Path canonicalUserHome = new java.io.File(System.getProperty("user.home")).getCanonicalFile().toPath();
-                if (!canonicalPath.startsWith(canonicalBase) && !canonicalPath.startsWith(canonicalUserHome)) {
-                    throw new SecurityException("Path traversal detected: " + uploadPath);
-                }
+                validateSafeFile(file, uploadPath);
                 String filename = file.getName();
                 baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"; filename=\"" + filename + "\"\r\n").getBytes(StandardCharsets.UTF_8));
-                String contentType = java.nio.file.Files.probeContentType(file.toPath());
+                String contentType = field.contentType;
+                if (contentType == null || contentType.isBlank()) contentType = java.nio.file.Files.probeContentType(file.toPath());
                 if (contentType == null) contentType = "application/octet-stream";
                 baos.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
                 baos.write(java.nio.file.Files.readAllBytes(file.toPath()));
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
             } else {
-                baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                baos.write(("Content-Disposition: form-data; name=\"" + resolvedKey + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+                if (field.contentType != null && !field.contentType.isBlank()) {
+                    baos.write(("Content-Type: " + field.contentType.replace("\r", " ").replace("\n", " ") + "\r\n").getBytes(StandardCharsets.UTF_8));
+                }
+                baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
                 baos.write(resolvedValue.getBytes(StandardCharsets.UTF_8));
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
             }
         }
         baos.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         return baos.toByteArray();
+    }
+
+    private byte[] buildFileBody(ApiRequest.Body body, VariableResolver resolver) throws Exception {
+        String authored = body.filePath != null && !body.filePath.isBlank() ? body.filePath : body.raw;
+        String resolved = resolve(resolver, authored);
+        if (resolved == null || resolved.isBlank()) {
+            throw new IllegalArgumentException("Binary request body requires a local file path");
+        }
+        File file = new File(resolved);
+        validateSafeFile(file, authored);
+        if (!file.exists()) throw new IllegalArgumentException("Binary request body file does not exist");
+        if (!file.isFile()) throw new IllegalArgumentException("Binary request body path must be a regular file");
+        return java.nio.file.Files.readAllBytes(file.toPath());
+    }
+
+    private void validateSafeFile(File file, String authoredPath) throws Exception {
+        Path canonicalPath = file.getCanonicalFile().toPath();
+        Path canonicalBase = new File(".").getCanonicalFile().toPath();
+        Path canonicalUserHome = new File(System.getProperty("user.home")).getCanonicalFile().toPath();
+        if (!canonicalPath.startsWith(canonicalBase) && !canonicalPath.startsWith(canonicalUserHome)) {
+            throw new SecurityException("File path is outside the permitted upload roots");
+        }
     }
 
     // Check for any header by name (case-insensitive) in a raw List
@@ -865,6 +898,9 @@ public class RequestBuilder {
                 return body.urlencoded == null || body.urlencoded.isEmpty();
             case "formdata":
                 return body.formdata == null || body.formdata.isEmpty();
+            case "file":
+                return (body.filePath == null || body.filePath.isBlank())
+                        && (body.raw == null || body.raw.isBlank());
             default:
                 return true;
         }

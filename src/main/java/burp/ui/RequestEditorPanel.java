@@ -334,7 +334,7 @@ public class RequestEditorPanel extends JPanel {
         paramsModel = new DefaultTableModel(new Object[]{
                 "Key", "Value", "Enabled", "Description", "Raw Key", "Raw Value",
                 "Value Present", "Required", "Type", "Source", "Style", "Explode", "Allow Reserved",
-                "Existing Row", "Location"
+                "Existing Row", "Location", "Format", "Source Metadata"
         }, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -375,7 +375,8 @@ public class RequestEditorPanel extends JPanel {
         panel.add(RequestEditorTableSupport.createAddRemovePanel(paramsTable, paramsModel,
                 () -> new Object[]{
                         "", "", Boolean.TRUE, "", null, null, Boolean.FALSE,
-                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE, "query"
+                        Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE, "query",
+                        null, null
                 }),
                 BorderLayout.SOUTH);
         RequestEditorStateMapper.ensureStarterRow(paramsModel);

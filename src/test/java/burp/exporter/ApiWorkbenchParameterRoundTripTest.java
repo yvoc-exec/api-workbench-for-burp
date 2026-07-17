@@ -40,11 +40,51 @@ class ApiWorkbenchParameterRoundTripTest {
         assertThat(parameter.disabled).isEqualTo(expected.disabled);
         assertThat(parameter.required).isEqualTo(expected.required);
         assertThat(parameter.type).isEqualTo(expected.type);
+        assertThat(parameter.format).isEqualTo(expected.format);
         assertThat(parameter.description).isEqualTo(expected.description);
         assertThat(parameter.style).isEqualTo(expected.style);
         assertThat(parameter.explode).isEqualTo(expected.explode);
         assertThat(parameter.allowReserved).isEqualTo(expected.allowReserved);
         assertThat(parameter.source).isEqualTo(expected.source);
+        assertThat(parameter.sourceMetadata).isEqualTo(expected.sourceMetadata);
+    }
+
+    @Test
+    void nativeExportImportRetainsAllWaveThreeMetadata() throws Exception {
+        ApiRequest original = request();
+        original.sourceMetadata.put("openapi.operation.extensions", "{\"x-op\":true}");
+        original.body = new ApiRequest.Body();
+        original.body.mode = "formdata";
+        original.body.required = true;
+        original.body.description = "body";
+        original.body.filePath = "relative.bin";
+        original.body.source = "openapi:requestBody";
+        original.body.sourceMetadata.put("openapi.requestBody.selectedMediaType", "multipart/form-data");
+        ApiRequest.Body.FormField field = bodyField("file", "", "");
+        field.required = true;
+        field.description = "field";
+        field.contentType = "image/png";
+        field.style = "form";
+        field.explode = Boolean.FALSE;
+        field.allowReserved = true;
+        field.source = "openapi:requestBody.property";
+        field.sourceMetadata.put("openapi.schema", "{\"type\":\"string\",\"format\":\"binary\"}");
+        original.body.formdata.add(field);
+
+        ApiCollection collection = new ApiCollection();
+        collection.name = "C";
+        collection.sourceMetadata.put("openapi.sourceVersion", "\"3.1.0\"");
+        collection.requests.add(original);
+        Path file = tempDir.resolve("wave3-native.json");
+        Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(
+                ApiWorkbenchCollectionExporter.build(collection,
+                        new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, null, false, null, Map.of()),
+                        new ArrayList<>())));
+        ApiCollection actualCollection = new ApiWorkbenchCollectionParser().parse(file.toFile());
+        ApiRequest actual = actualCollection.requests.get(0);
+        assertThat(actualCollection.sourceMetadata).isEqualTo(collection.sourceMetadata);
+        assertThat(actual.sourceMetadata).isEqualTo(original.sourceMetadata);
+        assertThat(actual.body).usingRecursiveComparison().isEqualTo(original.body);
     }
 
     @Test
@@ -168,11 +208,13 @@ class ApiWorkbenchParameterRoundTripTest {
         parameter.disabled = disabled;
         parameter.required = true;
         parameter.type = "string";
+        parameter.format = "uuid";
         parameter.description = "description";
         parameter.style = "form";
         parameter.explode = Boolean.FALSE;
         parameter.allowReserved = true;
         parameter.source = "native-test";
+        parameter.sourceMetadata.put("openapi.schema", "{\"type\":\"string\"}");
         return parameter;
     }
 }

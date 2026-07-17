@@ -97,6 +97,59 @@ class RequestBuilderTest {
     }
 
     @Test
+    void openApiStructuredHeaderCookieAndUrlEncodedFieldsUseStyleAwareSerialization() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "https://example.test/x";
+        ApiRequest.Parameter header = new ApiRequest.Parameter("header", "X-Object", "{\"a\":\"1\",\"b\":\"2\"}");
+        header.type = "object"; header.style = "simple"; header.explode = true;
+        ApiRequest.Parameter cookie = new ApiRequest.Parameter("cookie", "ignored", "{\"sid\":\"a\",\"mode\":\"b\"}");
+        cookie.type = "object"; cookie.style = "form"; cookie.explode = true;
+        req.parameters.add(header); req.parameters.add(cookie);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "urlencoded";
+        ApiRequest.Body.FormField tags = new ApiRequest.Body.FormField("tag", "[\"a\",\"b\"]");
+        tags.type = "array"; tags.style = "form"; tags.explode = true;
+        req.body.urlencoded.add(tags);
+
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+        assertThat(parsed.headerValue("X-Object")).isEqualTo("a=1,b=2");
+        assertThat(parsed.headerValue("Cookie")).isEqualTo("sid=a; mode=b");
+        assertThat(new String(parsed.body, StandardCharsets.UTF_8)).isEqualTo("tag=a&tag=b");
+    }
+
+    @Test
+    void wholeBodyFileReadsBinaryBytesAndRejectsBlankPaths() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "wave3-body-", ".bin");
+        byte[] expected = new byte[]{0, 1, 2, (byte) 255};
+        Files.write(file, expected);
+        ApiRequest req = new ApiRequest();
+        req.method = "POST"; req.url = "https://example.test/upload";
+        req.body = new ApiRequest.Body(); req.body.mode = "file";
+        req.body.filePath = file.toString(); req.body.contentType = "application/octet-stream";
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+        assertThat(parsed.body).isEqualTo(expected);
+        assertThat(parsed.headerValue("Content-Type")).isEqualTo("application/octet-stream");
+
+        req.body.filePath = ""; req.body.raw = "";
+        assertThatThrownBy(() -> builder.buildRequest(req, resolver))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("local file path");
+    }
+
+    @Test
+    void multipartUsesImportedPerPartContentType() throws Exception {
+        ApiRequest req = new ApiRequest();
+        req.method = "POST"; req.url = "https://example.test/upload";
+        req.body = new ApiRequest.Body(); req.body.mode = "formdata";
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("meta", "hello");
+        field.contentType = "text/custom";
+        req.body.formdata.add(field);
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+        assertThat(new String(parsed.body, StandardCharsets.UTF_8)).contains("Content-Type: text/custom\r\n\r\nhello");
+    }
+
+    @Test
     void parameterHeaderWinsOverDefaultsAndAuthentication() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "GET";

@@ -18,6 +18,8 @@ public class ApiCollection {
     public String description;
     public String format;         // postman, bruno, openapi, insomnia, har
     public String version;
+    /** Format-specific source structures retained losslessly as canonical JSON strings. */
+    public Map<String, String> sourceMetadata = new LinkedHashMap<>();
     public List<ApiRequest> requests = new ArrayList<>();
     /** Explicit folder paths preserved for empty/manual folders in the workbench tree. */
     public List<String> folderPaths = new ArrayList<>();
@@ -78,6 +80,7 @@ public class ApiCollection {
 
     public void ensureDefaults() {
         if (requests == null) requests = new ArrayList<>();
+        if (sourceMetadata == null) sourceMetadata = new LinkedHashMap<>();
         if (folderPaths == null) folderPaths = new ArrayList<>();
         if (variables == null) variables = new ArrayList<>();
         if (folderVars == null) folderVars = new LinkedHashMap<>();

@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Collections;
 
 /** Utilities for lossless request-parameter copying, parsing, and transport rendering. */
 public final class RequestParameterSupport {
@@ -41,11 +42,14 @@ public final class RequestParameterSupport {
             item.disabled = parameter.disabled;
             item.required = parameter.required;
             item.type = parameter.type;
+            item.format = parameter.format;
             item.description = parameter.description;
             item.style = parameter.style;
             item.explode = parameter.explode;
             item.allowReserved = parameter.allowReserved;
             item.source = parameter.source;
+            item.sourceMetadata = parameter.sourceMetadata != null
+                    ? new LinkedHashMap<>(parameter.sourceMetadata) : new LinkedHashMap<>();
             copy.add(item);
         }
         return copy;
@@ -143,16 +147,23 @@ public final class RequestParameterSupport {
             if (parameter == null || !parameter.isQuery() || parameter.disabled) {
                 continue;
             }
-            String key = resolve(resolver, parameter.key != null ? parameter.key : "");
-            String value = resolve(resolver, parameter.value != null ? parameter.value : "");
-            if (emittedAnyQueryParameter) {
-                query.append('&');
+            List<String> structured = serializeStructuredQuery(parameter, resolver);
+            if (structured != null) {
+                for (String segment : structured) {
+                    if (emittedAnyQueryParameter) query.append('&');
+                    query.append(segment);
+                    emittedAnyQueryParameter = true;
+                }
+            } else {
+                String key = resolve(resolver, parameter.key != null ? parameter.key : "");
+                String value = resolve(resolver, parameter.value != null ? parameter.value : "");
+                if (emittedAnyQueryParameter) query.append('&');
+                query.append(renderComponent(parameter.rawKey, key, resolver, false));
+                if (parameter.valuePresent) {
+                    query.append('=').append(renderComponent(parameter.rawValue, value, resolver, parameter.allowReserved));
+                }
+                emittedAnyQueryParameter = true;
             }
-            query.append(renderComponent(parameter.rawKey, key, resolver, false));
-            if (parameter.valuePresent) {
-                query.append('=').append(renderComponent(parameter.rawValue, value, resolver, parameter.allowReserved));
-            }
-            emittedAnyQueryParameter = true;
         }
         return base + (emittedAnyQueryParameter ? "?" + query : "") + fragment;
     }
@@ -187,7 +198,10 @@ public final class RequestParameterSupport {
             String key = entry.getKey();
             ApiRequest.Parameter parameter = entry.getValue();
             String editable = resolve(resolver, parameter.value != null ? parameter.value : "");
-            String rendered = renderPathComponent(parameter.rawValue, editable, resolver, parameter.allowReserved);
+            String rendered = serializeStructuredPath(parameter, resolver);
+            if (rendered == null) {
+                rendered = renderPathComponent(parameter.rawValue, editable, resolver, parameter.allowReserved);
+            }
             rendered = rendered.replace("?", questionMarker).replace("#", fragmentMarker);
             path = path.replace("{{" + key + "}}", rendered);
             path = path.replace("{" + key + "}", rendered);
@@ -381,6 +395,187 @@ public final class RequestParameterSupport {
             }
         }
         return encode(editable, allowReserved);
+    }
+
+    /** Returns an OpenAPI simple-style header value, falling back to scalar text. */
+    public static String serializeHeaderValue(ApiRequest.Parameter parameter, VariableResolver resolver) {
+        Object structured = structuredValue(parameter != null ? parameter.type : null,
+                parameter != null ? parameter.value : null, resolver);
+        if (structured == null || !"simple".equals(parameter.style)) {
+            return resolve(resolver, parameter != null && parameter.value != null ? parameter.value : "");
+        }
+        boolean explode = Boolean.TRUE.equals(parameter.explode);
+        return delimitedValue(structured, ",", explode, false, false);
+    }
+
+    /** Returns cookie pairs for OpenAPI form serialization, retaining explode semantics. */
+    public static List<String> serializeCookieParts(ApiRequest.Parameter parameter, VariableResolver resolver) {
+        if (parameter == null) return Collections.emptyList();
+        String key = resolve(resolver, parameter.key != null ? parameter.key : "");
+        if (!parameter.valuePresent) return List.of(key);
+        Object structured = structuredValue(parameter.type, parameter.value, resolver);
+        if (structured == null || !"form".equals(parameter.style)) {
+            return List.of(key + "=" + resolve(resolver, parameter.value != null ? parameter.value : ""));
+        }
+        boolean explode = Boolean.TRUE.equals(parameter.explode);
+        List<String> result = new ArrayList<>();
+        if (structured instanceof List<?> list) {
+            if (explode) for (Object item : list) result.add(key + "=" + scalar(item));
+            else result.add(key + "=" + joinScalars(list, ",", false, false));
+        } else if (structured instanceof Map<?, ?> map) {
+            if (explode) for (Map.Entry<?, ?> entry : map.entrySet()) result.add(scalar(entry.getKey()) + "=" + scalar(entry.getValue()));
+            else result.add(key + "=" + joinObject(map, ",", false, false));
+        }
+        return result;
+    }
+
+    /** OpenAPI form-style application/x-www-form-urlencoded pairs without a leading question mark. */
+    public static List<String> serializeFormPairs(String key,
+                                                  String value,
+                                                  String type,
+                                                  String style,
+                                                  Boolean explode,
+                                                  boolean allowReserved,
+                                                  VariableResolver resolver) {
+        String resolvedKey = resolve(resolver, key != null ? key : "");
+        String resolvedValue = resolve(resolver, value != null ? value : "");
+        Object structured = structuredValue(type, value, resolver);
+        if (structured == null) {
+            String encodedValue = allowReserved
+                    ? encode(resolvedValue, true)
+                    : java.net.URLEncoder.encode(resolvedValue, StandardCharsets.UTF_8);
+            return List.of(java.net.URLEncoder.encode(resolvedKey, StandardCharsets.UTF_8)
+                    + "=" + encodedValue);
+        }
+        ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", resolvedKey, resolvedValue);
+        parameter.type = type;
+        parameter.style = style == null || style.isBlank() ? "form" : style;
+        parameter.explode = explode;
+        parameter.allowReserved = allowReserved;
+        List<String> query = serializeStructuredQuery(parameter, null);
+        if (query != null) return query;
+        String encodedValue = allowReserved
+                ? encode(resolvedValue, true)
+                : java.net.URLEncoder.encode(resolvedValue, StandardCharsets.UTF_8);
+        return List.of(java.net.URLEncoder.encode(resolvedKey, StandardCharsets.UTF_8) + "=" + encodedValue);
+    }
+
+    private static List<String> serializeStructuredQuery(ApiRequest.Parameter parameter, VariableResolver resolver) {
+        Object structured = structuredValue(parameter.type, parameter.value, resolver);
+        if (structured == null) return null;
+        String style = parameter.style != null ? parameter.style : "form";
+        boolean explode = parameter.explode == null || parameter.explode;
+        String key = encode(resolve(resolver, parameter.key != null ? parameter.key : ""), false);
+        List<String> result = new ArrayList<>();
+        if (structured instanceof List<?> list) {
+            switch (style) {
+                case "form" -> {
+                    if (explode) for (Object item : list) result.add(key + "=" + encode(scalar(item), parameter.allowReserved));
+                    else result.add(key + "=" + joinScalars(list, ",", true, parameter.allowReserved));
+                }
+                case "spaceDelimited" -> result.add(key + "=" + joinScalars(list, "%20", true, parameter.allowReserved));
+                case "pipeDelimited" -> result.add(key + "=" + joinScalars(list, "|", true, parameter.allowReserved));
+                default -> { return null; }
+            }
+        } else if (structured instanceof Map<?, ?> map) {
+            switch (style) {
+                case "form" -> {
+                    if (explode) {
+                        for (Map.Entry<?, ?> entry : map.entrySet()) {
+                            result.add(encode(scalar(entry.getKey()), false) + "=" + encode(scalar(entry.getValue()), parameter.allowReserved));
+                        }
+                    } else result.add(key + "=" + joinObject(map, ",", true, parameter.allowReserved));
+                }
+                case "deepObject" -> {
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        result.add(key + "[" + encode(scalar(entry.getKey()), false) + "]="
+                                + encode(scalar(entry.getValue()), parameter.allowReserved));
+                    }
+                }
+                default -> { return null; }
+            }
+        }
+        return result;
+    }
+
+    private static String serializeStructuredPath(ApiRequest.Parameter parameter, VariableResolver resolver) {
+        Object structured = structuredValue(parameter.type, parameter.value, resolver);
+        if (structured == null) return null;
+        String style = parameter.style != null ? parameter.style : "simple";
+        boolean explode = Boolean.TRUE.equals(parameter.explode);
+        String key = encode(resolve(resolver, parameter.key != null ? parameter.key : ""), false);
+        return switch (style) {
+            case "simple" -> delimitedValue(structured, ",", explode, true, false);
+            case "label" -> "." + delimitedValue(structured, explode ? "." : ",", explode, true, false);
+            case "matrix" -> matrixValue(key, structured, explode);
+            default -> null;
+        };
+    }
+
+    private static String matrixValue(String key, Object structured, boolean explode) {
+        if (structured instanceof List<?> list) {
+            if (explode) {
+                StringBuilder out = new StringBuilder();
+                for (Object item : list) out.append(';').append(key).append('=').append(encode(scalar(item), false));
+                return out.toString();
+            }
+            return ";" + key + "=" + joinScalars(list, ",", true, false);
+        }
+        Map<?, ?> map = (Map<?, ?>) structured;
+        if (explode) {
+            StringBuilder out = new StringBuilder();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                out.append(';').append(encode(scalar(entry.getKey()), false)).append('=').append(encode(scalar(entry.getValue()), false));
+            }
+            return out.toString();
+        }
+        return ";" + key + "=" + joinObject(map, ",", true, false);
+    }
+
+    private static String delimitedValue(Object structured,
+                                         String separator,
+                                         boolean explode,
+                                         boolean encoded,
+                                         boolean allowReserved) {
+        if (structured instanceof List<?> list) return joinScalars(list, separator, encoded, allowReserved);
+        Map<?, ?> map = (Map<?, ?>) structured;
+        if (!explode) return joinObject(map, separator, encoded, allowReserved);
+        List<String> members = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            String key = encoded ? encode(scalar(entry.getKey()), false) : scalar(entry.getKey());
+            String value = encoded ? encode(scalar(entry.getValue()), allowReserved) : scalar(entry.getValue());
+            members.add(key + "=" + value);
+        }
+        return String.join(separator, members);
+    }
+
+    private static String joinScalars(List<?> values, String separator, boolean encoded, boolean allowReserved) {
+        List<String> rendered = new ArrayList<>();
+        for (Object value : values) rendered.add(encoded ? encode(scalar(value), allowReserved) : scalar(value));
+        return String.join(separator, rendered);
+    }
+
+    private static String joinObject(Map<?, ?> values, String separator, boolean encoded, boolean allowReserved) {
+        List<String> rendered = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            rendered.add(encoded ? encode(scalar(entry.getKey()), false) : scalar(entry.getKey()));
+            rendered.add(encoded ? encode(scalar(entry.getValue()), allowReserved) : scalar(entry.getValue()));
+        }
+        return String.join(separator, rendered);
+    }
+
+    private static Object structuredValue(String type, String value, VariableResolver resolver) {
+        if (type == null || !("array".equalsIgnoreCase(type) || "object".equalsIgnoreCase(type))) return null;
+        Object parsed = OpenApiMetadataSupport.parseCanonicalJson(resolve(resolver, value != null ? value : ""));
+        if ("array".equalsIgnoreCase(type) && parsed instanceof List<?>) return parsed;
+        if ("object".equalsIgnoreCase(type) && parsed instanceof Map<?, ?>) return parsed;
+        return null;
+    }
+
+    private static String scalar(Object value) {
+        if (value == null) return "null";
+        if (value instanceof Map<?, ?> || value instanceof List<?>) return OpenApiMetadataSupport.canonicalJson(value);
+        return String.valueOf(value);
     }
 
     private static boolean isSafePathRaw(String raw, boolean allowReserved) {

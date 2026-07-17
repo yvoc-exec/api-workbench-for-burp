@@ -13,6 +13,42 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RequestEditorParameterFidelityTest {
     @Test
+    void passiveEditPreservesWaveThreeRequestParameterBodyAndFieldMetadata() throws Exception {
+        ApiRequest request = request();
+        request.sourceMetadata.put("openapi.operation.extensions", "{\"x-op\":true}");
+        ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", "q", "1");
+        parameter.format = "int64";
+        parameter.sourceMetadata.put("openapi.schema", "{\"type\":\"integer\"}");
+        request.parameters.add(parameter);
+        request.body = new ApiRequest.Body();
+        request.body.mode = "urlencoded";
+        request.body.required = true;
+        request.body.description = "body";
+        request.body.filePath = "body.bin";
+        request.body.source = "openapi:requestBody";
+        request.body.sourceMetadata.put("openapi.requestBody.selectedMediaType", "application/x-www-form-urlencoded");
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("tags", "[\"a\"]");
+        field.required = true;
+        field.description = "field";
+        field.contentType = "text/plain";
+        field.style = "form";
+        field.explode = Boolean.FALSE;
+        field.allowReserved = true;
+        field.source = "openapi:requestBody.property";
+        field.sourceMetadata.put("openapi.schema", "{\"type\":\"array\"}");
+        request.body.urlencoded.add(field);
+
+        ApiRequest built = editWithoutChanges(request);
+        assertThat(built.sourceMetadata).isEqualTo(request.sourceMetadata);
+        assertThat(built.parameters.get(0)).usingRecursiveComparison().isEqualTo(parameter);
+        assertThat(built.body.required).isTrue();
+        assertThat(built.body.description).isEqualTo("body");
+        assertThat(built.body.filePath).isEqualTo("body.bin");
+        assertThat(built.body.sourceMetadata).isEqualTo(request.body.sourceMetadata);
+        assertThat(built.body.urlencoded.get(0)).usingRecursiveComparison().isEqualTo(field);
+    }
+
+    @Test
     void loadingAndRebuildingPreservesQueryMetadataAndOrder() throws Exception {
         ApiRequest request = request();
         ApiRequest.Parameter active = parameter("tag", "one", false);
@@ -323,7 +359,7 @@ class RequestEditorParameterFidelityTest {
             DefaultTableModel model = bodyFormModel(panel);
             javax.swing.JTable table = ImporterPanelTestSupport.getField(panel, "bodyFormTable");
 
-            assertThat(model.getColumnCount()).isEqualTo(10);
+            assertThat(model.getColumnCount()).isEqualTo(18);
             assertThat(table.getColumnCount()).isEqualTo(5);
             assertThat(java.util.stream.IntStream.range(0, table.getColumnCount())
                     .mapToObj(index -> table.getColumnName(index)))

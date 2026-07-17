@@ -42,7 +42,7 @@ class RequestEditorPanelTest {
         assertThat(headersModel(panel).getColumnCount()).isEqualTo(3);
         assertThat(headersModel(panel).getColumnName(RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo("Enabled");
         assertThat(headersModel(panel).getValueAt(0, RequestEditorStateMapper.HEADER_ENABLED_MODEL_COLUMN)).isEqualTo(Boolean.TRUE);
-        assertThat(paramsModel(panel).getColumnCount()).isEqualTo(15);
+        assertThat(paramsModel(panel).getColumnCount()).isEqualTo(17);
         assertThat(paramsModel(panel).getValueAt(0, RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN))
                 .isEqualTo("query");
         assertThat(java.util.stream.IntStream.range(0, paramsTable(panel).getColumnCount())

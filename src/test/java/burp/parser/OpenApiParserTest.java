@@ -64,9 +64,9 @@ class OpenApiParserTest {
         ApiRequest req = collection.requests.get(0);
 
         assertThat(req.url).contains("/users/{{id}}");
-        assertThat(req.variables)
-                .extracting(variable -> variable.key + "=" + variable.value)
-                .contains("id=42");
+        assertThat(req.parameters)
+                .extracting(parameter -> parameter.location + ":" + parameter.key + "=" + parameter.value)
+                .contains("path:id=42");
     }
 
     @Test
@@ -106,11 +106,9 @@ class OpenApiParserTest {
 
         assertThat(req.url).contains("/users/{{id}}");
         assertThat(req.url).contains("existing=1");
-        assertThat(req.url).contains("includeInactive=true");
-        assertThat(req.url).contains("search=alice");
-        assertThat(req.variables)
-                .extracting(variable -> variable.key + "=" + variable.value)
-                .contains("id=7");
+        assertThat(req.parameters)
+                .extracting(parameter -> parameter.location + ":" + parameter.key + "=" + parameter.value)
+                .containsExactly("query:existing=1", "path:id=7", "query:includeInactive=true", "query:search=alice");
     }
 
     @Test
@@ -292,7 +290,9 @@ class OpenApiParserTest {
 
         assertThat(collection.requests).hasSize(250);
         assertThat(collection.requests.get(249).url).contains("/items/249");
-        assertThat(collection.requests.get(249).headers).extracting(header -> header.key).contains("trace");
+        assertThat(collection.requests.get(249).parameters)
+                .filteredOn(parameter -> "header".equals(parameter.location))
+                .extracting(parameter -> parameter.key).contains("trace");
     }
 
     private Path createTempSpecFile(String content) throws Exception {

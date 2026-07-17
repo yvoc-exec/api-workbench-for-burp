@@ -33,7 +33,9 @@ final class RequestEditorBodySupport {
         final DefaultTableModel bodyFormModel = new DefaultTableModel(
                 new Object[]{
                         "Key", "Value", "Enabled", "Type", "File Path", "File Upload",
-                        "Original Type", "Original File Path", "Original File Upload", "Existing Row"
+                        "Original Type", "Original File Path", "Original File Upload", "Existing Row",
+                        "Required", "Description", "Content Type", "Style", "Explode",
+                        "Allow Reserved", "Source", "Source Metadata"
                 }, 0) {
             @Override
             public Class<?> getColumnClass(int columnIndex) {
@@ -41,6 +43,9 @@ final class RequestEditorBodySupport {
                         || columnIndex == RequestEditorStateMapper.BODY_FILE_UPLOAD_MODEL_COLUMN
                         || columnIndex == RequestEditorStateMapper.BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN
                         || columnIndex == RequestEditorStateMapper.BODY_EXISTING_ROW_MODEL_COLUMN
+                        || columnIndex == RequestEditorStateMapper.BODY_REQUIRED_MODEL_COLUMN
+                        || columnIndex == RequestEditorStateMapper.BODY_EXPLODE_MODEL_COLUMN
+                        || columnIndex == RequestEditorStateMapper.BODY_ALLOW_RESERVED_MODEL_COLUMN
                         ? Boolean.class
                         : String.class;
             }
@@ -67,14 +72,15 @@ final class RequestEditorBodySupport {
             bodyFormTable.getColumnModel().getColumn(0).setMaxWidth(90);
             bodyFormTable.getColumnModel().getColumn(0).setMinWidth(64);
             bodyFormTable.getColumnModel().getColumn(0).setCellRenderer(bodyFormTable.getDefaultRenderer(Boolean.class));
-            for (int viewColumn = 9; viewColumn >= 5; viewColumn--) {
+            for (int viewColumn = bodyFormTable.getColumnCount() - 1; viewColumn >= 5; viewColumn--) {
                 bodyFormTable.removeColumn(bodyFormTable.getColumnModel().getColumn(viewColumn));
             }
             formPanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
             formPanel.add(RequestEditorTableSupport.createAddRemovePanel(bodyFormTable, bodyFormModel,
                     () -> new Object[]{
                             "", "", Boolean.TRUE, "text", "", Boolean.FALSE,
-                            null, null, Boolean.FALSE, Boolean.FALSE
+                            null, null, Boolean.FALSE, Boolean.FALSE,
+                            Boolean.FALSE, null, null, null, null, Boolean.FALSE, null, null
                     }), BorderLayout.SOUTH);
             bodyContentPanel.add(formPanel, "form");
             RequestEditorStateMapper.ensureStarterRow(bodyFormModel);
