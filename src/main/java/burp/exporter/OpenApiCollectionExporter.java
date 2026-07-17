@@ -623,19 +623,23 @@ public final class OpenApiCollectionExporter {
     }
 
     private static boolean scanOpenApiFor31(Object node, boolean schemaContext) {
-        if (schemaContext) return schemaRequires31(node);
+        return scanOpenApiFor31(node,
+                schemaContext ? OpenApiTraversalRole.SCHEMA : OpenApiTraversalRole.OBJECT);
+    }
+
+    private static boolean scanOpenApiFor31(Object node, OpenApiTraversalRole role) {
+        if (role == OpenApiTraversalRole.SCHEMA) return schemaRequires31(node);
         if (node instanceof Map<?, ?> raw) {
             Map<String, Object> map = castMap(raw);
             for (Map.Entry<String, Object> entry : map.entrySet()) {
-                if (isExtensionKey(entry.getKey())) continue;
-                if ("schema".equals(entry.getKey()) && schemaRequires31(entry.getValue())) return true;
-                if ("schemas".equals(entry.getKey()) && entry.getValue() instanceof Map<?, ?> schemas) {
-                    for (Object schema : schemas.values()) if (schemaRequires31(schema)) return true;
-                }
-                if (scanOpenApiFor31(entry.getValue(), false)) return true;
+                String key = entry.getKey();
+                if (allowsExtensionFields(role) && isExtensionKey(key)) continue;
+                if (scanOpenApiFor31(entry.getValue(), childTraversalRole(role, key))) return true;
             }
         } else if (node instanceof List<?> list) {
-            for (Object item : list) if (scanOpenApiFor31(item, false)) return true;
+            for (Object item : list) {
+                if (scanOpenApiFor31(item, role)) return true;
+            }
         }
         return false;
     }
@@ -665,165 +669,171 @@ public final class OpenApiCollectionExporter {
 
     private static Map<String, Object> sanitizeArtifactReferences(Map<String, Object> root,
                                                                   List<String> warnings) {
-        Object sanitized = sanitizeReferenceNode(root, root, warnings, "OpenAPI field");
+        Object sanitized = sanitizeReferenceNode(
+                root,
+                root,
+                warnings,
+                "OpenAPI field",
+                OpenApiTraversalRole.OBJECT);
         return sanitized instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
     }
 
     private static Map<String, Object> normalizeReferenceSiblings(Map<String, Object> root,
                                                                   boolean openApi31,
                                                                   List<String> warnings) {
-        Object normalized = normalizeOpenApiNode(root, openApi31, warnings, "OpenAPI field");
+        Object normalized = normalizeOpenApiNode(
+                root,
+                openApi31,
+                warnings,
+                "OpenAPI field",
+                OpenApiTraversalRole.OBJECT);
         return normalized instanceof Map<?, ?> map ? castMap(map) : new LinkedHashMap<>();
     }
 
     private static Object normalizeOpenApiNode(Object node,
                                                boolean openApi31,
                                                List<String> warnings,
-                                               String context) {
+                                               String context,
+                                               OpenApiTraversalRole role) {
         if (node instanceof Map<?, ?> raw) {
             Map<String, Object> source = castMap(raw);
-            Map<String, Object> copy = referenceSiblingSubset(source, openApi31, false, warnings, context);
+            Map<String, Object> filtered = switch (role) {
+                case SCHEMA -> referenceSiblingSubset(source, openApi31, true, warnings, context);
+                case PATH_ITEM -> pathItemSiblingSubset(source, warnings, context);
+                case OBJECT, CALLBACK_OBJECT ->
+                        referenceSiblingSubset(source, openApi31, false, warnings, context);
+                default -> source;
+            };
+
             Map<String, Object> normalized = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> entry : copy.entrySet()) {
+            for (Map.Entry<String, Object> entry : filtered.entrySet()) {
                 String key = entry.getKey();
-                if (isExtensionKey(key)) {
-                    normalized.put(key, copyOpaqueExtensionValue(entry.getValue()));
-                } else if ("schema".equals(key)) {
-                    normalized.put(entry.getKey(), normalizeSchemaNode(entry.getValue(), openApi31, warnings, context + " schema"));
-                } else if ("schemas".equals(key) && entry.getValue() instanceof Map<?, ?> schemas) {
-                    Map<String, Object> normalizedSchemas = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> schema : castMap(schemas).entrySet()) {
-                        normalizedSchemas.put(schema.getKey(), normalizeSchemaNode(
-                                schema.getValue(), openApi31, warnings, context + " schema"));
-                    }
-                    normalized.put(entry.getKey(), normalizedSchemas);
-                } else if (Set.of("paths", "pathItems", "webhooks").contains(key)) {
-                    normalized.put(key, normalizePathItemMap(entry.getValue(), openApi31, warnings,
-                            context + " " + safeName(key)));
-                } else if ("callbacks".equals(key)) {
-                    normalized.put(key, normalizeCallbackMap(entry.getValue(), openApi31, warnings,
-                            context + " callbacks"));
+                Object value = entry.getValue();
+                if (allowsExtensionFields(role) && isExtensionKey(key)) {
+                    normalized.put(key, copyOpaqueExtensionValue(value));
                 } else {
-                    normalized.put(entry.getKey(), normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
-                            context + " " + safeName(entry.getKey())));
+                    normalized.put(key, normalizeOpenApiNode(
+                            value,
+                            openApi31,
+                            warnings,
+                            context + " " + safeName(key),
+                            childTraversalRole(role, key)));
                 }
             }
             return normalized;
         }
+
         if (node instanceof List<?> list) {
-            List<Object> copy = new ArrayList<>(list.size());
-            for (Object item : list) copy.add(normalizeOpenApiNode(item, openApi31, warnings, context));
-            return copy;
+            List<Object> normalized = new ArrayList<>(list.size());
+            for (Object item : list) {
+                normalized.add(normalizeOpenApiNode(item, openApi31, warnings, context, role));
+            }
+            return normalized;
         }
+
         return node;
     }
 
-    private static Object normalizePathItemMap(Object node,
-                                               boolean openApi31,
-                                               List<String> warnings,
-                                               String context) {
-        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
-        Map<String, Object> normalized = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-            normalized.put(entry.getKey(), isExtensionKey(entry.getKey())
-                    ? copyOpaqueExtensionValue(entry.getValue())
-                    : normalizePathItemNode(entry.getValue(), openApi31, warnings,
-                            context + " " + safeName(entry.getKey())));
-        }
-        return normalized;
-    }
-
-    private static Object normalizeCallbackMap(Object node,
-                                               boolean openApi31,
-                                               List<String> warnings,
-                                               String context) {
-        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
-        Map<String, Object> normalized = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> callback : castMap(raw).entrySet()) {
-            Object value = callback.getValue();
-            if (isExtensionKey(callback.getKey())) {
-                normalized.put(callback.getKey(), copyOpaqueExtensionValue(value));
-                continue;
-            }
-            if (!(value instanceof Map<?, ?> callbackRaw) || callbackRaw.containsKey("$ref")) {
-                normalized.put(callback.getKey(), normalizeOpenApiNode(value, openApi31, warnings,
-                        context + " " + safeName(callback.getKey())));
-                continue;
-            }
-            Map<String, Object> expressions = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> expression : castMap(callbackRaw).entrySet()) {
-                expressions.put(expression.getKey(), isExtensionKey(expression.getKey())
-                        ? copyOpaqueExtensionValue(expression.getValue())
-                        : normalizePathItemNode(expression.getValue(), openApi31, warnings,
-                                context + " expression"));
-            }
-            normalized.put(callback.getKey(), expressions);
-        }
-        return normalized;
-    }
-
-    private static Object normalizePathItemNode(Object node,
-                                                boolean openApi31,
-                                                List<String> warnings,
-                                                String context) {
-        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
-        Map<String, Object> source = pathItemSiblingSubset(castMap(raw), warnings, context);
-        Map<String, Object> normalized = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : source.entrySet()) {
-            normalized.put(entry.getKey(), isExtensionKey(entry.getKey())
-                    ? copyOpaqueExtensionValue(entry.getValue())
-                    : normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
-                            context + " " + safeName(entry.getKey())));
-        }
-        return normalized;
-    }
-
     private static Map<String, Object> pathItemSiblingSubset(Map<String, Object> source,
-                                                              List<String> warnings,
-                                                              String context) {
+                                                             List<String> warnings,
+                                                             String context) {
         if (!source.containsKey("$ref")) return source;
         Set<String> methods = Set.of("get", "put", "post", "delete", "options", "head", "patch", "trace");
         Map<String, Object> copy = new LinkedHashMap<>();
         List<String> ignored = new ArrayList<>();
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = entry.getKey();
-            if ("$ref".equals(key) || Set.of("summary", "description", "servers", "parameters").contains(key)
-                    || methods.contains(key) || isExtensionKey(key)) copy.put(key, entry.getValue());
-            else ignored.add(key);
+            if ("$ref".equals(key)
+                    || Set.of("summary", "description", "servers", "parameters").contains(key)
+                    || methods.contains(key)
+                    || isExtensionKey(key)) {
+                copy.put(key, entry.getValue());
+            } else {
+                ignored.add(key);
+            }
         }
-        if (!ignored.isEmpty()) addWarning(warnings, "ignored Path Item fields in " + context + ": "
-                + String.join(", ", ignored.stream().map(OpenApiCollectionExporter::safeName).toList()));
+        if (!ignored.isEmpty()) {
+            addWarning(warnings, "ignored Path Item fields in " + context + ": "
+                    + String.join(", ", ignored.stream()
+                            .map(OpenApiCollectionExporter::safeName)
+                            .toList()));
+        }
         return copy;
     }
 
-    private static Object normalizeSchemaNode(Object node,
-                                              boolean openApi31,
-                                              List<String> warnings,
-                                              String context) {
-        if (node instanceof Boolean) return node;
-        if (!(node instanceof Map<?, ?> raw)) return node;
-        Map<String, Object> source = referenceSiblingSubset(castMap(raw), openApi31, true, warnings, context);
-        Map<String, Object> copy = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : source.entrySet()) {
-            String key = entry.getKey();
-            Object value = entry.getValue();
-            if (isExtensionKey(key)) {
-                copy.put(key, copyOpaqueExtensionValue(value));
-            } else if (Set.of("items", "additionalProperties", "not", "unevaluatedProperties", "unevaluatedItems").contains(key)) {
-                copy.put(key, normalizeSchemaNode(value, openApi31, warnings, context + " " + safeName(key)));
-            } else if (Set.of("properties", "dependentSchemas").contains(key) && value instanceof Map<?, ?> children) {
-                Map<String, Object> normalized = new LinkedHashMap<>();
-                for (Map.Entry<String, Object> child : castMap(children).entrySet()) {
-                    normalized.put(child.getKey(), normalizeSchemaNode(child.getValue(), openApi31, warnings, context));
+    private enum OpenApiTraversalRole {
+        OBJECT,
+        COMPONENTS,
+        NAMED_OBJECTS,
+        NAMED_SCHEMAS,
+        PATHS,
+        PATH_ITEMS,
+        PATH_ITEM,
+        CALLBACKS,
+        CALLBACK_OBJECT,
+        SCHEMA
+    }
+
+    private static boolean allowsExtensionFields(OpenApiTraversalRole role) {
+        return switch (role) {
+            case OBJECT, COMPONENTS, PATHS, PATH_ITEM, CALLBACK_OBJECT, SCHEMA -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean supportsReferenceField(OpenApiTraversalRole role) {
+        return switch (role) {
+            case OBJECT, PATH_ITEM, CALLBACK_OBJECT, SCHEMA -> true;
+            default -> false;
+        };
+    }
+
+    private static OpenApiTraversalRole childTraversalRole(OpenApiTraversalRole role, String key) {
+        return switch (role) {
+            case COMPONENTS -> switch (key) {
+                case "schemas" -> OpenApiTraversalRole.NAMED_SCHEMAS;
+                case "pathItems" -> OpenApiTraversalRole.PATH_ITEMS;
+                case "callbacks" -> OpenApiTraversalRole.CALLBACKS;
+                default -> OpenApiTraversalRole.NAMED_OBJECTS;
+            };
+            case NAMED_OBJECTS -> OpenApiTraversalRole.OBJECT;
+            case NAMED_SCHEMAS -> OpenApiTraversalRole.SCHEMA;
+            case PATHS, PATH_ITEMS -> OpenApiTraversalRole.PATH_ITEM;
+            case CALLBACKS -> OpenApiTraversalRole.CALLBACK_OBJECT;
+            case CALLBACK_OBJECT -> OpenApiTraversalRole.PATH_ITEM;
+            case SCHEMA -> {
+                if (Set.of("properties", "dependentSchemas").contains(key)) {
+                    yield OpenApiTraversalRole.NAMED_SCHEMAS;
                 }
-                copy.put(key, normalized);
-            } else if (Set.of("prefixItems", "allOf", "oneOf", "anyOf").contains(key) && value instanceof List<?> children) {
-                List<Object> normalized = new ArrayList<>();
-                for (Object child : children) normalized.add(normalizeSchemaNode(child, openApi31, warnings, context));
-                copy.put(key, normalized);
-            } else copy.put(key, value);
-        }
-        return copy;
+                if (Set.of(
+                        "items",
+                        "additionalProperties",
+                        "not",
+                        "unevaluatedProperties",
+                        "unevaluatedItems",
+                        "prefixItems",
+                        "allOf",
+                        "oneOf",
+                        "anyOf").contains(key)) {
+                    yield OpenApiTraversalRole.SCHEMA;
+                }
+                yield OpenApiTraversalRole.OBJECT;
+            }
+            case OBJECT, PATH_ITEM -> {
+                if ("components".equals(key)) yield OpenApiTraversalRole.COMPONENTS;
+                if ("paths".equals(key)) yield OpenApiTraversalRole.PATHS;
+                if (Set.of("pathItems", "webhooks").contains(key)) {
+                    yield OpenApiTraversalRole.PATH_ITEMS;
+                }
+                if ("callbacks".equals(key)) yield OpenApiTraversalRole.CALLBACKS;
+                if ("schema".equals(key)) yield OpenApiTraversalRole.SCHEMA;
+                if ("schemas".equals(key)) yield OpenApiTraversalRole.NAMED_SCHEMAS;
+                if (Set.of("content", "encoding", "headers", "links", "examples").contains(key)) {
+                    yield OpenApiTraversalRole.NAMED_OBJECTS;
+                }
+                yield OpenApiTraversalRole.OBJECT;
+            }
+        };
     }
 
     private static Map<String, Object> referenceSiblingSubset(Map<String, Object> source,
@@ -848,31 +858,48 @@ public final class OpenApiCollectionExporter {
     private static Object sanitizeReferenceNode(Object node,
                                                 Map<String, Object> root,
                                                 List<String> warnings,
-                                                String context) {
+                                                String context,
+                                                OpenApiTraversalRole role) {
         if (node instanceof Map<?, ?> raw) {
             Map<String, Object> copy = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-                if (isExtensionKey(entry.getKey())) {
-                    copy.put(entry.getKey(), copyOpaqueExtensionValue(entry.getValue()));
-                } else if ("$ref".equals(entry.getKey())) {
-                    if (entry.getValue() instanceof String ref && ref.startsWith("#")
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                if (allowsExtensionFields(role) && isExtensionKey(key)) {
+                    copy.put(key, copyOpaqueExtensionValue(value));
+                    continue;
+                }
+
+                if (supportsReferenceField(role) && "$ref".equals(key)) {
+                    if (value instanceof String ref
+                            && ref.startsWith("#")
                             && jsonPointerExists(root, ref.substring(1))) {
                         copy.put("$ref", ref);
                     } else {
                         addWarning(warnings, "blocked or dangling reference omitted from " + context);
                     }
-                } else {
-                    copy.put(entry.getKey(), sanitizeReferenceNode(entry.getValue(), root, warnings,
-                            context + " " + safeName(entry.getKey())));
+                    continue;
                 }
+
+                copy.put(key, sanitizeReferenceNode(
+                        value,
+                        root,
+                        warnings,
+                        context + " " + safeName(key),
+                        childTraversalRole(role, key)));
             }
             return copy;
         }
+
         if (node instanceof List<?> list) {
             List<Object> copy = new ArrayList<>(list.size());
-            for (Object item : list) copy.add(sanitizeReferenceNode(item, root, warnings, context));
+            for (Object item : list) {
+                copy.add(sanitizeReferenceNode(item, root, warnings, context, role));
+            }
             return copy;
         }
+
         return node;
     }
 
@@ -1025,19 +1052,44 @@ public final class OpenApiCollectionExporter {
         return result;
     }
 
-    private static boolean referencesAreValidInternal(Object node, Map<String, Object> referenceDocument) {
+    private static boolean referencesAreValidInternal(Object node,
+                                                       Map<String, Object> referenceDocument) {
+        return referencesAreValidInternal(
+                node,
+                referenceDocument,
+                OpenApiTraversalRole.SCHEMA);
+    }
+
+    private static boolean referencesAreValidInternal(Object node,
+                                                       Map<String, Object> referenceDocument,
+                                                       OpenApiTraversalRole role) {
         if (node instanceof Map<?, ?> raw) {
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-                if (isExtensionKey(entry.getKey())) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                if (allowsExtensionFields(role) && isExtensionKey(key)) continue;
+
+                if (supportsReferenceField(role) && "$ref".equals(key)) {
+                    if (!(value instanceof String ref)
+                            || !ref.startsWith("#")
+                            || !jsonPointerExists(referenceDocument, ref.substring(1))) {
+                        return false;
+                    }
                     continue;
                 }
-                if ("$ref".equals(entry.getKey())) {
-                    if (!(entry.getValue() instanceof String ref) || !ref.startsWith("#")
-                            || !jsonPointerExists(referenceDocument, ref.substring(1))) return false;
-                } else if (!referencesAreValidInternal(entry.getValue(), referenceDocument)) return false;
+
+                if (!referencesAreValidInternal(
+                        value,
+                        referenceDocument,
+                        childTraversalRole(role, key))) {
+                    return false;
+                }
             }
         } else if (node instanceof List<?> list) {
-            for (Object item : list) if (!referencesAreValidInternal(item, referenceDocument)) return false;
+            for (Object item : list) {
+                if (!referencesAreValidInternal(item, referenceDocument, role)) return false;
+            }
         }
         return true;
     }
@@ -1063,25 +1115,46 @@ public final class OpenApiCollectionExporter {
     private static Object portableSchemaNode(Object value,
                                              List<String> warnings,
                                              String context) {
+        return portableSchemaNode(
+                value,
+                warnings,
+                context,
+                OpenApiTraversalRole.SCHEMA);
+    }
+
+    private static Object portableSchemaNode(Object value,
+                                             List<String> warnings,
+                                             String context,
+                                             OpenApiTraversalRole role) {
         if (value instanceof Map<?, ?> raw) {
             Map<String, Object> copy = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
-                if (isExtensionKey(entry.getKey())) {
-                    copy.put(entry.getKey(), copyOpaqueExtensionValue(entry.getValue()));
-                } else if ("$ref".equals(entry.getKey())) {
+                String key = entry.getKey();
+                Object child = entry.getValue();
+
+                if (allowsExtensionFields(role) && isExtensionKey(key)) {
+                    copy.put(key, copyOpaqueExtensionValue(child));
+                } else if (supportsReferenceField(role) && "$ref".equals(key)) {
                     addWarning(warnings, "unrepresentable reference omitted from " + context);
                 } else {
-                    copy.put(entry.getKey(), portableSchemaNode(entry.getValue(), warnings,
-                            context + " " + safeName(entry.getKey())));
+                    copy.put(key, portableSchemaNode(
+                            child,
+                            warnings,
+                            context + " " + safeName(key),
+                            childTraversalRole(role, key)));
                 }
             }
             return copy;
         }
+
         if (value instanceof List<?> list) {
             List<Object> copy = new ArrayList<>(list.size());
-            for (Object item : list) copy.add(portableSchemaNode(item, warnings, context));
+            for (Object item : list) {
+                copy.add(portableSchemaNode(item, warnings, context, role));
+            }
             return copy;
         }
+
         return value;
     }
 

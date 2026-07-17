@@ -665,6 +665,127 @@ class OpenApiFidelityRoundTripTest {
     }
 
     @Test
+    void xPrefixedNamesAreValidatedWhileActualExtensionsRemainOpaque() throws Exception {
+        Path source = tempDir.resolve("x-prefixed-names.yaml");
+        Files.writeString(source, """
+                openapi: 3.1.0
+                info: {title: XNames, version: '1'}
+                x-document: {$ref: vendor-value, mode: keep}
+                components:
+                  schemas:
+                    Target: {type: string}
+                    x-user:
+                      type: object
+                      properties:
+                        x-valid: {$ref: '#/components/schemas/Target'}
+                        x-blocked:
+                          $ref: 'https://BLOCKED-CANARY.invalid/schema'
+                          description: keep
+                  responses:
+                    Common: {description: ok}
+                    x-response: {$ref: '#/components/responses/Common'}
+                  pathItems:
+                    x-path:
+                      get:
+                        responses:
+                          '200': {$ref: '#/components/responses/Common'}
+                  callbacks:
+                    x-callback:
+                      '{$request.body#/callback}':
+                        post:
+                          requestBody:
+                            content:
+                              application/json:
+                                schema: {$ref: '#/components/schemas/x-user'}
+                          responses: {'200': {description: ok}}
+                webhooks:
+                  x-hook:
+                    $ref: '#/components/pathItems/x-path'
+                paths:
+                  /x:
+                    post:
+                      callbacks:
+                        x-operation-callback:
+                          '{$request.body#/callback}':
+                            $ref: '#/components/pathItems/x-path'
+                      requestBody:
+                        content:
+                          application/json:
+                            schema: {$ref: '#/components/schemas/x-user'}
+                      responses:
+                        '200': {$ref: '#/components/responses/x-response'}
+                """);
+
+        ApiCollection imported = new OpenApiParser().parse(source.toFile());
+        ArrayList<String> warnings = new ArrayList<>();
+        Map<String, Object> exported = OpenApiCollectionExporter.build(
+                imported,
+                options(CollectionExportFormat.OPENAPI_JSON),
+                warnings);
+
+        assertThat(exported.get("x-document")).isEqualTo(
+                Map.of("$ref", "vendor-value", "mode", "keep"));
+
+        Map<String, Object> components = cast(exported.get("components"));
+        Map<String, Object> schemas = cast(components.get("schemas"));
+        Map<String, Object> xUser = cast(schemas.get("x-user"));
+        Map<String, Object> properties = cast(xUser.get("properties"));
+
+        assertThat(cast(properties.get("x-valid")))
+                .containsEntry("$ref", "#/components/schemas/Target");
+        assertThat(cast(properties.get("x-blocked")))
+                .doesNotContainKey("$ref")
+                .containsEntry("description", "keep");
+
+        Map<String, Object> responses = cast(components.get("responses"));
+        assertThat(cast(responses.get("x-response")))
+                .containsOnly(entry("$ref", "#/components/responses/Common"));
+
+        Map<String, Object> pathItems = cast(components.get("pathItems"));
+        assertThat(pathItems).containsKey("x-path");
+
+        Map<String, Object> componentCallbacks = cast(components.get("callbacks"));
+        Map<String, Object> componentCallback = cast(componentCallbacks.get("x-callback"));
+        Map<String, Object> componentExpression =
+                cast(componentCallback.get("{$request.body#/callback}"));
+        Map<String, Object> componentPost = cast(componentExpression.get("post"));
+        Map<String, Object> componentRequestBody = cast(componentPost.get("requestBody"));
+        Map<String, Object> componentContent = cast(componentRequestBody.get("content"));
+        Map<String, Object> componentMedia = cast(componentContent.get("application/json"));
+        assertThat(cast(componentMedia.get("schema")))
+                .containsOnly(entry("$ref", "#/components/schemas/x-user"));
+
+        Map<String, Object> webhooks = cast(exported.get("webhooks"));
+        assertThat(cast(webhooks.get("x-hook")))
+                .containsOnly(entry("$ref", "#/components/pathItems/x-path"));
+
+        Map<String, Object> paths = cast(exported.get("paths"));
+        Map<String, Object> operation = cast(cast(paths.get("/x")).get("post"));
+        Map<String, Object> callbacks = cast(operation.get("callbacks"));
+        Map<String, Object> callback = cast(callbacks.get("x-operation-callback"));
+        Map<String, Object> expression = cast(callback.get("{$request.body#/callback}"));
+        assertThat(expression)
+                .containsOnly(entry("$ref", "#/components/pathItems/x-path"));
+
+        assertThat(collectRefs(exported))
+                .contains(
+                        "#/components/schemas/Target",
+                        "#/components/responses/Common",
+                        "#/components/pathItems/x-path",
+                        "#/components/schemas/x-user",
+                        "#/components/responses/x-response")
+                .allMatch(ref -> ref.startsWith("#"));
+        assertInternalRefsResolve(exported);
+
+        assertThat(warnings).anyMatch(w -> w.contains("blocked or dangling reference"));
+        assertThat(warnings).allMatch(w ->
+                !w.contains("BLOCKED-CANARY")
+                        && !w.contains("vendor-value")
+                        && !w.contains("\r")
+                        && !w.contains("\n"));
+    }
+
+    @Test
     void editedEndpointsOverrideStaleServerAndPathMetadata() throws Exception {
         Path source = tempDir.resolve("edited-endpoints.yaml");
         Files.writeString(source, """
@@ -795,17 +916,110 @@ class OpenApiFidelityRoundTripTest {
         }
     }
 
+    private enum RefTraversalRole {
+        OBJECT,
+        COMPONENTS,
+        NAMED_OBJECTS,
+        NAMED_SCHEMAS,
+        PATHS,
+        PATH_ITEMS,
+        PATH_ITEM,
+        CALLBACKS,
+        CALLBACK_OBJECT,
+        SCHEMA
+    }
+
     private static List<String> collectRefs(Object node) {
         List<String> refs = new ArrayList<>();
+        collectRefs(node, RefTraversalRole.OBJECT, refs);
+        return refs;
+    }
+
+    private static void collectRefs(Object node,
+                                    RefTraversalRole role,
+                                    List<String> refs) {
         if (node instanceof Map<?, ?> map) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
-                if (key.regionMatches(true, 0, "x-", 0, 2)) continue;
-                if ("$ref".equals(key) && entry.getValue() != null) refs.add(String.valueOf(entry.getValue()));
-                else refs.addAll(collectRefs(entry.getValue()));
+                Object value = entry.getValue();
+
+                if (refAllowsExtensionFields(role)
+                        && key.regionMatches(true, 0, "x-", 0, 2)) {
+                    continue;
+                }
+
+                if (refSupportsReferenceField(role) && "$ref".equals(key)) {
+                    if (value != null) refs.add(String.valueOf(value));
+                    continue;
+                }
+
+                collectRefs(value, refChildRole(role, key), refs);
             }
-        } else if (node instanceof List<?> list) for (Object item : list) refs.addAll(collectRefs(item));
-        return refs;
+        } else if (node instanceof List<?> list) {
+            for (Object item : list) collectRefs(item, role, refs);
+        }
+    }
+
+    private static boolean refAllowsExtensionFields(RefTraversalRole role) {
+        return switch (role) {
+            case OBJECT, COMPONENTS, PATHS, PATH_ITEM, CALLBACK_OBJECT, SCHEMA -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean refSupportsReferenceField(RefTraversalRole role) {
+        return switch (role) {
+            case OBJECT, PATH_ITEM, CALLBACK_OBJECT, SCHEMA -> true;
+            default -> false;
+        };
+    }
+
+    private static RefTraversalRole refChildRole(RefTraversalRole role, String key) {
+        return switch (role) {
+            case COMPONENTS -> switch (key) {
+                case "schemas" -> RefTraversalRole.NAMED_SCHEMAS;
+                case "pathItems" -> RefTraversalRole.PATH_ITEMS;
+                case "callbacks" -> RefTraversalRole.CALLBACKS;
+                default -> RefTraversalRole.NAMED_OBJECTS;
+            };
+            case NAMED_OBJECTS -> RefTraversalRole.OBJECT;
+            case NAMED_SCHEMAS -> RefTraversalRole.SCHEMA;
+            case PATHS, PATH_ITEMS -> RefTraversalRole.PATH_ITEM;
+            case CALLBACKS -> RefTraversalRole.CALLBACK_OBJECT;
+            case CALLBACK_OBJECT -> RefTraversalRole.PATH_ITEM;
+            case SCHEMA -> {
+                if (Set.of("properties", "dependentSchemas").contains(key)) {
+                    yield RefTraversalRole.NAMED_SCHEMAS;
+                }
+                if (Set.of(
+                        "items",
+                        "additionalProperties",
+                        "not",
+                        "unevaluatedProperties",
+                        "unevaluatedItems",
+                        "prefixItems",
+                        "allOf",
+                        "oneOf",
+                        "anyOf").contains(key)) {
+                    yield RefTraversalRole.SCHEMA;
+                }
+                yield RefTraversalRole.OBJECT;
+            }
+            case OBJECT, PATH_ITEM -> {
+                if ("components".equals(key)) yield RefTraversalRole.COMPONENTS;
+                if ("paths".equals(key)) yield RefTraversalRole.PATHS;
+                if (Set.of("pathItems", "webhooks").contains(key)) {
+                    yield RefTraversalRole.PATH_ITEMS;
+                }
+                if ("callbacks".equals(key)) yield RefTraversalRole.CALLBACKS;
+                if ("schema".equals(key)) yield RefTraversalRole.SCHEMA;
+                if ("schemas".equals(key)) yield RefTraversalRole.NAMED_SCHEMAS;
+                if (Set.of("content", "encoding", "headers", "links", "examples").contains(key)) {
+                    yield RefTraversalRole.NAMED_OBJECTS;
+                }
+                yield RefTraversalRole.OBJECT;
+            }
+        };
     }
 
     private static void assertInternalRefsResolve(Map<String, Object> root) {
