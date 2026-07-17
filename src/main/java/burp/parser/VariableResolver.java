@@ -22,9 +22,10 @@ public class VariableResolver {
 
     public void addCollectionVariables(ApiCollection collection) {
         for (ApiRequest.Variable var : collection.variables) {
-            if (var.value != null) {
-                variables.put(var.key, var.value);
+            if (var == null || !var.enabled || var.key == null || var.value == null) {
+                continue;
             }
+            variables.put(var.key, var.value);
         }
     }
 
@@ -55,9 +56,10 @@ public class VariableResolver {
 
     public void addRequestVariables(ApiRequest request) {
         for (ApiRequest.Variable var : request.variables) {
-            if (var.value != null) {
-                variables.put(var.key, var.value);
+            if (var == null || !var.enabled || var.key == null || var.value == null) {
+                continue;
             }
+            variables.put(var.key, var.value);
         }
     }
 

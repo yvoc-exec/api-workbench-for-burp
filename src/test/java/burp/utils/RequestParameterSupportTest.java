@@ -151,6 +151,23 @@ class RequestParameterSupportTest {
                 .isEqualTo("https://id.example/42/42/42/prefix:id?x=:id#id");
     }
 
+    @Test
+    void postmanRawMaterializationResolvesOrdinaryVariablesButPreservesPathTemplates() {
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("baseUrl", "https://api.example.test");
+        resolver.addCustomVariable("id", "99");
+        ApiRequest.Parameter path = new ApiRequest.Parameter("path", "id", "42");
+        path.valuePresent = true;
+        ApiRequest.Parameter query = parameter("filter", "{{id}}", true);
+
+        assertThat(RequestParameterSupport.materializePostmanRawUrl(
+                "{{baseUrl}}/users/{{id}}?stale={{id}}", List.of(path, query), resolver))
+                .isEqualTo("https://api.example.test/users/{{id}}?filter=99");
+        assertThat(RequestParameterSupport.materializePostmanRawUrl(
+                "https://{{id}}.example.test/users/{{id}}", List.of(path), resolver))
+                .isEqualTo("https://99.example.test/users/{{id}}");
+    }
+
     private static ApiRequest.Parameter parameter(String key, String value, boolean valuePresent) {
         ApiRequest.Parameter parameter = new ApiRequest.Parameter("query", key, value);
         parameter.valuePresent = valuePresent;

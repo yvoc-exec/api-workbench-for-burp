@@ -68,6 +68,53 @@ class Wave1ParameterLocationIntegrationTest {
     }
 
     @Test
+    void disabledPathTemplateIsProtectedWhileUnrelatedVariablesResolve() {
+        ApiRequest.Parameter disabled = parameter("path", "id", "42", true);
+        disabled.disabled = true;
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("baseUrl", "https://api.example.test");
+        resolver.addCustomVariable("id", "99");
+
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "{{baseUrl}}/users/{{id}}?authority-independent={{id}}",
+                List.of(disabled), resolver))
+                .isEqualTo("https://api.example.test/users/{{id}}?authority-independent=99");
+    }
+
+    @Test
+    void enabledPathParameterOverridesSameNamedEnvironmentVariableOnlyInPath() {
+        ApiRequest.Parameter enabled = parameter("path", "id", "42", true);
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("id", "99");
+
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "{{id}}.example.test/users/{{id}}", List.of(enabled), resolver))
+                .isEqualTo("99.example.test/users/42");
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "https://{{id}}.example.test/users/{{id}}", List.of(enabled), resolver))
+                .isEqualTo("https://99.example.test/users/42");
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "//{{id}}.example.test/users/{{id}}", List.of(enabled), resolver))
+                .isEqualTo("//99.example.test/users/42");
+    }
+
+    @Test
+    void schemelessAndTemplatedBasesKeepAuthorityOutsidePathReplacement() {
+        VariableResolver resolver = new VariableResolver();
+        resolver.addCustomVariable("baseUrl", "https://api.example.test");
+        resolver.addCustomVariable("id", "environment-id");
+        ApiRequest.Parameter id = parameter("path", "id", "path-id", true);
+        ApiRequest.Parameter baseUrl = parameter("path", "baseUrl", "tenant", true);
+
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "{{id}}.example.test/users/{id}", List.of(id), resolver))
+                .isEqualTo("environment-id.example.test/users/path-id");
+        assertThat(RequestParameterSupport.materializeRequestUrl(
+                "{{baseUrl}}/users/{{baseUrl}}", List.of(baseUrl), resolver))
+                .isEqualTo("https://api.example.test/users/tenant");
+    }
+
+    @Test
     void headerAndCookieParametersParticipateInOrderedPrecedenceAndFiltering() throws Exception {
         ApiRequest request = request("http://example.test/items");
         request.headers.add(new ApiRequest.Header("Cookie", "explicit=1"));

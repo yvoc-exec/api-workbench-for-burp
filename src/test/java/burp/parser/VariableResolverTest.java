@@ -58,6 +58,16 @@ class VariableResolverTest {
     }
 
     @Test
+    void disabledCollectionVariablesAreNotAdded() {
+        ApiCollection col = new ApiCollection();
+        ApiRequest.Variable disabled = createVar("col_key", "disabled");
+        disabled.enabled = false;
+        col.variables.add(disabled);
+        resolver.addCollectionVariables(col);
+        assertThat(resolver.resolve("{{col_key}}")).isEqualTo("{{col_key}}");
+    }
+
+    @Test
     void folderVariablesApplyParentThenChildScope() {
         ApiCollection col = new ApiCollection();
         col.folderVars.put("Admin", new java.util.LinkedHashMap<>(java.util.Map.of("token", "parent", "role", "admin")));
@@ -93,6 +103,34 @@ class VariableResolverTest {
         req.variables.add(createVar("req_key", "req_value"));
         resolver.addRequestVariables(req);
         assertThat(resolver.resolve("{{req_key}}")).isEqualTo("req_value");
+    }
+
+    @Test
+    void disabledRequestVariableDoesNotOverrideEnabledCollectionVariable() {
+        ApiCollection collection = new ApiCollection();
+        collection.variables.add(createVar("shared", "collection"));
+        ApiRequest request = new ApiRequest();
+        ApiRequest.Variable disabled = createVar("shared", "request-disabled");
+        disabled.enabled = false;
+        request.variables.add(disabled);
+
+        resolver.addCollectionVariables(collection);
+        resolver.addRequestVariables(request);
+
+        assertThat(resolver.resolve("{{shared}}")).isEqualTo("collection");
+    }
+
+    @Test
+    void enabledRequestVariablePrecedenceIsUnchanged() {
+        ApiCollection collection = new ApiCollection();
+        collection.variables.add(createVar("shared", "collection"));
+        ApiRequest request = new ApiRequest();
+        request.variables.add(createVar("shared", "request"));
+
+        resolver.addCollectionVariables(collection);
+        resolver.addRequestVariables(request);
+
+        assertThat(resolver.resolve("{{shared}}")).isEqualTo("request");
     }
 
     @Test

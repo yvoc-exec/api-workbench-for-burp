@@ -81,6 +81,44 @@ class PostmanCollectionExporterTest {
     }
 
     @Test
+    void resolveModePreservesModeledPathTemplateWhileResolvingBaseQueryHeadersAndBody() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "C";
+        ApiRequest request = new ApiRequest();
+        request.name = "R";
+        request.method = "POST";
+        request.url = "{{baseUrl}}/users/{{id}}";
+        ApiRequest.Parameter path = new ApiRequest.Parameter("path", "id", "42");
+        path.valuePresent = true;
+        ApiRequest.Parameter query = new ApiRequest.Parameter("query", "filter", "{{filter}}");
+        query.valuePresent = true;
+        request.parameters.add(path);
+        request.parameters.add(query);
+        request.headers.add(new ApiRequest.Header("X-ID", "{{id}}"));
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = "{\"id\":\"{{id}}\"}";
+        collection.requests.add(request);
+        EnvironmentProfile environment = new EnvironmentProfile();
+        environment.variables.put("baseUrl", "https://api.example.test");
+        environment.variables.put("id", "99");
+        environment.variables.put("filter", "active");
+
+        JsonObject root = PostmanCollectionExporter.build(collection, new CollectionExportOptions(
+                CollectionExportFormat.POSTMAN_JSON, null, true, environment, Map.of()), new ArrayList<>());
+        JsonObject exported = root.getAsJsonArray("item").get(0).getAsJsonObject()
+                .getAsJsonObject("request");
+
+        assertThat(exported.getAsJsonObject("url").get("raw").getAsString())
+                .isEqualTo("https://api.example.test/users/{{id}}?filter=active");
+        assertThat(exported.getAsJsonObject("url").getAsJsonArray("query")
+                .get(0).getAsJsonObject().get("value").getAsString()).isEqualTo("active");
+        assertThat(exported.getAsJsonArray("header").get(0).getAsJsonObject().get("value").getAsString())
+                .isEqualTo("99");
+        assertThat(exported.getAsJsonObject("body").get("raw").getAsString()).contains("99");
+    }
+
+    @Test
     void pathAndQueryRowsAndCollectionVariableMetadataRoundTripThroughPostman() throws Exception {
         ApiCollection collection = new ApiCollection();
         collection.name = "C";

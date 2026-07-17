@@ -203,7 +203,7 @@ public final class RuntimeResolverFactory {
             return;
         }
         for (ApiRequest.Variable variable : collection.variables) {
-            if (variable == null || variable.key == null || variable.value == null) {
+            if (variable == null || !variable.enabled || variable.key == null || variable.value == null) {
                 continue;
             }
             resolver.addCustomVariable(variable.key, variable.value);
@@ -321,7 +321,7 @@ public final class RuntimeResolverFactory {
             return;
         }
         for (ApiRequest.Variable variable : variables) {
-            if (variable == null || variable.key == null) {
+            if (variable == null || !variable.enabled || variable.key == null || variable.value == null) {
                 continue;
             }
             String key = variable.key.trim();

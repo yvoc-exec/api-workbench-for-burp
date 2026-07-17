@@ -165,15 +165,7 @@ public final class RequestParameterSupport {
             return materializeUrl(authoredUrl, parameters, resolver);
         }
 
-        int fragmentIndex = authoredUrl.indexOf('#');
-        int queryIndex = authoredUrl.indexOf('?');
-        int pathEnd = authoredUrl.length();
-        if (queryIndex >= 0) {
-            pathEnd = queryIndex;
-        }
-        if (fragmentIndex >= 0 && fragmentIndex < pathEnd) {
-            pathEnd = fragmentIndex;
-        }
+        int pathEnd = pathEnd(authoredUrl);
         int pathStart = pathStart(authoredUrl, pathEnd);
         String path = authoredUrl.substring(pathStart, pathEnd);
         String questionMarker = uniquePathMarker(authoredUrl, parameters, resolver, "question");
@@ -201,12 +193,91 @@ public final class RequestParameterSupport {
             path = path.replace("{" + key + "}", rendered);
             path = replaceColonPathSegment(path, key, rendered);
         }
+        ProtectedPath protectedDisabled = protectPathParameterTemplates(
+                path, authoredUrl, parameters, resolver, true);
+        path = protectedDisabled.path;
         String withMaterializedPath = authoredUrl.substring(0, pathStart)
                 + path
                 + authoredUrl.substring(pathEnd);
-        return materializeUrl(withMaterializedPath, parameters, resolver)
+        return restoreProtectedPathTemplates(
+                materializeUrl(withMaterializedPath, parameters, resolver), protectedDisabled)
                 .replace(questionMarker, "?")
                 .replace(fragmentMarker, "#");
+    }
+
+    public static String materializePostmanRawUrl(String url,
+                                                  List<ApiRequest.Parameter> parameters,
+                                                  VariableResolver resolver) {
+        String authoredUrl = url != null ? url : "";
+        if (!hasParametersAtLocation(parameters, "path")) {
+            return materializeUrl(authoredUrl, parameters, resolver);
+        }
+        int pathEnd = pathEnd(authoredUrl);
+        int pathStart = pathStart(authoredUrl, pathEnd);
+        ProtectedPath protectedPath = protectPathParameterTemplates(
+                authoredUrl.substring(pathStart, pathEnd),
+                authoredUrl,
+                parameters,
+                resolver,
+                false);
+        String protectedUrl = authoredUrl.substring(0, pathStart)
+                + protectedPath.path
+                + authoredUrl.substring(pathEnd);
+        return restoreProtectedPathTemplates(
+                materializeUrl(protectedUrl, parameters, resolver), protectedPath);
+    }
+
+    private static ProtectedPath protectPathParameterTemplates(String path,
+                                                               String url,
+                                                               List<ApiRequest.Parameter> parameters,
+                                                               VariableResolver resolver,
+                                                               boolean disabledOnly) {
+        String protectedPath = path != null ? path : "";
+        Map<String, String> restorations = new LinkedHashMap<>();
+        java.util.Set<String> protectedKeys = new java.util.LinkedHashSet<>();
+        if (parameters != null) {
+            for (ApiRequest.Parameter parameter : parameters) {
+                if (!isLocation(parameter, "path")
+                        || (disabledOnly && !parameter.disabled)
+                        || parameter.key == null
+                        || parameter.key.isEmpty()
+                        || !protectedKeys.add(parameter.key)) {
+                    continue;
+                }
+                String placeholder = "{{" + parameter.key + "}}";
+                if (!protectedPath.contains(placeholder)) {
+                    continue;
+                }
+                String marker = uniquePathMarker(
+                        url, parameters, resolver, "template-" + restorations.size());
+                protectedPath = protectedPath.replace(placeholder, marker);
+                restorations.put(marker, placeholder);
+            }
+        }
+        return new ProtectedPath(protectedPath, restorations);
+    }
+
+    private static String restoreProtectedPathTemplates(String value, ProtectedPath protectedPath) {
+        String restored = value != null ? value : "";
+        if (protectedPath != null) {
+            for (Map.Entry<String, String> restoration : protectedPath.restorations.entrySet()) {
+                restored = restored.replace(restoration.getKey(), restoration.getValue());
+            }
+        }
+        return restored;
+    }
+
+    private static int pathEnd(String url) {
+        int fragmentIndex = url.indexOf('#');
+        int queryIndex = url.indexOf('?');
+        int end = url.length();
+        if (queryIndex >= 0) {
+            end = queryIndex;
+        }
+        if (fragmentIndex >= 0 && fragmentIndex < end) {
+            end = fragmentIndex;
+        }
+        return end;
     }
 
     private static String uniquePathMarker(String url,
@@ -222,7 +293,9 @@ public final class RequestParameterSupport {
             if (parameters != null) {
                 for (ApiRequest.Parameter parameter : parameters) {
                     if (parameter != null
-                            && (containsResolved(parameter.value, marker, resolver)
+                            && (containsResolved(parameter.key, marker, resolver)
+                            || containsResolved(parameter.rawKey, marker, resolver)
+                            || containsResolved(parameter.value, marker, resolver)
                             || containsResolved(parameter.rawValue, marker, resolver))) {
                         collision = true;
                         break;
@@ -240,17 +313,47 @@ public final class RequestParameterSupport {
     }
 
     private static int pathStart(String url, int pathEnd) {
-        int scheme = url.indexOf("://");
-        int authorityStart;
-        if (scheme >= 0 && scheme < pathEnd) {
-            authorityStart = scheme + 3;
-        } else if (url.startsWith("//")) {
+        if (url == null || url.isEmpty() || pathEnd <= 0) {
+            return 0;
+        }
+        int authorityStart = 0;
+        if (url.startsWith("//")) {
             authorityStart = 2;
         } else {
-            return 0;
+            int schemeSeparator = url.indexOf("://");
+            if (schemeSeparator > 0
+                    && schemeSeparator < pathEnd
+                    && isValidScheme(url, schemeSeparator)) {
+                authorityStart = schemeSeparator + 3;
+            } else if (url.startsWith("/")) {
+                return 0;
+            }
         }
         int slash = url.indexOf('/', authorityStart);
         return slash >= 0 && slash < pathEnd ? slash : pathEnd;
+    }
+
+    private static boolean isValidScheme(String url, int end) {
+        if (end <= 0 || !Character.isLetter(url.charAt(0))) {
+            return false;
+        }
+        for (int i = 1; i < end; i++) {
+            char ch = url.charAt(i);
+            if (!Character.isLetterOrDigit(ch) && ch != '+' && ch != '-' && ch != '.') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static final class ProtectedPath {
+        final String path;
+        final Map<String, String> restorations;
+
+        ProtectedPath(String path, Map<String, String> restorations) {
+            this.path = path;
+            this.restorations = restorations;
+        }
     }
 
     private static String replaceColonPathSegment(String path, String key, String rendered) {

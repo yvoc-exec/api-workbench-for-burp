@@ -189,7 +189,7 @@ public final class PostmanCollectionExporter {
         }
         VariableResolver materializationResolver = resolve ? resolver : null;
         JsonObject url = new JsonObject();
-        url.addProperty("raw", RequestParameterSupport.materializeUrl(
+        url.addProperty("raw", RequestParameterSupport.materializePostmanRawUrl(
                 request.url != null ? request.url : "", request.parameters, materializationResolver));
         if (hasQuery) {
             JsonArray query = new JsonArray();

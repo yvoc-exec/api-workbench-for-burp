@@ -2,6 +2,7 @@ package burp.utils;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.exporter.ExportVariableResolutionService;
 import burp.parser.VariableResolver;
 import org.junit.jupiter.api.Test;
 
@@ -119,6 +120,50 @@ class RuntimeResolverFactoryTest {
         );
 
         assertThat(resolver.resolve("{{id}}")).isEqualTo("request");
+    }
+
+    @Test
+    void disabledCollectionAndRequestVariablesDoNotResolveOrAppearInInspection() {
+        ApiCollection collection = new ApiCollection();
+        collection.environment.put("shared", "environment");
+        ApiRequest.Variable disabledCollection = variable("shared", "collection-disabled");
+        disabledCollection.enabled = false;
+        collection.variables.add(disabledCollection);
+        ApiRequest request = new ApiRequest();
+        request.url = "https://example.test/{{shared}}";
+        ApiRequest.Variable disabledRequest = variable("shared", "request-disabled");
+        disabledRequest.enabled = false;
+        request.variables.add(disabledRequest);
+
+        VariableResolver resolver = RuntimeResolverFactory.build(collection, request);
+        RuntimeResolverFactory.ResolutionTrace trace = RuntimeResolverFactory.inspect(
+                collection, request, null, Map.of(), "shared");
+
+        assertThat(resolver.resolve("{{shared}}")).isEqualTo("environment");
+        assertThat(trace.value).isEqualTo("environment");
+        assertThat(trace.candidates).extracting(candidate -> candidate.source)
+                .containsExactly("collection environment");
+    }
+
+    @Test
+    void exportAndRuntimeResolversAgreeThatDisabledVariablesAreAbsent() {
+        ApiCollection collection = new ApiCollection();
+        ApiRequest.Variable disabledCollection = variable("collection_disabled", "secret");
+        disabledCollection.enabled = false;
+        collection.variables.add(disabledCollection);
+        ApiRequest request = new ApiRequest();
+        ApiRequest.Variable disabledRequest = variable("request_disabled", "secret");
+        disabledRequest.enabled = false;
+        request.variables.add(disabledRequest);
+
+        VariableResolver runtime = RuntimeResolverFactory.build(collection, request);
+        VariableResolver export = ExportVariableResolutionService.buildResolver(
+                collection, request, null, Map.of());
+
+        assertThat(runtime.resolve("{{collection_disabled}}/{{request_disabled}}"))
+                .isEqualTo("{{collection_disabled}}/{{request_disabled}}");
+        assertThat(export.resolve("{{collection_disabled}}/{{request_disabled}}"))
+                .isEqualTo("{{collection_disabled}}/{{request_disabled}}");
     }
 
     private static ApiRequest.Variable variable(String key, String value) {
