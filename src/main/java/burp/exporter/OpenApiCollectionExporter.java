@@ -58,6 +58,9 @@ public final class OpenApiCollectionExporter {
             Object externalDocs = OpenApiMetadataSupport.parseCanonicalJson(
                     metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_EXTERNAL_DOCS));
             if (externalDocs instanceof Map<?, ?>) root.put("externalDocs", externalDocs);
+            Object webhooks = OpenApiMetadataSupport.parseCanonicalJson(
+                    metadata(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_WEBHOOKS));
+            if (webhooks instanceof Map<?, ?>) root.put("webhooks", webhooks);
             warnStandardStructures(warnings, collection.sourceMetadata,
                     OpenApiMetadataSupport.DOCUMENT_SWAGGER_STRUCTURES, "document");
         }
@@ -118,7 +121,7 @@ public final class OpenApiCollectionExporter {
                 Map<String, Object> pathStructures = OpenApiMetadataSupport.parseObject(
                         metadata(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_STRUCTURES));
                 for (Map.Entry<String, Object> structure : pathStructures.entrySet()) {
-                    if (Set.of("summary", "description").contains(structure.getKey())) {
+                    if (Set.of("$ref", "summary", "description", "parameters").contains(structure.getKey())) {
                         pathItem.putIfAbsent(structure.getKey(), structure.getValue());
                     }
                 }
@@ -196,9 +199,11 @@ public final class OpenApiCollectionExporter {
             root.put("security", globalSecurity);
         }
         String sourceVersion = collection != null ? metadata(collection.sourceMetadata, OpenApiMetadataSupport.SOURCE_VERSION) : null;
-        boolean openApi31 = (sourceVersion != null && sourceVersion.startsWith("3.1")) || artifactRequires31(root);
+        boolean sourceOpenApi31 = sourceVersion != null && sourceVersion.startsWith("3.1");
+        boolean openApi31 = sourceOpenApi31 || artifactRequires31(root);
         root.put("openapi", openApi31 ? "3.1.0" : "3.0.3");
-        return sanitizeArtifactReferences(normalizeReferenceSiblings(root, openApi31, warnings), warnings);
+        boolean referenceSemantics31 = sourceVersion == null ? openApi31 : sourceOpenApi31;
+        return sanitizeArtifactReferences(normalizeReferenceSiblings(root, referenceSemantics31, warnings), warnings);
     }
 
     public static void writeJson(ApiCollection collection, CollectionExportOptions options, Writer writer, List<String> warnings) throws IOException {
@@ -603,6 +608,9 @@ public final class OpenApiCollectionExporter {
     }
 
     private static boolean artifactRequires31(Map<String, Object> root) {
+        if (root != null && root.containsKey("webhooks")) return true;
+        if (root != null && root.get("components") instanceof Map<?, ?> components
+                && components.containsKey("pathItems")) return true;
         return scanOpenApiFor31(root, false);
     }
 
@@ -668,15 +676,22 @@ public final class OpenApiCollectionExporter {
             Map<String, Object> copy = referenceSiblingSubset(source, openApi31, false, warnings, context);
             Map<String, Object> normalized = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : copy.entrySet()) {
-                if ("schema".equals(entry.getKey())) {
+                String key = entry.getKey();
+                if ("schema".equals(key)) {
                     normalized.put(entry.getKey(), normalizeSchemaNode(entry.getValue(), openApi31, warnings, context + " schema"));
-                } else if ("schemas".equals(entry.getKey()) && entry.getValue() instanceof Map<?, ?> schemas) {
+                } else if ("schemas".equals(key) && entry.getValue() instanceof Map<?, ?> schemas) {
                     Map<String, Object> normalizedSchemas = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> schema : castMap(schemas).entrySet()) {
                         normalizedSchemas.put(schema.getKey(), normalizeSchemaNode(
                                 schema.getValue(), openApi31, warnings, context + " schema"));
                     }
                     normalized.put(entry.getKey(), normalizedSchemas);
+                } else if (Set.of("paths", "pathItems", "webhooks").contains(key)) {
+                    normalized.put(key, normalizePathItemMap(entry.getValue(), openApi31, warnings,
+                            context + " " + safeName(key)));
+                } else if ("callbacks".equals(key)) {
+                    normalized.put(key, normalizeCallbackMap(entry.getValue(), openApi31, warnings,
+                            context + " callbacks"));
                 } else {
                     normalized.put(entry.getKey(), normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
                             context + " " + safeName(entry.getKey())));
@@ -690,6 +705,79 @@ public final class OpenApiCollectionExporter {
             return copy;
         }
         return node;
+    }
+
+    private static Object normalizePathItemMap(Object node,
+                                               boolean openApi31,
+                                               List<String> warnings,
+                                               String context) {
+        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : castMap(raw).entrySet()) {
+            normalized.put(entry.getKey(), entry.getKey().startsWith("x-")
+                    ? normalizeOpenApiNode(entry.getValue(), openApi31, warnings, context)
+                    : normalizePathItemNode(entry.getValue(), openApi31, warnings,
+                            context + " " + safeName(entry.getKey())));
+        }
+        return normalized;
+    }
+
+    private static Object normalizeCallbackMap(Object node,
+                                               boolean openApi31,
+                                               List<String> warnings,
+                                               String context) {
+        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> callback : castMap(raw).entrySet()) {
+            Object value = callback.getValue();
+            if (callback.getKey().startsWith("x-") || !(value instanceof Map<?, ?> callbackRaw)
+                    || callbackRaw.containsKey("$ref")) {
+                normalized.put(callback.getKey(), normalizeOpenApiNode(value, openApi31, warnings,
+                        context + " " + safeName(callback.getKey())));
+                continue;
+            }
+            Map<String, Object> expressions = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> expression : castMap(callbackRaw).entrySet()) {
+                expressions.put(expression.getKey(), expression.getKey().startsWith("x-")
+                        ? normalizeOpenApiNode(expression.getValue(), openApi31, warnings, context)
+                        : normalizePathItemNode(expression.getValue(), openApi31, warnings,
+                                context + " expression"));
+            }
+            normalized.put(callback.getKey(), expressions);
+        }
+        return normalized;
+    }
+
+    private static Object normalizePathItemNode(Object node,
+                                                boolean openApi31,
+                                                List<String> warnings,
+                                                String context) {
+        if (!(node instanceof Map<?, ?> raw)) return normalizeOpenApiNode(node, openApi31, warnings, context);
+        Map<String, Object> source = pathItemSiblingSubset(castMap(raw), warnings, context);
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            normalized.put(entry.getKey(), normalizeOpenApiNode(entry.getValue(), openApi31, warnings,
+                    context + " " + safeName(entry.getKey())));
+        }
+        return normalized;
+    }
+
+    private static Map<String, Object> pathItemSiblingSubset(Map<String, Object> source,
+                                                              List<String> warnings,
+                                                              String context) {
+        if (!source.containsKey("$ref")) return source;
+        Set<String> methods = Set.of("get", "put", "post", "delete", "options", "head", "patch", "trace");
+        Map<String, Object> copy = new LinkedHashMap<>();
+        List<String> ignored = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            String key = entry.getKey();
+            if ("$ref".equals(key) || Set.of("summary", "description", "servers", "parameters").contains(key)
+                    || methods.contains(key) || key.startsWith("x-")) copy.put(key, entry.getValue());
+            else ignored.add(key);
+        }
+        if (!ignored.isEmpty()) addWarning(warnings, "ignored Path Item fields in " + context + ": "
+                + String.join(", ", ignored.stream().map(OpenApiCollectionExporter::safeName).toList()));
+        return copy;
     }
 
     private static Object normalizeSchemaNode(Object node,

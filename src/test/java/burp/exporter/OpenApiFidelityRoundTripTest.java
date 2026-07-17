@@ -430,6 +430,139 @@ class OpenApiFidelityRoundTripTest {
     }
 
     @Test
+    void pathItemReferencesRetainLocalSiblingsAcrossAllSupportedContexts() throws Exception {
+        Path source30 = tempDir.resolve("path-item-30.yaml");
+        Files.writeString(source30, """
+                openapi: 3.0.3
+                info: {title: PathItems, version: '1'}
+                components:
+                  schemas: {Payload: {type: string}}
+                  parameters:
+                    Q: {name: q, in: query, schema: {type: string, default: target}}
+                  requestBodies:
+                    Body: {content: {application/json: {schema: {$ref: '#/components/schemas/Payload'}, example: target}}}
+                  responses:
+                    Common: {description: retained}
+                  pathItems:
+                    Base:
+                      get: {responses: {'200': {$ref: '#/components/responses/Common'}}}
+                    Composite:
+                      $ref: '#/components/pathItems/Base'
+                      post: {responses: {'200': {description: local}}}
+                paths:
+                  /root:
+                    $ref: '#/components/pathItems/Composite'
+                    put:
+                      parameters:
+                        - {$ref: '#/components/parameters/Q', name: ignored, in: header}
+                      requestBody:
+                        $ref: '#/components/requestBodies/Body'
+                        description: ignored
+                        content: {text/plain: {example: ignored}}
+                      callbacks:
+                        done:
+                          '{$request.body#/callback}':
+                            $ref: '#/components/pathItems/Base'
+                            parameters: [{name: callbackId, in: query, schema: {type: string}}]
+                            patch: {responses: {'200': {description: callback-local}}}
+                      responses:
+                        '200':
+                          $ref: '#/components/responses/Common'
+                          description: ignored
+                  /blocked:
+                    $ref: 'https://SECRET-CANARY.invalid/path-item'
+                    post: {responses: {'200': {description: local}}}
+                  /missing:
+                    $ref: '#/components/pathItems/SECRET-CANARY'
+                    delete: {responses: {'200': {description: local}}}
+                """);
+        ApiCollection imported30 = new OpenApiParser().parse(source30.toFile());
+        assertThat(imported30.requests).extracting(r -> r.method + " " + r.path)
+                .containsExactly("PUT /root", "POST /blocked", "DELETE /missing");
+        assertThat(imported30.requests.get(0).parameters).extracting(p -> p.key + ":" + p.location)
+                .contains("q:query");
+        assertThat(imported30.requests.get(0).body.raw).isEqualTo("\"target\"");
+
+        Path nativeFile = tempDir.resolve("path-item-native.json");
+        Files.writeString(nativeFile, new GsonBuilder().create().toJson(ApiWorkbenchCollectionExporter.build(
+                imported30, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>())));
+        ApiCollection nativeRoundTrip = new ApiWorkbenchCollectionParser().parse(nativeFile.toFile());
+        assertThat(nativeRoundTrip.requests.get(0).sourceMetadata.get("openapi.pathItem.structures"))
+                .contains("$ref");
+        assertThat(nativeRoundTrip.sourceMetadata.get("openapi.document.components"))
+                .contains("pathItems", "Composite");
+
+        ArrayList<String> warnings30 = new ArrayList<>();
+        Map<String, Object> exported30 = OpenApiCollectionExporter.build(
+                nativeRoundTrip, options(CollectionExportFormat.OPENAPI_JSON), warnings30);
+        Map<String, Object> paths30 = cast(exported30.get("paths"));
+        assertThat(cast(paths30.get("/root")))
+                .containsEntry("$ref", "#/components/pathItems/Composite")
+                .containsKey("put");
+        assertThat(cast(paths30.get("/blocked"))).doesNotContainKey("$ref").containsKey("post");
+        assertThat(cast(paths30.get("/missing"))).doesNotContainKey("$ref").containsKey("delete");
+        Map<String, Object> componentPathItems = cast(cast(exported30.get("components")).get("pathItems"));
+        assertThat(cast(componentPathItems.get("Composite")))
+                .containsEntry("$ref", "#/components/pathItems/Base")
+                .containsKey("post");
+        Map<String, Object> put = cast(cast(paths30.get("/root")).get("put"));
+        Map<String, Object> callback = cast(cast(cast(put.get("callbacks")).get("done"))
+                .get("{$request.body#/callback}"));
+        assertThat(callback).containsEntry("$ref", "#/components/pathItems/Base")
+                .containsKeys("parameters", "patch");
+        assertThat(cast(cast(put.get("responses")).get("200")))
+                .containsOnly(entry("$ref", "#/components/responses/Common"));
+        assertThat(collectRefs(exported30)).allMatch(ref -> ref.startsWith("#"));
+        assertInternalRefsResolve(exported30);
+        assertThat(warnings30).anyMatch(w -> w.contains("blocked or dangling reference"));
+        assertThat(warnings30).allMatch(w -> !w.contains("SECRET-CANARY")
+                && !w.contains("\r") && !w.contains("\n"));
+
+        Path source31 = tempDir.resolve("path-item-31.yaml");
+        Files.writeString(source31, """
+                openapi: 3.1.0
+                info: {title: Webhooks, version: '1'}
+                components:
+                  pathItems:
+                    Base: {get: {responses: {'200': {description: base}}}}
+                    Composite:
+                      $ref: '#/components/pathItems/Base'
+                      post: {responses: {'200': {description: component-local}}}
+                webhooks:
+                  event:
+                    $ref: '#/components/pathItems/Composite'
+                    trace: {responses: {'200': {description: webhook-local}}}
+                paths:
+                  /root31:
+                    $ref: '#/components/pathItems/Composite'
+                    put:
+                      callbacks:
+                        again:
+                          '{$request.body#/callback}':
+                            $ref: '#/components/pathItems/Base'
+                            head: {responses: {'200': {description: callback-local}}}
+                      responses: {'200': {description: local}}
+                """);
+        ApiCollection imported31 = new OpenApiParser().parse(source31.toFile());
+        Path native31 = tempDir.resolve("path-item-31-native.json");
+        Files.writeString(native31, new GsonBuilder().create().toJson(ApiWorkbenchCollectionExporter.build(
+                imported31, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>())));
+        ApiCollection nativeRoundTrip31 = new ApiWorkbenchCollectionParser().parse(native31.toFile());
+        assertThat(nativeRoundTrip31.sourceMetadata.get("openapi.document.webhooks"))
+                .contains("event", "$ref", "trace");
+        Map<String, Object> exported31 = OpenApiCollectionExporter.build(
+                nativeRoundTrip31, options(CollectionExportFormat.OPENAPI_JSON), new ArrayList<>());
+        Map<String, Object> webhook = cast(cast(exported31.get("webhooks")).get("event"));
+        assertThat(webhook).containsEntry("$ref", "#/components/pathItems/Composite").containsKey("trace");
+        Map<String, Object> root31 = cast(cast(exported31.get("paths")).get("/root31"));
+        assertThat(root31).containsEntry("$ref", "#/components/pathItems/Composite").containsKey("put");
+        Map<String, Object> callback31 = cast(cast(cast(cast(root31.get("put")).get("callbacks")).get("again"))
+                .get("{$request.body#/callback}"));
+        assertThat(callback31).containsEntry("$ref", "#/components/pathItems/Base").containsKey("head");
+        assertInternalRefsResolve(exported31);
+    }
+
+    @Test
     void editedEndpointsOverrideStaleServerAndPathMetadata() throws Exception {
         Path source = tempDir.resolve("edited-endpoints.yaml");
         Files.writeString(source, """

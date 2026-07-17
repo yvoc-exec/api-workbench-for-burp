@@ -53,7 +53,7 @@ public class OpenApiParser implements CollectionParser {
         collection.sourceMetadata.put(OpenApiMetadataSupport.SOURCE_VERSION, sourceVersion);
         putExtensions(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_EXTENSIONS, spec);
         retainUnsupported(collection.sourceMetadata, "openapi.document.unsupported", spec,
-                Set.of("openapi", "swagger", "info", "servers", "host", "basePath", "schemes", "consumes",
+                Set.of("openapi", "swagger", "info", "servers", "webhooks", "host", "basePath", "schemes", "consumes",
                         "produces", "paths", "components", "definitions", "parameters", "responses",
                         "security", "securityDefinitions", "tags", "externalDocs"), warnings, "document");
         if (spec.get("servers") instanceof List<?> servers) {
@@ -62,6 +62,7 @@ public class OpenApiParser implements CollectionParser {
         retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_TAGS, spec, "tags");
         retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_INFO, spec, "info");
         retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_EXTERNAL_DOCS, spec, "externalDocs");
+        retainStandard(collection.sourceMetadata, OpenApiMetadataSupport.DOCUMENT_WEBHOOKS, spec, "webhooks");
         if (spec.get("components") instanceof Map<?, ?> components) {
             OpenApiMetadataSupport.putCanonical(collection.sourceMetadata,
                     OpenApiMetadataSupport.DOCUMENT_COMPONENTS, components);
@@ -130,7 +131,7 @@ public class OpenApiParser implements CollectionParser {
         request.parameters.addAll(RequestParameterSupport.parseQueryParameters(request.url, "openapi:server"));
         putExtensions(request.sourceMetadata, OpenApiMetadataSupport.OPERATION_EXTENSIONS, operation);
         putExtensions(request.sourceMetadata, OpenApiMetadataSupport.PATH_ITEM_EXTENSIONS, pathItem);
-        Map<String, Object> pathStructures = selectedFields(pathItem, Set.of("summary", "description", "$ref"));
+        Map<String, Object> pathStructures = selectedFields(pathItem, Set.of("summary", "description", "$ref", "parameters"));
         if (!pathStructures.isEmpty()) OpenApiMetadataSupport.putCanonical(request.sourceMetadata,
                 OpenApiMetadataSupport.PATH_ITEM_STRUCTURES, pathStructures);
         if (pathItem.get("servers") instanceof List<?> servers) OpenApiMetadataSupport.putCanonical(
