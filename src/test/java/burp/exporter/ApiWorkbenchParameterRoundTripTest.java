@@ -6,7 +6,9 @@ import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.ApiWorkbenchCollectionParser;
 import burp.utils.RequestBuilder;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -26,6 +28,48 @@ class ApiWorkbenchParameterRoundTripTest {
     @Test
     void exporterWritesSchemaVersion2() {
         assertThat(export(request()).get("schemaVersion").getAsInt()).isEqualTo(2);
+    }
+
+    @Test
+    void absentOptionalDescriptionsAndVersionRemainAbsent() throws Exception {
+        for (int schemaVersion : new int[]{1, 2}) {
+            JsonObject first = parseAndExportOptionalFields(schemaVersion, null, false);
+            JsonObject collection = first.getAsJsonObject("collection");
+            JsonObject request = collection.getAsJsonArray("requests").get(0).getAsJsonObject();
+
+            assertThat(collection.has("description")).isFalse();
+            assertThat(collection.has("version")).isFalse();
+            assertThat(request.has("description")).isFalse();
+            assertNativeExportImportExportIdempotent(first);
+        }
+    }
+
+    @Test
+    void explicitEmptyOptionalDescriptionsAndVersionRemainExplicit() throws Exception {
+        for (int schemaVersion : new int[]{1, 2}) {
+            JsonObject first = parseAndExportOptionalFields(schemaVersion, "", true);
+            JsonObject collection = first.getAsJsonObject("collection");
+            JsonObject request = collection.getAsJsonArray("requests").get(0).getAsJsonObject();
+
+            assertThat(collection.get("description").getAsString()).isEmpty();
+            assertThat(collection.get("version").getAsString()).isEmpty();
+            assertThat(request.get("description").getAsString()).isEmpty();
+            assertNativeExportImportExportIdempotent(first);
+        }
+    }
+
+    @Test
+    void nonemptyOptionalDescriptionsAndVersionSurvive() throws Exception {
+        for (int schemaVersion : new int[]{1, 2}) {
+            JsonObject first = parseAndExportOptionalFields(schemaVersion, "retained", true);
+            JsonObject collection = first.getAsJsonObject("collection");
+            JsonObject request = collection.getAsJsonArray("requests").get(0).getAsJsonObject();
+
+            assertThat(collection.get("description").getAsString()).isEqualTo("retained");
+            assertThat(collection.get("version").getAsString()).isEqualTo("retained");
+            assertThat(request.get("description").getAsString()).isEqualTo("retained");
+            assertNativeExportImportExportIdempotent(first);
+        }
     }
 
     @Test
@@ -228,6 +272,55 @@ class ApiWorkbenchParameterRoundTripTest {
         Path file = tempDir.resolve("native.json");
         Files.writeString(file, new GsonBuilder().setPrettyPrinting().create().toJson(export(request)), StandardCharsets.UTF_8);
         return new ApiWorkbenchCollectionParser().parse(file.toFile());
+    }
+
+    private JsonObject parseAndExportOptionalFields(int schemaVersion,
+                                                    String value,
+                                                    boolean declared) throws Exception {
+        JsonObject root = new JsonObject();
+        root.addProperty("format", "api-workbench-collection");
+        root.addProperty("schemaVersion", schemaVersion);
+        JsonObject collection = new JsonObject();
+        collection.addProperty("id", "optional-fields");
+        collection.addProperty("name", "Optional Fields");
+        collection.addProperty("format", "api-workbench");
+        if (declared) {
+            collection.addProperty("description", value);
+            collection.addProperty("version", value);
+        }
+        JsonObject request = new JsonObject();
+        request.addProperty("id", "optional-request");
+        request.addProperty("name", "Optional Request");
+        request.addProperty("method", "GET");
+        request.addProperty("url", "https://example.test/optional");
+        if (declared) {
+            request.addProperty("description", value);
+        }
+        com.google.gson.JsonArray requests = new com.google.gson.JsonArray();
+        requests.add(request);
+        collection.add("requests", requests);
+        root.add("collection", collection);
+
+        Path input = tempDir.resolve("optional-" + schemaVersion + "-" + declared + "-"
+                + (value == null ? "absent" : value.isEmpty() ? "empty" : "value") + ".json");
+        Files.writeString(input, new GsonBuilder().create().toJson(root), StandardCharsets.UTF_8);
+        ApiCollection parsed = new ApiWorkbenchCollectionParser().parse(input.toFile());
+        assertThat(parsed.description).isEqualTo(declared ? value : null);
+        assertThat(parsed.version).isEqualTo(declared ? value : null);
+        assertThat(parsed.requests.get(0).description).isEqualTo(declared ? value : null);
+        return ApiWorkbenchCollectionExporter.build(parsed,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                        null, false, null, Map.of()), new ArrayList<>());
+    }
+
+    private void assertNativeExportImportExportIdempotent(JsonObject first) throws Exception {
+        Path firstFile = tempDir.resolve("first-" + Math.abs(first.hashCode()) + ".json");
+        Files.writeString(firstFile, new GsonBuilder().create().toJson(first), StandardCharsets.UTF_8);
+        ApiCollection reloaded = new ApiWorkbenchCollectionParser().parse(firstFile.toFile());
+        JsonElement second = ApiWorkbenchCollectionExporter.build(reloaded,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                        null, false, null, Map.of()), new ArrayList<>());
+        assertThat(second).isEqualTo(JsonParser.parseString(Files.readString(firstFile)));
     }
 
     private static JsonObject export(ApiRequest request) {

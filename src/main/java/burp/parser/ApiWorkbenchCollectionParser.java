@@ -72,9 +72,9 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         ApiCollection collection = new ApiCollection();
         collection.id = getString(collectionObj, "id", null);
         collection.name = firstNonBlank(getString(collectionObj, "name"), "Untitled Collection");
-        collection.description = getString(collectionObj, "description", "");
+        collection.description = getString(collectionObj, "description", null);
         collection.format = getString(collectionObj, "format", "api-workbench");
-        collection.version = getString(collectionObj, "version", "");
+        collection.version = getString(collectionObj, "version", null);
         collection.sourceMetadata = parseMetadataMap(collectionObj.getAsJsonObject("sourceMetadata"));
         collection.folderPaths = parseStringList(collectionObj.getAsJsonArray("folderPaths"));
         collection.variables = parseVariables(collectionObj.getAsJsonArray("variables"));
@@ -162,7 +162,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.url = getString(obj, "url", "");
             request.sourceMetadata = parseMetadataMap(obj.getAsJsonObject("sourceMetadata"));
             request.parameters = parseParameters(obj.getAsJsonArray("parameters"));
-            request.description = getString(obj, "description", "");
+            request.description = getString(obj, "description", null);
             request.editorMaterialized = getBoolean(obj, "editorMaterialized", false);
             request.buildMode = parseBuildMode(getString(obj, "buildMode", null), request.editorMaterialized);
             request.suppressedAutoHeaders = parseSuppressedHeaders(obj.getAsJsonArray("suppressedAutoHeaders"));
