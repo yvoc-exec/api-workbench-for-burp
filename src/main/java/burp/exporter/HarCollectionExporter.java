@@ -237,41 +237,44 @@ public final class HarCollectionExporter {
         JsonArray headers = new JsonArray();
         if (request != null && request.headers != null) {
             for (ApiRequest.Header header : request.headers) {
-                if (header == null || header.disabled || header.key == null || header.key.isBlank()) {
+                if (header == null || header.disabled) {
                     continue;
                 }
                 String name = resolve(header.key, resolver, resolve);
                 String value = resolve(header.value, resolver, resolve);
-                if (name == null || name.isBlank() || name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0
-                        || (value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0))) {
-                    ExportWarningSupport.add(warnings, "HAR request #" + (index + 1)
-                            + ": unsafe header row was omitted");
+                if (!isSafeHeader(name, value)) {
+                    addUnsafeHeaderWarning(warnings, index);
                     continue;
                 }
                 headers.add(harNameValue(name, value != null ? value : ""));
             }
         }
-        appendParameterHeaders(request, headers, resolver, resolve);
+        appendParameterHeaders(request, headers, resolver, resolve, index, warnings);
         return headers;
     }
 
     private static void appendParameterHeaders(ApiRequest request,
                                                JsonArray headers,
                                                VariableResolver resolver,
-                                               boolean resolve) {
+                                               boolean resolve,
+                                               int index,
+                                               List<String> warnings) {
         if (request == null || request.parameters == null) {
             return;
         }
         VariableResolver activeResolver = resolve ? resolver : null;
         for (ApiRequest.Parameter parameter : request.parameters) {
             if (parameter == null || parameter.disabled
-                    || !RequestParameterSupport.isLocation(parameter, "header")
-                    || parameter.key == null || parameter.key.isBlank()) {
+                    || !RequestParameterSupport.isLocation(parameter, "header")) {
                 continue;
             }
             String name = resolve(parameter.key, resolver, resolve);
             String value = parameter.valuePresent
                     ? RequestParameterSupport.serializeHeaderValue(parameter, activeResolver) : "";
+            if (!isSafeHeader(name, value)) {
+                addUnsafeHeaderWarning(warnings, index);
+                continue;
+            }
             headers.add(harNameValue(name, value));
         }
         List<String> cookieParts = new ArrayList<>();
@@ -284,7 +287,12 @@ public final class HarCollectionExporter {
             cookieParts.addAll(RequestParameterSupport.serializeCookieParts(parameter, activeResolver));
         }
         if (!cookieParts.isEmpty()) {
-            headers.add(harNameValue("Cookie", String.join("; ", cookieParts)));
+            String joinedValue = String.join("; ", cookieParts);
+            if (isSafeHeader("Cookie", joinedValue)) {
+                headers.add(harNameValue("Cookie", joinedValue));
+            } else {
+                addUnsafeHeaderWarning(warnings, index);
+            }
         }
     }
 
@@ -649,6 +657,43 @@ public final class HarCollectionExporter {
             }
         }
         return false;
+    }
+
+    private static boolean isSafeHeader(String name,
+                                        String value) {
+        return name != null
+                && !name.isBlank()
+                && isHttpToken(name)
+                && !containsLineBreak(name)
+                && !containsLineBreak(value);
+    }
+
+    private static boolean isHttpToken(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            boolean token = (ch >= '0' && ch <= '9')
+                    || (ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z')
+                    || ch == '!' || ch == '#' || ch == '$' || ch == '%' || ch == '&'
+                    || ch == '\'' || ch == '*' || ch == '+' || ch == '-' || ch == '.'
+                    || ch == '^' || ch == '_' || ch == '`' || ch == '|' || ch == '~';
+            if (!token) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean containsLineBreak(String value) {
+        return value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0);
+    }
+
+    private static void addUnsafeHeaderWarning(List<String> warnings, int index) {
+        ExportWarningSupport.add(warnings, "HAR request #" + (index + 1)
+                + ": unsafe header row was omitted");
     }
 
     private static JsonObject harNameValue(String name, String value) {

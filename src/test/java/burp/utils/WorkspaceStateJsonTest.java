@@ -535,6 +535,55 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void restoresPreWave4ExactFingerprintWithoutFalseInvalidation() {
+        byte[] raw = "GET /legacy HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .getBytes(StandardCharsets.UTF_8);
+        ApiRequest request = new ApiRequest();
+        request.id = "legacy-exact";
+        request.name = "Legacy exact";
+        request.method = "GET";
+        request.url = "https://example.test/legacy";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = raw.clone();
+        request.exactHttpRequest.serviceHost = "example.test";
+        request.exactHttpRequest.servicePort = 443;
+        request.exactHttpRequest.secure = true;
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.httpVersion = null;
+        request.exactHttpRequest.semanticFingerprint = request.computeLegacySemanticFingerprintV1();
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Legacy workspace";
+        collection.requests.add(request);
+        WorkspaceState state = WorkspaceState.fromCollections(List.of(collection));
+
+        String oldShape = burp.history.HistoryJsonSupport.createGson().toJson(state);
+        assertThat(JsonParser.parseString(oldShape).getAsJsonObject()
+                .getAsJsonArray("collections").get(0).getAsJsonObject()
+                .getAsJsonArray("requests").get(0).getAsJsonObject()
+                .getAsJsonObject("exactHttpRequest").has("httpVersion")).isFalse();
+
+        WorkspaceState restoredState = WorkspaceStateJson.fromJson(oldShape);
+        ApiRequest restored = restoredState.collections.get(0).requests.get(0);
+        assertThat(restored.exactHttpRequest.httpVersion).isEqualTo("HTTP/1.1");
+        assertThat(restored.exactHttpRequest.semanticFingerprint)
+                .isEqualTo(restored.computeSemanticFingerprint());
+        assertThat(restored.exactHttpRequest.pristine).isTrue();
+        assertThat(restored.exactHttpRequest.invalidationReason == null
+                || restored.exactHttpRequest.invalidationReason.isBlank()).isTrue();
+        assertThat(restored.exactHttpRequest.rawRequestBytes).isEqualTo(raw);
+
+        WorkspaceState restoredAgain = WorkspaceStateJson.fromJson(
+                WorkspaceStateJson.toJson(restoredState));
+        ApiRequest idempotent = restoredAgain.collections.get(0).requests.get(0);
+        assertThat(idempotent.exactHttpRequest.semanticFingerprint)
+                .isEqualTo(restored.exactHttpRequest.semanticFingerprint);
+        assertThat(idempotent.exactHttpRequest.httpVersion).isEqualTo("HTTP/1.1");
+        assertThat(idempotent.exactHttpRequest.pristine).isTrue();
+        assertThat(idempotent.exactHttpRequest.rawRequestBytes).isEqualTo(raw);
+    }
+
+    @Test
     void legacyWorkspaceDefaultsBuildModeAndSuppressedAutoHeadersSafely() {
         String json = """
                 {

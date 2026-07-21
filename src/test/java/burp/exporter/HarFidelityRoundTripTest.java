@@ -186,6 +186,70 @@ class HarFidelityRoundTripTest {
                 .isEqualTo(builder.buildRequest(imported.requests.get(0), null));
     }
 
+    @Test
+    void unsafeHeaderParametersAreOmittedFromRebuiltHar() {
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = new ApiRequest();
+        request.method = "GET";
+        request.url = "https://example.test/p";
+        request.parameters.add(new ApiRequest.Parameter("header", "X-Safe", "ok"));
+        request.parameters.add(new ApiRequest.Parameter("header", "Bad Header", "bad"));
+        request.parameters.add(new ApiRequest.Parameter("header", "X-Break", "CANARY-HEADER\r\nInjected: yes"));
+        request.parameters.add(new ApiRequest.Parameter("cookie", "safe", "one"));
+        request.parameters.add(new ApiRequest.Parameter("cookie", "bad", "CANARY-COOKIE\r\nInjected: yes"));
+        collection.requests.add(request);
+
+        ArrayList<String> warnings = new ArrayList<>();
+        JsonObject exported = firstRequest(HarCollectionExporter.build(
+                collection, harOptions(false), warnings));
+        JsonArray headers = exported.getAsJsonArray("headers");
+        assertThat(headers).extracting(e -> e.getAsJsonObject().get("name").getAsString())
+                .contains("X-Safe", "Host")
+                .doesNotContain("Bad Header", "X-Break", "Cookie");
+        assertThat(warnings).containsExactly("HAR request #1: unsafe header row was omitted");
+        assertThat(warnings).allSatisfy(w -> assertThat(w)
+                .doesNotContain("CANARY", "Bad Header", "\r", "\n"));
+    }
+
+    @Test
+    void unsafeExplicitHeaderTokenIsOmittedFromRebuiltHar() {
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = new ApiRequest();
+        request.method = "GET";
+        request.url = "https://example.test/p";
+        request.headers.add(new ApiRequest.Header("Bad Header", "CANARY"));
+        collection.requests.add(request);
+        ArrayList<String> warnings = new ArrayList<>();
+
+        JsonObject exported = firstRequest(HarCollectionExporter.build(
+                collection, harOptions(false), warnings));
+
+        assertThat(exported.getAsJsonArray("headers")).extracting(e ->
+                e.getAsJsonObject().get("name").getAsString()).doesNotContain("Bad Header");
+        assertThat(warnings).containsExactly("HAR request #1: unsafe header row was omitted");
+        assertThat(warnings.get(0)).doesNotContain("Bad Header", "CANARY");
+    }
+
+    @Test
+    void structuredCookieHarImportBuildsRuntimeCookieAfterNativeReload() throws Exception {
+        ApiCollection imported = importHar("""
+                {"log":{"version":"1.2","entries":[{"request":{"method":"GET","url":"https://example.test/p","httpVersion":"HTTP/1.1",
+                "headers":[{"name":"Host","value":"example.test"}],"cookies":[{"name":"a","value":"1"},{"name":"a","value":"2"}]},"response":{"status":200}}]}}
+                """);
+        Path nativeFile = tempDir.resolve("structured-cookies.api-workbench.json");
+        new CollectionExportService().exportCollection(imported,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                        nativeFile, false, null, Map.of()));
+        ApiCollection restored = new ApiWorkbenchCollectionParser().parse(nativeFile.toFile());
+        ApiRequest request = restored.requests.get(0);
+        String raw = new String(new RequestBuilder(null).buildRequest(request, null), StandardCharsets.UTF_8);
+
+        assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(request.exactHttpRequest).isNull();
+        assertThat(count(raw, "Cookie:")).isOne();
+        assertThat(raw).contains("Cookie: a=1; a=2");
+    }
+
     private ApiCollection importHar(String json) throws Exception {
         Path file = tempDir.resolve("source-" + System.nanoTime() + ".har");
         Files.writeString(file, json, StandardCharsets.UTF_8);
@@ -227,7 +291,7 @@ class HarFidelityRoundTripTest {
                 "browser":{"name":"Test","version":"9"},"pages":[{"id":"page-1"}],"comment":"log-comment","vendorLog":true,
                 "entries":[{"startedDateTime":"2020-01-01T00:00:00Z","time":12,"pageref":"page-1","serverIPAddress":"127.0.0.1","connection":"7","comment":"entry-comment","vendorEntry":{"a":1},
                 "request":{"method":"POST","url":"https://example.test/p?a=one&a=two","httpVersion":"HTTP/1.0",
-                "headers":[{"name":"Host","value":"example.test"},{"name":"X-Dupe","value":"1"},{"name":"X-Dupe","value":"2"},{"name":"Content-Type","value":"application/json"}],
+                "headers":[{"name":"Host","value":"example.test"},{"name":"X-Dupe","value":"1"},{"name":"X-Dupe","value":"2"},{"name":"Content-Type","value":"application/json"},{"name":"Content-Length","value":"11"}],
                 "queryString":[{"name":"a","value":"one","comment":"first"},{"name":"a","value":"two"}],"cookies":[],
                 "postData":{"mimeType":"application/json","text":"{\\"ok\\":true}","vendorPost":1},"headersSize":99,"bodySize":11,"comment":"request-comment","vendorRequest":true},
                 "response":{"status":201,"statusText":"Created","httpVersion":"HTTP/1.1","headers":[],"cookies":[],"content":{"size":2,"mimeType":"text/plain","text":"ok"},"redirectURL":"","headersSize":10,"bodySize":2,"vendorResponse":true},

@@ -22,7 +22,7 @@ class HarParserFidelityTest {
     void importsOrderedQueryHeadersCookiesBodyAndHttp10Snapshot() throws Exception {
         ApiCollection collection = parse("ordered.har", """
                 {"request":{"method":"POST","url":"https://example.test:8443/p?a=one&a=two%20words&flag",
-                "httpVersion":"HTTP/1.0","headers":[{"name":"X-Dupe","value":"1"},{"name":"X-Dupe","value":"2"},{"name":"Cookie","value":"sid=x; theme=dark"}],
+                "httpVersion":"HTTP/1.0","headers":[{"name":"Host","value":"example.test:8443"},{"name":"X-Dupe","value":"1"},{"name":"X-Dupe","value":"2"},{"name":"Cookie","value":"sid=x; theme=dark"},{"name":"Content-Length","value":"11"}],
                 "queryString":[{"name":"a","value":"one"},{"name":"a","value":"two words"},{"name":"flag"}],
                 "cookies":[{"name":"sid","value":"x"},{"name":"theme","value":"dark"}],
                 "postData":{"mimeType":"application/json","text":"{\\"ok\\":true}"},"bodySize":11},"response":{"status":204}}
@@ -32,7 +32,7 @@ class HarParserFidelityTest {
         assertThat(request.parameters).extracting(p -> p.key).containsExactly("a", "a", "flag");
         assertThat(request.parameters.get(1).rawValue).isEqualTo("two%20words");
         assertThat(request.parameters).noneMatch(p -> "cookie".equals(p.location));
-        assertThat(request.headers).extracting(h -> h.key).containsExactly("X-Dupe", "X-Dupe", "Cookie");
+        assertThat(request.headers).extracting(h -> h.key).containsExactly("Host", "X-Dupe", "X-Dupe", "Cookie", "Content-Length");
         assertThat(request.body.mode).isEqualTo("raw");
         assertThat(request.exactHttpRequest).isNotNull();
         String raw = new String(request.exactHttpRequest.rawRequestBytes, StandardCharsets.UTF_8);
@@ -104,7 +104,7 @@ class HarParserFidelityTest {
     @Test
     void textWinsWhenTextAndParamsAreBothPresent() throws Exception {
         ApiCollection collection = parse("both.har", """
-                {"request":{"method":"POST","url":"https://example.test/p","httpVersion":"HTTP/1.1","headers":[],
+                {"request":{"method":"POST","url":"https://example.test/p","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"13"}],
                 "postData":{"mimeType":"text/plain","text":"authoritative","params":[{"name":"ignored","value":"x"}]}},"response":{"status":200}}
                 """);
         assertThat(collection.requests.get(0).body.raw).isEqualTo("authoritative");
@@ -147,6 +147,128 @@ class HarParserFidelityTest {
         JsonObject original = HarMetadataSupport.parseObject(request.sourceMetadata.get(HarMetadataSupport.ENTRY_ORIGINAL));
         assertThat(original.toString()).contains("CANARY");
         assertThat(collection.importWarnings).allSatisfy(w -> assertThat(w).doesNotContain("CANARY", "Injected", "\r", "\n"));
+    }
+
+    @Test
+    void structuredCookiesWithoutCookieHeaderRemainAutoCompatibleAndAreSent() throws Exception {
+        ApiCollection collection = parse("structured-cookies.har", """
+                {"request":{"method":"GET","url":"https://example.test/p","httpVersion":"HTTP/1.1",
+                "headers":[{"name":"Host","value":"example.test"}],
+                "cookies":[{"name":"session","value":"secret-one"},{"name":"session","value":"secret-two"}]},"response":{"status":200}}
+                """);
+        ApiRequest request = collection.requests.get(0);
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("session", "session");
+        assertThat(request.exactHttpRequest).isNull();
+        assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        String raw = new String(new RequestBuilder(null).buildRequest(request, null), StandardCharsets.UTF_8);
+        assertThat(count(raw, "Cookie:")).isOne();
+        assertThat(raw).contains("Cookie: session=secret-one; session=secret-two");
+        assertThat(collection.importWarnings).anyMatch(w -> w.contains(
+                "structured cookies were not represented by explicit Cookie headers"));
+        assertThat(collection.importWarnings).allSatisfy(w -> assertThat(w)
+                .doesNotContain("session", "secret-one", "secret-two"));
+    }
+
+    @Test
+    void matchingExplicitCookieHeaderMayRemainExact() throws Exception {
+        ApiRequest request = parse("explicit-cookie.har", """
+                {"request":{"method":"GET","url":"https://example.test/p","httpVersion":"HTTP/1.1",
+                "headers":[{"name":"Host","value":"example.test"},{"name":"Cookie","value":"a=1; a=2"}],
+                "cookies":[{"name":"a","value":"1"},{"name":"a","value":"2"}]},"response":{"status":200}}
+                """).requests.get(0);
+        assertThat(request.parameters).noneMatch(p -> "cookie".equalsIgnoreCase(p.location));
+        assertThat(request.exactHttpRequest).isNotNull();
+        String snapshot = new String(request.exactHttpRequest.rawRequestBytes, StandardCharsets.UTF_8);
+        assertThat(count(snapshot, "Cookie: a=1; a=2")).isOne();
+        String built = new String(new RequestBuilder(null).buildRequest(request, null), StandardCharsets.UTF_8);
+        assertThat(count(built, "Cookie: a=1; a=2")).isOne();
+    }
+
+    @Test
+    void http11WithoutSingleHostDoesNotClaimExactSnapshot() throws Exception {
+        ApiCollection collection = parse("hosts.har", """
+                {"request":{"method":"GET","url":"https://example.test/no-host","httpVersion":"HTTP/1.1","headers":[]},"response":{"status":200}},
+                {"request":{"method":"GET","url":"https://example.test/blank-host","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":" "}]},"response":{"status":200}},
+                {"request":{"method":"GET","url":"https://example.test/duplicate-host","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"one"},{"name":"Host","value":"two"}]},"response":{"status":200}}
+                """);
+        assertThat(collection.requests).allSatisfy(request -> {
+            assertThat(request.exactHttpRequest).isNull();
+            assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        });
+        assertThat(collection.importWarnings).hasSize(3).allMatch(w ->
+                w.contains("HTTP/1.1 Host header was missing or ambiguous"));
+        String built = new String(new RequestBuilder(null).buildRequest(collection.requests.get(0), null), StandardCharsets.UTF_8);
+        assertThat(built).contains("Host: example.test");
+    }
+
+    @Test
+    void nonEmptyBodyRequiresMatchingContentLengthForExactSnapshot() throws Exception {
+        ApiCollection collection = parse("lengths.har", """
+                {"request":{"method":"POST","url":"https://example.test/missing","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}},
+                {"request":{"method":"POST","url":"https://example.test/mismatch","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"3"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}},
+                {"request":{"method":"POST","url":"https://example.test/malformed","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"+4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}},
+                {"request":{"method":"POST","url":"https://example.test/correct","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}}
+                """);
+        assertThat(collection.requests.subList(0, 3)).allSatisfy(r -> assertThat(r.exactHttpRequest).isNull());
+        ApiRequest exact = collection.requests.get(3);
+        assertThat(exact.exactHttpRequest).isNotNull();
+        assertThat(new String(exact.exactHttpRequest.rawRequestBytes, StandardCharsets.UTF_8)).endsWith("\r\n\r\nbody");
+        assertThat(collection.importWarnings).allSatisfy(w -> assertThat(w).doesNotContain("+4", "\r", "\n"));
+    }
+
+    @Test
+    void transferEncodingPreventsExactSnapshot() throws Exception {
+        ApiCollection collection = parse("transfer.har", """
+                {"request":{"method":"POST","url":"https://example.test/p","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Transfer-Encoding","value":"chunked"},{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}}
+                """);
+        assertThat(collection.requests.get(0).exactHttpRequest).isNull();
+        assertThat(collection.requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        assertThat(collection.importWarnings).anyMatch(w -> w.contains("Transfer-Encoding prevented exact body reconstruction"));
+    }
+
+    @Test
+    void duplicateAndOverflowingContentLengthPreventExactSnapshot() throws Exception {
+        ApiCollection collection = parse("ambiguous-lengths.har", """
+                {"request":{"method":"POST","url":"https://example.test/duplicate","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"4"},{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}},
+                {"request":{"method":"POST","url":"https://example.test/overflow","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Length","value":"999999999999999999999999"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}}
+                """);
+        assertThat(collection.requests).allSatisfy(request -> {
+            assertThat(request.exactHttpRequest).isNull();
+            assertThat(request.buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
+        });
+        assertThat(collection.importWarnings).hasSize(2).allMatch(w ->
+                w.contains("request body framing was missing or inconsistent"));
+    }
+
+    @Test
+    void encodedBodyPreventsExactSnapshotUnlessIdentity() throws Exception {
+        ApiCollection collection = parse("encoding.har", """
+                {"request":{"method":"POST","url":"https://example.test/gzip","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Encoding","value":"gzip"},{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}},
+                {"request":{"method":"POST","url":"https://example.test/identity","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"},{"name":"Content-Encoding","value":"identity"},{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}}
+                """);
+        assertThat(collection.requests.get(0).exactHttpRequest).isNull();
+        assertThat(collection.requests.get(1).exactHttpRequest).isNotNull();
+        assertThat(collection.importWarnings).anyMatch(w -> w.contains("Content-Encoding prevented exact body reconstruction"));
+    }
+
+    @Test
+    void http10MayRemainExactWithoutHostWhenFramingIsValid() throws Exception {
+        ApiRequest request = parse("http10.har", """
+                {"request":{"method":"POST","url":"http://example.test/p","httpVersion":"HTTP/1.0","headers":[{"name":"Content-Length","value":"4"}],"postData":{"mimeType":"text/plain","text":"body"}},"response":{"status":200}}
+                """).requests.get(0);
+        assertThat(request.exactHttpRequest).isNotNull();
+        assertThat(new String(request.exactHttpRequest.rawRequestBytes, StandardCharsets.UTF_8))
+                .startsWith("POST /p HTTP/1.0\r\n").endsWith("\r\n\r\nbody");
+    }
+
+    @Test
+    void emptyStructuredQueryArrayDoesNotWarn() throws Exception {
+        ApiCollection collection = parse("empty-query.har", """
+                {"request":{"method":"GET","url":"https://example.test/path","httpVersion":"HTTP/1.1","headers":[{"name":"Host","value":"example.test"}],"queryString":[]},"response":{"status":200}}
+                """);
+        assertThat(collection.requests.get(0).parameters).noneMatch(ApiRequest.Parameter::isQuery);
+        assertThat(collection.importWarnings).noneMatch(w ->
+                w.contains("URL had no query") || w.contains("queryString did not match"));
     }
 
     private ApiCollection parse(String name, String entries) throws Exception {

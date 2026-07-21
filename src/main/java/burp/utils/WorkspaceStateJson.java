@@ -320,6 +320,8 @@ public final class WorkspaceStateJson {
         }
         request.normalizeSuppressedAutoHeaders();
         removeSuppressedAutoHeadersFromRequest(request);
+        ExactHttpRequestSnapshotMigrationSupport
+                .migrateLegacySemanticFingerprint(request);
     }
 
     private static void removeSuppressedAutoHeadersFromRequest(ApiRequest request) {

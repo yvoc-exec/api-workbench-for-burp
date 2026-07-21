@@ -209,15 +209,25 @@ public class ApiRequest {
     }
 
     public String computeSemanticFingerprint() {
+        return computeSemanticFingerprint(true);
+    }
+
+    public String computeLegacySemanticFingerprintV1() {
+        return computeSemanticFingerprint(false);
+    }
+
+    private String computeSemanticFingerprint(boolean includeExactHttpVersion) {
         StringBuilder canonical = new StringBuilder();
         canonical.append(method != null ? method : "").append('\n');
         canonical.append(url != null ? url : "").append('\n');
         appendParameters(canonical, parameters);
         canonical.append(description != null ? description : "").append('\n');
         canonical.append(buildMode != null ? buildMode.name() : "").append('\n');
-        canonical.append(exactHttpRequest != null && exactHttpRequest.httpVersion != null
-                ? exactHttpRequest.httpVersion
-                : "").append('\n');
+        if (includeExactHttpVersion) {
+            canonical.append(exactHttpRequest != null && exactHttpRequest.httpVersion != null
+                    ? exactHttpRequest.httpVersion
+                    : "").append('\n');
+        }
         canonical.append(authOverrideMode != null ? authOverrideMode : "").append('\n');
         appendHeaders(canonical, headers);
         appendBody(canonical, body);

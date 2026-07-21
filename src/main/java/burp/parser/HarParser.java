@@ -200,13 +200,14 @@ public class HarParser implements CollectionParser {
         List<ApiRequest.Parameter> urlRows = RequestParameterSupport.parseQueryParameters(
                 transportUrl, "har:request.url");
         boolean urlHasQuery = transportUrl.indexOf('?') >= 0;
-        boolean structuredPresent = request.has("queryString")
+        boolean structuredArrayPresent = request.has("queryString")
                 && request.get("queryString").isJsonArray();
-        List<ApiRequest.Parameter> structured = structuredPresent
+        List<ApiRequest.Parameter> structured = structuredArrayPresent
                 ? parseQueryRows(request.getAsJsonArray("queryString"), collection, label)
                 : new ArrayList<>();
+        boolean structuredRowsPresent = !structured.isEmpty();
 
-        if (urlHasQuery && structuredPresent && queryEquivalent(urlRows, structured)) {
+        if (urlHasQuery && structuredArrayPresent && queryEquivalent(urlRows, structured)) {
             for (int index = 0; index < structured.size(); index++) {
                 ApiRequest.Parameter fromUrl = urlRows.get(index);
                 ApiRequest.Parameter row = structured.get(index);
@@ -217,11 +218,11 @@ public class HarParser implements CollectionParser {
             target.parameters.addAll(structured);
         } else if (urlHasQuery) {
             target.parameters.addAll(urlRows);
-            if (structuredPresent) {
+            if (structuredArrayPresent) {
                 addWarning(collection, label,
                         "queryString did not match the URL query; URL query was used");
             }
-        } else if (structuredPresent) {
+        } else if (structuredRowsPresent) {
             target.parameters.addAll(structured);
             addWarning(collection, label,
                     "queryString was present while the URL had no query");
@@ -399,6 +400,32 @@ public class HarParser implements CollectionParser {
         if (!isHttpToken(request.method) || !headers.complete() || !body.exactBodyAvailable()) {
             return null;
         }
+        byte[] bodyBytes = body.exactBodyBytes() != null ? body.exactBodyBytes() : new byte[0];
+        if (hasCanonicalCookieParameters(request)) {
+            addWarning(collection, label,
+                    "structured cookies were not represented by explicit Cookie headers");
+            return null;
+        }
+        if ("HTTP/1.1".equals(normalizedVersion) && !hasValidHttp11Host(request.headers)) {
+            addWarning(collection, label,
+                    "HTTP/1.1 Host header was missing or ambiguous");
+            return null;
+        }
+        if (hasTransferEncoding(request.headers)) {
+            addWarning(collection, label,
+                    "Transfer-Encoding prevented exact body reconstruction");
+            return null;
+        }
+        if (hasUnsupportedContentEncoding(request.headers, bodyBytes.length)) {
+            addWarning(collection, label,
+                    "Content-Encoding prevented exact body reconstruction");
+            return null;
+        }
+        if (!hasConsistentContentLength(request.headers, bodyBytes.length)) {
+            addWarning(collection, label,
+                    "request body framing was missing or inconsistent");
+            return null;
+        }
         try {
             HttpUtils.ParsedTarget parsed = HttpUtils.parseTargetForRequest(transportUrl);
             String canonicalTransportUrl = RequestParameterSupport.materializeRequestUrl(
@@ -416,7 +443,6 @@ public class HarParser implements CollectionParser {
             }
             raw.append("\r\n");
             byte[] head = raw.toString().getBytes(StandardCharsets.UTF_8);
-            byte[] bodyBytes = body.exactBodyBytes() != null ? body.exactBodyBytes() : new byte[0];
             byte[] bytes = new byte[head.length + bodyBytes.length];
             System.arraycopy(head, 0, bytes, 0, head.length);
             System.arraycopy(bodyBytes, 0, bytes, head.length, bodyBytes.length);
@@ -434,6 +460,100 @@ public class HarParser implements CollectionParser {
         } catch (RuntimeException ignored) {
             addWarning(collection, label,
                     "request URL could not be represented as an exact textual request");
+            return null;
+        }
+    }
+
+    private boolean hasCanonicalCookieParameters(ApiRequest request) {
+        if (request == null || request.parameters == null) {
+            return false;
+        }
+        for (ApiRequest.Parameter parameter : request.parameters) {
+            if (parameter != null && !parameter.disabled
+                    && RequestParameterSupport.isLocation(parameter, "cookie")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<ApiRequest.Header> headersNamed(
+            List<ApiRequest.Header> headers,
+            String name) {
+        List<ApiRequest.Header> matches = new ArrayList<>();
+        if (headers == null || name == null) {
+            return matches;
+        }
+        for (ApiRequest.Header header : headers) {
+            if (header != null && name.equalsIgnoreCase(header.key)) {
+                matches.add(header);
+            }
+        }
+        return matches;
+    }
+
+    private static boolean hasValidHttp11Host(
+            List<ApiRequest.Header> headers) {
+        List<ApiRequest.Header> hosts = headersNamed(headers, "Host");
+        return hosts.size() == 1
+                && hosts.get(0).value != null
+                && !hosts.get(0).value.trim().isEmpty();
+    }
+
+    private static boolean hasTransferEncoding(
+            List<ApiRequest.Header> headers) {
+        return !headersNamed(headers, "Transfer-Encoding").isEmpty();
+    }
+
+    private static boolean hasUnsupportedContentEncoding(
+            List<ApiRequest.Header> headers,
+            int bodyLength) {
+        if (bodyLength == 0) {
+            return false;
+        }
+        for (ApiRequest.Header header : headersNamed(headers, "Content-Encoding")) {
+            String value = header.value != null ? header.value : "";
+            for (String token : value.split(",", -1)) {
+                String candidate = token.trim();
+                if (!candidate.isEmpty() && !"identity".equalsIgnoreCase(candidate)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasConsistentContentLength(
+            List<ApiRequest.Header> headers,
+            int bodyLength) {
+        List<ApiRequest.Header> lengths = headersNamed(headers, "Content-Length");
+        if (lengths.size() > 1) {
+            return false;
+        }
+        if (lengths.isEmpty()) {
+            return bodyLength == 0;
+        }
+        Long parsed = parseContentLength(lengths.get(0).value);
+        return parsed != null && parsed == bodyLength;
+    }
+
+    private static Long parseContentLength(String value) {
+        if (value == null) {
+            return null;
+        }
+        String candidate = value.trim();
+        if (candidate.isEmpty()) {
+            return null;
+        }
+        for (int index = 0; index < candidate.length(); index++) {
+            char ch = candidate.charAt(index);
+            if (ch < '0' || ch > '9') {
+                return null;
+            }
+        }
+        try {
+            return Long.parseLong(candidate);
+        } catch (NumberFormatException ignored) {
             return null;
         }
     }

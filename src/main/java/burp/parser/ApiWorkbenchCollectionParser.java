@@ -5,6 +5,7 @@ import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.utils.AuthInheritanceResolver;
+import burp.utils.ExactHttpRequestSnapshotMigrationSupport;
 import burp.utils.RequestPathResolver;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -91,6 +92,10 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             if (entry.getKey() != null && entry.getValue() != null) {
                 entry.getKey().authSource = entry.getValue();
             }
+        }
+        for (ApiRequest request : collection.requests) {
+            ExactHttpRequestSnapshotMigrationSupport
+                    .migrateLegacySemanticFingerprint(request);
         }
         collection.ensureId();
         return collection;
