@@ -15,10 +15,12 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 final class RequestEditorBodyFieldDetailsPanel extends JPanel {
     private final JTable table;
     private final DefaultTableModel model;
+    private final Supplier<String> bodyModeSupplier;
 
     private final JTextField valueKindField = new JTextField();
     private final JCheckBox requiredBox = new JCheckBox();
@@ -32,10 +34,14 @@ final class RequestEditorBodyFieldDetailsPanel extends JPanel {
 
     private boolean refreshing;
 
-    RequestEditorBodyFieldDetailsPanel(JTable table, DefaultTableModel model) {
+    RequestEditorBodyFieldDetailsPanel(
+            JTable table,
+            DefaultTableModel model,
+            Supplier<String> bodyModeSupplier) {
         super(new GridBagLayout());
         this.table = table;
         this.model = model;
+        this.bodyModeSupplier = bodyModeSupplier;
         setBorder(BorderFactory.createTitledBorder("Selected Body Field Details"));
         valueKindField.setEditable(false);
         sourceField.setEditable(false);
@@ -155,11 +161,16 @@ final class RequestEditorBodyFieldDetailsPanel extends JPanel {
     }
 
     private String valueKindForRow(int modelRow) {
+        boolean multipart = "formdata".equals(bodyModeSupplier.get());
         RequestEditorStateMapper.BodyFieldState state =
                 RequestEditorStateMapper.resolveBodyFieldState(
                         model,
                         modelRow,
-                        true);
+                        multipart);
+
+        if (!multipart) {
+            return "Text field — Value is serialized as text.";
+        }
 
         if (state.usesLocalFile()) {
             return "Local file path — request bytes are read from this machine.";

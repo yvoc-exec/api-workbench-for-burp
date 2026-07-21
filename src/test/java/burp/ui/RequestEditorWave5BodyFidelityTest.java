@@ -274,10 +274,16 @@ class RequestEditorWave5BodyFidelityTest {
         ApiRequest built = onEdt(() -> {
             RequestEditorPanel panel = new RequestEditorPanel();
             panel.loadRequest(request);
-            DefaultTableModel model = (DefaultTableModel) bodyTable(panel).getModel();
+            JTable table = bodyTable(panel);
+            DefaultTableModel model = (DefaultTableModel) table.getModel();
             model.setValueAt("file", 0, RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN);
             model.setValueAt("uploads/payload.bin", 0,
                     RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN);
+            table.setRowSelectionInterval(0, 0);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Text field — Value is serialized as text.");
             return panel.buildRequestFromUI();
         });
 
@@ -286,6 +292,39 @@ class RequestEditorWave5BodyFidelityTest {
         assertThat(rebuilt.fileUpload).isFalse();
         assertThat(rebuilt.filePath).isNull();
         assertThat(rebuilt.value).isEqualTo("retained text");
+        String raw = new String(new RequestBuilder(null).buildRequest(built, null),
+                StandardCharsets.UTF_8);
+        assertThat(raw).contains("field=retained+text")
+                .doesNotContain("uploads/payload.bin");
+    }
+
+    @Test
+    void unchangedUnusualUrlEncodedFileMetadataStillDisplaysTextRuntimeState() throws Exception {
+        ApiRequest.Body.FormField unusual =
+                field("field", "retained unusual text", "custom-file-type", true,
+                        "C:\\not-read\\payload.bin", 1);
+        unusual.sourceMetadata.put("retained.fileName", "payload.bin");
+        ApiRequest request = requestWithField("urlencoded", unusual);
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            JTable table = bodyTable(panel);
+            table.setRowSelectionInterval(0, 0);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Text field — Value is serialized as text.");
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.urlencoded.get(0);
+        assertThat(rebuilt).usingRecursiveComparison().isEqualTo(unusual);
+        assertThat(rebuilt.sourceMetadata).containsEntry("retained.fileName", "payload.bin");
+        String raw = new String(new RequestBuilder(null).buildRequest(built, null),
+                StandardCharsets.UTF_8);
+        assertThat(raw).contains("field=retained+unusual+text")
+                .doesNotContain("C:\\not-read\\payload.bin");
     }
 
     private static ApiRequest noOp(ApiRequest request) throws Exception {

@@ -54,10 +54,13 @@ final class RequestEditorBodySupport {
             }
         };
         final javax.swing.JTable bodyFormTable = RequestEditorTableSupport.createEditableTable(bodyFormModel);
-        final RequestEditorBodyFieldDetailsPanel bodyFieldDetailsPanel =
-                new RequestEditorBodyFieldDetailsPanel(bodyFormTable, bodyFormModel);
-        final Runnable refreshResolvedMirror;
         String bodyModeInternal = "none";
+        final RequestEditorBodyFieldDetailsPanel bodyFieldDetailsPanel =
+                new RequestEditorBodyFieldDetailsPanel(
+                        bodyFormTable,
+                        bodyFormModel,
+                        this::getBodyModeInternal);
+        final Runnable refreshResolvedMirror;
 
         BodyUi(Runnable refreshResolvedMirror) {
             this.refreshResolvedMirror = refreshResolvedMirror;
