@@ -1475,10 +1475,6 @@ public class RequestEditorPanel extends JPanel {
             }
             return;
         }
-        if (currentRequest == null) {
-            headersTable.setToolTipText(null);
-            return;
-        }
         HeaderVariableHover hover = resolveHeaderVariableHover(e);
         if (hover == null) {
             if (support != null) {
