@@ -155,27 +155,20 @@ final class RequestEditorBodyFieldDetailsPanel extends JPanel {
     }
 
     private String valueKindForRow(int modelRow) {
-        String visiblePath = stringValue(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN));
-        if (!visiblePath.isBlank()) {
+        RequestEditorStateMapper.BodyFieldState state =
+                RequestEditorStateMapper.resolveBodyFieldState(
+                        model,
+                        modelRow,
+                        true);
+
+        if (state.usesLocalFile()) {
             return "Local file path — request bytes are read from this machine.";
         }
-        String originalPath = stringValue(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN));
-        boolean file = Boolean.TRUE.equals(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_FILE_UPLOAD_MODEL_COLUMN))
-                || Boolean.TRUE.equals(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN))
-                || "file".equalsIgnoreCase(stringValue(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN)))
-                || "file".equalsIgnoreCase(stringValue(model.getValueAt(modelRow,
-                RequestEditorStateMapper.BODY_ORIGINAL_TYPE_MODEL_COLUMN)));
-        if (!originalPath.isBlank()) {
-            return "Local file path — request bytes are read from this machine.";
-        }
-        if (file) {
+
+        if (state.retainsFileMetadataWithoutPath()) {
             return "Retained file metadata — no local file path. Value remains imported source text.";
         }
+
         return "Text field — Value is serialized as text.";
     }
 

@@ -67,6 +67,24 @@ final class RequestEditorStateMapper {
     static final int BODY_SOURCE_MODEL_COLUMN = 16;
     static final int BODY_SOURCE_METADATA_MODEL_COLUMN = 17;
 
+    static record BodyFieldState(
+            String type,
+            String filePath,
+            boolean fileUpload,
+            boolean existingRow,
+            boolean visibleStateChanged) {
+
+        boolean usesLocalFile() {
+            return fileUpload
+                    && filePath != null
+                    && !filePath.isBlank();
+        }
+
+        boolean retainsFileMetadataWithoutPath() {
+            return fileUpload && !usesLocalFile();
+        }
+    }
+
     private RequestEditorStateMapper() {
     }
 
@@ -276,6 +294,7 @@ final class RequestEditorStateMapper {
                 req.body.urlencoded = copyFormFields(existingBody.urlencoded);
                 req.body.graphql = copyGraphQL(existingBody.graphql);
                 if (Objects.equals(bodyMode, existingBody.mode)) {
+                    req.body.raw = existingBody.raw;
                     req.body.required = existingBody.required;
                     req.body.description = existingBody.description;
                     req.body.filePath = existingBody.filePath;
@@ -812,23 +831,6 @@ final class RequestEditorStateMapper {
             String value = tableString(model, row, BODY_VALUE_MODEL_COLUMN);
             boolean disabled = fullModel
                     && Boolean.FALSE.equals(model.getValueAt(row, BODY_ENABLED_MODEL_COLUMN));
-            String visibleType = nullableTableString(model, row, BODY_TYPE_MODEL_COLUMN);
-            String visibleFilePathCell = tableString(model, row, BODY_FILE_PATH_MODEL_COLUMN);
-            boolean hiddenFileUpload = Boolean.TRUE.equals(
-                    model.getValueAt(row, BODY_FILE_UPLOAD_MODEL_COLUMN));
-            String originalType = nullableTableString(model, row, BODY_ORIGINAL_TYPE_MODEL_COLUMN);
-            String originalFilePath = nullableTableString(
-                    model, row, BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN);
-            boolean originalFileUpload = Boolean.TRUE.equals(
-                    model.getValueAt(row, BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN));
-            boolean existingRow = Boolean.TRUE.equals(
-                    model.getValueAt(row, BODY_EXISTING_ROW_MODEL_COLUMN));
-
-            String originalDisplayedType = effectiveBodyDisplayType(originalType, originalFileUpload);
-            String originalDisplayedFilePath = originalFilePath != null ? originalFilePath : "";
-            boolean metadataChanged = !Objects.equals(visibleType, originalDisplayedType)
-                    || !Objects.equals(visibleFilePathCell, originalDisplayedFilePath)
-                    || hiddenFileUpload != originalFileUpload;
 
             ApiRequest.Body.FormField field = new ApiRequest.Body.FormField(key, value);
             field.disabled = disabled;
@@ -843,28 +845,103 @@ final class RequestEditorStateMapper {
                 field.sourceMetadata = metadataFromCell(
                         nullableTableString(model, row, BODY_SOURCE_METADATA_MODEL_COLUMN));
             }
-            if (existingRow && !metadataChanged) {
-                field.type = originalType;
-                field.filePath = originalFilePath;
-                field.fileUpload = originalFileUpload;
-            } else {
-                String authoredFilePath = visibleFilePathCell.isEmpty() ? null : visibleFilePathCell;
-                field.type = visibleType;
-                field.filePath = authoredFilePath;
-                if (multipart) {
-                    field.fileUpload = hiddenFileUpload
-                            || "file".equalsIgnoreCase(field.type)
-                            || field.filePath != null;
-                    if (field.fileUpload && (field.type == null || field.type.isBlank())) {
-                        field.type = "file";
-                    }
-                } else {
-                    field.fileUpload = hiddenFileUpload;
-                }
-            }
+            BodyFieldState fileState = resolveBodyFieldState(model, row, multipart);
+            field.type = fileState.type();
+            field.filePath = fileState.filePath();
+            field.fileUpload = fileState.fileUpload();
             fields.add(field);
         }
         return fields;
+    }
+
+    static BodyFieldState resolveBodyFieldState(
+            DefaultTableModel model,
+            int row,
+            boolean multipart) {
+        String visibleType = nullableTableString(
+                model,
+                row,
+                BODY_TYPE_MODEL_COLUMN);
+
+        if (visibleType == null || visibleType.isBlank()) {
+            visibleType = "text";
+        }
+
+        String visiblePathText = tableString(
+                model,
+                row,
+                BODY_FILE_PATH_MODEL_COLUMN);
+
+        String visiblePath = visiblePathText.isBlank()
+                ? null
+                : visiblePathText;
+
+        String originalType = nullableTableString(
+                model,
+                row,
+                BODY_ORIGINAL_TYPE_MODEL_COLUMN);
+
+        String originalPath = nullableTableString(
+                model,
+                row,
+                BODY_ORIGINAL_FILE_PATH_MODEL_COLUMN);
+
+        boolean originalFileUpload = Boolean.TRUE.equals(
+                model.getValueAt(
+                        row,
+                        BODY_ORIGINAL_FILE_UPLOAD_MODEL_COLUMN));
+
+        boolean existingRow = Boolean.TRUE.equals(
+                model.getValueAt(
+                        row,
+                        BODY_EXISTING_ROW_MODEL_COLUMN));
+
+        String originalDisplayedType =
+                effectiveBodyDisplayType(
+                        originalType,
+                        originalFileUpload);
+
+        String originalDisplayedPath =
+                originalPath != null
+                        ? originalPath
+                        : "";
+
+        boolean visibleStateChanged =
+                !Objects.equals(
+                        visibleType,
+                        originalDisplayedType)
+                        || !Objects.equals(
+                        visiblePathText,
+                        originalDisplayedPath);
+
+        if (existingRow && !visibleStateChanged) {
+            return new BodyFieldState(
+                    originalType,
+                    originalPath,
+                    originalFileUpload,
+                    true,
+                    false);
+        }
+
+        if (!multipart) {
+            return new BodyFieldState(
+                    visibleType,
+                    null,
+                    false,
+                    existingRow,
+                    true);
+        }
+
+        boolean currentFileUpload =
+                visiblePath != null
+                        || "file".equalsIgnoreCase(visibleType);
+
+        return new BodyFieldState(
+                visibleType,
+                visiblePath,
+                currentFileUpload,
+                existingRow,
+                true);
     }
 
     private static String effectiveBodyDisplayType(String originalType, boolean originalFileUpload) {

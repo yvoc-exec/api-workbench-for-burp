@@ -2,10 +2,13 @@ package burp.ui;
 
 import burp.models.ApiRequest;
 import burp.testsupport.ImporterPanelTestSupport;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.JTable;
 import javax.swing.SwingUtilities;
+import javax.swing.table.DefaultTableModel;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 
@@ -110,6 +113,181 @@ class RequestEditorWave5BodyFidelityTest {
         });
     }
 
+    @Test
+    void clearingExistingLocalPathUsesRetainedTextState() throws Exception {
+        ApiRequest request = requestWithField("formdata",
+                field("upload", "retained fallback text", "file", true,
+                        "C:\\tmp\\payload.bin", 1));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            JTable table = bodyTable(panel);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            table.setRowSelectionInterval(0, 0);
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Local file path — request bytes are read from this machine.");
+            table.getModel().setValueAt("", 0,
+                    RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN);
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Retained file metadata — no local file path. Value remains imported source text.");
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+        assertThat(rebuilt.type).isEqualTo("file");
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isNull();
+        assertThat(rebuilt.value).isEqualTo("retained fallback text");
+        String raw = new String(new RequestBuilder(null).buildRequest(built, null),
+                StandardCharsets.UTF_8);
+        assertThat(raw).contains("retained fallback text")
+                .doesNotContain("C:\\tmp\\payload.bin");
+    }
+
+    @Test
+    void changingImportedFileRowToTextClearsFileUploadState() throws Exception {
+        ApiRequest request = requestWithField("formdata",
+                field("upload", "retained inline text", "file", true, null, 1));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            JTable table = bodyTable(panel);
+            table.setRowSelectionInterval(0, 0);
+            table.getModel().setValueAt("text", 0,
+                    RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Text field — Value is serialized as text.");
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+        assertThat(rebuilt.type).isEqualTo("text");
+        assertThat(rebuilt.fileUpload).isFalse();
+        assertThat(rebuilt.filePath).isNull();
+        assertThat(rebuilt.value).isEqualTo("retained inline text");
+        String raw = new String(new RequestBuilder(null).buildRequest(built, null),
+                StandardCharsets.UTF_8);
+        assertThat(raw).contains("retained inline text")
+                .doesNotContain("filename=");
+    }
+
+    @Test
+    void changingTextRowToFileWithoutPathCreatesRetainedFileState() throws Exception {
+        ApiRequest request = requestWithField("formdata",
+                field("upload", "unchanged text", "text", false, null, 1));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            JTable table = bodyTable(panel);
+            table.setRowSelectionInterval(0, 0);
+            table.getModel().setValueAt("file", 0,
+                    RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Retained file metadata — no local file path. Value remains imported source text.");
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+        assertThat(rebuilt.type).isEqualTo("file");
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isNull();
+        assertThat(rebuilt.value).isEqualTo("unchanged text");
+    }
+
+    @Test
+    void addingVisibleFilePathCreatesLocalFileState() throws Exception {
+        ApiRequest request = requestWithField("formdata",
+                field("upload", "retained", "text", false, null, 1));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            JTable table = bodyTable(panel);
+            table.setRowSelectionInterval(0, 0);
+            table.getModel().setValueAt("uploads/payload.bin", 0,
+                    RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN);
+            RequestEditorBodyFieldDetailsPanel details = panel.bodyFieldDetailsPanelForTests();
+            details.refreshSelection();
+            assertThat(details.valueKindFieldForTests().getText())
+                    .isEqualTo("Local file path — request bytes are read from this machine.");
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.formdata.get(0);
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isEqualTo("uploads/payload.bin");
+    }
+
+    @Test
+    void unchangedImportedFileRowPreservesOriginalFileState() throws Exception {
+        ApiRequest.Body.FormField unusual =
+                field("upload", "retained", "custom-file-type", true, null, 1);
+
+        ApiRequest.Body.FormField rebuilt = noOp(requestWithField("formdata", unusual))
+                .body.formdata.get(0);
+
+        assertThat(rebuilt.type).isEqualTo("custom-file-type");
+        assertThat(rebuilt.fileUpload).isTrue();
+        assertThat(rebuilt.filePath).isNull();
+        assertThat(rebuilt.value).isEqualTo("retained");
+    }
+
+    @Test
+    void formDataNoOpPreservesRetainedBodyRaw() throws Exception {
+        ApiRequest request = requestWithField("formdata",
+                field("field", "value", "text", false, null, 1));
+        request.body.raw = "retained-formdata-source";
+
+        ApiRequest built = noOp(request);
+
+        assertThat(built.body.raw).isEqualTo("retained-formdata-source");
+        assertThat(built.body.formdata).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(request.body.formdata);
+    }
+
+    @Test
+    void urlEncodedNoOpPreservesRetainedBodyRaw() throws Exception {
+        ApiRequest request = requestWithField("urlencoded",
+                field("field", "value", "text", false, null, 1));
+        request.body.raw = "retained-urlencoded-source";
+
+        ApiRequest built = noOp(request);
+
+        assertThat(built.body.raw).isEqualTo("retained-urlencoded-source");
+        assertThat(built.body.urlencoded).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(request.body.urlencoded);
+    }
+
+    @Test
+    void urlEncodedRowsNeverEnableNewLocalFileState() throws Exception {
+        ApiRequest request = requestWithField("urlencoded",
+                field("field", "retained text", "text", false, null, 1));
+
+        ApiRequest built = onEdt(() -> {
+            RequestEditorPanel panel = new RequestEditorPanel();
+            panel.loadRequest(request);
+            DefaultTableModel model = (DefaultTableModel) bodyTable(panel).getModel();
+            model.setValueAt("file", 0, RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN);
+            model.setValueAt("uploads/payload.bin", 0,
+                    RequestEditorStateMapper.BODY_FILE_PATH_MODEL_COLUMN);
+            return panel.buildRequestFromUI();
+        });
+
+        ApiRequest.Body.FormField rebuilt = built.body.urlencoded.get(0);
+        assertThat(rebuilt.type).isEqualTo("file");
+        assertThat(rebuilt.fileUpload).isFalse();
+        assertThat(rebuilt.filePath).isNull();
+        assertThat(rebuilt.value).isEqualTo("retained text");
+    }
+
     private static ApiRequest noOp(ApiRequest request) throws Exception {
         return onEdt(() -> {
             RequestEditorPanel panel = new RequestEditorPanel();
@@ -136,6 +314,28 @@ class RequestEditorWave5BodyFidelityTest {
         retained.sourceMetadata.put("har.postData.param.original", "{\"fileName\":\"remote.bin\"}");
         request.body.formdata.add(retained);
         return request;
+    }
+
+    private static ApiRequest requestWithField(String mode, ApiRequest.Body.FormField field) {
+        ApiRequest request = new ApiRequest();
+        request.name = "Body";
+        request.method = "POST";
+        request.url = "https://example.test/upload";
+        request.body = new ApiRequest.Body();
+        request.body.mode = mode;
+        request.body.contentType = "formdata".equals(mode)
+                ? "multipart/form-data"
+                : "application/x-www-form-urlencoded";
+        if ("formdata".equals(mode)) {
+            request.body.formdata.add(field);
+        } else {
+            request.body.urlencoded.add(field);
+        }
+        return request;
+    }
+
+    private static JTable bodyTable(RequestEditorPanel panel) {
+        return ImporterPanelTestSupport.getField(panel, "bodyFormTable");
     }
 
     private static ApiRequest.Body.FormField field(String key, String value, String type,

@@ -47,6 +47,7 @@ class Wave5CanonicalRuntimeIntegrationTest {
             return panel.buildRequestFromUI();
         });
         assertEquivalentModel(editorBuilt, request);
+        assertThat(editorBuilt.body.raw).isEqualTo("retained-structured-body-source");
         assertThat(builder.buildRequest(editorBuilt, resolver(values))).containsExactly(baseline);
 
         try (SharedRequestPipeline pipeline = new SharedRequestPipeline(
@@ -58,12 +59,14 @@ class Wave5CanonicalRuntimeIntegrationTest {
 
         ApiRequest nativeRequest = nativeRoundTrip(collection);
         assertEquivalentModel(nativeRequest, request);
+        assertThat(nativeRequest.body.raw).isEqualTo("retained-structured-body-source");
         assertThat(builder.buildRequest(nativeRequest, resolver(values))).containsExactly(baseline);
 
         ApiRequest workspaceRequest = WorkspaceStateJson.fromJson(
                 WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))))
                 .collections.get(0).requests.get(0);
         assertEquivalentModel(workspaceRequest, request);
+        assertThat(workspaceRequest.body.raw).isEqualTo("retained-structured-body-source");
         assertThat(builder.buildRequest(workspaceRequest, resolver(values))).containsExactly(baseline);
 
         String text = new String(baseline, StandardCharsets.UTF_8);
@@ -154,6 +157,7 @@ class Wave5CanonicalRuntimeIntegrationTest {
                 "Authorization", "Bearer {{token}}", false));
         request.body = new ApiRequest.Body();
         request.body.mode = "urlencoded";
+        request.body.raw = "retained-structured-body-source";
         request.body.required = true;
         request.body.description = "body";
         request.body.source = "test:body";
