@@ -5,6 +5,7 @@ import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.utils.AuthInheritanceResolver;
+import burp.utils.CanonicalRequestModelMigrationSupport;
 import burp.utils.ExactHttpRequestSnapshotMigrationSupport;
 import burp.utils.RequestPathResolver;
 import com.google.gson.JsonArray;
@@ -65,6 +66,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         if (!root.has("collection") || !root.get("collection").isJsonObject()) {
             throw new Exception("Invalid API Workbench collection export: missing collection object");
         }
+        int schemaVersion = getInt(root, "schemaVersion", 1);
 
         JsonObject collectionObj = root.getAsJsonObject("collection");
         ApiCollection collection = new ApiCollection();
@@ -84,7 +86,11 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         collection.scriptBlocks = parseScriptBlocks(collectionObj.getAsJsonArray("scriptBlocks"));
         collection.folderScriptBlocks = parseFolderScriptBlocks(collectionObj.getAsJsonObject("folderScriptBlocks"));
         Map<ApiRequest, String> exportedAuthSources = new IdentityHashMap<>();
-        collection.requests = parseRequests(collectionObj.getAsJsonArray("requests"), collection.name, exportedAuthSources);
+        collection.requests = parseRequests(
+                collectionObj.getAsJsonArray("requests"),
+                collection.name,
+                schemaVersion,
+                exportedAuthSources);
 
         normalizeFolderAuthState(collection);
         AuthInheritanceResolver.recomputeCollectionAuth(collection);
@@ -136,6 +142,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
 
     private List<ApiRequest> parseRequests(JsonArray requestsArray,
                                            String collectionName,
+                                           int schemaVersion,
                                            Map<ApiRequest, String> exportedAuthSources) {
         List<ApiRequest> requests = new ArrayList<>();
         if (requestsArray == null) {
@@ -174,6 +181,15 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.disabled = getBoolean(obj, "disabled", false);
             request.sequenceOrder = getInt(obj, "sequenceOrder", 0);
             request.exactHttpRequest = parseExactHttpRequest(obj.getAsJsonObject("exactHttpRequest"));
+            boolean parametersDeclared =
+                    obj.has("parameters")
+                            && !obj.get("parameters").isJsonNull();
+            if (schemaVersion < 2) {
+                CanonicalRequestModelMigrationSupport
+                        .migrateLegacyEmbeddedQuery(
+                                request,
+                                parametersDeclared);
+            }
             requests.add(request);
             if (exportedAuthSources != null) {
                 exportedAuthSources.put(request, request.authSource);

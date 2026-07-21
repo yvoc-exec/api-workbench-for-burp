@@ -474,7 +474,7 @@ final class RequestEditorStateMapper {
         model.addRow(row);
     }
 
-    private static boolean isUntouchedNewParameterRow(DefaultTableModel model, int row) {
+    static boolean isUntouchedNewParameterRow(DefaultTableModel model, int row) {
         if (!isParamsModel(model)
                 || Boolean.TRUE.equals(model.getValueAt(row, PARAM_EXISTING_ROW_MODEL_COLUMN))) {
             return false;
@@ -504,7 +504,7 @@ final class RequestEditorStateMapper {
                 && (sourceMetadata == null || sourceMetadata.isEmpty());
     }
 
-    private static boolean isUntouchedNewBodyRow(DefaultTableModel model, int row) {
+    static boolean isUntouchedNewBodyRow(DefaultTableModel model, int row) {
         return isBodyModel(model)
                 && !Boolean.TRUE.equals(model.getValueAt(row, BODY_EXISTING_ROW_MODEL_COLUMN))
                 && tableString(model, row, BODY_KEY_MODEL_COLUMN).isEmpty()
@@ -769,9 +769,12 @@ final class RequestEditorStateMapper {
                 parameter.description = nullableTableString(model, row, PARAM_DESCRIPTION_MODEL_COLUMN);
                 parameter.rawKey = nullableTableString(model, row, PARAM_RAW_KEY_MODEL_COLUMN);
                 parameter.rawValue = nullableTableString(model, row, PARAM_RAW_VALUE_MODEL_COLUMN);
-                parameter.valuePresent = Boolean.TRUE.equals(
-                        model.getValueAt(row, PARAM_VALUE_PRESENT_MODEL_COLUMN))
-                        || !value.isEmpty();
+                Object valuePresentCell =
+                        model.getValueAt(row, PARAM_VALUE_PRESENT_MODEL_COLUMN);
+
+                parameter.valuePresent = valuePresentCell instanceof Boolean
+                        ? Boolean.TRUE.equals(valuePresentCell)
+                        : !value.isEmpty();
                 parameter.required = Boolean.TRUE.equals(
                         model.getValueAt(row, PARAM_REQUIRED_MODEL_COLUMN));
                 parameter.type = nullableTableString(model, row, PARAM_TYPE_MODEL_COLUMN);

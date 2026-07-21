@@ -6,6 +6,7 @@ import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
 import burp.diagnostics.DiagnosticStore;
 import burp.history.HistoryEntry;
+import burp.history.HistoryRequestSnapshot;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -21,6 +22,8 @@ import org.mockito.ArgumentCaptor;
 
 import javax.swing.SwingUtilities;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -48,7 +51,34 @@ class HistoryReplayActionTest {
         EnvironmentProfile activeEnvironment = HistoryTestFixtures.sampleEnvironment();
 
         HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
-        entry.requestSnapshot.authoredRequest.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        ApiRequest authored = entry.requestSnapshot.toApiRequest();
+        authored.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        authored.parameters = new ArrayList<>(List.of(
+                richParameter("path", "id", "42", false),
+                richParameter("query", "q", "one", false),
+                richParameter("header", "X-Authored", "header", true),
+                richParameter("cookie", "session", "cookie", false)));
+        authored.body.required = true;
+        authored.body.description = "authored body";
+        authored.body.source = "history:authored";
+        authored.body.sourceMetadata.put("retained.body", "value");
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("field", "retained");
+        field.required = true;
+        field.description = "field description";
+        field.contentType = "text/plain";
+        field.style = "form";
+        field.explode = Boolean.FALSE;
+        field.allowReserved = true;
+        field.source = "history:authored";
+        field.sourceMetadata.put("retained.field", "value");
+        authored.body.formdata = new ArrayList<>(List.of(field));
+        entry.requestSnapshot = HistoryRequestSnapshot.from(authored);
+        entry.requestSnapshot.rawRequestSent =
+                "DELETE /raw-evidence HTTP/1.1\r\nHost: evidence.invalid\r\n\r\n"
+                        .getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText =
+                "DELETE /raw-evidence HTTP/1.1\r\nHost: evidence.invalid\r\n\r\n";
+        ApiRequest expectedAuthored = entry.requestSnapshot.toApiRequest();
         ExecutionResult exec = HistoryTestFixtures.sampleWorkbenchExecutionResult();
         exec.executionSource = burp.scripts.ExecutionSource.HISTORY_REPLAY;
         HttpRequest builtRequest = org.mockito.Mockito.mock(HttpRequest.class);
@@ -113,6 +143,10 @@ class HistoryReplayActionTest {
                 any(RedirectPolicy.class));
         assertThat(requestCaptor.getValue().url).isEqualTo("{{base_url}}/login");
         assertThat(requestCaptor.getValue().buildMode).isEqualTo(ApiRequest.BuildMode.EXACT_HTTP);
+        assertThat(requestCaptor.getValue().parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(expectedAuthored.parameters);
+        assertThat(requestCaptor.getValue().body).usingRecursiveComparison().isEqualTo(expectedAuthored.body);
+        assertThat(requestCaptor.getValue().url).doesNotContain("raw-evidence", "evidence.invalid");
         assertThat(capturedEnvironment.get()).isSameAs(activeEnvironment);
         assertThat(capturedExecutionSource.get()).isEqualTo(burp.scripts.ExecutionSource.HISTORY_REPLAY);
 
@@ -176,6 +210,25 @@ class HistoryReplayActionTest {
         return collections.stream()
                 .map(collection -> collection != null ? collection.name : null)
                 .toList();
+    }
+
+    private static ApiRequest.Parameter richParameter(String location, String key,
+                                                      String value, boolean disabled) {
+        ApiRequest.Parameter parameter = new ApiRequest.Parameter(location, key, value);
+        parameter.rawKey = "raw-" + key;
+        parameter.rawValue = "raw-" + value;
+        parameter.valuePresent = true;
+        parameter.disabled = disabled;
+        parameter.required = true;
+        parameter.type = "string";
+        parameter.format = "wave5";
+        parameter.description = "authored";
+        parameter.style = "form";
+        parameter.explode = Boolean.FALSE;
+        parameter.allowReserved = true;
+        parameter.source = "history:authored";
+        parameter.sourceMetadata.put("retained.parameter", "value");
+        return parameter;
     }
 
     private static void clickReplayHistoryButton(ImporterPanelTestSupport.PanelBundle bundle, HistoryEntry entry) throws Exception {

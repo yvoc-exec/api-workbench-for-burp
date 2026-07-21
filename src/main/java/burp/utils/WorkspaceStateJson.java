@@ -322,6 +322,15 @@ public final class WorkspaceStateJson {
         removeSuppressedAutoHeadersFromRequest(request);
         ExactHttpRequestSnapshotMigrationSupport
                 .migrateLegacySemanticFingerprint(request);
+        if (rawRequest != null) {
+            boolean parametersDeclared =
+                    rawRequest.has("parameters")
+                            && !rawRequest.get("parameters").isJsonNull();
+            CanonicalRequestModelMigrationSupport
+                    .migrateLegacyEmbeddedQuery(
+                            request,
+                            parametersDeclared);
+        }
     }
 
     private static void removeSuppressedAutoHeadersFromRequest(ApiRequest request) {

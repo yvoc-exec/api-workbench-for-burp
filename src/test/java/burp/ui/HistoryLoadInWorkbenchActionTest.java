@@ -5,6 +5,7 @@ import burp.history.HistoryRequestSnapshot;
 import burp.history.HistorySource;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.models.WorkspaceState;
 import burp.testsupport.HistoryTestFixtures;
 import burp.testsupport.ImporterPanelTestSupport;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import javax.swing.*;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,15 +37,61 @@ class HistoryLoadInWorkbenchActionTest {
         List<ApiCollection> loadedCollections = ImporterPanelTestSupport.getField(bundle.panel, "loadedCollections");
         ApiCollection liveCollection = loadedCollections.get(0);
         ApiRequest liveRequest = liveCollection.requests.get(0);
+        String liveId = liveRequest.id;
+        String liveName = liveRequest.name;
+        String livePath = liveRequest.path;
+        String liveSourceCollection = liveRequest.sourceCollection;
+        int liveSequenceOrder = liveRequest.sequenceOrder;
 
         RequestEditorPanel requestEditor = ImporterPanelTestSupport.getField(bundle.panel, "requestEditor");
         requestEditor.markDirty();
 
         ApiRequest changedRequest = HistoryTestFixtures.copyRequest(HistoryTestFixtures.sampleRequest());
         changedRequest.body.raw = "{\"username\":\"loaded\"}";
+        changedRequest.description = "authored history description";
+        changedRequest.sourceMetadata.put("history.request.metadata", "retained-value");
+        changedRequest.parameters = new ArrayList<>();
+        changedRequest.parameters.add(richParameter("path", "id", "42", true));
+        changedRequest.parameters.add(richParameter("query", "q", "one", false));
+        changedRequest.parameters.add(richParameter("header", "X-Authored", "header", true));
+        changedRequest.parameters.add(richParameter("cookie", "session", "cookie", true));
+        ApiRequest.Body.FormField retainedField = new ApiRequest.Body.FormField("upload", "retained-text");
+        retainedField.type = "file";
+        retainedField.fileUpload = true;
+        retainedField.required = true;
+        retainedField.description = "field description";
+        retainedField.contentType = "application/octet-stream";
+        retainedField.style = "form";
+        retainedField.explode = Boolean.FALSE;
+        retainedField.allowReserved = true;
+        retainedField.source = "history:authored";
+        retainedField.sourceMetadata.put("retained.fileName", "payload.bin");
+        changedRequest.body.formdata = new ArrayList<>(List.of(retainedField));
+        changedRequest.body.required = true;
+        changedRequest.body.description = "authored body description";
+        changedRequest.body.source = "history:body";
+        changedRequest.body.sourceMetadata.put("history.body.metadata", "retained-body-value");
+        changedRequest.authOverrideMode = "override";
+        changedRequest.explicitAuth = new ApiRequest.Auth();
+        changedRequest.explicitAuth.type = "bearer";
+        changedRequest.explicitAuth.properties.put("token", "authored-token");
+        changedRequest.exactHttpRequest = new ExactHttpRequestSnapshot();
+        changedRequest.exactHttpRequest.rawRequestBytes =
+                "GET /authored HTTP/1.0\r\nHost: authored.example\r\n\r\n"
+                        .getBytes(StandardCharsets.UTF_8);
+        changedRequest.exactHttpRequest.serviceHost = "authored.example";
+        changedRequest.exactHttpRequest.servicePort = 443;
+        changedRequest.exactHttpRequest.secure = true;
+        changedRequest.exactHttpRequest.httpVersion = "HTTP/1.0";
+        changedRequest.exactHttpRequest.pristine = true;
         HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
                 "load-entry", Instant.parse("2026-06-15T01:40:00Z"));
         entry.requestSnapshot = HistoryRequestSnapshot.from(changedRequest);
+        entry.requestSnapshot.rawRequestSent =
+                "DELETE /raw-evidence HTTP/1.1\r\nHost: evidence.invalid\r\n\r\n"
+                        .getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText =
+                "DELETE /raw-evidence HTTP/1.1\r\nHost: evidence.invalid\r\n\r\n";
         entry.collectionName = HistoryTestFixtures.COLLECTION_NAME;
         entry.requestId = liveRequest.id;
         entry.requestName = HistoryTestFixtures.REQUEST_NAME;
@@ -57,7 +105,38 @@ class HistoryLoadInWorkbenchActionTest {
         assertThat(requestEditor.isDirty()).isFalse();
         assertThat(requestEditor.getCurrentRequest()).isSameAs(liveRequest);
         assertThat(liveRequest.body.raw).isEqualTo("{\"username\":\"loaded\"}");
-        assertThat(liveRequest.path).isEqualTo(HistoryTestFixtures.REQUEST_FOLDER);
+        assertThat(liveRequest.parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(changedRequest.parameters);
+        assertThat(liveRequest.parameters).extracting(parameter -> parameter.location)
+                .containsExactly("path", "query", "header", "cookie");
+        assertThat(liveRequest.parameters).extracting(parameter -> parameter.rawKey)
+                .containsExactly("raw-id", "raw-q", "raw-X-Authored", "raw-session");
+        assertThat(liveRequest.parameters).extracting(parameter -> parameter.rawValue)
+                .containsExactly("raw-42", "raw-one", "raw-header", "raw-cookie");
+        assertThat(liveRequest.parameters.get(1).valuePresent).isFalse();
+        assertThat(liveRequest.body.formdata).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(changedRequest.body.formdata);
+        assertThat(liveRequest.body.required).isTrue();
+        assertThat(liveRequest.body.description).isEqualTo("authored body description");
+        assertThat(liveRequest.body.source).isEqualTo("history:body");
+        assertThat(liveRequest.body.sourceMetadata)
+                .containsEntry("history.body.metadata", "retained-body-value");
+        assertThat(liveRequest.parameters.get(0).sourceMetadata)
+                .containsEntry("retained.key", "retained-value");
+        assertThat(liveRequest.exactHttpRequest).isNotNull().isNotSameAs(changedRequest.exactHttpRequest);
+        assertThat(liveRequest.exactHttpRequest.rawRequestBytes)
+                .containsExactly(changedRequest.exactHttpRequest.rawRequestBytes)
+                .isNotSameAs(changedRequest.exactHttpRequest.rawRequestBytes);
+        assertThat(liveRequest.id).isEqualTo(liveId);
+        assertThat(liveRequest.name).isEqualTo(liveName);
+        assertThat(liveRequest.path).isEqualTo(livePath);
+        assertThat(liveRequest.sourceCollection).isEqualTo(liveSourceCollection);
+        assertThat(liveRequest.sequenceOrder).isEqualTo(liveSequenceOrder);
+        assertThat(liveRequest.description).isEqualTo("authored history description");
+        assertThat(liveRequest.sourceMetadata)
+                .containsEntry("history.request.metadata", "retained-value");
+        assertThat(liveRequest.auth).usingRecursiveComparison().isEqualTo(changedRequest.explicitAuth);
+        assertThat(liveRequest.url).doesNotContain("raw-evidence", "evidence.invalid");
         assertThat(collectionNames(loadedCollections)).doesNotContain("History Replays");
     }
 
@@ -574,6 +653,25 @@ class HistoryLoadInWorkbenchActionTest {
         variable.key = key;
         variable.value = value;
         return variable;
+    }
+
+    private static ApiRequest.Parameter richParameter(String location, String key,
+                                                      String value, boolean valuePresent) {
+        ApiRequest.Parameter parameter = new ApiRequest.Parameter(location, key, value);
+        parameter.rawKey = "raw-" + key;
+        parameter.rawValue = "raw-" + value;
+        parameter.valuePresent = valuePresent;
+        parameter.disabled = "header".equals(location);
+        parameter.required = true;
+        parameter.type = "string";
+        parameter.format = "wave5";
+        parameter.description = "authored parameter";
+        parameter.style = "form";
+        parameter.explode = Boolean.TRUE;
+        parameter.allowReserved = true;
+        parameter.source = "history:authored";
+        parameter.sourceMetadata.put("retained.key", "retained-value");
+        return parameter;
     }
 
     private static void clickLoadHistoryButton(ImporterPanelTestSupport.PanelBundle bundle, HistoryEntry entry) throws Exception {

@@ -6,6 +6,9 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.JComboBox;
+import javax.swing.DefaultCellEditor;
 import javax.swing.JTextPane;
 import javax.swing.SwingConstants;
 import javax.swing.border.Border;
@@ -51,6 +54,8 @@ final class RequestEditorBodySupport {
             }
         };
         final javax.swing.JTable bodyFormTable = RequestEditorTableSupport.createEditableTable(bodyFormModel);
+        final RequestEditorBodyFieldDetailsPanel bodyFieldDetailsPanel =
+                new RequestEditorBodyFieldDetailsPanel(bodyFormTable, bodyFormModel);
         final Runnable refreshResolvedMirror;
         String bodyModeInternal = "none";
 
@@ -75,15 +80,31 @@ final class RequestEditorBodySupport {
             for (int viewColumn = bodyFormTable.getColumnCount() - 1; viewColumn >= 5; viewColumn--) {
                 bodyFormTable.removeColumn(bodyFormTable.getColumnModel().getColumn(viewColumn));
             }
-            formPanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
-            formPanel.add(RequestEditorTableSupport.createAddRemovePanel(bodyFormTable, bodyFormModel,
+            int typeViewColumn = bodyFormTable.convertColumnIndexToView(
+                    RequestEditorStateMapper.BODY_TYPE_MODEL_COLUMN);
+            bodyFormTable.getColumnModel().getColumn(typeViewColumn).setCellEditor(
+                    new DefaultCellEditor(new JComboBox<>(new String[]{"text", "file"})));
+            JPanel upperTablePanel = new JPanel(new BorderLayout());
+            upperTablePanel.add(new JScrollPane(bodyFormTable), BorderLayout.CENTER);
+            upperTablePanel.add(RequestEditorTableSupport.createAddRemovePanel(bodyFormTable, bodyFormModel,
                     () -> new Object[]{
                             "", "", Boolean.TRUE, "text", "", Boolean.FALSE,
                             null, null, Boolean.FALSE, Boolean.FALSE,
                             Boolean.FALSE, null, null, null, null, Boolean.FALSE, null, null
                     }), BorderLayout.SOUTH);
+            JSplitPane splitPane = new JSplitPane(
+                    JSplitPane.VERTICAL_SPLIT,
+                    upperTablePanel,
+                    bodyFieldDetailsPanel);
+            splitPane.setResizeWeight(0.72);
+            splitPane.setDividerLocation(0.72);
+            splitPane.setContinuousLayout(true);
+            splitPane.setOneTouchExpandable(true);
+            splitPane.setDividerSize(7);
+            formPanel.add(splitPane, BorderLayout.CENTER);
             bodyContentPanel.add(formPanel, "form");
             RequestEditorStateMapper.ensureStarterRow(bodyFormModel);
+            bodyFieldDetailsPanel.refreshSelection();
 
             JLabel noBodyLabel = new JLabel("No body");
             noBodyLabel.setHorizontalAlignment(SwingConstants.LEFT);
@@ -144,6 +165,7 @@ final class RequestEditorBodySupport {
                 btn.setSelected(true);
             }
             updateBodyMode();
+            bodyFieldDetailsPanel.refreshSelection();
         }
 
         void updateBodyMode() {
@@ -159,6 +181,7 @@ final class RequestEditorBodySupport {
                 cl.show(bodyContentPanel, "form");
             }
             refreshResolvedMirror.run();
+            bodyFieldDetailsPanel.refreshSelection();
         }
     }
 

@@ -1363,6 +1363,96 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.collections.get(0).scriptBlocks.get(0).source).contains("pm.environment.set");
     }
 
+    @Test
+    void legacyWorkspaceMigratesEmbeddedQueryIntoCanonicalParameters() throws Exception {
+        String json = oldRequestShape(
+                "https://example.test/search?a=1&a=2&flag&empty=&encoded=a%2Fb#fragment",
+                false,
+                false);
+
+        ApiRequest request = WorkspaceStateJson.fromJson(json).collections.get(0).requests.get(0);
+
+        assertThat(request.url).isEqualTo("https://example.test/search#fragment");
+        assertThat(request.parameters).extracting(p -> p.key)
+                .containsExactly("a", "a", "flag", "empty", "encoded");
+        assertThat(request.parameters).extracting(p -> p.valuePresent)
+                .containsExactly(true, true, false, true, true);
+        assertThat(request.parameters.get(4).rawValue).isEqualTo("a%2Fb");
+        String raw = new String(new RequestBuilder(null).buildRequest(request, null), StandardCharsets.UTF_8);
+        assertThat(raw).contains("/search?a=1&a=2&flag&empty=&encoded=a%2Fb HTTP/");
+    }
+
+    @Test
+    void currentWorkspaceDeclaredParametersDoNotMigrateUrlAgain() {
+        String json = oldRequestShape("https://example.test/search?stale=1", true, false);
+
+        ApiRequest request = WorkspaceStateJson.fromJson(json).collections.get(0).requests.get(0);
+
+        assertThat(request.url).isEqualTo("https://example.test/search?stale=1");
+        assertThat(request.parameters).extracting(p -> p.key).containsExactly("canonical");
+    }
+
+    @Test
+    void legacyWorkspaceExactSnapshotDoesNotMigrateQuery() {
+        String json = oldRequestShape("https://example.test/search?a=1", false, true);
+
+        ApiRequest request = WorkspaceStateJson.fromJson(json).collections.get(0).requests.get(0);
+
+        assertThat(request.url).isEqualTo("https://example.test/search?a=1");
+        assertThat(request.parameters).isEmpty();
+        assertThat(request.exactHttpRequest).isNotNull();
+        assertThat(request.exactHttpRequest.rawRequestBytes)
+                .containsExactly("GET /search?a=1 HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                        .getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void workspaceMigrationIsIdempotent() {
+        WorkspaceState first = WorkspaceStateJson.fromJson(
+                oldRequestShape("https://example.test/search?a=1&flag", false, false));
+        ApiRequest firstRequest = first.collections.get(0).requests.get(0);
+
+        WorkspaceState second = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(first));
+        ApiRequest secondRequest = second.collections.get(0).requests.get(0);
+
+        assertThat(secondRequest.url).isEqualTo(firstRequest.url);
+        assertThat(secondRequest.parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(firstRequest.parameters);
+    }
+
+    private static String oldRequestShape(String url, boolean declaredParameters, boolean exact) {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Legacy";
+        ApiRequest request = new ApiRequest();
+        request.name = "R";
+        request.method = "GET";
+        request.url = url;
+        if (declaredParameters) {
+            request.parameters.add(new ApiRequest.Parameter("query", "canonical", "2"));
+        }
+        if (exact) {
+            request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+            request.exactHttpRequest = new ExactHttpRequestSnapshot();
+            request.exactHttpRequest.rawRequestBytes =
+                    "GET /search?a=1 HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                            .getBytes(StandardCharsets.UTF_8);
+            request.exactHttpRequest.serviceHost = "example.test";
+            request.exactHttpRequest.servicePort = 443;
+            request.exactHttpRequest.secure = true;
+            request.exactHttpRequest.pristine = true;
+        }
+        collection.requests.add(request);
+        com.google.gson.JsonObject root = JsonParser.parseString(
+                WorkspaceStateJson.toJson(WorkspaceState.fromCollections(List.of(collection))))
+                .getAsJsonObject();
+        com.google.gson.JsonObject rawRequest = root.getAsJsonArray("collections").get(0)
+                .getAsJsonObject().getAsJsonArray("requests").get(0).getAsJsonObject();
+        if (!declaredParameters) {
+            rawRequest.remove("parameters");
+        }
+        return root.toString();
+    }
+
     private static ApiRequest exactTransportRequest() {
         ApiRequest request = new ApiRequest();
         request.id = "req-exact";

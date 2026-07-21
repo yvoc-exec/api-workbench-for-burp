@@ -35,6 +35,7 @@ public class RequestEditorPanel extends JPanel {
     // Params
     private DefaultTableModel paramsModel;
     private JTable paramsTable;
+    private RequestEditorParameterDetailsPanel parameterDetailsPanel;
 
     // Auth
     private JComboBox<String> authTypeBox;
@@ -371,15 +372,28 @@ public class RequestEditorPanel extends JPanel {
                 RequestEditorStateMapper.PARAM_LOCATION_MODEL_COLUMN);
         paramsTable.getColumnModel().getColumn(locationViewColumn).setCellEditor(
                 new DefaultCellEditor(new JComboBox<>(new String[]{"query", "path", "header", "cookie"})));
-        panel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
-        panel.add(RequestEditorTableSupport.createAddRemovePanel(paramsTable, paramsModel,
+        JPanel upperTablePanel = new JPanel(new BorderLayout());
+        upperTablePanel.add(new JScrollPane(paramsTable), BorderLayout.CENTER);
+        upperTablePanel.add(RequestEditorTableSupport.createAddRemovePanel(paramsTable, paramsModel,
                 () -> new Object[]{
                         "", "", Boolean.TRUE, "", null, null, Boolean.FALSE,
                         Boolean.FALSE, null, "workbench", null, null, Boolean.FALSE, Boolean.FALSE, "query",
                         null, null
                 }),
                 BorderLayout.SOUTH);
+        parameterDetailsPanel = new RequestEditorParameterDetailsPanel(paramsTable, paramsModel);
+        JSplitPane splitPane = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                upperTablePanel,
+                parameterDetailsPanel);
+        splitPane.setResizeWeight(0.72);
+        splitPane.setDividerLocation(0.72);
+        splitPane.setContinuousLayout(true);
+        splitPane.setOneTouchExpandable(true);
+        splitPane.setDividerSize(7);
+        panel.add(splitPane, BorderLayout.CENTER);
         RequestEditorStateMapper.ensureStarterRow(paramsModel);
+        parameterDetailsPanel.refreshSelection();
         return panel;
     }
 
@@ -551,6 +565,12 @@ public class RequestEditorPanel extends JPanel {
             setExactHttpModeSelected(req != null && req.isExactHttpMode());
             RequestEditorStateMapper.Context ctx = createStateMapperContext();
             RequestEditorStateMapper.loadRequest(req, ctx);
+            if (parameterDetailsPanel != null) {
+                parameterDetailsPanel.selectFirstDataRowIfAvailable();
+                parameterDetailsPanel.refreshSelection();
+            }
+            bodyUi.bodyFieldDetailsPanel.selectFirstDataRowIfAvailable();
+            bodyUi.bodyFieldDetailsPanel.refreshSelection();
         } finally {
             loadingRequest = false;
         }
@@ -574,6 +594,12 @@ public class RequestEditorPanel extends JPanel {
             loadingRequest = false;
         }
         refreshAll();
+        if (parameterDetailsPanel != null) {
+            parameterDetailsPanel.refreshSelection();
+        }
+        if (bodyUi != null) {
+            bodyUi.bodyFieldDetailsPanel.refreshSelection();
+        }
         setSendControlsEnabled(false);
         markClean();
     }
@@ -2037,6 +2063,8 @@ public class RequestEditorPanel extends JPanel {
     JTable getHeadersTableForTests() { return headersTable; }
     JTextComponent getBodyRawAreaForTests() { return bodyRawArea; }
     JTextArea getResolvedViewAreaForTests() { return resolvedViewArea; }
+    RequestEditorParameterDetailsPanel parameterDetailsPanelForTests() { return parameterDetailsPanel; }
+    RequestEditorBodyFieldDetailsPanel bodyFieldDetailsPanelForTests() { return bodyUi.bodyFieldDetailsPanel; }
     JPopupMenu getVisibleVariablePopupForTests() {
         JPopupMenu popup = popupForComponent(urlField);
         if (popup != null) {

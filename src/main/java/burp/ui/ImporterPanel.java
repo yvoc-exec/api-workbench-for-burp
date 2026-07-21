@@ -2015,6 +2015,10 @@ public class ImporterPanel {
 
         liveRequest.method = edited.method;
         liveRequest.url = edited.url;
+        liveRequest.parameters = burp.utils.RequestParameterSupport.copyParameters(
+                edited.parameters != null
+                        ? edited.parameters
+                        : Collections.emptyList());
         liveRequest.editorMaterialized = edited.editorMaterialized;
         liveRequest.buildMode = edited.buildMode;
         liveRequest.suppressedAutoHeaders = edited.suppressedAutoHeaders != null
@@ -2027,11 +2031,16 @@ public class ImporterPanel {
         liveRequest.scriptBlocks = copyScriptBlocks(edited.scriptBlocks);
         liveRequest.authOverrideMode = edited.authOverrideMode != null ? edited.authOverrideMode : "inherit";
         liveRequest.explicitAuth = burp.utils.AuthInheritanceResolver.copyAuth(edited.explicitAuth);
+        liveRequest.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(edited.exactHttpRequest);
+        liveRequest.disabled = edited.disabled;
         if (replaceHistoryOwnedMetadata) {
             liveRequest.description = edited.description;
             liveRequest.variables = copyVariables(
                     edited.variables != null ? edited.variables : Collections.emptyList()
             );
+            liveRequest.sourceMetadata = edited.sourceMetadata != null
+                    ? new LinkedHashMap<>(edited.sourceMetadata)
+                    : new LinkedHashMap<>();
         }
         burp.utils.AuthInheritanceResolver.resolveRequestAuth(collection, liveRequest);
 
@@ -2083,6 +2092,13 @@ public class ImporterPanel {
         copy.mode = body.mode;
         copy.raw = body.raw;
         copy.contentType = body.contentType;
+        copy.required = body.required;
+        copy.description = body.description;
+        copy.filePath = body.filePath;
+        copy.source = body.source;
+        copy.sourceMetadata = body.sourceMetadata != null
+                ? new LinkedHashMap<>(body.sourceMetadata)
+                : new LinkedHashMap<>();
         copy.formdata = copyBodyFields(body.formdata);
         copy.urlencoded = copyBodyFields(body.urlencoded);
         if (body.graphql != null) {
@@ -2108,6 +2124,16 @@ public class ImporterPanel {
             copy.fileUpload = field.fileUpload;
             copy.filePath = field.filePath;
             copy.disabled = field.disabled;
+            copy.required = field.required;
+            copy.description = field.description;
+            copy.contentType = field.contentType;
+            copy.style = field.style;
+            copy.explode = field.explode;
+            copy.allowReserved = field.allowReserved;
+            copy.source = field.source;
+            copy.sourceMetadata = field.sourceMetadata != null
+                    ? new LinkedHashMap<>(field.sourceMetadata)
+                    : new LinkedHashMap<>();
             out.add(copy);
         }
         return out;

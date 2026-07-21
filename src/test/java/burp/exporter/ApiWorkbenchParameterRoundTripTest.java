@@ -2,7 +2,9 @@ package burp.exporter;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.ApiWorkbenchCollectionParser;
+import burp.utils.RequestBuilder;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,18 +106,63 @@ class ApiWorkbenchParameterRoundTripTest {
     }
 
     @Test
-    void schemaVersion1WithoutParametersPreservesUrlAndMutableEmptyList() throws Exception {
+    void schemaVersion1WithoutParametersMigratesEmbeddedQuery() throws Exception {
         Path file = tempDir.resolve("v1.json");
         Files.writeString(file, """
                 {"format":"api-workbench-collection","schemaVersion":1,"collection":{
-                  "name":"Legacy","requests":[{"name":"R","method":"GET","url":"https://example.test/a?x=1"}]
+                  "name":"Legacy","requests":[{"name":"R","method":"GET","url":"https://example.test/a?x=1&x=2&flag&empty=&encoded=a%2Fb#fragment"}]
+                }}
+                """, StandardCharsets.UTF_8);
+        ApiRequest request = new ApiWorkbenchCollectionParser().parse(file.toFile()).requests.get(0);
+        assertThat(request.url).isEqualTo("https://example.test/a#fragment");
+        assertThat(request.parameters).extracting(p -> p.key)
+                .containsExactly("x", "x", "flag", "empty", "encoded");
+        assertThat(request.parameters).extracting(p -> p.valuePresent)
+                .containsExactly(true, true, false, true, true);
+        assertThat(request.parameters.get(4).rawValue).isEqualTo("a%2Fb");
+        request.parameters.add(new ApiRequest.Parameter());
+        assertThat(request.parameters).hasSize(6);
+
+        byte[] before = new RequestBuilder(null).buildRequest(request, null);
+        JsonObject exported = export(request);
+        assertThat(exported.get("schemaVersion").getAsInt()).isEqualTo(2);
+        Path second = tempDir.resolve("migrated.json");
+        Files.writeString(second, new GsonBuilder().create().toJson(exported), StandardCharsets.UTF_8);
+        ApiRequest restored = new ApiWorkbenchCollectionParser().parse(second.toFile()).requests.get(0);
+        assertThat(restored.parameters).usingRecursiveFieldByFieldElementComparator()
+                .containsExactlyElementsOf(request.parameters);
+        assertThat(new RequestBuilder(null).buildRequest(restored, null)).containsExactly(before);
+    }
+
+    @Test
+    void schemaVersion1ExactSnapshotDoesNotMigrateEmbeddedQuery() throws Exception {
+        byte[] raw = "GET /a?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .getBytes(StandardCharsets.UTF_8);
+        Path file = tempDir.resolve("v1-exact.json");
+        Files.writeString(file, """
+                {"format":"api-workbench-collection","schemaVersion":1,"collection":{
+                  "name":"Legacy","requests":[{"name":"R","method":"GET","url":"https://example.test/a?x=1",
+                  "buildMode":"EXACT_HTTP","exactHttpRequest":{"rawRequestBase64":"%s","serviceHost":"example.test","servicePort":443,"secure":true,"pristine":true}}]
+                }}
+                """.formatted(Base64.getEncoder().encodeToString(raw)), StandardCharsets.UTF_8);
+        ApiRequest request = new ApiWorkbenchCollectionParser().parse(file.toFile()).requests.get(0);
+        assertThat(request.url).isEqualTo("https://example.test/a?x=1");
+        assertThat(request.parameters).isEmpty();
+        assertThat(request.exactHttpRequest).isNotNull();
+        assertThat(request.exactHttpRequest.rawRequestBytes).containsExactly(raw);
+    }
+
+    @Test
+    void schemaVersion1DeclaredEmptyParametersDoesNotMigrate() throws Exception {
+        Path file = tempDir.resolve("v1-declared.json");
+        Files.writeString(file, """
+                {"format":"api-workbench-collection","schemaVersion":1,"collection":{
+                  "name":"Legacy","requests":[{"name":"R","method":"GET","url":"https://example.test/a?x=1","parameters":[]}]
                 }}
                 """, StandardCharsets.UTF_8);
         ApiRequest request = new ApiWorkbenchCollectionParser().parse(file.toFile()).requests.get(0);
         assertThat(request.url).isEqualTo("https://example.test/a?x=1");
         assertThat(request.parameters).isEmpty();
-        request.parameters.add(new ApiRequest.Parameter());
-        assertThat(request.parameters).hasSize(1);
     }
 
     @Test
