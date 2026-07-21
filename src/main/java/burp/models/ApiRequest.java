@@ -215,6 +215,9 @@ public class ApiRequest {
         appendParameters(canonical, parameters);
         canonical.append(description != null ? description : "").append('\n');
         canonical.append(buildMode != null ? buildMode.name() : "").append('\n');
+        canonical.append(exactHttpRequest != null && exactHttpRequest.httpVersion != null
+                ? exactHttpRequest.httpVersion
+                : "").append('\n');
         canonical.append(authOverrideMode != null ? authOverrideMode : "").append('\n');
         appendHeaders(canonical, headers);
         appendBody(canonical, body);

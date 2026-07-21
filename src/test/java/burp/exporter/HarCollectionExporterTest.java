@@ -1,6 +1,7 @@
 package burp.exporter;
 
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -45,6 +46,32 @@ class HarCollectionExporterTest {
         JsonObject users = entryByRequestName(log.getAsJsonArray("entries"), "GET /users");
         assertThat(users.getAsJsonObject("request").getAsJsonArray("queryString")).hasSizeGreaterThan(0);
         assertThat(users.getAsJsonObject("request").getAsJsonArray("cookies")).hasSizeGreaterThan(0);
+    }
+
+    @Test
+    void doesNotEmitInternalFilePathProperty() {
+        ApiCollection collection = new ApiCollection();
+        ApiRequest request = new ApiRequest();
+        request.method = "POST";
+        request.url = "https://example.test/upload";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "formdata";
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("upload", null);
+        field.type = "file";
+        field.fileUpload = true;
+        field.filePath = "C:\\Users\\tester\\secret\\payload.bin";
+        request.body.formdata.add(field);
+        collection.requests.add(request);
+
+        String serialized = HarCollectionExporter.build(collection, null, new java.util.ArrayList<>()).toString();
+        JsonObject param = JsonParser.parseString(serialized).getAsJsonObject()
+                .getAsJsonObject("log").getAsJsonArray("entries").get(0).getAsJsonObject()
+                .getAsJsonObject("request").getAsJsonObject("postData")
+                .getAsJsonArray("params").get(0).getAsJsonObject();
+
+        assertThat(serialized).doesNotContain("\"filePath\"");
+        assertThat(serialized).doesNotContain("C:\\\\Users\\\\tester\\\\secret");
+        assertThat(param.get("fileName").getAsString()).isEqualTo("payload.bin");
     }
 
     private static JsonObject entryByRequestMethod(JsonArray entries, String method) {

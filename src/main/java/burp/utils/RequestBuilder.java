@@ -158,12 +158,31 @@ public class RequestBuilder {
 
         // Insert request line at index 0
         List<String> rawHeaders = new ArrayList<>();
-        rawHeaders.add(method + " " + requestTarget + " HTTP/1.1");
+        rawHeaders.add(method + " " + requestTarget + " "
+                + effectiveHttpVersion(request, policy));
         for (Map.Entry<String, String> entry : headers.entries()) {
             rawHeaders.add(entry.getKey() + ": " + entry.getValue());
         }
 
         return new BuildContext(rawHeaders, body, method, resolvedUrl);
+    }
+
+    private static String effectiveHttpVersion(ApiRequest request,
+                                               RequestBuildPolicy policy) {
+        if (policy != null
+                && policy.exactHttp()
+                && request != null
+                && request.exactHttpRequest != null
+                && request.exactHttpRequest.httpVersion != null) {
+            String candidate = request.exactHttpRequest.httpVersion.trim();
+            if ("HTTP/1.0".equalsIgnoreCase(candidate)) {
+                return "HTTP/1.0";
+            }
+            if ("HTTP/1.1".equalsIgnoreCase(candidate)) {
+                return "HTTP/1.1";
+            }
+        }
+        return "HTTP/1.1";
     }
 
     private static final class BuildContext {

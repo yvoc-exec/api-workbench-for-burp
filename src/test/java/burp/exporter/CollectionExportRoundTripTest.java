@@ -78,6 +78,7 @@ class CollectionExportRoundTripTest {
         request.exactHttpRequest.serviceHost = "api.example.test";
         request.exactHttpRequest.servicePort = 443;
         request.exactHttpRequest.secure = true;
+        request.exactHttpRequest.httpVersion = "HTTP/1.0";
         request.exactHttpRequest.pristine = true;
         request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
         Path output = tempDir.resolve("apim.api-workbench.json");
@@ -91,6 +92,7 @@ class CollectionExportRoundTripTest {
         ApiRequest restored = requestById(imported, request.id);
 
         assertThat(restored.exactHttpRequest).isNotNull();
+        assertThat(restored.exactHttpRequest.httpVersion).isEqualTo("HTTP/1.0");
         assertThat(restored.exactHttpRequest.rawRequestBytes).isEqualTo(request.exactHttpRequest.rawRequestBytes);
         restored.exactHttpRequest.rawRequestBytes[0] = 'X';
         assertThat(request.exactHttpRequest.rawRequestBytes[0]).isEqualTo((byte) 'G');

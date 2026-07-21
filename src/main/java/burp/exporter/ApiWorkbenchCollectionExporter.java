@@ -174,6 +174,9 @@ public final class ApiWorkbenchCollectionExporter {
         out.addProperty("serviceHost", snapshot.serviceHost != null ? snapshot.serviceHost : "");
         out.addProperty("servicePort", snapshot.servicePort);
         out.addProperty("secure", snapshot.secure);
+        if (snapshot.httpVersion != null) {
+            out.addProperty("httpVersion", snapshot.httpVersion);
+        }
         out.addProperty("pristine", snapshot.pristine);
         out.addProperty("binaryBody", snapshot.binaryBody);
         if (snapshot.sourceContext != null) {

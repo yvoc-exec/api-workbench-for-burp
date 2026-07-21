@@ -11,6 +11,7 @@ public final class ExactHttpRequestSnapshot {
     public String serviceHost;
     public int servicePort;
     public boolean secure;
+    public String httpVersion;
     public boolean pristine = true;
     public boolean binaryBody;
     public String sourceContext;
@@ -26,6 +27,7 @@ public final class ExactHttpRequestSnapshot {
         copy.serviceHost = source.serviceHost;
         copy.servicePort = source.servicePort;
         copy.secure = source.secure;
+        copy.httpVersion = source.httpVersion;
         copy.pristine = source.pristine;
         copy.binaryBody = source.binaryBody;
         copy.sourceContext = source.sourceContext;

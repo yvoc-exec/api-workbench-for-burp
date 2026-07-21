@@ -227,6 +227,7 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
         snapshot.serviceHost = getString(object, "serviceHost", null);
         snapshot.servicePort = getInt(object, "servicePort", 0);
         snapshot.secure = getBoolean(object, "secure", false);
+        snapshot.httpVersion = getString(object, "httpVersion", null);
         snapshot.pristine = getBoolean(object, "pristine", true);
         snapshot.binaryBody = getBoolean(object, "binaryBody", false);
         snapshot.sourceContext = getString(object, "sourceContext", null);
