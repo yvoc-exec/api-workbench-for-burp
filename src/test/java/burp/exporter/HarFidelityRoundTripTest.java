@@ -8,6 +8,7 @@ import burp.parser.HarParser;
 import burp.utils.HarMetadataSupport;
 import burp.utils.RequestBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,13 +30,19 @@ class HarFidelityRoundTripTest {
     void untouchedHarEntryRoundTripsExactly() throws Exception {
         String source = detailedHar();
         ApiCollection collection = importHar(source);
-        JsonObject exported = HarCollectionExporter.build(collection, harOptions(false), new ArrayList<>());
+        ArrayList<String> warnings = new ArrayList<>();
+        JsonObject exported = HarCollectionExporter.build(collection, harOptions(false), warnings);
         JsonObject expected = JsonParser.parseString(source).getAsJsonObject();
         assertThat(exported.get("rootVendor")).isEqualTo(expected.get("rootVendor"));
         assertThat(exported.getAsJsonObject("log").get("browser"))
                 .isEqualTo(expected.getAsJsonObject("log").get("browser"));
         assertThat(exported.getAsJsonObject("log").getAsJsonArray("entries").get(0))
                 .isEqualTo(expected.getAsJsonObject("log").getAsJsonArray("entries").get(0));
+        assertThat(firstEntry(exported).getAsJsonObject("response").get("status").getAsInt())
+                .isEqualTo(201);
+        assertThat(firstEntry(exported).getAsJsonObject("response").get("vendorResponse").getAsBoolean())
+                .isTrue();
+        assertThat(warnings).isEmpty();
     }
 
     @Test
@@ -231,6 +239,89 @@ class HarFidelityRoundTripTest {
     }
 
     @Test
+    void importedUnsafeRetainedHeadersAreOmittedForResolvedAndUnresolvedExports() throws Exception {
+        for (boolean resolve : List.of(false, true)) {
+            ApiCollection collection = importHar(unsafeRetainedHeadersHar());
+
+            assertThat(collection.requests.get(0).exactHttpRequest).isNull();
+            assertUnsafeRetainedHeadersAreOmitted(collection, resolve);
+        }
+    }
+
+    @Test
+    void multipleUnsafeRetainedHeadersProduceOneGenericOmissionWarning() throws Exception {
+        ApiCollection collection = importHar(unsafeRetainedHeadersHar());
+        ArrayList<String> warnings = new ArrayList<>();
+
+        HarCollectionExporter.build(collection, harOptions(false), warnings);
+
+        assertThat(warnings.stream().filter(w -> w.contains("unsafe header row was omitted")))
+                .hasSize(1);
+        assertThat(warnings).doesNotHaveDuplicates().allSatisfy(warning -> assertThat(warning)
+                .isNotBlank()
+                .doesNotContain("Bad Header", "X-Break", "WAVE6_HAR_WARNING_CANARY",
+                        "Injected", "\r", "\n"));
+    }
+
+    @Test
+    void nativeSaveReloadDoesNotReenableUnsafeRetainedHeaderFastPath() throws Exception {
+        ApiCollection imported = importHar(unsafeRetainedHeadersHar());
+        Path nativeFile = tempDir.resolve("unsafe-retained.api-workbench.json");
+        new CollectionExportService().exportCollection(imported,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                        nativeFile, false, null, Map.of()));
+        ApiCollection restored = new ApiWorkbenchCollectionParser().parse(nativeFile.toFile());
+
+        assertUnsafeRetainedHeadersAreOmitted(restored, false);
+        assertUnsafeRetainedHeadersAreOmitted(restored, true);
+    }
+
+    @Test
+    void malformedRetainedHeaderShapesDisqualifyExactEntryFastPath() throws Exception {
+        JsonArray nonObjectRow = new JsonArray();
+        nonObjectRow.add("not-an-object");
+        JsonArray missingName = new JsonArray();
+        missingName.add(JsonParser.parseString("{\"value\":\"safe\"}"));
+        JsonArray blankName = new JsonArray();
+        blankName.add(JsonParser.parseString("{\"name\":\"\",\"value\":\"safe\"}"));
+        JsonArray missingValue = new JsonArray();
+        missingValue.add(JsonParser.parseString("{\"name\":\"X-Test\"}"));
+        JsonArray nonStringValue = new JsonArray();
+        nonStringValue.add(JsonParser.parseString("{\"name\":\"X-Test\",\"value\":7}"));
+        JsonArray lineBreakName = new JsonArray();
+        lineBreakName.add(JsonParser.parseString("{\"name\":\"X-Test\\r\\nInjected\",\"value\":\"safe\"}"));
+        List<JsonElement> malformedHeaders = List.of(
+                JsonParser.parseString("{}"),
+                JsonParser.parseString("null"),
+                nonObjectRow,
+                missingName,
+                blankName,
+                missingValue,
+                nonStringValue,
+                lineBreakName);
+
+        for (int index = 0; index < malformedHeaders.size(); index++) {
+            ApiCollection collection = importHar(detailedHar());
+            ApiRequest request = collection.requests.get(0);
+            JsonObject original = HarMetadataSupport.parseObject(
+                    request.sourceMetadata.get(HarMetadataSupport.ENTRY_ORIGINAL));
+            original.getAsJsonObject("request").add("headers", malformedHeaders.get(index));
+            request.sourceMetadata.put(HarMetadataSupport.ENTRY_ORIGINAL, original.toString());
+            ArrayList<String> warnings = new ArrayList<>();
+
+            JsonObject exported = HarCollectionExporter.build(
+                    collection, harOptions(false), warnings);
+
+            assertThat(firstEntry(exported).getAsJsonObject("response").get("status").getAsInt())
+                    .as("malformed retained header case %s", index)
+                    .isZero();
+            assertThat(firstRequest(exported).get("headers").isJsonArray()).isTrue();
+            assertThat(warnings.stream().filter(w -> w.contains("unsafe header row was omitted")))
+                    .hasSize(1);
+        }
+    }
+
+    @Test
     void structuredCookieHarImportBuildsRuntimeCookieAfterNativeReload() throws Exception {
         ApiCollection imported = importHar("""
                 {"log":{"version":"1.2","entries":[{"request":{"method":"GET","url":"https://example.test/p","httpVersion":"HTTP/1.1",
@@ -257,8 +348,33 @@ class HarFidelityRoundTripTest {
     }
 
     private static JsonObject firstRequest(JsonObject root) {
-        return root.getAsJsonObject("log").getAsJsonArray("entries").get(0).getAsJsonObject()
-                .getAsJsonObject("request");
+        return firstEntry(root).getAsJsonObject("request");
+    }
+
+    private static JsonObject firstEntry(JsonObject root) {
+        return root.getAsJsonObject("log").getAsJsonArray("entries").get(0).getAsJsonObject();
+    }
+
+    private static void assertUnsafeRetainedHeadersAreOmitted(ApiCollection collection,
+                                                               boolean resolve) {
+        ArrayList<String> warnings = new ArrayList<>();
+        JsonObject exported = HarCollectionExporter.build(collection, harOptions(resolve), warnings);
+        JsonObject entry = firstEntry(exported);
+        String output = exported.toString();
+
+        assertThat(firstRequest(exported).getAsJsonArray("headers"))
+                .extracting(element -> element.getAsJsonObject().get("name").getAsString())
+                .contains("Host", "X-Safe")
+                .doesNotContain("Bad Header", "X-Break");
+        assertThat(output).doesNotContain("Bad Header", "X-Break", "WAVE6_HAR_WARNING_CANARY",
+                "Injected: yes");
+        assertThat(entry.getAsJsonObject("response").get("status").getAsInt()).isZero();
+        assertThat(entry.getAsJsonObject("response").has("vendorResponse")).isFalse();
+        assertThat(warnings.stream().filter(w -> w.contains("unsafe header row was omitted")))
+                .hasSize(1);
+        assertThat(warnings).doesNotHaveDuplicates().allSatisfy(warning -> assertThat(warning)
+                .doesNotContain("Bad Header", "X-Break", "WAVE6_HAR_WARNING_CANARY",
+                        "Injected", "\r", "\n"));
     }
 
     private static CollectionExportOptions harOptions(boolean resolve) {
@@ -296,6 +412,20 @@ class HarFidelityRoundTripTest {
                 "postData":{"mimeType":"application/json","text":"{\\"ok\\":true}","vendorPost":1},"headersSize":99,"bodySize":11,"comment":"request-comment","vendorRequest":true},
                 "response":{"status":201,"statusText":"Created","httpVersion":"HTTP/1.1","headers":[],"cookies":[],"content":{"size":2,"mimeType":"text/plain","text":"ok"},"redirectURL":"","headersSize":10,"bodySize":2,"vendorResponse":true},
                 "cache":{"beforeRequest":{"lastAccess":"x"}},"timings":{"send":1,"wait":2,"receive":3},"vendorTail":"kept"}]}}
+                """;
+    }
+
+    private static String unsafeRetainedHeadersHar() {
+        return """
+                {"log":{"version":"1.2","creator":{"name":"wave6","version":"1"},"entries":[{
+                "startedDateTime":"2020-01-01T00:00:00Z","time":1,
+                "request":{"method":"GET","url":"https://example.test/unsafe","httpVersion":"HTTP/1.1",
+                "headers":[{"name":"Host","value":"example.test"},{"name":"X-Safe","value":"safe"},
+                {"name":"Bad Header","value":"unsafe"},{"name":"X-Break","value":"WAVE6_HAR_WARNING_CANARY\\r\\nInjected: yes"}],
+                "queryString":[],"cookies":[],"headersSize":1,"bodySize":0},
+                "response":{"status":202,"statusText":"Accepted","httpVersion":"HTTP/1.1","headers":[],"cookies":[],
+                "content":{"size":0,"mimeType":"text/plain"},"redirectURL":"","headersSize":0,"bodySize":0,
+                "vendorResponse":true},"cache":{},"timings":{"send":0,"wait":1,"receive":0}}]}}
                 """;
     }
 }

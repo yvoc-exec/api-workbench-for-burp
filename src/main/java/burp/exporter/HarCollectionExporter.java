@@ -83,8 +83,15 @@ public final class HarCollectionExporter {
                                        int index,
                                        List<String> warnings) {
         JsonObject original = originalEntry(request);
-        if (!resolve && !original.entrySet().isEmpty() && retainedFingerprintMatches(request)) {
+        boolean retainedHeadersSafe = retainedRequestHeadersAreSafe(original);
+        if (!resolve
+                && !original.entrySet().isEmpty()
+                && retainedFingerprintMatches(request)
+                && retainedHeadersSafe) {
             return original;
+        }
+        if (!retainedHeadersSafe) {
+            addUnsafeHeaderWarning(warnings, index);
         }
 
         JsonObject entry = original;
@@ -227,6 +234,45 @@ public final class HarCollectionExporter {
         }
         String retained = request.sourceMetadata.get(HarMetadataSupport.REQUEST_FINGERPRINT);
         return retained != null && retained.equals(request.computeSemanticFingerprint());
+    }
+
+    private static boolean retainedRequestHeadersAreSafe(JsonObject entry) {
+        if (entry == null || !entry.has("request") || !entry.get("request").isJsonObject()) {
+            return true;
+        }
+        JsonObject retainedRequest = entry.getAsJsonObject("request");
+        if (!retainedRequest.has("headers")) {
+            return true;
+        }
+        JsonElement retainedHeaders = retainedRequest.get("headers");
+        if (retainedHeaders == null || retainedHeaders.isJsonNull()
+                || !retainedHeaders.isJsonArray()) {
+            return false;
+        }
+        for (JsonElement retainedHeader : retainedHeaders.getAsJsonArray()) {
+            if (retainedHeader == null || !retainedHeader.isJsonObject()) {
+                return false;
+            }
+            JsonObject header = retainedHeader.getAsJsonObject();
+            String name = retainedHeaderString(header, "name");
+            String value = retainedHeaderString(header, "value");
+            if (name == null || value == null || !isSafeHeader(name, value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String retainedHeaderString(JsonObject header, String property) {
+        if (header == null || !header.has(property)) {
+            return null;
+        }
+        JsonElement value = header.get(property);
+        if (value == null || !value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isString()) {
+            return null;
+        }
+        return value.getAsString();
     }
 
     private static JsonArray headersFromModel(ApiRequest request,
