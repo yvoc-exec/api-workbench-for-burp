@@ -26,6 +26,7 @@
         <failsafe.include.pattern>**/*IT.java</failsafe.include.pattern>
         <ui.tests.enabled>false</ui.tests.enabled>
         <performance.tests.enabled>false</performance.tests.enabled>
+        <memory.hardening.enabled>false</memory.hardening.enabled>
         <spotbugs.version>4.8.6.0</spotbugs.version>
         <pitest.version>1.16.1</pitest.version>
         <pitest.junit5.version>1.2.1</pitest.junit5.version>
@@ -448,6 +449,7 @@
                     <systemPropertyVariables>
                         <ui.tests.enabled>${ui.tests.enabled}</ui.tests.enabled>
                         <performance.tests.enabled>${performance.tests.enabled}</performance.tests.enabled>
+                        <memory.hardening.enabled>${memory.hardening.enabled}</memory.hardening.enabled>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
@@ -463,6 +465,7 @@
                     <systemPropertyVariables>
                         <ui.tests.enabled>${ui.tests.enabled}</ui.tests.enabled>
                         <performance.tests.enabled>${performance.tests.enabled}</performance.tests.enabled>
+                        <memory.hardening.enabled>${memory.hardening.enabled}</memory.hardening.enabled>
                     </systemPropertyVariables>
                 </configuration>
                 <executions>
@@ -499,6 +502,36 @@
                 <ui.tests.enabled>false</ui.tests.enabled>
                 <performance.tests.enabled>true</performance.tests.enabled>
             </properties>
+        </profile>
+        <profile>
+            <id>memory-hardening</id>
+            <properties>
+                <skipUnitTests>true</skipUnitTests>
+                <skipITs>false</skipITs>
+                <skipJacocoCheck>true</skipJacocoCheck>
+                <failsafe.include.pattern>**/MemoryHardeningProcessIT.java</failsafe.include.pattern>
+                <ui.tests.enabled>false</ui.tests.enabled>
+                <performance.tests.enabled>false</performance.tests.enabled>
+                <memory.hardening.enabled>true</memory.hardening.enabled>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <argLine>-Xms256m -Xmx512m -XX:+HeapDumpOnOutOfMemoryError "-XX:HeapDumpPath=${project.build.directory}/memory-hardening/parent.hprof"</argLine>
+                            <systemPropertyVariables>
+                                <ui.tests.enabled>false</ui.tests.enabled>
+                                <performance.tests.enabled>false</performance.tests.enabled>
+                                <memory.hardening.enabled>true</memory.hardening.enabled>
+                                <memory.hardening.output>${project.build.directory}/memory-hardening</memory.hardening.output>
+                                <memory.hardening.maven.version>3.9.9</memory.hardening.maven.version>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
         <profile>
             <id>static-analysis</id>
