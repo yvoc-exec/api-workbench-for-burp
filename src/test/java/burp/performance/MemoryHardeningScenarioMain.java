@@ -320,6 +320,28 @@ public final class MemoryHardeningScenarioMain {
     private static ScenarioExecution runnerSiteMap(String name, long[] peak) {
         int attempts = 100;
         int bytes = 64 * 1024;
+        SiteMapRun defaultOff = runSiteMapGroup(attempts, bytes, false);
+        SiteMapRun optIn = runSiteMapGroup(attempts, bytes, true);
+        sample(peak);
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = attempts * 2;
+        result.payloadBytes = bytes;
+        result.logicalRetainedBytes = defaultOff.requestBytes + defaultOff.responseBytes
+                + optIn.requestBytes + optIn.responseBytes;
+        result.retainedOwners = defaultOff.retained.size() + optIn.retained.size();
+        result.metrics.put("defaultOffRunnerAttempts", defaultOff.attempts);
+        result.metrics.put("defaultOffSuccessfulAttempts", defaultOff.successfulAttempts);
+        result.metrics.put("defaultOffSiteMapAddCalls", defaultOff.siteMapAdds);
+        result.metrics.put("optInRunnerAttempts", optIn.attempts);
+        result.metrics.put("optInSuccessfulAttempts", optIn.successfulAttempts);
+        result.metrics.put("optInSiteMapAddCalls", optIn.siteMapAdds);
+        result.metrics.put("optInApproximateRequestBytes", optIn.requestBytes);
+        result.metrics.put("optInApproximateResponseBytes", optIn.responseBytes);
+        result.metrics.put("runnerResultCount", result.retainedOwners);
+        return retain(result, List.of(defaultOff.runner, defaultOff.retained, optIn.runner, optIn.retained));
+    }
+
+    private static SiteMapRun runSiteMapGroup(int attempts, int bytes, boolean enabled) {
         MontoyaApi api = mock(MontoyaApi.class);
         SiteMap siteMap = mock(SiteMap.class);
         when(api.siteMap()).thenReturn(siteMap);
@@ -345,6 +367,7 @@ public final class MemoryHardeningScenarioMain {
             }
         };
         CollectionRunner runner = new CollectionRunner(api, pipeline, null);
+        runner.setAddResponsesToSiteMap(enabled);
         useDirectExecutor(runner);
         burp.models.ApiCollection collection = new burp.models.ApiCollection();
         collection.name = "Memory baseline";
@@ -365,20 +388,14 @@ public final class MemoryHardeningScenarioMain {
         List<RunnerResult> retained = runner.getResults();
         long requestBytes = (long) sends.get() * requestEvidence.length;
         long responseBytes = (long) sends.get() * bytes;
-        sample(peak);
-        ScenarioResult result = new ScenarioResult(name);
-        result.operationCount = attempts;
-        result.payloadBytes = bytes;
-        result.logicalRetainedBytes = requestBytes + responseBytes;
-        result.retainedOwners = retained.size();
-        result.metrics.put("runnerAttempts", sends.get());
-        result.metrics.put("successfulAttempts", retained.stream().filter(value -> value.success).count());
-        result.metrics.put("siteMapAddCalls", siteMapAdds.get());
-        result.metrics.put("approximateRequestBytes", requestBytes);
-        result.metrics.put("approximateResponseBytes", responseBytes);
-        result.metrics.put("runnerResultCount", retained.size());
-        return retain(result, List.of(runner, retained));
+        return new SiteMapRun(runner, retained, sends.get(),
+                retained.stream().filter(value -> value.success).count(), siteMapAdds.get(),
+                requestBytes, responseBytes);
     }
+
+    private record SiteMapRun(CollectionRunner runner, List<RunnerResult> retained,
+                              int attempts, long successfulAttempts, int siteMapAdds,
+                              long requestBytes, long responseBytes) { }
 
     private static HttpRequestResponse response(int bytes) {
         ByteArray body = mock(ByteArray.class);

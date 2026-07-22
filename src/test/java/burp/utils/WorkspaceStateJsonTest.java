@@ -46,6 +46,40 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void runnerSiteMapRetentionOptionalBooleanCopiesAndRoundTripsWithoutVersionOrWorkbenchCoupling() {
+        WorkspaceState enabled = new WorkspaceState();
+        enabled.runnerAddResponsesToSiteMap = Boolean.TRUE;
+        enabled.workbenchSitemapSelected = Boolean.FALSE;
+        enabled.runnerFollowRedirects = Boolean.FALSE;
+        WorkspaceState enabledCopy = WorkspaceState.copyOf(enabled);
+        WorkspaceState enabledRoundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(enabled));
+
+        assertThat(enabledCopy.runnerAddResponsesToSiteMap).isTrue();
+        assertThat(enabledRoundTrip.runnerAddResponsesToSiteMap).isTrue();
+        assertThat(enabledRoundTrip.workbenchSitemapSelected).isFalse();
+        assertThat(enabledRoundTrip.runnerFollowRedirects).isFalse();
+        assertThat(enabledRoundTrip.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
+
+        WorkspaceState disabled = new WorkspaceState();
+        disabled.runnerAddResponsesToSiteMap = Boolean.FALSE;
+        disabled.workbenchSitemapSelected = Boolean.TRUE;
+        disabled.runnerDebugRawRequest = Boolean.TRUE;
+        WorkspaceState disabledCopy = WorkspaceState.copyOf(disabled);
+        WorkspaceState disabledRoundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(disabled));
+
+        assertThat(disabledCopy.runnerAddResponsesToSiteMap).isFalse();
+        assertThat(disabledRoundTrip.runnerAddResponsesToSiteMap).isFalse();
+        assertThat(disabledRoundTrip.workbenchSitemapSelected).isTrue();
+        assertThat(disabledRoundTrip.runnerDebugRawRequest).isTrue();
+
+        WorkspaceState absent = WorkspaceStateJson.fromJson("{\"version\":2,\"collections\":[]}");
+        WorkspaceState nullCopy = WorkspaceState.copyOf(absent);
+        assertThat(absent.runnerAddResponsesToSiteMap).isNull();
+        assertThat(nullCopy.runnerAddResponsesToSiteMap).isNull();
+        assertThat(absent.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
+    }
+
+    @Test
     void versionOneWorkspaceIsUpgradedOnSave() {
         WorkspaceState state = new WorkspaceState();
         state.version = 1;

@@ -55,6 +55,7 @@ public class CollectionRunner {
     private boolean followRedirects = true;
     private RedirectPolicy redirectPolicy = RedirectPolicy.defaults();
     private boolean debugRawRequest = false;
+    private volatile boolean addResponsesToSiteMap = false;
     private volatile RunnerStopConditions stopConditions = new RunnerStopConditions();
     private final Object pauseLock = new Object();
     private volatile boolean pauseRequested = false;
@@ -138,6 +139,8 @@ public class CollectionRunner {
         this.executorServiceFactory = factory != null ? factory : Executors::newSingleThreadExecutor;
     }
     public void setDebugRawRequest(boolean debugRawRequest) { this.debugRawRequest = debugRawRequest; }
+    public void setAddResponsesToSiteMap(boolean enabled) { this.addResponsesToSiteMap = enabled; }
+    public boolean isAddResponsesToSiteMap() { return addResponsesToSiteMap; }
     public void setRuntimeOverlayProvider(Function<ApiCollection, Map<String, String>> provider) {
         this.runtimeOverlayProvider = provider;
     }
@@ -843,7 +846,7 @@ public class CollectionRunner {
                     result.path = parsed.pathWithQuery;
 
                     // Annotate sitemap entry for visibility
-                    if (api != null) {
+                    if (api != null && addResponsesToSiteMap) {
                         try {
                             Annotations annotations = Annotations.annotations(
                                     "[Runner] " + req.name, HighlightColor.CYAN);

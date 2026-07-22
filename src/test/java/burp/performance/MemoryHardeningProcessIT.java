@@ -224,10 +224,13 @@ class MemoryHardeningProcessIT {
             assertThat(workspace.get("isolatedByteArrayJsonBytes").getAsLong())
                     .isGreaterThan(workspace.get("byteArrayCanonicalRawBytes").getAsLong());
         }
-        if (runner.has("successfulAttempts") && runner.has("siteMapAddCalls")) {
-            assertThat(runner.get("siteMapAddCalls").getAsLong())
-                    .isEqualTo(runner.get("successfulAttempts").getAsLong());
-        }
+        assertThat(runner.get("defaultOffRunnerAttempts").getAsLong()).isEqualTo(100);
+        assertThat(runner.get("defaultOffSuccessfulAttempts").getAsLong()).isEqualTo(100);
+        assertThat(runner.get("defaultOffSiteMapAddCalls").getAsLong()).isZero();
+        assertThat(runner.get("optInRunnerAttempts").getAsLong()).isEqualTo(100);
+        assertThat(runner.get("optInSuccessfulAttempts").getAsLong()).isEqualTo(100);
+        assertThat(runner.get("optInSiteMapAddCalls").getAsLong())
+                .isEqualTo(runner.get("optInSuccessfulAttempts").getAsLong());
     }
 
     private static void assertRetainedOwnershipMeasurements(JsonArray results) {

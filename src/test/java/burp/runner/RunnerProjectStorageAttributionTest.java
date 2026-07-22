@@ -36,47 +36,55 @@ import static org.mockito.Mockito.when;
 class RunnerProjectStorageAttributionTest {
 
     @Test
-    void successfulFailureRetryRedirectDependentAdHocCancellationAndConsecutiveRunsAreAttributed()
+    void defaultOffAndExplicitOptInProjectStorageAreAttributedIndependently()
             throws Exception {
         try (MockedStatic<Annotations> annotations = mockStatic(Annotations.class)) {
             annotations.when(() -> Annotations.annotations("[Runner] Storage request", HighlightColor.CYAN))
                     .thenReturn(mock(Annotations.class));
 
-            Attribution one = execute(List.of(success(200, 1024, false, false)), 0, false, 1);
-            Attribution httpFailure = execute(List.of(success(500, 2048, false, false)), 0, false, 1);
-            Attribution retry = execute(List.of(
-                    success(503, 512, false, false),
-                    success(200, 1024, false, false)), 1, false, 1);
-            Attribution redirect = execute(List.of(redirectSuccess()), 0, false, 1);
-            Attribution dependent = execute(List.of(success(200, 256, true, false)), 0, false, 1);
-            Attribution adHoc = execute(List.of(success(200, 256, false, true)), 0, false, 1);
-            Attribution cancelled = execute(List.of(success(200, 128, false, false)), 0, true, 1);
-            Attribution consecutive = execute(List.of(
-                    success(200, 128, false, false),
-                    success(200, 128, false, false)), 0, false, 2);
+            List<Attribution> defaultOff = representativeCases(false);
+            List<Attribution> optIn = representativeCases(true);
 
-            assertThat(one.siteMapAdds).isEqualTo(1);
-            assertThat(httpFailure.siteMapAdds).isEqualTo(1);
-            assertThat(retry.attempts).isEqualTo(2);
-            assertThat(retry.siteMapAdds).isEqualTo(2);
-            assertThat(redirect.siteMapAdds).isEqualTo(1);
-            assertThat(redirect.redirectHops).isEqualTo(1);
-            assertThat(dependent.dependentResults).isEqualTo(1);
-            assertThat(adHoc.adHocResults).isEqualTo(1);
-            assertThat(cancelled.siteMapAdds).isZero();
-            assertThat(consecutive.attempts).isEqualTo(2);
-            assertThat(consecutive.siteMapAdds).isEqualTo(2);
-            assertThat(one.approximateResponseBytes).isEqualTo(1024);
-            assertThat(one.approximateRequestBytes).isPositive();
-            assertThat(one.runnerResults).isEqualTo(1);
-            assertThat(one.requestCompleteCallbacks).isEqualTo(1);
+            assertThat(defaultOff).extracting(value -> value.siteMapAdds)
+                    .containsOnly(0);
+            assertThat(optIn).extracting(value -> value.siteMapAdds)
+                    .containsExactly(1, 1, 2, 1, 1, 1, 0, 2);
+
+            assertThat(defaultOff.get(2).attempts).isEqualTo(2);
+            assertThat(optIn.get(2).attempts).isEqualTo(2);
+            assertThat(defaultOff.get(3).redirectHops).isEqualTo(1);
+            assertThat(optIn.get(3).redirectHops).isEqualTo(1);
+            assertThat(defaultOff.get(4).dependentResults).isEqualTo(1);
+            assertThat(optIn.get(4).dependentResults).isEqualTo(1);
+            assertThat(defaultOff.get(5).adHocResults).isEqualTo(1);
+            assertThat(optIn.get(5).adHocResults).isEqualTo(1);
+            assertThat(defaultOff.get(0).runnerResults).isEqualTo(optIn.get(0).runnerResults);
+            assertThat(defaultOff.get(0).requestCompleteCallbacks)
+                    .isEqualTo(optIn.get(0).requestCompleteCallbacks);
+            assertThat(optIn.get(0).approximateResponseBytes).isEqualTo(1024);
+            assertThat(optIn.get(0).approximateRequestBytes).isPositive();
         }
+    }
+
+    private static List<Attribution> representativeCases(boolean enabled) throws Exception {
+        return List.of(
+                execute(List.of(success(200, 1024, false, false)), 0, false, 1, enabled),
+                execute(List.of(success(500, 2048, false, false)), 0, false, 1, enabled),
+                execute(List.of(success(503, 512, false, false), success(200, 1024, false, false)),
+                        1, false, 1, enabled),
+                execute(List.of(redirectSuccess()), 0, false, 1, enabled),
+                execute(List.of(success(200, 256, true, false)), 0, false, 1, enabled),
+                execute(List.of(success(200, 256, false, true)), 0, false, 1, enabled),
+                execute(List.of(success(200, 128, false, false)), 0, true, 1, enabled),
+                execute(List.of(success(200, 128, false, false), success(200, 128, false, false)),
+                        0, false, 2, enabled));
     }
 
     private static Attribution execute(List<ExecutionResult> executions,
                                        int retries,
                                        boolean cancelBeforeRun,
-                                       int runCount) throws Exception {
+                                       int runCount,
+                                       boolean addResponsesToSiteMap) throws Exception {
         MontoyaApi api = mock(MontoyaApi.class);
         SiteMap siteMap = mock(SiteMap.class);
         when(api.siteMap()).thenReturn(siteMap);
@@ -104,6 +112,7 @@ class RunnerProjectStorageAttributionTest {
             }
         };
         CollectionRunner runner = new CollectionRunner(api, pipeline, null);
+        runner.setAddResponsesToSiteMap(addResponsesToSiteMap);
         runner.setDelayMs(0);
         if (!cancelBeforeRun) {
             runner.setExecutorServiceFactory(RunnerProjectStorageAttributionTest::directExecutorService);

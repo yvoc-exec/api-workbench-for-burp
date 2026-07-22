@@ -153,6 +153,8 @@ Compatibility note:
 
 Use the runner for ordered, repeatable API flows.
 
+Runner Site map retention is disabled by default. Enable **Add responses to Burp Site map** only when Burp project retention is intentional: qualifying attempts, including retries, are stored separately and large responses or repeated runs can significantly increase project size. This Runner option is independent from Workbench **Sitemap (Live)**, and disabling it does not compact an existing Burp project.
+
 | Runner capability | What users can do |
 | --- | --- |
 | Queue checked requests | Build a run list |

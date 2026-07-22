@@ -249,6 +249,7 @@ public class ImporterPanel {
     private JComboBox<ExecutionPolicy.TargetChangeMode> runnerTargetChangeModeCombo;
     private JSpinner stopAfterFailuresSpinner;
     private JCheckBox followRedirectsBox;
+    private JCheckBox runnerAddResponsesToSiteMapCheckBox;
     private JCheckBox runnerDebugRawRequestBox;
     private JButton pauseRunnerBtn, resumeRunnerBtn, stepRunnerBtn, startRunnerBtn, cancelRunnerBtn;
     private RunnerPreviewTableModel runnerPreviewModel;
@@ -3722,6 +3723,17 @@ public class ImporterPanel {
         gbc.gridx = 2;
         runnerDebugRawRequestBox = new JCheckBox("Debug final raw request");
         configPanel.add(runnerDebugRawRequestBox, gbc);
+        gbc.gridx = 3;
+        runnerAddResponsesToSiteMapCheckBox = new JCheckBox("Add responses to Burp Site map");
+        runnerAddResponsesToSiteMapCheckBox.setSelected(false);
+        runnerAddResponsesToSiteMapCheckBox.setToolTipText(
+                "Stores every qualifying Runner attempt in Burp's Site map and project file. "
+                        + "Retries and large responses can significantly increase project size.");
+        runnerAddResponsesToSiteMapCheckBox.addActionListener(e -> {
+            runner.setAddResponsesToSiteMap(runnerAddResponsesToSiteMapCheckBox.isSelected());
+            notifyWorkspaceChanged();
+        });
+        configPanel.add(runnerAddResponsesToSiteMapCheckBox, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3;
         stopOnStatusAtLeast400Box = new JCheckBox("Stop on status >= 400");
@@ -8565,6 +8577,8 @@ public class ImporterPanel {
         if (stopOnMissingVariableBox != null) state.runnerStopOnMissingVariable = stopOnMissingVariableBox.isSelected();
         if (stopAfterFailuresSpinner != null) state.runnerStopAfterFailures = spinnerIntValue(stopAfterFailuresSpinner);
         if (followRedirectsBox != null) state.runnerFollowRedirects = followRedirectsBox.isSelected();
+        state.runnerAddResponsesToSiteMap = runnerAddResponsesToSiteMapCheckBox != null
+                && runnerAddResponsesToSiteMapCheckBox.isSelected();
         if (runnerDebugRawRequestBox != null) state.runnerDebugRawRequest = runnerDebugRawRequestBox.isSelected();
         if (runnerDetailTabs != null) state.runnerDetailTabIndex = runnerDetailTabs.getSelectedIndex();
         ExecutionPolicy policy = currentRunnerExecutionPolicy();
@@ -8661,6 +8675,11 @@ public class ImporterPanel {
         applyCheckboxState(stopOnMissingVariableBox, state.runnerStopOnMissingVariable, false);
         applySpinnerState(stopAfterFailuresSpinner, state.runnerStopAfterFailures, 0);
         applyCheckboxState(followRedirectsBox, state.runnerFollowRedirects, true);
+        boolean addResponsesToSiteMap = Boolean.TRUE.equals(state.runnerAddResponsesToSiteMap);
+        applyCheckboxState(runnerAddResponsesToSiteMapCheckBox, addResponsesToSiteMap, false);
+        if (runner != null) {
+            runner.setAddResponsesToSiteMap(addResponsesToSiteMap);
+        }
         applyCheckboxState(runnerDebugRawRequestBox, state.runnerDebugRawRequest, false);
         if (runnerResponseTimeoutSpinner != null) {
             applySpinnerState(runnerResponseTimeoutSpinner, state.runnerResponseTimeoutMillis != null ? state.runnerResponseTimeoutMillis : state.defaultResponseTimeoutMillis, 30_000);
@@ -12101,6 +12120,8 @@ public class ImporterPanel {
         runner.setRedirectPolicy(sharedRedirectPolicy);
         runner.setExecutionPolicy(currentRunnerExecutionPolicy());
         runner.setDebugRawRequest(runnerDebugRawRequestBox.isSelected());
+        runner.setAddResponsesToSiteMap(runnerAddResponsesToSiteMapCheckBox != null
+                && runnerAddResponsesToSiteMapCheckBox.isSelected());
 
         resultModel.clear();
         timelineModel.clear();
@@ -12310,6 +12331,9 @@ public class ImporterPanel {
         }
         if (stepRunnerBtn != null) {
             stepRunnerBtn.setEnabled(canStepRunnerNow(running, !runnerQueuedRequests.isEmpty()));
+        }
+        if (runnerAddResponsesToSiteMapCheckBox != null) {
+            runnerAddResponsesToSiteMapCheckBox.setEnabled(!running);
         }
     }
 

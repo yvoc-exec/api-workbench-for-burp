@@ -51,6 +51,7 @@ public class WorkspaceState {
     public Boolean runnerStopOnMissingVariable;
     public Integer runnerStopAfterFailures;
     public Boolean runnerFollowRedirects;
+    public Boolean runnerAddResponsesToSiteMap;
     public Boolean runnerDebugRawRequest;
     public Integer runnerDetailTabIndex;
     public Integer runnerResponseTimeoutMillis;
@@ -116,6 +117,7 @@ public class WorkspaceState {
         copy.runnerStopOnMissingVariable = source.runnerStopOnMissingVariable;
         copy.runnerStopAfterFailures = source.runnerStopAfterFailures;
         copy.runnerFollowRedirects = source.runnerFollowRedirects;
+        copy.runnerAddResponsesToSiteMap = source.runnerAddResponsesToSiteMap;
         copy.runnerDebugRawRequest = source.runnerDebugRawRequest;
         copy.runnerDetailTabIndex = source.runnerDetailTabIndex;
         copy.runnerResponseTimeoutMillis = source.runnerResponseTimeoutMillis;

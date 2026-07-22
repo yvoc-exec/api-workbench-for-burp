@@ -296,6 +296,7 @@ The current presentation is a Runner Queue on the left, one consolidated Runner 
 | Setting | Behavior |
 | --- | --- |
 | Delay | Time between requests |
+| Add responses to Burp Site map | Disabled by default. When enabled, stores each qualifying Runner attempt in Burp's Site map and project; retries can create multiple entries and large responses or long runs can significantly increase project size. This is independent from Workbench **Sitemap (Live)**, and disabling it does not shrink an existing project. |
 | Retries | Attempts after the initial attempt |
 | Stop on error | Stop when a request-level error occurs |
 | Stop on assertion failure | Stop when an assertion fails |

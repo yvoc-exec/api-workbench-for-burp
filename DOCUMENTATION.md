@@ -56,6 +56,8 @@ The same checked requests can be sent to Repeater, Sitemap, or Intruder. Workben
 
 The runner executes checked requests in order with retries, redirect handling, stop conditions, pause/resume, step, and cancellation. Runner redirect following is controlled separately from Workbench Send, and redirect hops are recorded as evidence under the logical execution rather than as queue items. Redirect following defaults to 10 hops and is configurable from 1 to 20. Pre-request scripts run once per logical request, post-response scripts run once against the final successful response, stop-on-status evaluates only that final response, fragments are stripped before the next request is built, and percent-encoded path/query octets stay encoded exactly. 307/308 preserve method, body, and entity metadata; 301/302 preserve body for non-POST methods; and POST-to-GET or non-HEAD 303 redirects drop body and entity headers.
 
+Runner-to-Site-map retention is disabled by default. The independent **Add responses to Burp Site map** option stores every qualifying Runner attempt, so retries may create multiple project entries and large responses or repeated runs may significantly increase project size. It does not change Workbench **Sitemap (Live)**, and turning it off does not reclaim existing Burp project pages.
+
 ### 2.5 OAuth2 Token Management
 
 OAuth2 configuration belongs to the active environment profile. Tokens are acquired, refreshed, and written back to configured environment outputs.

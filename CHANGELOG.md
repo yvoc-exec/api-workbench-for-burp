@@ -19,6 +19,7 @@
 
 ### Changed
 
+- Runner responses are added to Burp Site map only when the independent **Add responses to Burp Site map** option is enabled; the safe default is off because retries and large responses can substantially increase project size. Disabling it does not compact existing projects.
 - OAuth2 token acquisition in production uses Burp/Montoya networking.
 - Dialog parenting improved for Burp UI integration.
 - Header Enabled checkbox exposes preserved-but-not-sent header state.
