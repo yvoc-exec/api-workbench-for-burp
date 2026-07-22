@@ -28,7 +28,7 @@ class ImporterPanelWorkbenchLayoutTest {
                 .map(AbstractButton::getText)
                 .toList();
 
-        assertThat(visibleButtons).containsExactly("+ Add Collection", "- Remove Collection", "Actions");
+        assertThat(visibleButtons).containsExactly("+ Add", "Remove", "Actions");
         assertThat(Integer.valueOf(countButtonsByText(workbenchTab, "Actions"))).isEqualTo(1);
         assertThat(collectionsPanel).isSameAs(((JButton) field(panel, "importBtn")).getParent());
         assertThat((JButton) field(panel, "importBtn")).isSameAs((JButton) field(panel, "actionsBtn"));

@@ -536,22 +536,50 @@ public class ImporterPanel {
 
     private JPanel createCollectionControls() {
         ensureWorkbenchActionDefaultsInitialized();
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+
+        JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createTitledBorder("Collections"));
-        addCollectionBtn = new JButton("+ Add Collection");
+
+        addCollectionBtn = new JButton("+ Add");
+        addCollectionBtn.setToolTipText("Add Collection");
+        addCollectionBtn.getAccessibleContext().setAccessibleName("Add Collection");
         addCollectionBtn.addActionListener(e -> addCollection());
-        removeCollectionBtn = new JButton("- Remove Collection");
+
+        removeCollectionBtn = new JButton("Remove");
+        removeCollectionBtn.setToolTipText("Remove Collection");
+        removeCollectionBtn.getAccessibleContext().setAccessibleName("Remove Collection");
         removeCollectionBtn.addActionListener(e -> showRemoveCollectionsDialog());
         removeCollectionBtn.setEnabled(false);
+
         importBtn = new JButton("Actions");
+        importBtn.setToolTipText("Open collection actions");
         importBtn.setEnabled(false);
         importBtn.addActionListener(e -> showActionsDialog());
         actionsBtn = importBtn;
+
         sendToRunnerBtn = new JButton("Run Checked");
         sendToRunnerBtn.setEnabled(false);
-        panel.add(addCollectionBtn);
-        panel.add(removeCollectionBtn);
-        panel.add(importBtn);
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(2, 2, 2, 2);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridy = 0;
+        gbc.gridwidth = 1;
+        gbc.weightx = 0.5;
+
+        gbc.gridx = 0;
+        panel.add(addCollectionBtn, gbc);
+
+        gbc.gridx = 1;
+        panel.add(removeCollectionBtn, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1.0;
+        panel.add(importBtn, gbc);
+
         return panel;
     }
 
