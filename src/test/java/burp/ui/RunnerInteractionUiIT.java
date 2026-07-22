@@ -204,12 +204,16 @@ class RunnerInteractionUiIT {
         SwingRobotTestSupport.clickTabbedPaneTab(panel.getTabbedPane(), "Workbench", robot);
         JButton actions = panel.getActionsButtonForTests();
         assertThat(actions).isNotNull();
-        SwingRobotTestSupport.waitUntilOnEdt(() -> actions.isShowing() && actions.isEnabled(),
+        prepareActionsButtonForPhysicalClick(actions, frame);
+        SwingRobotTestSupport.waitUntilOnEdt(() -> actions.isShowing()
+                        && actions.isEnabled()
+                        && actions.getVisibleRect().contains(actions.getWidth() / 2, actions.getHeight() / 2),
                 SHORT_UI_TIMEOUT,
                 "Actions button did not become ready");
         SwingRobotTestSupport.click(actions, robot);
 
-        Window optionsDialog = SwingRobotTestSupport.waitForWindowTitle("Options", SHORT_UI_TIMEOUT);
+        Window optionsDialog = SwingRobotTestSupport.waitForWindowTitle(
+                "Options", SHORT_UI_TIMEOUT, "runner-actions-options-timeout.png", frame);
         @SuppressWarnings("unchecked")
         List<JTree> trees = SwingRobotTestSupport.findByType((Container) ((RootPaneContainer) optionsDialog).getContentPane(), JTree.class);
         assertThat(trees).isNotEmpty();
@@ -228,6 +232,34 @@ class RunnerInteractionUiIT {
         SwingRobotTestSupport.waitUntil(() -> !optionsDialog.isShowing(),
                 SHORT_UI_TIMEOUT,
                 "Actions dialog did not close after queueing runner requests");
+    }
+
+    private static void prepareActionsButtonForPhysicalClick(JButton actions, JFrame frame) {
+        SwingRobotTestSupport.runOnEdt(() -> {
+            frame.toFront();
+            frame.requestFocus();
+            frame.requestFocusInWindow();
+
+            Container toolbar = actions.getParent();
+            int requiredToolbarWidth = toolbar != null ? toolbar.getPreferredSize().width + 16 : 0;
+            for (Container ancestor = toolbar; ancestor != null; ancestor = ancestor.getParent()) {
+                if (!(ancestor instanceof JSplitPane splitPane)) {
+                    continue;
+                }
+                Component left = splitPane.getLeftComponent();
+                if (left != null && SwingUtilities.isDescendingFrom(actions, left)) {
+                    int maximum = Math.max(splitPane.getDividerLocation(), frame.getWidth() - 400);
+                    splitPane.setDividerLocation(Math.min(requiredToolbarWidth, maximum));
+                    break;
+                }
+            }
+            frame.validate();
+            frame.repaint();
+        });
+        SwingRobotTestSupport.waitUntilOnEdt(
+                () -> frame.isShowing() && frame.isActive(),
+                SHORT_UI_TIMEOUT,
+                "Workbench owner frame did not activate before Actions click");
     }
 
     private static void clickStartRunnerInPreview(Window preview, Robot robot) {

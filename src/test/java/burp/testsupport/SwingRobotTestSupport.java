@@ -348,21 +348,49 @@ public final class SwingRobotTestSupport {
     }
 
     public static Window waitForWindowTitle(String title, Duration timeout) {
-        final Window[] found = new Window[1];
-        waitUntil(() -> {
-            for (Window window : Window.getWindows()) {
-                if (window instanceof Frame frame && Objects.equals(frame.getTitle(), title) && window.isShowing()) {
-                    found[0] = window;
-                    return true;
-                }
-                if (window instanceof Dialog dialog && Objects.equals(dialog.getTitle(), title) && window.isShowing()) {
-                    found[0] = window;
-                    return true;
-                }
+        return waitForWindowTitle(title, timeout, "window-title-timeout.png", null);
+    }
+
+    public static Window waitForWindowTitle(String title, Duration timeout, String failureArtifactName) {
+        return waitForWindowTitle(title, timeout, failureArtifactName, null);
+    }
+
+    public static Window waitForWindowTitle(String title, Duration timeout, String failureArtifactName,
+                                            Window expectedOwner) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            Window found = visibleWindowWithTitle(title);
+            if (found != null) {
+                return found;
             }
-            return false;
-        }, timeout, "Timed out waiting for window title: " + title);
-        return found[0];
+            awaitEdt();
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted waiting for window title: " + title, e);
+            }
+        }
+
+        List<String> visibleWindows = visibleWindowDescriptions();
+        Point pointer = pointerLocation();
+        Path screenshot = captureScreenshot(failureArtifactName);
+        boolean visibleDialog = false;
+        boolean visibleOwnedWindow = false;
+        for (Window window : Window.getWindows()) {
+            if (window == null || !window.isShowing()) {
+                continue;
+            }
+            visibleDialog |= window instanceof Dialog;
+            visibleOwnedWindow |= expectedOwner != null && window.getOwner() == expectedOwner;
+        }
+        throw new AssertionError("Timed out waiting for window title: " + title
+                + "; visibleWindows=" + visibleWindows
+                + "; pointerLocation=" + pointer
+                + "; visibleDialog=" + visibleDialog
+                + "; visibleWindowOwnedByExpectedFrame=" + visibleOwnedWindow
+                + "; expectedOwnerActive=" + (expectedOwner != null && expectedOwner.isActive())
+                + "; screenshot=" + screenshot);
     }
 
     public static void expandWindowToAvailableScreen(Window window) {
@@ -462,6 +490,33 @@ public final class SwingRobotTestSupport {
             }
         }
         return titles;
+    }
+
+    private static Window visibleWindowWithTitle(String title) {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof Frame frame && Objects.equals(frame.getTitle(), title) && window.isShowing()) {
+                return window;
+            }
+            if (window instanceof Dialog dialog && Objects.equals(dialog.getTitle(), title) && window.isShowing()) {
+                return window;
+            }
+        }
+        return null;
+    }
+
+    private static List<String> visibleWindowDescriptions() {
+        List<String> descriptions = new ArrayList<>();
+        for (Window window : Window.getWindows()) {
+            if (window != null && window.isShowing()) {
+                descriptions.add(describeWindow(window)
+                        + "{class=" + window.getClass().getSimpleName()
+                        + ",active=" + window.isActive()
+                        + ",focused=" + window.isFocused()
+                        + ",owner=" + (window.getOwner() != null ? describeWindow(window.getOwner()) : "none")
+                        + ",bounds=" + window.getBounds() + "}");
+            }
+        }
+        return descriptions;
     }
 
     public static Path captureScreenshot(String fileName) {
