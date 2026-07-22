@@ -31,6 +31,34 @@ class ApiWorkbenchParameterRoundTripTest {
     }
 
     @Test
+    void nativeExportCanonicalizesRequestPathsOnceWithoutChangingTransport() throws Exception {
+        Map<String, String> cases = new java.util.LinkedHashMap<>();
+        cases.put("/items/{id}", "items/{id}");
+        cases.put("Core\\Nested///Leaf", "Core/Nested/Leaf");
+        cases.put("Core/Nested", "Core/Nested");
+
+        for (Map.Entry<String, String> entry : cases.entrySet()) {
+            ApiRequest original = request();
+            original.path = entry.getKey();
+            original.sourceCollection = "C";
+            original.authSource = "none";
+            byte[] before = new RequestBuilder(null).buildRequest(original, null);
+
+            JsonObject first = export(original);
+            JsonObject exportedRequest = first.getAsJsonObject("collection")
+                    .getAsJsonArray("requests").get(0).getAsJsonObject();
+            assertThat(exportedRequest.get("path").getAsString()).isEqualTo(entry.getValue());
+            assertNativeExportImportExportIdempotent(first);
+
+            Path file = tempDir.resolve("path-" + Math.abs(entry.getKey().hashCode()) + ".json");
+            Files.writeString(file, new GsonBuilder().create().toJson(first), StandardCharsets.UTF_8);
+            ApiRequest restored = new ApiWorkbenchCollectionParser().parse(file.toFile()).requests.get(0);
+            assertThat(restored.path).isEqualTo(entry.getValue());
+            assertThat(new RequestBuilder(null).buildRequest(restored, null)).containsExactly(before);
+        }
+    }
+
+    @Test
     void absentOptionalDescriptionsAndVersionRemainAbsent() throws Exception {
         for (int schemaVersion : new int[]{1, 2}) {
             JsonObject first = parseAndExportOptionalFields(schemaVersion, null, false);
@@ -326,6 +354,7 @@ class ApiWorkbenchParameterRoundTripTest {
     private static JsonObject export(ApiRequest request) {
         ApiCollection collection = new ApiCollection();
         collection.name = "C";
+        collection.format = "api-workbench";
         collection.requests.add(request);
         return ApiWorkbenchCollectionExporter.build(collection,
                 new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON, null, false, null, Map.of()),

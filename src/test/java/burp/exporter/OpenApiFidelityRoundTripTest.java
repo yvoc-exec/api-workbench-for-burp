@@ -7,6 +7,7 @@ import burp.parser.OpenApiParser;
 import burp.parser.VariableResolver;
 import burp.utils.RequestBuilder;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -48,19 +49,36 @@ class OpenApiFidelityRoundTripTest {
                       responses: {'200': {description: ok}}
                 """);
         ApiCollection imported = new OpenApiParser().parse(source.toFile());
+        ApiRequest importedRequest = imported.requests.get(0);
+        assertThat(importedRequest.path).isEqualTo("/users/{id}");
+        assertThat(importedRequest.sourceMetadata.get("openapi.pathTemplate"))
+                .isEqualTo("/users/{id}");
+        byte[] importedBytes = new RequestBuilder(null)
+                .buildRequest(importedRequest, new VariableResolver());
 
         Path nativeFile = tempDir.resolve("native.json");
-        Files.writeString(nativeFile, new GsonBuilder().setPrettyPrinting().create().toJson(
-                ApiWorkbenchCollectionExporter.build(imported, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>())));
+        JsonObject firstNative = ApiWorkbenchCollectionExporter.build(
+                imported, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>());
+        assertThat(firstNative.getAsJsonObject("collection").getAsJsonArray("requests")
+                .get(0).getAsJsonObject().get("path").getAsString()).isEqualTo("users/{id}");
+        Files.writeString(nativeFile, new GsonBuilder().setPrettyPrinting().create().toJson(firstNative));
         ApiCollection nativeRoundTrip = new ApiWorkbenchCollectionParser().parse(nativeFile.toFile());
+        JsonObject secondNative = ApiWorkbenchCollectionExporter.build(
+                nativeRoundTrip, options(CollectionExportFormat.API_WORKBENCH_JSON), new ArrayList<>());
+        assertThat(secondNative).isEqualTo(firstNative);
         assertThat(nativeRoundTrip.sourceMetadata).isEqualTo(imported.sourceMetadata);
         assertThat(nativeRoundTrip.requests.get(0).sourceMetadata).isEqualTo(imported.requests.get(0).sourceMetadata);
+        assertThat(nativeRoundTrip.requests.get(0).sourceMetadata.get("openapi.pathTemplate"))
+                .isEqualTo("/users/{id}");
+        assertThat(new RequestBuilder(null).buildRequest(
+                nativeRoundTrip.requests.get(0), new VariableResolver())).containsExactly(importedBytes);
         assertNativeMetadata(imported.requests.get(0), nativeRoundTrip.requests.get(0));
         assertEquivalent(imported.requests.get(0), nativeRoundTrip.requests.get(0));
 
         Path openApiFile = tempDir.resolve("export.json");
         Files.writeString(openApiFile, new GsonBuilder().setPrettyPrinting().create().toJson(
                 OpenApiCollectionExporter.build(nativeRoundTrip, options(CollectionExportFormat.OPENAPI_JSON), new ArrayList<>())));
+        assertThat(Files.readString(openApiFile)).contains("\"/users/{id}\"");
         ApiCollection reimported = new OpenApiParser().parse(openApiFile.toFile());
         assertEquivalent(nativeRoundTrip.requests.get(0), reimported.requests.get(0), false);
         assertThat(reimported.sourceMetadata).containsKey("openapi.document.extensions");

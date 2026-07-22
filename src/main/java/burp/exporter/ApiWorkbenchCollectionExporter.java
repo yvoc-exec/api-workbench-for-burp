@@ -6,6 +6,7 @@ import burp.models.EnvironmentProfile;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ScriptBlock;
 import burp.parser.VariableResolver;
+import burp.utils.RequestPathResolver;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
@@ -88,7 +89,8 @@ public final class ApiWorkbenchCollectionExporter {
         JsonObject out = new JsonObject();
         out.addProperty("id", request.id != null ? request.id : "");
         out.addProperty("name", CollectionExportSupport.resolve(request.name, resolver, resolve) != null ? CollectionExportSupport.resolve(request.name, resolver, resolve) : "");
-        out.addProperty("path", CollectionExportSupport.resolve(request.path, resolver, resolve) != null ? CollectionExportSupport.resolve(request.path, resolver, resolve) : "");
+        String resolvedPath = CollectionExportSupport.resolve(request.path, resolver, resolve);
+        out.addProperty("path", RequestPathResolver.normalizeFolderPath(resolvedPath));
         out.addProperty("sourceCollection", request.sourceCollection != null ? request.sourceCollection : "");
         out.addProperty("method", CollectionExportSupport.resolve(request.method, resolver, resolve) != null ? CollectionExportSupport.resolve(request.method, resolver, resolve) : "GET");
         out.addProperty("url", CollectionExportSupport.resolve(request.url, resolver, resolve) != null ? CollectionExportSupport.resolve(request.url, resolver, resolve) : "");
