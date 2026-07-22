@@ -1,0 +1,4 @@
+{
+  "info":{"name":"Wave 6 Postman V20","schema":"https://schema.getpostman.com/json/collection/v2.0.0/collection.json"},
+  "item":[{"name":"V20 Canonical GET","request":{"method":"GET","header":[{"key":"X-Dupe","value":"one"},{"key":"X-Dupe","value":"two"},{"key":"X-Disabled","value":"no","disabled":true}],"url":{"raw":"https://example.test/v20?tag=one&tag=two&flag&empty=","protocol":"https","host":["example","test"],"path":["v20"],"query":[{"key":"tag","value":"one"},{"key":"tag","value":"two"},{"key":"flag"},{"key":"empty","value":""}]}}}]
+}

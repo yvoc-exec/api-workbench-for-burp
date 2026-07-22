@@ -1,0 +1,59 @@
+openapi: 3.1.0
+info:
+  title: Wave 6 OpenAPI
+  version: 1.0.0
+servers:
+  - url: https://example.test
+x-wave6-root: retained
+paths:
+  /items/{id}:
+    post:
+      operationId: createItem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            $ref: components.yaml#/Identifier
+        - name: tag
+          in: query
+          style: form
+          explode: true
+          schema: {type: array, items: {type: string}}
+          example: [one, two]
+        - name: reserved
+          in: query
+          allowReserved: true
+          schema: {type: string}
+          example: a/b?c=d
+        - name: X-Wave
+          in: header
+          required: false
+          schema: {type: string, default: header}
+        - name: session
+          in: cookie
+          schema: {type: string, default: cookie}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: components.yaml#/FormBody
+            encoding:
+              items: {style: form, explode: true}
+          application/json:
+            schema:
+              $ref: components.yaml#/JsonBody
+            example: {name: wave6}
+      callbacks:
+        wave6Callback:
+          '{$request.body#/callbackUrl}':
+            post:
+              responses:
+                '204': {description: callback accepted}
+      responses:
+        '200':
+          description: ok
+          x-wave6-response: retained

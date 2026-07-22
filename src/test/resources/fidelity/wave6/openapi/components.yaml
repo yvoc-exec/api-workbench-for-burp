@@ -1,0 +1,26 @@
+Identifier:
+  type: string
+  format: uuid
+  default: '42'
+FormBody:
+  type: object
+  properties:
+    items:
+      type: array
+      items: {type: string}
+      example: [one, two]
+    enabled:
+      type: boolean
+      default: true
+JsonBody:
+  type: object
+  properties:
+    name: {type: string, default: wave6}
+BinaryFile:
+  type: string
+  format: binary
+MultipartBody:
+  type: object
+  properties:
+    upload:
+      $ref: '#/BinaryFile'

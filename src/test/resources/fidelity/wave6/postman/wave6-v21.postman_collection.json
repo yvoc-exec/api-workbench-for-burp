@@ -1,0 +1,28 @@
+{
+  "info": {"name":"Wave 6 Postman","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+  "variable": [
+    {"key":"baseUrl","value":"https://example.test","type":"string"},
+    {"key":"token","value":"wave6-disabled-token","type":"secret","disabled":true}
+  ],
+  "item": [
+    {"name":"Core","item":[{"name":"Nested","item":[{
+      "name":"Canonical GET",
+      "event":[
+        {"listen":"prerequest","script":{"type":"text/javascript","exec":["pm.variables.set(\"wave6\", \"one\");"]}},
+        {"listen":"test","script":{"type":"text/javascript","exec":["pm.test(\"wave6 status\", function () {","    pm.expect(pm.response.code).to.be.oneOf([200, 204]);","});"]}}
+      ],
+      "request": {
+        "method":"GET",
+        "header":[{"key":"X-Dupe","value":"one"},{"key":"X-Dupe","value":"two"},{"key":"X-Disabled","value":"no","disabled":true},{"key":"Cookie","value":"session=cookie"}],
+        "auth":{"type":"bearer","bearer":[{"key":"token","value":"{{token}}","type":"string"}]},
+        "url":{"raw":"https://example.test/items/:id?tag=%6Fne&tag=two&flag&empty=&disabled=no","protocol":"https","host":["example","test"],"path":["items",":id"],
+          "query":[{"key":"tag","value":"one"},{"key":"tag","value":"two"},{"key":"flag"},{"key":"empty","value":""},{"key":"disabled","value":"no","disabled":true}],
+          "variable":[{"key":"id","value":"42"}]}
+      }
+    }]}]},
+    {"name":"Bodies","item":[
+      {"name":"Structured Body","request":{"method":"POST","header":[{"key":"Content-Type","value":"application/x-www-form-urlencoded"}],"url":"https://example.test/form","body":{"mode":"urlencoded","urlencoded":[{"key":"item","value":"one"},{"key":"item","value":"two"},{"key":"disabledField","value":"no","disabled":true}]}}},
+      {"name":"Multipart Body","request":{"method":"POST","header":[{"key":"Content-Type","value":"multipart/form-data; boundary=wave6boundary"}],"url":"https://example.test/upload","body":{"mode":"formdata","formdata":[{"key":"note","value":"retained text","type":"text"},{"key":"upload","value":"not-read","type":"file","src":"fixtures/not-read.bin","disabled":true}]}}}
+    ]}
+  ]
+}

@@ -1,0 +1,22 @@
+openapi: 3.0.3
+info:
+  title: Wave 6 Warning
+  version: "1"
+x-secret: WAVE6_OPENAPI_WARNING_CANARY
+paths:
+  /warning:
+    post:
+      parameters:
+        - name: q
+          in: query
+          examples:
+            one:
+              externalValue: WAVE6_OPENAPI_WARNING_CANARY
+        - $ref: missing-WAVE6_OPENAPI_WARNING_CANARY.yaml
+      requestBody:
+        content:
+          application/octet-stream:
+            example: WAVE6_OPENAPI_WARNING_CANARY
+      responses:
+        "200":
+          description: ok

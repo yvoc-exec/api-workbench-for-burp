@@ -1,0 +1,17 @@
+{
+  "__type":"export","__export_format":5,"__export_date":"2026-01-01T00:00:00.000Z","__export_source":"api-workbench-wave6",
+  "resources":[
+    {"_id":"wrk_wave6","_type":"workspace","name":"Wave 6 Insomnia","description":"Wave 6 fidelity fixture"},
+    {"_id":"env_wave6","_type":"environment","parentId":"wrk_wave6","name":"Base Environment","data":{"baseUrl":"https://example.test","token":"wave6-token","nested":{"scope":"base"}}},
+    {"_id":"fld_core","_type":"request_group","parentId":"wrk_wave6","name":"Core","authentication":{"type":"bearer","token":"{{token}}"}},
+    {"_id":"fld_nested","_type":"request_group","parentId":"fld_core","name":"Nested"},
+    {"_id":"req_get","_type":"request","parentId":"fld_nested","name":"Canonical GET","method":"GET","url":"{{baseUrl}}/items/42?encoded=a%2Fb&raw=one&flag&empty=&tag=one&tag=two",
+      "parameters":[{"name":"encoded","value":"a/b"},{"name":"disabled","value":"no","disabled":true},{"name":"flag"},{"name":"empty","value":""},{"name":"tag","value":"one"},{"name":"tag","value":"two"}],
+      "headers":[{"name":"X-Dupe","value":"one"},{"name":"X-Dupe","value":"two"},{"name":"X-Disabled","value":"no","disabled":true},{"name":"Cookie","value":"session=cookie"}],
+      "scripts":{"preRequest":"insomnia.environment.set('wave6', 'one');","afterResponse":"insomnia.test('wave6', () => insomnia.expect(200).to.equal(200));"}},
+    {"_id":"req_form","_type":"request","parentId":"fld_core","name":"Structured Body","method":"POST","url":"{{baseUrl}}/form","headers":[{"name":"Content-Type","value":"application/x-www-form-urlencoded"}],"parameters":[],
+      "body":{"mimeType":"application/x-www-form-urlencoded","params":[{"name":"item","value":"one"},{"name":"item","value":"two"},{"name":"disabledField","value":"no","disabled":true}]}},
+    {"_id":"req_upload","_type":"request","parentId":"fld_core","name":"Multipart Body","method":"POST","url":"{{baseUrl}}/upload","headers":[{"name":"Content-Type","value":"multipart/form-data; boundary=wave6insomnia"}],"parameters":[],
+      "body":{"mimeType":"multipart/form-data","params":[{"name":"note","value":"retained text","type":"text"},{"name":"upload","value":"not-read.bin","type":"file","fileName":"not-read.bin","filePath":"fixtures/not-read.bin","disabled":true}]}}
+  ]
+}

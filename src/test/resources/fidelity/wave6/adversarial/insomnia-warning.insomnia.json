@@ -1,0 +1,10 @@
+{
+  "__type":"export","__export_format":5,"resources":[
+    {"_type":"workspace","_id":"wrk_warning","name":"Wave 6 Warning"},
+    {"_type":"environment","_id":"env_base","parentId":"wrk_warning","name":"Base","data":{"baseUrl":"https://example.test"}},
+    {"_type":"environment","_id":"env_child","parentId":"env_base","name":"Child","data":{"secret":"WAVE6_INSOMNIA_WARNING_CANARY"}},
+    {"_type":"request_group","_id":"fld_warning","parentId":"wrk_warning","name":"Warnings","scripts":{"customMetadata":{"name":"metadata","description":"WAVE6_INSOMNIA_WARNING_CANARY"}}},
+    {"_type":"request","_id":"req_bad","parentId":"fld_warning","name":"Malformed","url":{"invalid":"WAVE6_INSOMNIA_WARNING_CANARY"}},
+    {"_type":"request","_id":"req_good","parentId":"fld_warning","name":"Valid","method":"GET","url":"https://example.test/valid","headers":[],"parameters":[]}
+  ]
+}

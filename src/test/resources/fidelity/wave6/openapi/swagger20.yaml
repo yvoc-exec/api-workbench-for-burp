@@ -1,0 +1,19 @@
+swagger: "2.0"
+info: {title: Wave 6 Swagger, version: "1.0"}
+host: example.test
+basePath: /v2
+schemes: [https]
+consumes: [application/x-www-form-urlencoded]
+produces: [application/json]
+paths:
+  /items/{id}:
+    post:
+      operationId: swaggerItem
+      parameters:
+        - {name: id, in: path, required: true, type: string, format: uuid, x-example: "42"}
+        - {name: tag, in: query, type: array, items: {type: string}, collectionFormat: multi, x-example: [one, two]}
+        - {name: X-Wave, in: header, type: string, default: header}
+        - {name: item, in: formData, required: true, type: string, default: one}
+        - {name: disabledField, in: formData, type: string, default: no, x-disabled: true}
+      responses:
+        "200": {description: ok}

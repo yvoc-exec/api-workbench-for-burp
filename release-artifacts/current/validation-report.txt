@@ -1,42 +1,81 @@
-API Workbench for Burp - Local Validation Report
+API Workbench for Burp - Automated Wave 6 Validation Report
 
 Branch: main
-Starting SHA before privacy cleanup: 219f0f748bf34f05ca43e10ed37341640e25cc92
-Sanitized history HEAD before final metadata commit: 3cd2f82ea78e550587d96bfaa432929509ed7b84
-Ending SHA / Commit SHA: final git HEAD after commit/push (commit hash cannot be embedded self-referentially in this tracked report)
-Java version: OpenJDK 17.0.19 (Eclipse Temurin; local ignored JDK cache)
+Starting SHA: 109f3bb0a5f82a0fa9d603df84f011ed3c297a64
+Ending commit: the commit containing this report; exact SHA is reported after commit/push
+Java version: OpenJDK 17.0.19 (2026-04-21)
 Maven version: Apache Maven 3.9.9
-Full validation command: mvn -B clean verify (via local ignored Maven cache with JAVA_HOME set to local ignored JDK cache)
-Validation result: PASS
-Test count: 1517 run, 0 failures, 0 errors, 0 skipped
-JaCoCo result: PASS - All coverage checks have been met.
-Artifact path: release-artifacts/current/api-workbench-for-burp-local-validated.jar
-Artifact size: 42009687 bytes
-Artifact SHA256: C3659134CCC9E390C7B906D7A7EC3B8CEC7C144CFFC9C2367938C45CA15AFF4A
 
-BApp hardening items addressed:
-- OAuth2 Burp networking fallback patched: production token requests with non-null MontoyaApi use Burp/Montoya networking and fail clearly; Java HttpClient is isolated to api == null test/no-Burp harnesses.
-- GUI dialog parenting audited/fixed: dialog parent resolver added; OAuth browser fallback, Workbench dialogs, History compare, traffic import, redirect/auth dialogs, and script trust review use owner/parent resolution where practical.
-- Adversarial script tests added/updated: host interop, filesystem, thread/process, require('fs'), timeout/cancellation, unsupported capability reporting, and destination mutation preflight coverage pass.
-- Large-project generated smoke tests added/updated: generated Postman (500 requests), OpenAPI (250 operations), and WorkspaceState (500 requests) round-trip coverage pass.
-- Manual QA fixture cleanup: repo-local manual QA fixture was removed from the public repository; deterministic local smoke validation remains a maintainer-side release practice.
-- Public release docs updated: README.md, SECURITY.md, and CHANGELOG.md. Internal BApp draft and repo-local manual QA fixture were removed from the public repository.
-- LICENSE status: LICENSE exists and is MIT.
-- Privacy cleanup updated Maven groupId to com.yvocexec and license holder to yvoc-exec.
-- Previous artifact hash was stale after Maven metadata cleanup; validated artifact and checksum were regenerated.
+Automated Wave 6 scope:
+- checked-in representative fixtures
+- adversarial warning fixtures
+- import to native save/reload
+- target-format export and re-import
+- final built-request comparison
+- native JSON idempotence
+- no-silent-loss assertions
+- sanitized warning assertions
+- fidelity matrix validation
+- packaged artifact validation
 
-Search gates:
-- OAuth2 fallback search: HttpClient remains only in sendTokenRequestViaJdkForTestsOnly used when api == null; isMissingMontoyaFactory removed; no api != null fallback to JDK.
-- GUI parenting search: no showOpenDialog(null), showSaveDialog(null), JOptionPane.show*(null), new JDialog((Frame)null), or setLocationRelativeTo(null) in production code.
-- Script overclaim search: no unsupported full parity / translated script claims in checked docs.
-- Public release cleanup search: internal submission draft and repo-local manual QA fixture references removed.
-- Runtime disclosure search: docs/main code search gate did not reintroduce Script engine: GraalJS, GraalJS available, or Nashorn operator-facing strings.
-- Current-file privacy search: no personal identity, old attribution, old groupId, or local Windows workspace path matches.
-- Full-history privacy search: no personal identity, old attribution, old groupId, or local Windows workspace path matches after rewrite.
-- Author/committer privacy search: all reachable commits rewritten to yvoc-exec <noreply@github.com>.
-- Generated/local tracking search: no target, .tools, .codex-tools, surefire-reports, or baseline-clean log artifacts are tracked.
+Focused validation command:
+mvn -B -Dtest=Wave6EndToEndFidelityTest,Wave6WarningSanitizationTest,Wave6FidelityDocumentationTest,CollectionExportRoundTripTest,PostmanCollectionExporterTest,BrunoCollectionRoundTripTest,BrunoMetadataAndAuthRoundTripTest,InsomniaHierarchyAndAuthRoundTripTest,OpenApiFidelityRoundTripTest,HarFidelityRoundTripTest,ApiWorkbenchParameterRoundTripTest,Wave5CanonicalRuntimeIntegrationTest test
 
-Notes:
-- Failsafe integration-test phase is configured as skipped in this project build.
-- Hosted GitHub Actions were not manually dispatched by this cleanup.
-- Manual Burp UI smoke, screenshots, and PortSwigger submission remain separate release activities.
+Focused validation result:
+PASS
+Tests run: 90
+Failures: 0
+Errors: 0
+Skipped: 0
+
+Full validation command:
+mvn -B clean verify
+
+Full validation result:
+PASS
+Tests run: 1904
+Failures: 0
+Errors: 0
+Skipped: 0
+JaCoCo result: PASS
+JaCoCo classes analyzed: 491
+
+Static analysis command:
+mvn -B -Pstatic-analysis verify
+
+Static analysis result:
+PASS
+
+Artifact path:
+release-artifacts/current/api-workbench-for-burp-local-validated.jar
+
+Artifact size:
+42231764 bytes
+
+Artifact SHA256:
+1F24BEDDFCB09FD298F4A1689DEF32CE1D2229660B2F92E9582E38095F0BDA2E
+
+Collection export targets covered:
+- API_WORKBENCH_JSON
+- POSTMAN_JSON
+- OPENAPI_JSON
+- OPENAPI_YAML
+- INSOMNIA_JSON
+- BRUNO_ZIP
+- HAR_JSON
+
+Representative imports covered:
+- Postman v2.1
+- Postman v2.0
+- Bruno folder
+- Insomnia
+- OpenAPI 3.1
+- Swagger 2.0
+- HAR 1.2
+- API Workbench schema 2
+
+Manual Burp smoke:
+PENDING — intentionally outside the Code Editor execution boundary.
+
+Hosted GitHub Actions:
+NOT TRIGGERED.

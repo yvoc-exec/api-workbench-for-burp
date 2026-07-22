@@ -1,0 +1,20 @@
+meta {
+  name: Structured Body
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/form
+  body: form-urlencoded
+}
+
+body:form-urlencoded {
+  item: one
+  item: two
+  ~disabledField: no
+}
+
+headers {
+  Content-Type: application/x-www-form-urlencoded
+}

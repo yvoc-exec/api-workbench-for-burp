@@ -249,6 +249,8 @@ These features reduce repetitive setup work and keep testing moving inside Burp.
 | Bruno ZIP / folder | Yes | Yes | Bruno collection packages |
 | HAR 1.2 JSON | Yes | Yes | Captured request collections |
 
+For field-level preservation, normalization, retained-only structures, warning behavior, and the automated lifecycle fixtures, see the [Collection Import and Export Fidelity Matrix](IMPORT-FIDELITY-MATRIX.md).
+
 ### Environments
 
 | Format | Import | Export | Notes |
@@ -279,10 +281,12 @@ mvn clean package
 The shaded artifact is written to:
 
 ```text
-target\api-workbench-for-burp-2.0.0-jar-with-dependencies.jar
+target\api-workbench-for-burp-2.0.1-jar-with-dependencies.jar
 ```
 
 ### Validation
+
+The checked-in Wave 6 fixtures exercise Postman, Bruno, Insomnia, OpenAPI, Swagger, HAR, and native API Workbench assets through import, native persistence, export, re-import, and final request construction. Manual Burp interaction remains a separate release gate.
 
 Run the standard validation commands:
 
@@ -308,6 +312,8 @@ For day-to-day use, see:
 
 - [Operator Guide](OPERATOR_GUIDE.md)
 - [Environment vs Collection Precedence](ENVIRONMENT-VS-COLLECTION-PRECEDENCE.md)
+- [Collection Import and Export Fidelity Matrix](IMPORT-FIDELITY-MATRIX.md)
+- [Wave 6 Manual Burp Fidelity Smoke](WAVE6-MANUAL-BURP-SMOKE.md)
 
 ## More documentation
 

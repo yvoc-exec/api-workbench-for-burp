@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0 release candidate
+## v2.0.1 release candidate
 
 ### Added
 
@@ -13,6 +13,9 @@
 - Diagnostics for import, runner, OAuth2, redirect, script, and history workflows.
 - Redirect policy controls for cross-origin credentials and trusted redirects.
 - Deterministic OAuth2/request-response smoke validation coverage.
+- Checked-in multi-format fidelity fixtures for Postman v2.0/v2.1, Bruno, Insomnia, OpenAPI 3.1, Swagger 2.0, HAR 1.2, and native API Workbench collections.
+- Automated import → native save/reload → export → re-import → final request construction verification.
+- A public collection import/export fidelity matrix and pending manual Burp smoke checklist.
 
 ### Changed
 
@@ -21,6 +24,7 @@
 - Header Enabled checkbox exposes preserved-but-not-sent header state.
 - Cross-format script export warning clarifies scripts are preserved but tool-specific APIs are not translated.
 - Public repo cleanup removed maintainer-only submission drafts and repo-local manual QA fixtures.
+- Collection fidelity guarantees now distinguish preserved, normalized, retained-only, warned-and-omitted, unsupported, and manually pending behavior.
 
 ### Security
 
@@ -36,3 +40,4 @@
 - Cross-format script export does not translate tool-specific scripting APIs.
 - Public smoke endpoints are optional; deterministic local validation is preferred.
 - History, workspace state, diagnostics, exports, and evidence bundles may contain sensitive data and must be reviewed before sharing.
+- Automated lifecycle validation does not replace live Burp UI, Send, Repeater, Runner, or History smoke testing.

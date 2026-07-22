@@ -1,0 +1,51 @@
+meta {
+  name: Canonical GET
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/items/:id?flag&empty=&raw=one
+  auth: bearer
+}
+
+params:query {
+  tag: one
+  tag: two
+  ~disabled: no
+}
+
+params:path {
+  id: 42
+}
+
+headers {
+  X-Dupe: one
+  X-Dupe: two
+  ~X-Disabled: no
+  Cookie: session=cookie
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+vars:pre-request {
+  requestVar: request
+}
+
+script:pre-request {
+  bru.setVar("wave6", "one");
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("wave6_done", "yes");
+  }
+}
+
+tests {
+  test("wave6 status", function () {
+    expect(res.status).to.be.oneOf([200, 204]);
+  });
+}
