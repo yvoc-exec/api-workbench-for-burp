@@ -334,42 +334,36 @@ class ApiWorkbenchNativeConvergenceTest {
         assertThat(reloaded.body.formdata.get(0).filePath).isEqualTo("fixtures/not-read.bin");
         assertThat(reloaded.body.graphql.query).isEqualTo("query { wave6 }");
 
-        ApiCollection rawCollection = baseCollection("body-raw");
-        rawCollection.requests.get(0).body = new ApiRequest.Body();
-        rawCollection.requests.get(0).disabled = true;
-        rawCollection.requests.get(0).body.mode = null;
-        rawCollection.requests.get(0).body.raw = "retained raw";
-        assertThat(assertConverges("derived raw body", rawCollection).firstReload().requests.get(0).body.mode)
-                .isEqualTo("raw");
+        assertMissingBodyModeRemainsInactive("default body", new ApiRequest.Body(), null);
 
-        ApiCollection formCollection = baseCollection("body-formdata");
-        formCollection.requests.get(0).body = new ApiRequest.Body();
-        formCollection.requests.get(0).disabled = true;
-        formCollection.requests.get(0).body.mode = null;
-        formCollection.requests.get(0).body.urlencoded = null;
-        formCollection.requests.get(0).body.formdata.add(field("note", "text", "text", false, null));
-        assertThat(assertConverges("derived formdata body", formCollection).firstReload().requests.get(0).body.mode)
-                .isEqualTo("formdata");
+        ApiRequest.Body blankMode = new ApiRequest.Body();
+        blankMode.mode = " ";
+        assertMissingBodyModeRemainsInactive("blank body mode", blankMode, null);
 
-        ApiCollection graphqlCollection = baseCollection("body-graphql");
-        graphqlCollection.requests.get(0).body = new ApiRequest.Body();
-        graphqlCollection.requests.get(0).disabled = true;
-        graphqlCollection.requests.get(0).body.mode = null;
-        graphqlCollection.requests.get(0).body.urlencoded = null;
-        graphqlCollection.requests.get(0).body.formdata = null;
-        graphqlCollection.requests.get(0).body.graphql = new ApiRequest.Body.GraphQL();
-        graphqlCollection.requests.get(0).body.graphql.query = "query { wave6 }";
-        assertThat(assertConverges("derived graphql body", graphqlCollection).firstReload().requests.get(0).body.mode)
-                .isEqualTo("graphql");
+        ApiRequest.Body latentRaw = new ApiRequest.Body();
+        latentRaw.raw = "latent-raw-content";
+        assertMissingBodyModeRemainsInactive("latent raw body", latentRaw, "latent-raw-content");
 
-        ApiCollection emptyBodyCollection = baseCollection("body-empty");
-        emptyBodyCollection.requests.get(0).body = new ApiRequest.Body();
-        emptyBodyCollection.requests.get(0).disabled = true;
-        emptyBodyCollection.requests.get(0).body.mode = null;
-        emptyBodyCollection.requests.get(0).body.urlencoded = null;
-        emptyBodyCollection.requests.get(0).body.formdata = null;
-        assertThat(assertConverges("derived empty body", emptyBodyCollection).firstReload().requests.get(0).body.mode)
-                .isEqualTo("none");
+        ApiRequest.Body latentUrlEncoded = new ApiRequest.Body();
+        latentUrlEncoded.urlencoded.add(field("latent-urlencoded", "retained", "text", false, null));
+        assertMissingBodyModeRemainsInactive("latent urlencoded body", latentUrlEncoded, "latent-urlencoded");
+
+        ApiRequest.Body latentMultipart = new ApiRequest.Body();
+        latentMultipart.formdata.add(field("latent-multipart", "retained", "text", false, null));
+        assertMissingBodyModeRemainsInactive("latent multipart body", latentMultipart, "latent-multipart");
+
+        ApiRequest.Body latentGraphql = new ApiRequest.Body();
+        latentGraphql.graphql = new ApiRequest.Body.GraphQL();
+        latentGraphql.graphql.query = "query { latentGraphql }";
+        assertMissingBodyModeRemainsInactive("latent graphql body", latentGraphql, "latentGraphql");
+    }
+
+    @Test
+    void legacyNativeBodiesWithoutModeStillInferTheirShape() throws Exception {
+        assertLegacyBodyMode("raw", bodyWithRaw(), "legacy-raw-content");
+        assertLegacyBodyMode("urlencoded", bodyWithField("urlencoded", "legacy-urlencoded"), "legacy-urlencoded");
+        assertLegacyBodyMode("formdata", bodyWithField("formdata", "legacy-multipart"), "legacy-multipart");
+        assertLegacyBodyMode("graphql", bodyWithGraphql(), "legacyGraphql");
     }
 
     @Test
@@ -716,6 +710,93 @@ class ApiWorkbenchNativeConvergenceTest {
         resolver.addFolderVariables(collection, request);
         resolver.addRequestVariables(request);
         return new RequestBuilder(null).buildRequest(request, resolver);
+    }
+
+    private void assertMissingBodyModeRemainsInactive(String label,
+                                                      ApiRequest.Body body,
+                                                      String inactiveMarker) throws Exception {
+        ApiCollection collection = baseCollection(safe(label));
+        ApiRequest request = collection.requests.get(0);
+        request.method = "POST";
+        request.body = body;
+
+        String originalBytes = new String(build(collection, request), StandardCharsets.UTF_8);
+        if (inactiveMarker != null) {
+            assertThat(originalBytes).doesNotContain(inactiveMarker);
+        }
+
+        ConvergenceResult result = assertConverges(label, collection);
+        JsonObject firstBody = result.firstJson().getAsJsonObject("collection")
+                .getAsJsonArray("requests").get(0).getAsJsonObject().getAsJsonObject("body");
+        assertThat(firstBody.get("mode").getAsString()).isEqualTo("none");
+        if (inactiveMarker != null) {
+            assertThat(firstBody.toString()).contains(inactiveMarker);
+        }
+        assertThat(result.firstReload().requests.get(0).body.mode).isEqualTo("none");
+        assertThat(result.secondReload().requests.get(0).body.mode).isEqualTo("none");
+
+        String reloadedBytes = new String(
+                build(result.firstReload(), result.firstReload().requests.get(0)),
+                StandardCharsets.UTF_8);
+        if (inactiveMarker != null) {
+            assertThat(reloadedBytes).doesNotContain(inactiveMarker);
+        }
+    }
+
+    private void assertLegacyBodyMode(String expectedMode,
+                                      JsonObject body,
+                                      String transportMarker) throws Exception {
+        JsonObject legacyJson = minimalNativeJson(2);
+        JsonObject requestJson = legacyJson.getAsJsonObject("collection")
+                .getAsJsonArray("requests").get(0).getAsJsonObject();
+        requestJson.addProperty("method", "POST");
+        if ("formdata".equals(expectedMode)) {
+            JsonObject contentType = new JsonObject();
+            contentType.addProperty("key", "Content-Type");
+            contentType.addProperty("value", "multipart/form-data; boundary=legacy-fixed-boundary");
+            JsonArray headers = new JsonArray();
+            headers.add(contentType);
+            requestJson.add("headers", headers);
+        }
+        assertThat(body.has("mode")).isFalse();
+        requestJson.add("body", body);
+
+        ApiCollection imported = reload(legacyJson, "legacy-body-" + expectedMode + ".json");
+        ApiRequest importedRequest = imported.requests.get(0);
+        assertThat(importedRequest.body.mode).isEqualTo(expectedMode);
+        assertThat(new String(build(imported, importedRequest), StandardCharsets.UTF_8))
+                .contains(transportMarker);
+
+        ConvergenceResult result = assertConverges("legacy body " + expectedMode, imported);
+        assertThat(result.firstReload().requests.get(0).body.mode).isEqualTo(expectedMode);
+        assertThat(result.secondReload().requests.get(0).body.mode).isEqualTo(expectedMode);
+    }
+
+    private static JsonObject bodyWithRaw() {
+        JsonObject body = new JsonObject();
+        body.addProperty("raw", "legacy-raw-content");
+        return body;
+    }
+
+    private static JsonObject bodyWithField(String property, String key) {
+        JsonObject body = new JsonObject();
+        JsonObject field = new JsonObject();
+        field.addProperty("key", key);
+        field.addProperty("value", "retained");
+        field.addProperty("type", "text");
+        JsonArray fields = new JsonArray();
+        fields.add(field);
+        body.add(property, fields);
+        return body;
+    }
+
+    private static JsonObject bodyWithGraphql() {
+        JsonObject body = new JsonObject();
+        JsonObject graphql = new JsonObject();
+        graphql.addProperty("query", "query { legacyGraphql }");
+        graphql.addProperty("variables", "{}");
+        body.add("graphql", graphql);
+        return body;
     }
 
     private JsonObject minimalNativeJson(int schema) {

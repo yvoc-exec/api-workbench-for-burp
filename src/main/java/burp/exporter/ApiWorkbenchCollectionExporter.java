@@ -267,17 +267,7 @@ public final class ApiWorkbenchCollectionExporter {
             return null;
         }
         if (copy.mode == null || copy.mode.isBlank()) {
-            if (source.raw != null) {
-                copy.mode = "raw";
-            } else if (source.urlencoded != null) {
-                copy.mode = "urlencoded";
-            } else if (source.formdata != null) {
-                copy.mode = "formdata";
-            } else if (source.graphql != null) {
-                copy.mode = "graphql";
-            } else {
-                copy.mode = "none";
-            }
+            copy.mode = "none";
         }
         canonicalizeFormFields(copy.urlencoded);
         canonicalizeFormFields(copy.formdata);
