@@ -38,6 +38,8 @@ class WorkspaceCompatibilityFixtureTest {
         assertThat(state.historyRetentionPolicy).isNotNull();
         assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
         assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
+        assertThat(state.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
         assertThat(state.historyEntries).hasSize(2);
         assertThat(state.diagnosticsCaptureEnabled).isTrue();
         assertThat(state.checkedRequestKeys).containsExactly("APIM\u001FAuth/OAuth\u001FLogin\u001FPOST\u001F1");
@@ -54,6 +56,8 @@ class WorkspaceCompatibilityFixtureTest {
         assertThat(state.activeEnvironmentId).isNull();
         assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_ENTRIES);
         assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_TOTAL_STORED_BYTES);
+        assertThat(state.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
         assertThat(state.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.AUTO_COMPATIBLE);
         assertThat(state.collections.get(0).requests.get(0).suppressedAutoHeaders).isEmpty();
     }

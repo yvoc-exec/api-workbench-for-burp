@@ -361,7 +361,9 @@ Pentester workflow:
 7. Pin the entry so it is easy to find and retained when clearing unpinned noise.
 8. Use filters, compare, replay, send to Repeater, copy as cURL, or export when preparing report evidence.
 
-Pin marks a History entry as important. Pinned entries are keep-worthy evidence; unpinned entries are normal testing noise or temporary history. Clear Unpinned cleans noisy History while retaining pinned evidence. Pin important entries before using Clear Unpinned. Do not treat Clear Unpinned as reversible.
+Pin marks a History entry as important. Pinned entries are keep-worthy evidence; unpinned entries are normal testing noise or temporary history. Clear Unpinned cleans noisy History while retaining pinned evidence. Pin important entries before using Clear Unpinned. Do not treat Clear Unpinned as reversible. Pinned entries count toward the same hard entry and retained-byte budgets and cannot bypass those limits.
+
+History evicts the oldest eligible unpinned evidence first. If pinned evidence consumes the available budget, new capture or an evidence-metadata change may be rejected atomically; the HTTP request or Runner attempt still completes. A legacy workspace that was already over budget may compact retained payloads once, with explicit markers and preserved original lengths and SHA-256 hashes. Clearing or disabling History does not necessarily reclaim pages from an existing Burp project file. Lightweight History table ownership remains future work.
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 

@@ -268,6 +268,172 @@ class HistoryBodyTruncationTest {
         assertThat(stored.rawRequestText).isEqualTo(new String(stored.rawRequestBytes, StandardCharsets.UTF_8));
     }
 
+    @Test
+    void ordinaryTruncationReasonsRemainCompatibleAndIdempotent() {
+        HistoryEntry entry = entryWithRequestAndResponse("ordinary-reasons", "abcdefghij", "uvwxyz1234", "raw");
+        entry.requestSnapshot.rawRequestSent = ("POST /ordinary HTTP/1.1\r\nHost: api.example.test\r\n\r\nabcdefghij")
+                .getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText = new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8);
+
+        HistoryBodyTruncator.apply(entry, policy(4, 10_000, 5));
+        com.google.gson.JsonElement once = JsonParser.parseString(
+                new HistoryJsonExportService().export(List.of(entry)))
+                .getAsJsonObject().get("entries");
+        HistoryBodyTruncator.apply(entry, policy(4, 10_000, 5));
+        com.google.gson.JsonElement twice = JsonParser.parseString(
+                new HistoryJsonExportService().export(List.of(entry)))
+                .getAsJsonObject().get("entries");
+
+        assertThat(entry.requestSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.REQUEST_BODY_LIMIT_REASON);
+        assertThat(entry.requestSnapshot.rawTruncationReason)
+                .isEqualTo(HistoryBodyTruncator.RAW_REQUEST_BODY_LIMIT_REASON);
+        assertThat(entry.responseSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.RESPONSE_BODY_LIMIT_REASON);
+        assertThat(twice).isEqualTo(once);
+    }
+
+    @Test
+    void legacyBudgetCompactionPreservesOriginalMetadataAndIsIdempotent() {
+        HistoryEntry entry = entryWithRequestAndResponse(
+                "legacy-budget",
+                "request-payload-that-is-long",
+                "response-payload-that-is-long",
+                "raw");
+        entry.requestSnapshot.rawRequestSent = ("POST /legacy HTTP/1.1\r\nHost: api.example.test\r\n\r\nraw-request-payload-that-is-long")
+                .getBytes(StandardCharsets.UTF_8);
+        entry.requestSnapshot.rawRequestSentText = new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8);
+        entry.redirectHops.add(redirectHop(
+                "redirect-request-payload-that-is-long",
+                "redirect-response-payload-that-is-long"));
+
+        String authoredHash = HistoryBodyTruncator.sha256Hex(entry.requestSnapshot.bodyAsAuthored);
+        long authoredLength = entry.requestSnapshot.bodyAsAuthored.length;
+        String responseHash = HistoryBodyTruncator.sha256Hex(entry.responseSnapshot.body);
+        long responseLength = entry.responseSnapshot.body.length;
+
+        assertThat(HistoryBodyTruncator.compactLegacyPayloads(entry, 4)).isTrue();
+        com.google.gson.JsonElement once = JsonParser.parseString(
+                new HistoryJsonExportService().export(List.of(entry)))
+                .getAsJsonObject().get("entries");
+        assertThat(HistoryBodyTruncator.compactLegacyPayloads(entry, 4)).isFalse();
+        com.google.gson.JsonElement twice = JsonParser.parseString(
+                new HistoryJsonExportService().export(List.of(entry)))
+                .getAsJsonObject().get("entries");
+
+        assertThat(entry.legacyBudgetCompacted).isTrue();
+        assertThat(entry.requestSnapshot.bodyAsAuthored).hasSize(4);
+        assertThat(entry.requestSnapshot.originalBodyLength).isEqualTo(authoredLength);
+        assertThat(entry.requestSnapshot.storedBodyLength).isEqualTo(4);
+        assertThat(entry.requestSnapshot.fullBodySha256).isEqualTo(authoredHash);
+        assertThat(entry.requestSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+        assertThat(entry.responseSnapshot.body).hasSize(4);
+        assertThat(entry.responseSnapshot.originalBodyLength).isEqualTo(responseLength);
+        assertThat(entry.responseSnapshot.storedBodyLength).isEqualTo(4);
+        assertThat(entry.responseSnapshot.fullBodySha256).isEqualTo(responseHash);
+        assertThat(entry.responseSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+        assertThat(entry.redirectHops.get(0).storedRawRequestBodyLength).isEqualTo(4);
+        assertThat(entry.redirectHops.get(0).storedResponseBodyLength).isEqualTo(4);
+        assertThat(entry.redirectHops.get(0).rawRequestText)
+                .isEqualTo(new String(entry.redirectHops.get(0).rawRequestBytes, StandardCharsets.UTF_8));
+        assertThat(twice).isEqualTo(once);
+    }
+
+    @Test
+    void legacyCompactionNeverExpandsAndNormalTruncationDoesNotRestorePayload() {
+        HistoryEntry entry = entryWithRequestAndResponse("legacy-no-expand", "abcdef", "uvwxyz", "raw");
+        HistoryBodyTruncator.compactLegacyPayloads(entry, 3);
+        byte[] requestPreview = entry.requestSnapshot.bodyAsAuthored.clone();
+        byte[] responsePreview = entry.responseSnapshot.body.clone();
+
+        HistoryBodyTruncator.compactLegacyPayloads(entry, 4);
+        HistoryBodyTruncator.apply(entry, policy(100, 10_000, 100));
+
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEqualTo(requestPreview);
+        assertThat(entry.responseSnapshot.body).isEqualTo(responsePreview);
+        assertThat(entry.requestSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+        assertThat(entry.responseSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+    }
+
+    @Test
+    void legacyCompactionStopsAfterFirstOrderedPayloadWhenTargetIsMet() {
+        HistoryEntry entry = entryWithRequestAndResponse(
+                "legacy-minimal-reduction",
+                "a".repeat(20_000),
+                "r".repeat(20_000),
+                null);
+        byte[] authoredBefore = entry.requestSnapshot.bodyAsAuthored.clone();
+        long before = entry.estimatedStoredBytes();
+        long responseReduction = entry.responseSnapshot.body.length
+                - HistoryBodyTruncator.LEGACY_PREVIEW_MAX_BYTES;
+
+        HistoryBodyTruncator.compactLegacyPayloads(
+                entry,
+                HistoryBodyTruncator.LEGACY_PREVIEW_MAX_BYTES,
+                before - responseReduction + 128L);
+
+        assertThat(entry.responseSnapshot.body)
+                .hasSize(HistoryBodyTruncator.LEGACY_PREVIEW_MAX_BYTES);
+        assertThat(entry.requestSnapshot.bodyAsAuthored).isEqualTo(authoredBefore);
+        assertThat(entry.requestSnapshot.bodyTruncated).isFalse();
+    }
+
+    @Test
+    void legacyRawCompactionKeepsBinaryBytesAuthoritative() {
+        HistoryEntry entry = entryWithRequestAndResponse("legacy-binary", "ok", "ok", null);
+        byte[] headers = "POST /binary HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] binaryBody = new byte[]{0, 1, 2, 3, (byte) 0xff, 5, 6, 7};
+        entry.requestSnapshot.rawRequestSent = new byte[headers.length + binaryBody.length];
+        System.arraycopy(headers, 0, entry.requestSnapshot.rawRequestSent, 0, headers.length);
+        System.arraycopy(binaryBody, 0, entry.requestSnapshot.rawRequestSent, headers.length, binaryBody.length);
+        entry.requestSnapshot.rawRequestSentText = null;
+        String expectedHash = HistoryBodyTruncator.sha256Hex(binaryBody);
+
+        HistoryBodyTruncator.compactLegacyPayloads(entry, 4);
+
+        byte[] stored = java.util.Arrays.copyOfRange(
+                entry.requestSnapshot.rawRequestSent,
+                headers.length,
+                entry.requestSnapshot.rawRequestSent.length);
+        assertThat(stored).containsExactly((byte) 0, (byte) 1, (byte) 2, (byte) 3);
+        assertThat(entry.requestSnapshot.fullRawBodySha256).isEqualTo(expectedHash);
+        assertThat(entry.requestSnapshot.originalRawBodyLength).isEqualTo(binaryBody.length);
+        assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
+        assertThat(entry.requestSnapshot.rawRequestSent).endsWith((byte) 0, (byte) 1, (byte) 2, (byte) 3);
+        assertThat(entry.requestSnapshot.rawRequestSentText)
+                .isEqualTo(new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void zeroPreviewRetainsLegacyHashLengthAndReasonAcrossNormalApply() {
+        HistoryEntry entry = entryWithRequestAndResponse("legacy-zero", "authored", "response", null);
+        byte[] malformed = new byte[]{0, 1, 2, 3, (byte) 0xff};
+        entry.requestSnapshot.rawRequestSent = malformed.clone();
+        entry.requestSnapshot.rawRequestSentText = null;
+        String rawHash = HistoryBodyTruncator.sha256Hex(malformed);
+        long rawLength = malformed.length;
+
+        HistoryBodyTruncator.compactLegacyPayloads(entry, 0);
+        HistoryBodyTruncator.apply(entry, policy(100, 10_000, 100));
+
+        assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
+        assertThat(entry.requestSnapshot.originalRawBodyLength).isEqualTo(rawLength);
+        assertThat(entry.requestSnapshot.storedRawBodyLength).isZero();
+        assertThat(entry.requestSnapshot.fullRawBodySha256).isEqualTo(rawHash);
+        assertThat(entry.requestSnapshot.rawTruncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+        assertThat(entry.requestSnapshot.bodyTruncated).isTrue();
+        assertThat(entry.requestSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+        assertThat(entry.responseSnapshot.bodyTruncated).isTrue();
+        assertThat(entry.responseSnapshot.truncationReason)
+                .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
+    }
+
     private static HistoryRetentionPolicy policy(long requestLimit, long totalLimit, long responseLimit) {
         return new HistoryRetentionPolicy(100, totalLimit, requestLimit, responseLimit, true);
     }

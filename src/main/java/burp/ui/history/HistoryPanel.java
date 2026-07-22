@@ -195,12 +195,16 @@ public class HistoryPanel extends JPanel {
         for (HistoryEntry entry : selected) {
             if (entry != null && entry.id != null) {
                 ids.add(entry.id);
-                historyStore.setPinned(entry.id, !allPinned);
             }
         }
+        HistoryAdmissionResult result = historyStore.setPinnedAllWithResult(ids, !allPinned);
         refreshFromStore(ids);
         updateUsageBanner();
-        notifyWorkspaceChanged();
+        if (result.accepted()) {
+            notifyWorkspaceChanged();
+        } else {
+            notifier.showPinRejected(this, result, historyStore.getRetentionStats());
+        }
     }
 
     public void clearUnpinnedEntries() {
@@ -220,19 +224,22 @@ public class HistoryPanel extends JPanel {
         String entryId = selected.id;
         String notes = detailPanel.getAnalystNotesText();
         java.util.Collection<String> tags = HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText());
-        HistoryEntry updated = historyStore.updateEvidenceMetadata(
+        HistoryAdmissionResult result = historyStore.updateEvidenceMetadataWithResult(
                 entryId,
                 detailPanel.getPinnedCheckBox().isSelected(),
                 notes,
                 tags
         );
-        if (updated != null) {
-            refreshFromStore(updated.id);
-        } else {
-            refreshFromStore();
-        }
+        HistoryEntry updated = result.accepted() && result.storedEntryId() != null
+                ? historyStore.getById(result.storedEntryId())
+                : null;
+        refreshFromStore(updated != null ? updated.id : entryId);
         updateUsageBanner();
-        notifyWorkspaceChanged();
+        if (result.accepted()) {
+            notifyWorkspaceChanged();
+        } else {
+            notifier.showMetadataRejected(this, result, historyStore.getRetentionStats());
+        }
     }
 
     public void loadSelectedInWorkbench() {
@@ -300,9 +307,15 @@ public class HistoryPanel extends JPanel {
     }
 
     public void addHistoryEntry(HistoryEntry entry, boolean selectInsertedEntry) {
-        HistoryEntry stored = historyStore.addEntry(entry);
-        refreshFromStore(selectInsertedEntry ? stored.id : null);
-        notifyWorkspaceChanged();
+        HistoryAdmissionResult result = historyStore.admitEntry(entry);
+        if (result.accepted()) {
+            refreshFromStore(selectInsertedEntry ? result.storedEntryId() : null);
+            notifyWorkspaceChanged();
+            return;
+        }
+        refreshFromStore();
+        updateUsageBanner();
+        notifier.showAddRejected(this, result, historyStore.getRetentionStats());
     }
 
     public void setSelectionByEntryId(String entryId) {
@@ -453,11 +466,17 @@ public class HistoryPanel extends JPanel {
         HistoryRetentionStats safeStats = stats != null ? stats : HistoryRetentionStats.empty();
         return "History retention: "
                 + safeStats.entryCount() + "/" + safePolicy.maxEntries + " entries; "
-                + "stored " + formatBytes(safeStats.totalEstimatedBytes()) + "/" + formatBytes(safePolicy.maxTotalStoredBytes) + "; "
+                + "stored " + formatBytes(safeStats.canonicalRetainedBytes()) + "/" + formatBytes(safePolicy.maxTotalStoredBytes) + "; "
                 + "request body limit " + formatBytes(safePolicy.maxRequestBodyBytesPerEntry) + "; "
                 + "response body limit " + formatBytes(safePolicy.maxResponseBodyBytesPerEntry) + "; "
-                + "pinned " + safeStats.pinnedCount() + "; "
+                + "pinned " + safeStats.pinnedCount() + " (" + formatBytes(safeStats.pinnedRetainedBytes()) + "); "
+                + "unpinned " + formatBytes(safeStats.unpinnedRetainedBytes()) + "; "
                 + "truncated " + safeStats.truncatedEntryCount() + "; "
+                + "last evictions " + safeStats.lastEvictionCount() + "; "
+                + "rejected adds " + safeStats.rejectedAddCount() + "; "
+                + (safeStats.legacyCompactedEntryCount() > 0
+                    ? "legacy compacted " + safeStats.legacyCompactedEntryCount() + "; "
+                    : "")
                 + "retain pinned " + (safePolicy.retainPinnedEntries ? "yes" : "no") + "; "
                 + "over budget: " + (safeStats.overBudget() ? "yes" : "no");
     }

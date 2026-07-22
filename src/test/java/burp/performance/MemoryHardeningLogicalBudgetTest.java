@@ -1,6 +1,8 @@
 package burp.performance;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryAdmissionRejectionReason;
+import burp.history.HistoryAdmissionResult;
 import burp.history.HistoryRetentionPolicy;
 import burp.history.HistoryStore;
 import burp.models.ApiRequest;
@@ -68,7 +70,7 @@ class MemoryHardeningLogicalBudgetTest {
     }
 
     @Test
-    void currentHistoryDefaultsAndPinnedOverBudgetBehaviorAreMeasured() {
+    void currentHistoryDefaultsAndPinnedHardBudgetBehaviorAreMeasured() {
         HistoryRetentionPolicy defaults = HistoryRetentionPolicy.defaultPolicy();
         assertThat(defaults.maxEntries).isEqualTo(1000);
         assertThat(defaults.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
@@ -77,17 +79,22 @@ class MemoryHardeningLogicalBudgetTest {
         assertThat(defaults.retainPinnedEntries).isTrue();
 
         HistoryStore store = new HistoryStore();
-        store.setRetentionPolicy(new HistoryRetentionPolicy(1, 1024, 1024, 1024, true));
+        store.setRetentionPolicy(new HistoryRetentionPolicy(1, 1_000_000, 1024, 1024, true));
         HistoryEntry first = MemoryHardeningFixtureFactory.historyEntry(1, 64, 2048);
         first.pinned = true;
         HistoryEntry second = MemoryHardeningFixtureFactory.historyEntry(2, 64, 2048);
         second.pinned = true;
-        store.addEntry(first);
-        store.addEntry(second);
+        HistoryAdmissionResult firstAdmission = store.admitEntry(first);
+        HistoryAdmissionResult secondAdmission = store.admitEntry(second);
 
-        assertThat(store.size()).isEqualTo(2);
-        assertThat(store.getRetentionStats().pinnedCount()).isEqualTo(2);
-        assertThat(store.getRetentionStats().overBudget()).isTrue();
+        assertThat(firstAdmission.accepted()).isTrue();
+        assertThat(secondAdmission.accepted()).isFalse();
+        assertThat(secondAdmission.rejectionReason())
+                .isEqualTo(HistoryAdmissionRejectionReason.PINNED_BUDGET_EXHAUSTED);
+        assertThat(store.size()).isEqualTo(1);
+        assertThat(store.getRetentionStats().pinnedCount()).isEqualTo(1);
+        assertThat(store.getRetentionStats().rejectedAddCount()).isEqualTo(1L);
+        assertThat(store.getRetentionStats().overBudget()).isFalse();
     }
 
     @Test

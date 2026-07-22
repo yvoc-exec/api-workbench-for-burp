@@ -69,10 +69,9 @@ class HistoryStoreTest {
         bulk.add(older);
         bulk.add(newer);
         bulk.add(duplicate);
-        bulk.add(null);
         bulk.add(missingTimestamp);
         store.addAll(bulk);
-        assertThat(store.snapshot()).hasSize(4);
+        assertThat(store.snapshot()).hasSize(3);
         assertThat(store.snapshot().get(0).id).isNotBlank();
         assertThat(store.snapshot().get(0).timestamp).isNotNull();
         assertThat(store.snapshot()).extracting(entry -> entry.id)
@@ -88,15 +87,21 @@ class HistoryStoreTest {
                 "replacement", Instant.parse("2026-06-15T01:03:00Z"));
         List<HistoryEntry> replacementBulk = new ArrayList<>();
         replacementBulk.add(replacement);
-        replacementBulk.add(null);
         store.replaceAll(replacementBulk);
-        assertThat(store.snapshot()).hasSize(2);
-        assertThat(store.snapshot().get(0).id).isNotBlank();
-        assertThat(store.snapshot().get(1).id).isEqualTo("replacement");
+        assertThat(store.snapshot()).extracting(entry -> entry.id).containsExactly("replacement");
+
+        List<HistoryEntry> invalidBulk = new ArrayList<>();
+        invalidBulk.add(HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
+                "not-stored", Instant.parse("2026-06-15T01:04:00Z")));
+        invalidBulk.add(null);
+        HistoryAdmissionResult rejected = store.admitAll(invalidBulk);
+        assertThat(rejected.accepted()).isFalse();
+        assertThat(rejected.rejectionReason()).isEqualTo(HistoryAdmissionRejectionReason.INVALID_ENTRY);
+        assertThat(store.snapshot()).extracting(entry -> entry.id).containsExactly("replacement");
 
         store.setRetentionPolicy(new HistoryRetentionPolicy(0));
         assertThat(store.getRetentionPolicy().maxEntries).isEqualTo(HistoryRetentionPolicy.DEFAULT_MAX_ENTRIES);
-        assertThat(store.snapshot()).hasSize(2);
+        assertThat(store.snapshot()).hasSize(1);
 
         List<HistoryEntry> normalized = HistoryStore.normalizeEntries(
                 new ArrayList<>(List.of(missingTimestamp, duplicate, older)),
@@ -133,5 +138,24 @@ class HistoryStoreTest {
         assertThat(store.getByIds(null)).isEmpty();
         assertThat(store.removeByIds(null)).isEmpty();
         assertThat(store.snapshot()).isEmpty();
+    }
+
+    @Test
+    void completedNoOpRemovalResetsMostRecentEvictionCount() {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(1));
+        store.addEntry(HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(),
+                "older",
+                Instant.parse("2026-06-15T01:00:00Z")));
+        store.addEntry(HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleRunnerEntry(),
+                "newer",
+                Instant.parse("2026-06-15T01:01:00Z")));
+        assertThat(store.getRetentionStats().lastEvictionCount()).isEqualTo(1);
+
+        assertThat(store.removeByIds(List.of("absent"))).isEmpty();
+
+        assertThat(store.getRetentionStats().lastEvictionCount()).isZero();
     }
 }

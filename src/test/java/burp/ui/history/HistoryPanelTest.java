@@ -21,6 +21,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,7 +66,11 @@ class HistoryPanelTest {
                 .contains("0/1000 entries")
                 .contains("request body limit")
                 .contains("response body limit")
+                .contains("pinned 0 (0 B)")
+                .contains("unpinned 0 B")
                 .contains("truncated 0")
+                .contains("last evictions 0")
+                .contains("rejected adds 0")
                 .contains("over budget: no");
         assertThat(panel.getUsageLabel().getText()).contains("pinned 0");
         assertThat(panel.getFilterPanel().getPreferredSize().height).isLessThanOrEqualTo(90);
@@ -147,6 +152,132 @@ class HistoryPanelTest {
     }
 
     @Test
+    void usageBannerShowsLegacyCompactionOnlyWhenPresent() {
+        HistoryStore store = new HistoryStore() {
+            @Override
+            public synchronized HistoryRetentionStats getRetentionStats() {
+                return new HistoryRetentionStats(
+                        2, 6_000L, 1, 1, false,
+                        6_000L, 4_000L, 2_000L, 3, 4L, 1);
+            }
+        };
+
+        HistoryPanel panel = new HistoryPanel(
+                store, new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier());
+
+        assertThat(panel.getUsageLabel().getText())
+                .contains("stored 5.9 KiB")
+                .contains("pinned 1 (3.9 KiB)")
+                .contains("unpinned 2.0 KiB")
+                .contains("last evictions 3")
+                .contains("rejected adds 4")
+                .contains("legacy compacted 1")
+                .contains("over budget: no");
+    }
+
+    @Test
+    void acceptedAndRejectedAddsHaveAtomicUiAndWorkspaceBehavior() {
+        HistoryStore acceptedStore = new HistoryStore();
+        RecordingNotifier acceptedNotifier = new RecordingNotifier();
+        HistoryPanel acceptedPanel = new HistoryPanel(
+                acceptedStore, new HistoryExportService(), new HistoryDiffService(), acceptedNotifier);
+        AtomicInteger acceptedChanges = new AtomicInteger();
+        acceptedPanel.setWorkspaceChangeListener(acceptedChanges::incrementAndGet);
+        HistoryEntry accepted = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(), "accepted", Instant.parse("2026-06-15T03:00:00Z"));
+
+        acceptedPanel.addHistoryEntry(accepted);
+
+        assertThat(acceptedStore.getById("accepted")).isNotNull();
+        assertThat(acceptedPanel.getSelectedEntry()).isNotNull();
+        assertThat(acceptedPanel.getSelectedEntry().id).isEqualTo("accepted");
+        assertThat(acceptedChanges).hasValue(1);
+        assertThat(acceptedNotifier.addRejectedCount).isZero();
+
+        HistoryStore rejectedStore = new HistoryStore();
+        rejectedStore.setRetentionPolicy(new HistoryRetentionPolicy(10, 1L, 1L, 1L, true));
+        RecordingNotifier rejectedNotifier = new RecordingNotifier();
+        HistoryPanel rejectedPanel = new HistoryPanel(
+                rejectedStore, new HistoryExportService(), new HistoryDiffService(), rejectedNotifier);
+        AtomicInteger rejectedChanges = new AtomicInteger();
+        rejectedPanel.setWorkspaceChangeListener(rejectedChanges::incrementAndGet);
+        HistoryEntry rejected = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleRunnerEntry(), "rejected", Instant.parse("2026-06-15T03:01:00Z"));
+
+        rejectedPanel.addHistoryEntry(rejected);
+
+        assertThat(rejectedStore.snapshot()).isEmpty();
+        assertThat(rejectedPanel.getSelectedEntry()).isNull();
+        assertThat(rejectedChanges).hasValue(0);
+        assertThat(rejectedNotifier.addRejectedCount).isEqualTo(1);
+        assertThat(rejectedNotifier.lastAdmissionMessage)
+                .contains("ENTRY_EXCEEDS_POLICY")
+                .doesNotContain(HistoryTestFixtures.BASE_URL);
+        assertThat(rejectedPanel.getUsageLabel().getText())
+                .contains("rejected adds 1")
+                .contains("over budget: no");
+    }
+
+    @Test
+    void multiPinRejectionPreservesEverySelectedRecordAndSelection() {
+        RejectingPinStore store = new RejectingPinStore();
+        HistoryEntry first = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(), "pin-first", Instant.parse("2026-06-15T04:00:00Z"));
+        HistoryEntry second = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleRunnerEntry(), "pin-second", Instant.parse("2026-06-15T04:01:00Z"));
+        store.addAll(List.of(first, second));
+        RecordingNotifier notifier = new RecordingNotifier();
+        HistoryPanel panel = new HistoryPanel(store, new HistoryExportService(), new HistoryDiffService(), notifier);
+        AtomicInteger changes = new AtomicInteger();
+        panel.setWorkspaceChangeListener(changes::incrementAndGet);
+        panel.getHistoryTable().setRowSelectionInterval(0, 1);
+
+        panel.togglePinSelectedEntries();
+
+        assertThat(store.getById("pin-first").pinned).isFalse();
+        assertThat(store.getById("pin-second").pinned).isFalse();
+        assertThat(panel.getSelectedEntries()).extracting(entry -> entry.id)
+                .containsExactlyInAnyOrder("pin-first", "pin-second");
+        assertThat(notifier.pinRejectedCount).isEqualTo(1);
+        assertThat(changes).hasValue(0);
+    }
+
+    @Test
+    void rejectedMetadataRestoresStoredValuesAndDoesNotSignalWorkspaceMutation() {
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(), "metadata", Instant.parse("2026-06-15T05:00:00Z"));
+        entry.analystNotes = "stored-note";
+        entry.tags = new LinkedHashSet<>(List.of("stored-tag"));
+        long baseSize = entry.estimatedStoredBytes();
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(
+                10, baseSize + 256L, 1024L * 1024L, 2L * 1024L * 1024L, true));
+        assertThat(store.addEntry(entry)).isNotNull();
+        RecordingNotifier notifier = new RecordingNotifier();
+        HistoryPanel panel = new HistoryPanel(store, new HistoryExportService(), new HistoryDiffService(), notifier);
+        AtomicInteger changes = new AtomicInteger();
+        panel.setWorkspaceChangeListener(changes::incrementAndGet);
+        panel.getHistoryTable().setRowSelectionInterval(0, 0);
+        panel.getDetailPanel().getPinnedCheckBox().setSelected(true);
+        panel.getDetailPanel().getAnalystNotesArea().setText("x".repeat(16_384));
+        panel.getDetailPanel().getTagsField().setText("new-secret-tag");
+
+        panel.saveSelectedMetadata();
+
+        HistoryEntry retained = store.getById("metadata");
+        assertThat(retained).isNotNull();
+        assertThat(retained.pinned).isFalse();
+        assertThat(retained.analystNotes).isEqualTo("stored-note");
+        assertThat(retained.tags).containsExactly("stored-tag");
+        assertThat(panel.getDetailPanel().getPinnedCheckBox().isSelected()).isFalse();
+        assertThat(panel.getDetailPanel().getAnalystNotesText()).isEqualTo("stored-note");
+        assertThat(panel.getDetailPanel().getTagsText()).isEqualTo("stored-tag");
+        assertThat(notifier.metadataRejectedCount).isEqualTo(1);
+        assertThat(notifier.lastAdmissionMessage).doesNotContain("new-secret-tag");
+        assertThat(changes).hasValue(0);
+    }
+
+    @Test
     void nativeDetailViewersRenderTemplatedRequestAndResponseMessages() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),
@@ -219,6 +350,10 @@ class HistoryPanelTest {
 
     private static final class RecordingNotifier extends HistoryLoadResultNotifier {
         int confirmClearCount;
+        int addRejectedCount;
+        int pinRejectedCount;
+        int metadataRejectedCount;
+        String lastAdmissionMessage;
 
         @Override
         public boolean confirmClearHistory(java.awt.Component parent) {
@@ -250,6 +385,41 @@ class HistoryPanelTest {
 
         @Override
         public void showLoadedUnderHistoryReplays(java.awt.Component parent, String requestName) {
+        }
+
+        @Override
+        public void showAddRejected(java.awt.Component parent,
+                                    HistoryAdmissionResult result,
+                                    HistoryRetentionStats stats) {
+            addRejectedCount++;
+            lastAdmissionMessage = admissionRejectionMessage("add", result, stats);
+        }
+
+        @Override
+        public void showPinRejected(java.awt.Component parent,
+                                    HistoryAdmissionResult result,
+                                    HistoryRetentionStats stats) {
+            pinRejectedCount++;
+            lastAdmissionMessage = admissionRejectionMessage("pin", result, stats);
+        }
+
+        @Override
+        public void showMetadataRejected(java.awt.Component parent,
+                                         HistoryAdmissionResult result,
+                                         HistoryRetentionStats stats) {
+            metadataRejectedCount++;
+            lastAdmissionMessage = admissionRejectionMessage("metadata", result, stats);
+        }
+    }
+
+    private static final class RejectingPinStore extends HistoryStore {
+        @Override
+        public synchronized HistoryAdmissionResult setPinnedAllWithResult(Collection<String> ids, boolean pinned) {
+            return HistoryAdmissionResult.rejection(
+                    HistoryAdmissionRejectionReason.PINNED_BUDGET_EXHAUSTED,
+                    null,
+                    getRetentionStats().canonicalRetainedBytes(),
+                    getRetentionPolicy());
         }
     }
 

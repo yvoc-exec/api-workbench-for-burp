@@ -19,6 +19,7 @@
 
 ### Changed
 
+- History now enforces hard entry and retained-byte budgets. Pinned evidence shares the same budget, oldest eligible unpinned evidence is evicted first, and capture is safely rejected without failing HTTP execution when pinned evidence exhausts the limit. Legacy over-budget payloads may be compacted once with original lengths and hashes retained; clearing History does not compact existing Burp project pages.
 - Runner responses are added to Burp Site map only when the independent **Add responses to Burp Site map** option is enabled; the safe default is off because retries and large responses can substantially increase project size. Disabling it does not compact existing projects.
 - OAuth2 token acquisition in production uses Burp/Montoya networking.
 - Dialog parenting improved for Burp UI integration.

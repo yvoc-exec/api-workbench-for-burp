@@ -46,6 +46,44 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
+    void historyPolicyVersionCopiesAndRoundTripsWithoutChangingWorkspaceSchema() {
+        WorkspaceState current = new WorkspaceState();
+        current.historyRetentionPolicyVersion = HistoryRetentionPolicy.CURRENT_POLICY_VERSION;
+        current.historyLegacyCompactedEntryCount = 3;
+        WorkspaceState currentCopy = WorkspaceState.copyOf(current);
+        String currentJson = WorkspaceStateJson.toJson(current);
+        WorkspaceState currentRoundTrip = WorkspaceStateJson.fromJson(currentJson);
+
+        assertThat(currentCopy.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
+        assertThat(currentCopy.historyLegacyCompactedEntryCount).isEqualTo(3);
+        assertThat(JsonParser.parseString(currentJson).getAsJsonObject()
+                .has("historyLegacyCompactedEntryCount")).isFalse();
+        assertThat(currentRoundTrip.historyLegacyCompactedEntryCount).isZero();
+        assertThat(currentRoundTrip.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
+        assertThat(currentRoundTrip.version).isEqualTo(2);
+
+        WorkspaceState future = new WorkspaceState();
+        future.historyRetentionPolicyVersion = 7;
+        WorkspaceState futureRoundTrip = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(future));
+        assertThat(futureRoundTrip.historyRetentionPolicyVersion).isEqualTo(7);
+
+        WorkspaceState missing = WorkspaceStateJson.fromJson("{\"version\":2,\"collections\":[]}");
+        assertThat(missing.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
+        assertThat(WorkspaceState.CURRENT_VERSION).isEqualTo(2);
+    }
+
+    @Test
+    void workspaceCopyPreservesNullHistoryPolicyVersion() {
+        WorkspaceState state = new WorkspaceState();
+        state.historyRetentionPolicyVersion = null;
+
+        assertThat(WorkspaceState.copyOf(state).historyRetentionPolicyVersion).isNull();
+    }
+
+    @Test
     void runnerSiteMapRetentionOptionalBooleanCopiesAndRoundTripsWithoutVersionOrWorkbenchCoupling() {
         WorkspaceState enabled = new WorkspaceState();
         enabled.runnerAddResponsesToSiteMap = Boolean.TRUE;

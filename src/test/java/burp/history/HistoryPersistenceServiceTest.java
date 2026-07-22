@@ -11,6 +11,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class HistoryPersistenceServiceTest {
 
@@ -150,5 +151,68 @@ class HistoryPersistenceServiceTest {
         assertThat(store.getById("workspace-store-copy").analystNotes).isNotEqualTo("mutated-store-copy");
         assertThat(store.getById("workspace-store-copy").analystNotes).isNotEqualTo("mutated-state");
         assertThat(state.historyEntries.get(0).analystNotes).isEqualTo("mutated-state");
+    }
+
+    @Test
+    void failedAtomicRestorePreservesExistingStore() {
+        HistoryPersistenceService service = new HistoryPersistenceService();
+        HistoryStore store = new HistoryStore();
+        HistoryEntry existing = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(),
+                "existing-before-failed-restore",
+                Instant.parse("2026-06-15T02:54:00Z"));
+        store.addEntry(existing);
+        List<HistoryEntry> before = store.snapshot();
+
+        WorkspaceState impossible = new WorkspaceState();
+        impossible.historyRetentionPolicyVersion = HistoryRetentionPolicy.CURRENT_POLICY_VERSION;
+        impossible.historyRetentionPolicy = new HistoryRetentionPolicy(1, 1_000_000, 100_000, 100_000, true);
+        HistoryEntry first = HistoryTestFixtures.copyEntry(existing, "pinned-one", Instant.parse("2026-06-15T02:55:00Z"));
+        HistoryEntry second = HistoryTestFixtures.copyEntry(existing, "pinned-two", Instant.parse("2026-06-15T02:56:00Z"));
+        first.pinned = true;
+        second.pinned = true;
+        impossible.historyEntries = new java.util.ArrayList<>(List.of(first, second));
+
+        assertThatThrownBy(() -> service.restoreStore(store, impossible))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("History persistence could not satisfy the configured retention policy.");
+        assertThat(store.snapshot()).usingRecursiveComparison().isEqualTo(before);
+    }
+
+    @Test
+    void writeStorePersistsCurrentHistoryPolicyVersion() {
+        HistoryStore store = new HistoryStore();
+        store.addEntry(HistoryTestFixtures.sampleWorkbenchEntry());
+        WorkspaceState state = new WorkspaceState();
+
+        new HistoryPersistenceService().writeStore(state, store);
+
+        assertThat(state.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
+        assertThat(state.historyEntries).hasSize(1);
+    }
+
+    @Test
+    void directLegacyRestoreReportsCompactionCount() {
+        WorkspaceState legacy = new WorkspaceState();
+        legacy.historyRetentionPolicyVersion = null;
+        legacy.historyRetentionPolicy = new HistoryRetentionPolicy(10, 8_000, 1_000_000, 2_000_000, true);
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(),
+                "direct-legacy",
+                Instant.parse("2026-06-15T02:57:00Z"));
+        entry.pinned = true;
+        entry.responseSnapshot.body = "x".repeat(20_000).getBytes(StandardCharsets.UTF_8);
+        entry.responseSnapshot.originalBodyLength = entry.responseSnapshot.body.length;
+        entry.responseSnapshot.storedBodyLength = entry.responseSnapshot.body.length;
+        entry.responseSnapshot.fullBodySha256 = HistoryBodyTruncator.sha256Hex(entry.responseSnapshot.body);
+        legacy.historyEntries = new java.util.ArrayList<>(List.of(entry));
+        HistoryStore store = new HistoryStore();
+
+        new HistoryPersistenceService().restoreStore(store, legacy);
+
+        assertThat(store.getRetentionStats().legacyCompactedEntryCount()).isEqualTo(1);
+        assertThat(legacy.historyRetentionPolicyVersion)
+                .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
     }
 }

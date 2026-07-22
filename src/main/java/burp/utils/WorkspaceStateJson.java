@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryAdmissionResult;
 import burp.history.HistoryJsonSupport;
 import burp.history.HistoryRetentionPolicy;
 import burp.history.HistoryStore;
@@ -16,6 +17,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class WorkspaceStateJson {
     private static final Gson GSON = HistoryJsonSupport.configure(new GsonBuilder())
@@ -27,26 +30,39 @@ public final class WorkspaceStateJson {
 
     public static String toJson(WorkspaceState state) {
         WorkspaceState snapshot = WorkspaceState.copyOf(state);
+        // The general migrator supplies defaults to History entries. A current
+        // save must not run that mutation path over an already bounded store
+        // snapshot, so detach History while the general workspace is migrated.
+        List<HistoryEntry> boundedHistory = copyHistory(snapshot.historyEntries);
+        snapshot.historyEntries = new ArrayList<>();
         snapshot = WorkspaceStateMigrator.migrate(snapshot);
-        normalize(snapshot);
+        snapshot.historyEntries = boundedHistory;
+        normalize(snapshot, null, HistoryNormalizationMode.SAVE_CURRENT);
         return GSON.toJson(snapshot);
     }
 
     public static WorkspaceState fromJson(String json) {
         if (json == null || json.isBlank()) {
-            return new WorkspaceState();
+            return normalize(new WorkspaceState(), null, HistoryNormalizationMode.LOAD_CURRENT);
         }
         JsonElement raw = JsonParser.parseString(json);
         WorkspaceState state = GSON.fromJson(raw, WorkspaceState.class);
         state = WorkspaceStateMigrator.migrate(state);
-        return normalize(state, raw);
+        return normalize(state, raw, historyMode(raw));
     }
 
     static WorkspaceState normalize(WorkspaceState state) {
-        return normalize(state, null);
+        return normalize(state, null, HistoryNormalizationMode.SAVE_CURRENT);
     }
 
     static WorkspaceState normalize(WorkspaceState state, JsonElement raw) {
+        return normalize(state, raw, historyMode(raw));
+    }
+
+    private static WorkspaceState normalize(
+            WorkspaceState state,
+            JsonElement raw,
+            HistoryNormalizationMode historyMode) {
         WorkspaceState out = state != null ? state : new WorkspaceState();
         if (out.collections == null) {
             out.collections = new java.util.ArrayList<>();
@@ -67,20 +83,11 @@ public final class WorkspaceStateJson {
             out.runnerQueuedRequestIdentityKeys = new java.util.ArrayList<>();
         }
         normalizeRunnerRetryPolicy(out);
-        if (out.historyRetentionPolicy == null) {
-            out.historyRetentionPolicy = HistoryRetentionPolicy.defaultPolicy();
-        } else {
-            out.historyRetentionPolicy = HistoryRetentionPolicy.copyOf(out.historyRetentionPolicy);
-        }
-        out.historyRetentionPolicy.normalize();
+        out.historyRetentionPolicy = normalizedHistoryPolicy(out.historyRetentionPolicy);
         if (out.environments == null) {
             out.environments = new java.util.ArrayList<>();
         }
-        if (out.historyEntries == null) {
-            out.historyEntries = new java.util.ArrayList<>();
-        } else {
-            out.historyEntries = HistoryStore.normalizeEntries(out.historyEntries, out.historyRetentionPolicy);
-        }
+        normalizeHistory(out, historyMode);
         if (out.defaultResponseTimeoutMillis == null || out.defaultResponseTimeoutMillis <= 0) {
             out.defaultResponseTimeoutMillis = 30_000;
         } else if (out.defaultResponseTimeoutMillis < 1_000) {
@@ -160,6 +167,107 @@ public final class WorkspaceStateJson {
             out.version = WorkspaceState.CURRENT_VERSION;
         }
         return out;
+    }
+
+    private static HistoryRetentionPolicy normalizedHistoryPolicy(HistoryRetentionPolicy policy) {
+        HistoryRetentionPolicy normalized = policy != null
+                ? HistoryRetentionPolicy.copyOf(policy)
+                : HistoryRetentionPolicy.defaultPolicy();
+        normalized.normalize();
+        return normalized;
+    }
+
+    private static void normalizeHistory(WorkspaceState state, HistoryNormalizationMode mode) {
+        List<HistoryEntry> incoming = copyHistory(state.historyEntries);
+        if (mode == HistoryNormalizationMode.SAVE_CURRENT) {
+            validateCurrentHistory(incoming, state.historyRetentionPolicy);
+            state.historyEntries = incoming;
+            state.historyLegacyCompactedEntryCount = 0;
+            if (state.historyRetentionPolicyVersion == null
+                    || state.historyRetentionPolicyVersion < HistoryRetentionPolicy.CURRENT_POLICY_VERSION) {
+                state.historyRetentionPolicyVersion = HistoryRetentionPolicy.CURRENT_POLICY_VERSION;
+            }
+            return;
+        }
+        HistoryStore staging = new HistoryStore();
+        HistoryAdmissionResult restoreResult = staging.restoreAll(
+                incoming,
+                state.historyRetentionPolicy,
+                mode == HistoryNormalizationMode.LOAD_LEGACY);
+        if (!restoreResult.accepted()) {
+            throw historyMigrationFailure();
+        }
+        state.historyEntries = staging.snapshot();
+        state.historyLegacyCompactedEntryCount = mode == HistoryNormalizationMode.LOAD_LEGACY
+                ? staging.getRetentionStats().legacyCompactedEntryCount()
+                : 0;
+        if (state.historyRetentionPolicyVersion == null
+                || state.historyRetentionPolicyVersion < HistoryRetentionPolicy.CURRENT_POLICY_VERSION) {
+            state.historyRetentionPolicyVersion = HistoryRetentionPolicy.CURRENT_POLICY_VERSION;
+        }
+    }
+
+    private static void validateCurrentHistory(
+            List<HistoryEntry> entries,
+            HistoryRetentionPolicy policy) {
+        if (entries.size() > policy.maxEntries) {
+            throw new IllegalStateException("Current History state exceeds the configured retention policy.");
+        }
+        long total = 0L;
+        for (HistoryEntry entry : entries) {
+            long size = entry != null ? Math.max(0L, entry.estimatedStoredBytes()) : 0L;
+            if (Long.MAX_VALUE - total < size) {
+                total = Long.MAX_VALUE;
+            } else {
+                total += size;
+            }
+        }
+        if (total > policy.maxTotalStoredBytes) {
+            throw new IllegalStateException("Current History state exceeds the configured retention policy.");
+        }
+    }
+
+    private static HistoryNormalizationMode historyMode(JsonElement raw) {
+        JsonObject root = raw != null && raw.isJsonObject() ? raw.getAsJsonObject() : null;
+        if (root == null || !root.has("historyRetentionPolicyVersion")) {
+            return HistoryNormalizationMode.LOAD_LEGACY;
+        }
+        JsonElement version = root.get("historyRetentionPolicyVersion");
+        if (version == null || version.isJsonNull() || !version.isJsonPrimitive()) {
+            return HistoryNormalizationMode.LOAD_LEGACY;
+        }
+        try {
+            return version.getAsInt() < HistoryRetentionPolicy.CURRENT_POLICY_VERSION
+                    ? HistoryNormalizationMode.LOAD_LEGACY
+                    : HistoryNormalizationMode.LOAD_CURRENT;
+        } catch (RuntimeException ignored) {
+            return HistoryNormalizationMode.LOAD_LEGACY;
+        }
+    }
+
+    private static List<HistoryEntry> copyHistory(java.util.Collection<HistoryEntry> entries) {
+        List<HistoryEntry> copies = new ArrayList<>();
+        if (entries == null) {
+            return copies;
+        }
+        for (HistoryEntry entry : entries) {
+            HistoryEntry copy = HistoryEntry.copyOf(entry);
+            if (copy != null) {
+                copies.add(copy);
+            }
+        }
+        return copies;
+    }
+
+    private static IllegalStateException historyMigrationFailure() {
+        return new IllegalStateException(
+                "History retention migration could not satisfy the configured policy.");
+    }
+
+    private enum HistoryNormalizationMode {
+        LOAD_LEGACY,
+        LOAD_CURRENT,
+        SAVE_CURRENT
     }
 
     private static void applyRunnerRetryPolicyForSave(WorkspaceState state) {

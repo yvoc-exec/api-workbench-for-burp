@@ -67,7 +67,7 @@ class MemoryHardeningProcessIT {
         root.addProperty("generatedAtUtc", Instant.now().toString());
         root.addProperty("repository", "api-workbench-for-burp");
         root.addProperty("branch", "main");
-        root.addProperty("startingSha", "68401e62d8929546622cff28231c180b91f0e412");
+        root.addProperty("startingSha", "6cdcf45f5e4c81471fe446b8548f056c015523f5");
         root.addProperty("javaVersion", System.getProperty("java.version"));
         root.addProperty("mavenVersion", System.getProperty("memory.hardening.maven.version", "3.9.9"));
         root.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
@@ -82,7 +82,10 @@ class MemoryHardeningProcessIT {
         notes.add("Retained-settle heap is sampled while scenario owner roots remain strongly reachable; release-settle heap is sampled after explicit owner release.");
         notes.add("maximumSampledHeapBytes is sparse sampled heap, not a continuously observed JVM peak.");
         root.add("notes", notes);
-        root.addProperty("reportStatus", unclassified.isEmpty() ? "R1A_MEASUREMENTS_COMPLETE_WITH_DECLARED_PROXIES" : "INCOMPLETE");
+        String reportStatus = unclassified.isEmpty()
+                ? "R3_HISTORY_HARD_BOUND_ENFORCED_WITH_DECLARED_PROXIES"
+                : "INCOMPLETE";
+        root.addProperty("reportStatus", reportStatus);
 
         Path jsonReport = output.resolve("baseline-report.json");
         Path textReport = output.resolve("baseline-summary.txt");
@@ -93,7 +96,10 @@ class MemoryHardeningProcessIT {
         assertThat(jsonReport).exists().isNotEmptyFile();
         assertThat(textReport).exists().isNotEmptyFile();
         assertThat(unclassified).as("every child process must be classifiable").isEmpty();
-        assertThat(root.get("reportStatus").getAsString()).isEqualTo("R1A_MEASUREMENTS_COMPLETE_WITH_DECLARED_PROXIES");
+        assertHistoryHardBounds(results);
+        assertDeclaredClassifications(results);
+        assertThat(root.get("reportStatus").getAsString())
+                .isEqualTo("R3_HISTORY_HARD_BOUND_ENFORCED_WITH_DECLARED_PROXIES");
     }
 
     private static JsonObject executeChild(String scenario, Path output) throws Exception {
@@ -248,6 +254,46 @@ class MemoryHardeningProcessIT {
             assertThat(longValue(script, "apiWorkbenchThreadCountDuring")).isPositive();
             assertThat(longValue(script, "apiWorkbenchThreadCountAfter"))
                     .isLessThan(longValue(script, "apiWorkbenchThreadCountDuring"));
+        }
+    }
+
+    private static void assertHistoryHardBounds(JsonArray results) {
+        JsonObject small = resultFor(results, "history-1000x64k");
+        JsonObject large = resultFor(results, "history-100x2m");
+        assertThat(string(small, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(string(large, "exitClassification")).isEqualTo("SUCCESS");
+        assertHistoryMetrics(small, 1000, false);
+        assertHistoryMetrics(large, 100, true);
+        JsonObject largeMetrics = large.getAsJsonObject("metrics");
+        assertThat(longValue(largeMetrics, "retainedEntryCount")).isLessThan(100L);
+    }
+
+    private static void assertHistoryMetrics(JsonObject result, int attempted, boolean requiresEviction) {
+        JsonObject metrics = result.getAsJsonObject("metrics");
+        assertThat(longValue(metrics, "attemptedAdds")).isEqualTo(attempted);
+        assertThat(longValue(metrics, "acceptedAdds")).isEqualTo(attempted);
+        assertThat(longValue(metrics, "rejectedAdds")).isZero();
+        assertThat(longValue(metrics, "retainedEntryCount"))
+                .isLessThanOrEqualTo(longValue(metrics, "retentionLimitEntries"));
+        assertThat(longValue(metrics, "canonicalRetainedBytes"))
+                .isLessThanOrEqualTo(longValue(metrics, "retentionLimitBytes"));
+        assertThat(longValue(metrics, "pinnedRetainedBytes")
+                + longValue(metrics, "unpinnedRetainedBytes"))
+                .isEqualTo(longValue(metrics, "canonicalRetainedBytes"));
+        assertThat(longValue(metrics, "overBudget")).isZero();
+        if (requiresEviction) {
+            assertThat(longValue(metrics, "cumulativeEvictions")).isPositive();
+        }
+    }
+
+    private static void assertDeclaredClassifications(JsonArray results) {
+        assertThat(string(resultFor(results, "runner-200x2m"), "exitClassification"))
+                .isEqualTo("OOM_REPORTED");
+        assertThat(string(resultFor(results, "workspace-history-80m"), "exitClassification"))
+                .isEqualTo("OOM_REPORTED");
+        for (JsonElement item : results) {
+            JsonObject result = item.getAsJsonObject();
+            assertThat(string(result, "exitClassification")).isNotEqualTo("TIMEOUT");
         }
     }
 

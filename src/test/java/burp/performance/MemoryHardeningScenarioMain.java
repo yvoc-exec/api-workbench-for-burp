@@ -2,7 +2,11 @@ package burp.performance;
 
 import burp.UniversalImporter;
 import burp.history.HistoryEntry;
+import burp.history.HistoryAdmissionResult;
 import burp.history.HistoryJsonSupport;
+import burp.history.HistoryRetentionPolicy;
+import burp.history.HistoryRetentionStats;
+import burp.history.HistoryStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -132,20 +136,43 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static ScenarioExecution history(String name, int count, int responseBytes, long[] peak) {
-        List<HistoryEntry> owners = new ArrayList<>(count);
-        long logical = 0;
+        HistoryStore owners = new HistoryStore();
+        owners.setRetentionPolicy(HistoryRetentionPolicy.defaultPolicy());
+        int accepted = 0;
+        int rejected = 0;
+        long cumulativeEvictions = 0L;
         for (int i = 0; i < count; i++) {
             HistoryEntry entry = MemoryHardeningFixtureFactory.historyEntry(i, 256, responseBytes);
-            owners.add(entry);
-            logical = MemoryHardeningFixtureFactory.safeAdd(logical, entry.estimatedStoredBytes());
+            HistoryAdmissionResult admission = owners.admitEntry(entry);
+            if (admission.accepted()) {
+                accepted++;
+                cumulativeEvictions = MemoryHardeningFixtureFactory.safeAdd(
+                        cumulativeEvictions, admission.entriesEvicted());
+            } else {
+                rejected++;
+            }
             sample(peak);
         }
+        HistoryRetentionStats stats = owners.getRetentionStats();
+        HistoryRetentionPolicy policy = owners.getRetentionPolicy();
         ScenarioResult result = new ScenarioResult(name);
         result.operationCount = count;
         result.payloadBytes = responseBytes;
-        result.logicalRetainedBytes = logical;
+        result.logicalRetainedBytes = stats.canonicalRetainedBytes();
         result.retainedOwners = owners.size();
         result.metrics.put("historyEntryOwners", owners.size());
+        result.metrics.put("attemptedAdds", count);
+        result.metrics.put("acceptedAdds", accepted);
+        result.metrics.put("rejectedAdds", rejected);
+        result.metrics.put("cumulativeEvictions", cumulativeEvictions);
+        result.metrics.put("retainedEntryCount", owners.size());
+        result.metrics.put("canonicalRetainedBytes", stats.canonicalRetainedBytes());
+        result.metrics.put("pinnedRetainedBytes", stats.pinnedRetainedBytes());
+        result.metrics.put("unpinnedRetainedBytes", stats.unpinnedRetainedBytes());
+        result.metrics.put("retentionLimitBytes", policy.maxTotalStoredBytes);
+        result.metrics.put("retentionLimitEntries", policy.maxEntries);
+        result.metrics.put("truncatedEntryCount", stats.truncatedEntryCount());
+        result.metrics.put("overBudget", stats.overBudget() ? 1 : 0);
         return retain(result, owners);
     }
 

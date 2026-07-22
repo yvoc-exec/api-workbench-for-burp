@@ -30,6 +30,8 @@ public class WorkspaceState {
     public Map<String, String> requestTreePaths = new LinkedHashMap<>();
     public List<HistoryEntry> historyEntries = new ArrayList<>();
     public HistoryRetentionPolicy historyRetentionPolicy = HistoryRetentionPolicy.defaultPolicy();
+    public Integer historyRetentionPolicyVersion;
+    public transient int historyLegacyCompactedEntryCount;
     public boolean diagnosticsCaptureEnabled = false;
     public Boolean workbenchRepeaterSelected;
     public Boolean workbenchSitemapSelected;
@@ -96,6 +98,8 @@ public class WorkspaceState {
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
         copy.historyEntries = copyHistoryEntries(source.historyEntries);
         copy.historyRetentionPolicy = HistoryRetentionPolicy.copyOf(source.historyRetentionPolicy);
+        copy.historyRetentionPolicyVersion = source.historyRetentionPolicyVersion;
+        copy.historyLegacyCompactedEntryCount = Math.max(0, source.historyLegacyCompactedEntryCount);
         copy.diagnosticsCaptureEnabled = source.diagnosticsCaptureEnabled;
         copy.workbenchRepeaterSelected = source.workbenchRepeaterSelected;
         copy.workbenchSitemapSelected = source.workbenchSitemapSelected;

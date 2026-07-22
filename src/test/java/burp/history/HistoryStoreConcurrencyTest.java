@@ -5,9 +5,12 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,6 +38,7 @@ class HistoryStoreConcurrencyTest {
 
         store.addEntry(entry("id-5", 5));
         assertThat(ids(store.snapshot())).containsExactly("id-5", "id-4", "id-2");
+        assertBounded(store);
     }
 
     @Test
@@ -67,6 +71,7 @@ class HistoryStoreConcurrencyTest {
         assertThat(ids(store.snapshot())).containsExactly("new-3", "new-2", "new-1");
         assertThat(store.getById("old-1")).isNull();
         assertThat(store.getById("new-2")).isNotNull();
+        assertBounded(store);
     }
 
     @Test
@@ -113,6 +118,7 @@ class HistoryStoreConcurrencyTest {
         assertThat(policyThread.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
         assertThat(ids(store.snapshot())).containsExactly("id-6", "id-5", "id-4");
+        assertBounded(store);
     }
 
     @Test
@@ -162,6 +168,7 @@ class HistoryStoreConcurrencyTest {
         assertThat(reader.isAlive()).isFalse();
         assertThat(failure.get()).isNull();
         assertThat(ids(store.snapshot())).containsExactly("id-5", "id-3", "id-1");
+        assertBounded(store);
     }
 
     @Test
@@ -218,6 +225,59 @@ class HistoryStoreConcurrencyTest {
         assertThat(iteratedIds).containsExactly("id-5", "id-4", "id-3", "id-2", "id-1");
         assertThat(ids(snapshot)).containsExactly("id-5", "id-4", "id-3", "id-2", "id-1");
         assertThat(ids(store.snapshot())).containsExactly("id-8", "id-7", "id-6", "id-5", "id-4", "id-1");
+        assertBounded(store);
+    }
+
+    @Test
+    void concurrentReadersObserveOnlyCompleteOldOrNewBulkState() throws Exception {
+        HistoryStore store = new HistoryStore();
+        store.setRetentionPolicy(new HistoryRetentionPolicy(500));
+        List<HistoryEntry> oldEntries = List.of(entry("old-1", 1), entry("old-2", 2));
+        List<HistoryEntry> newEntries = new ArrayList<>();
+        for (int i = 0; i < 250; i++) {
+            newEntries.add(entry("new-" + i, 1_000L + i));
+        }
+        assertThat(store.replaceAllWithResult(oldEntries).accepted()).isTrue();
+
+        Set<String> oldIds = new HashSet<>(ids(oldEntries));
+        Set<String> newIds = new HashSet<>(ids(newEntries));
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicBoolean writerDone = new AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread writer = new Thread(() -> {
+            try {
+                await(start);
+                assertThat(store.replaceAllWithResult(newEntries).accepted()).isTrue();
+            } catch (Throwable t) {
+                failure.compareAndSet(null, t);
+            } finally {
+                writerDone.set(true);
+            }
+        }, "history-bulk-writer");
+        Thread reader = new Thread(() -> {
+            try {
+                await(start);
+                do {
+                    Set<String> observed = new HashSet<>(ids(store.snapshot()));
+                    assertThat(observed.equals(oldIds) || observed.equals(newIds)).isTrue();
+                } while (!writerDone.get());
+            } catch (Throwable t) {
+                failure.compareAndSet(null, t);
+            }
+        }, "history-bulk-reader");
+
+        writer.start();
+        reader.start();
+        start.countDown();
+        writer.join(THREAD_JOIN_TIMEOUT_MILLIS);
+        reader.join(THREAD_JOIN_TIMEOUT_MILLIS);
+
+        assertThat(writer.isAlive()).isFalse();
+        assertThat(reader.isAlive()).isFalse();
+        assertThat(failure.get()).isNull();
+        assertThat(new HashSet<>(ids(store.snapshot()))).isEqualTo(newIds);
+        assertBounded(store);
     }
 
     private static HistoryEntry entry(String id, long offsetSeconds) {
@@ -245,5 +305,17 @@ class HistoryStoreConcurrencyTest {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted waiting for history concurrency latch", e);
         }
+    }
+
+    private static void assertBounded(HistoryStore store) {
+        HistoryRetentionPolicy policy = store.getRetentionPolicy();
+        HistoryRetentionStats stats = store.getRetentionStats();
+        assertThat(stats.entryCount()).isLessThanOrEqualTo(policy.maxEntries);
+        assertThat(stats.canonicalRetainedBytes()).isLessThanOrEqualTo(policy.maxTotalStoredBytes);
+        assertThat(stats.pinnedRetainedBytes() + stats.unpinnedRetainedBytes())
+                .isEqualTo(stats.canonicalRetainedBytes());
+        assertThat(stats.totalEstimatedBytes()).isEqualTo(stats.canonicalRetainedBytes());
+        assertThat(stats.overBudget()).isFalse();
+        assertThat(store.snapshot()).extracting(entry -> entry.id).doesNotHaveDuplicates();
     }
 }

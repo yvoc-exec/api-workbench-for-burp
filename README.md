@@ -189,11 +189,13 @@ Preserved actions:
 - clear
 - Clear Unpinned
 
-The Evidence tab stores analyst metadata for a History entry: pinned status, tags, and analyst notes. Workbench and Runner detail viewers edit the same HistoryStore metadata once a result is captured in History. Pin important entries before using Clear Unpinned so noisy unpinned records can be removed while keep-worthy evidence remains.
+The Evidence tab stores analyst metadata for a History entry: pinned status, tags, and analyst notes. Workbench and Runner detail viewers edit the same HistoryStore metadata once a result is captured in History. Pin important entries before using Clear Unpinned so noisy unpinned records can be removed while keep-worthy evidence remains. Pinned evidence counts toward the same hard retained-byte and entry budgets; it does not bypass them.
+
+History enforces hard entry and retained-byte budgets. Oldest eligible unpinned evidence is evicted first. When protected pinned evidence consumes the available budget, new evidence is rejected without failing the Workbench request or Runner attempt. Older over-budget workspaces may receive a one-time, explicitly marked payload compaction that preserves original lengths and SHA-256 metadata. History rows still retain full entry copies in the UI pending later lightweight-ownership work.
 
 History may contain raw requests, responses, authorization material, tokens, cookies, and sensitive payloads. Review before sharing.
 
-Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. History replay can use recorded redirect behavior, always follow, or never follow redirects. Redirect hops are stored as nested evidence under the logical execution. Fragments are stripped before the next request is sent; percent-encoded path and query octets stay encoded exactly; 307/308 preserve method, body, and entity metadata; 301/302 preserve body for non-POST methods; and POST-to-GET or non-HEAD 303 redirects drop body and entity headers. The History store retains at most 1,000 entries and persists with the workspace.
+Replay uses the original snapshot when possible and can fall back to a `History Replays` collection when the original request no longer exists. History replay can use recorded redirect behavior, always follow, or never follow redirects. Redirect hops are stored as nested evidence under the logical execution. Fragments are stripped before the next request is sent; percent-encoded path and query octets stay encoded exactly; 307/308 preserve method, body, and entity metadata; 301/302 preserve body for non-POST methods; and POST-to-GET or non-HEAD 303 redirects drop body and entity headers. The History store retains at most 1,000 entries and persists with the workspace. Clearing or disabling History does not necessarily compact an existing Burp project file.
 
 ### Diagnostics
 

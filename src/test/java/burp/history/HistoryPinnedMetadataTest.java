@@ -130,29 +130,28 @@ class HistoryPinnedMetadataTest {
     }
 
     @Test
-    void atomicEvidenceUpdatePinsBeforeRetention() {
+    void oversizedAtomicEvidenceUpdateRejectsAndPreservesOriginal() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = storedEntry(store, "atomic-pin");
         long baseSize = store.getById(entry.id).estimatedStoredBytes();
         store.setRetentionPolicy(new HistoryRetentionPolicy(10, baseSize + 32, 1_000_000, 1_000_000, true));
 
-        HistoryEntry updated = store.updateEvidenceMetadata(
+        HistoryEntry before = store.getById(entry.id);
+        HistoryAdmissionResult result = store.updateEvidenceMetadataWithResult(
                 entry.id,
                 true,
                 "N".repeat(512),
                 List.of(" Auth ", "auth", "Evidence")
         );
 
-        assertThat(updated).isNotNull();
-        assertThat(updated.pinned).isTrue();
-        assertThat(updated.analystNotes).hasSize(512);
-        assertThat(updated.tags).containsExactly("Auth", "Evidence");
-        assertThat(store.getById(entry.id)).isNotNull();
-        assertThat(store.getRetentionStats().overBudget()).isTrue();
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.rejectionReason()).isEqualTo(HistoryAdmissionRejectionReason.ENTRY_EXCEEDS_POLICY);
+        assertThat(store.getById(entry.id)).usingRecursiveComparison().isEqualTo(before);
+        assertThat(store.getRetentionStats().overBudget()).isFalse();
     }
 
     @Test
-    void atomicEvidenceUpdateReportsOverBudgetWhenPinnedEntryExceedsBudget() {
+    void compatibilityWrapperReturnsNullWhenPinnedMetadataCannotFit() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = storedEntry(store, "atomic-over-budget");
         long baseSize = store.getById(entry.id).estimatedStoredBytes();
@@ -160,14 +159,14 @@ class HistoryPinnedMetadataTest {
 
         HistoryEntry updated = store.updateEvidenceMetadata(entry.id, true, "Reviewed-" + "X".repeat(256), List.of("Evidence"));
 
-        assertThat(updated).isNotNull();
-        assertThat(updated.pinned).isTrue();
-        assertThat(store.getRetentionStats().overBudget()).isTrue();
+        assertThat(updated).isNull();
+        assertThat(store.getById(entry.id).pinned).isFalse();
+        assertThat(store.getRetentionStats().overBudget()).isFalse();
         assertThat(store.snapshot()).extracting(value -> value.id).containsExactly(entry.id);
     }
 
     @Test
-    void atomicEvidenceUpdateEvictsEligibleUnpinnedEntry() {
+    void atomicEvidenceUpdateNeverEvictsEditedEntryToClaimSuccess() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = storedEntry(store, "atomic-evict");
         long baseSize = store.getById(entry.id).estimatedStoredBytes();
@@ -176,8 +175,9 @@ class HistoryPinnedMetadataTest {
         HistoryEntry updated = store.updateEvidenceMetadata(entry.id, false, "Z".repeat(512), List.of("Evidence"));
 
         assertThat(updated).isNull();
-        assertThat(store.getById(entry.id)).isNull();
-        assertThat(store.getRetentionStats().entryCount()).isZero();
+        assertThat(store.getById(entry.id)).isNotNull();
+        assertThat(store.getById(entry.id).analystNotes).isNotEqualTo("Z".repeat(512));
+        assertThat(store.getRetentionStats().entryCount()).isEqualTo(1);
         assertThat(store.getRetentionStats().overBudget()).isFalse();
     }
 

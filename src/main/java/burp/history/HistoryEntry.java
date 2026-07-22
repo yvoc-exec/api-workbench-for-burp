@@ -111,6 +111,7 @@ public class HistoryEntry {
     public String assertionsSummaryText;
     public String metadataSummaryText;
     public boolean pinned;
+    public boolean legacyBudgetCompacted;
     public String analystNotes = "";
     public LinkedHashSet<String> tags = new LinkedHashSet<>();
 
@@ -507,6 +508,7 @@ public class HistoryEntry {
         copy.assertionsSummaryText = source.assertionsSummaryText;
         copy.metadataSummaryText = source.metadataSummaryText;
         copy.pinned = source.pinned;
+        copy.legacyBudgetCompacted = source.legacyBudgetCompacted;
         copy.analystNotes = source.analystNotes;
         copy.tags = source.tags != null ? new LinkedHashSet<>(source.tags) : new LinkedHashSet<>();
         return copy;
@@ -712,6 +714,7 @@ public class HistoryEntry {
         size = addUtf8(size, responseSnapshot != null ? responseSnapshot.truncationSummary() : null);
 
         size = addBoolean(size, pinned);
+        size = addBoolean(size, legacyBudgetCompacted);
         size = addBoolean(size, requestMayHaveBeenProcessed);
         size = addBoolean(size, dependentExecution);
         size = addBoolean(size, adHocExecution);

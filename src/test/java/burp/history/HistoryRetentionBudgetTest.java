@@ -49,20 +49,25 @@ class HistoryRetentionBudgetTest {
     }
 
     @Test
-    void overBudgetReportedWhenPinnedEntriesExceedBudget() {
+    void policyChangeRejectsWhenPinnedEntriesExceedBudget() {
         HistoryStore store = new HistoryStore();
         HistoryEntry first = entry("first", Instant.parse("2026-06-15T01:00:00Z"), true, 48, 32);
         HistoryEntry second = entry("second", Instant.parse("2026-06-15T01:01:00Z"), true, 48, 32);
         store.replaceAll(List.of(second, first));
         long total = store.getRetentionStats().totalEstimatedBytes();
 
-        store.setRetentionPolicy(new HistoryRetentionPolicy(10, total - 1, 1_000_000, 1_000_000, true));
+        HistoryRetentionPolicy beforePolicy = store.getRetentionPolicy();
+        HistoryAdmissionResult result = store.applyRetentionPolicy(
+                new HistoryRetentionPolicy(10, total - 1, 1_000_000, 1_000_000, true));
 
         HistoryRetentionStats stats = store.getRetentionStats();
-        assertThat(stats.overBudget()).isTrue();
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.rejectionReason()).isEqualTo(HistoryAdmissionRejectionReason.POLICY_REJECTED);
+        assertThat(stats.overBudget()).isFalse();
         assertThat(stats.entryCount()).isEqualTo(2);
         assertThat(stats.totalEstimatedBytes()).isEqualTo(total);
         assertThat(store.snapshot()).extracting(entry -> entry.id).containsExactly("second", "first");
+        assertThat(store.getRetentionPolicy().maxTotalStoredBytes).isEqualTo(beforePolicy.maxTotalStoredBytes);
     }
 
     @Test
@@ -176,18 +181,20 @@ class HistoryRetentionBudgetTest {
     }
 
     @Test
-    void unpinningMakesEntryEligibleForEviction() {
+    void rejectedPolicyDoesNotRequireUnpinningToRepairOverBudgetState() {
         HistoryStore store = new HistoryStore();
         store.setRetentionPolicy(new HistoryRetentionPolicy(10, 1_000_000, 1_000_000, 1_000_000, true));
         HistoryEntry pinnedOldest = entry("pinned-oldest", Instant.parse("2026-06-15T01:00:00Z"), true, 48, 32);
         HistoryEntry pinnedNewest = entry("pinned-newest", Instant.parse("2026-06-15T01:01:00Z"), true, 48, 32);
         store.replaceAll(List.of(pinnedNewest, pinnedOldest));
         long total = store.getRetentionStats().totalEstimatedBytes();
-        store.setRetentionPolicy(new HistoryRetentionPolicy(10, total - 1, 1_000_000, 1_000_000, true));
-        assertThat(store.getRetentionStats().overBudget()).isTrue();
+        HistoryAdmissionResult rejected = store.applyRetentionPolicy(
+                new HistoryRetentionPolicy(10, total - 1, 1_000_000, 1_000_000, true));
+        assertThat(rejected.accepted()).isFalse();
+        assertThat(store.getRetentionStats().overBudget()).isFalse();
 
         assertThat(store.setPinned("pinned-oldest", false)).isTrue();
-        assertThat(store.getById("pinned-oldest")).isNull();
+        assertThat(store.getById("pinned-oldest")).isNotNull();
         assertThat(store.getById("pinned-newest")).isNotNull();
         assertThat(store.getRetentionStats().overBudget()).isFalse();
     }

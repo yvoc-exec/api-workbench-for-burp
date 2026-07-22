@@ -9,6 +9,8 @@ import burp.auth.OAuth2Config;
 import burp.auth.TokenStore;
 import burp.UniversalImporter;
 import burp.history.HistoryEntry;
+import burp.history.HistoryAdmissionResult;
+import burp.history.HistoryRetentionStats;
 import burp.history.HistoryExportService;
 import burp.history.HistoryPersistenceService;
 import burp.history.HistoryStore;
@@ -170,7 +172,7 @@ public class ImporterPanel {
     private final HistoryExportService historyExportService = new HistoryExportService();
     private final HistoryDiffService historyDiffService = new HistoryDiffService();
     private final HistoryPersistenceService historyPersistenceService = new HistoryPersistenceService();
-    private final HistoryLoadResultNotifier historyLoadResultNotifier = new HistoryLoadResultNotifier();
+    private HistoryLoadResultNotifier historyLoadResultNotifier = new HistoryLoadResultNotifier();
     private final JPanel mainPanel;
     private JTabbedPane tabbedPane;
 
@@ -263,6 +265,8 @@ public class ImporterPanel {
     private int runnerCompletedQueueCount = 0;
     private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
     private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
+    private final Set<RunnerResult> runnerHistoryAdmissionRejections =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private RunnerWarningPresenter runnerWarningPresenter = this::showRunnerWarningDialog;
 
     // Workbench environment selector
@@ -999,6 +1003,9 @@ public class ImporterPanel {
         if (result == null) {
             return null;
         }
+        if (runnerHistoryAdmissionRejections.contains(result)) {
+            return null;
+        }
         if (result.historyEntryId != null && !result.historyEntryId.isBlank()) {
             HistoryEntry existing = historyStore.getById(result.historyEntryId);
             if (existing != null) {
@@ -1036,6 +1043,8 @@ public class ImporterPanel {
         HistoryEntry stored = recordHistoryEntry(entry);
         if (stored != null) {
             result.historyEntryId = stored.id;
+        } else {
+            runnerHistoryAdmissionRejections.add(result);
         }
         return stored;
     }
@@ -1069,7 +1078,16 @@ public class ImporterPanel {
             return stored.get();
         }
         entry.ensureDefaults();
-        HistoryEntry stored = historyStore.addEntry(entry);
+        HistoryAdmissionResult admission = historyStore.admitEntry(entry);
+        if (!admission.accepted() || admission.storedEntryId() == null) {
+            handleAutomaticHistoryAdmissionRejected(admission, entry.source);
+            return null;
+        }
+        HistoryEntry stored = historyStore.getById(admission.storedEntryId());
+        if (stored == null) {
+            handleAutomaticHistoryAdmissionRejected(admission, entry.source);
+            return null;
+        }
         recordDiagnostic(
                 DiagnosticOperation.HISTORY_CAPTURE,
                 DiagnosticSeverity.INFO,
@@ -1082,6 +1100,22 @@ public class ImporterPanel {
         }
         notifyWorkspaceChanged();
         return stored;
+    }
+
+    private void handleAutomaticHistoryAdmissionRejected(HistoryAdmissionResult admission, HistorySource source) {
+        HistoryRetentionStats stats = historyStore.getRetentionStats();
+        String warning = HistoryLoadResultNotifier.admissionRejectionMessage(
+                "Automatic History capture was not retained",
+                admission,
+                stats);
+        if (source == HistorySource.RUNNER) {
+            appendRunnerLog("[WARN] " + warning);
+        } else {
+            appendImportLog("[WARN] " + warning);
+        }
+        if (historyPanel != null) {
+            historyPanel.refreshFromStore();
+        }
     }
 
     private void loadHistoryEntryIntoWorkbench(HistoryEntry entry) {
@@ -7582,7 +7616,7 @@ public class ImporterPanel {
         Map<String, String> modelTreePaths = collectRequestTreePathsFromRequestModels();
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
-        state.historyEntries = historyStore.snapshot();
+        historyPersistenceService.writeStore(state, historyStore);
         state.diagnosticsCaptureEnabled = DiagnosticStore.getInstance().isCaptureEnabled();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
@@ -7629,6 +7663,10 @@ public class ImporterPanel {
                 DiagnosticStore.getInstance().setCaptureEnabled(state.diagnosticsCaptureEnabled);
                 if (historyPanel != null) {
                     historyPanel.refreshFromStore();
+                }
+                HistoryRetentionStats restoredHistoryStats = historyStore.getRetentionStats();
+                if (restoredHistoryStats.legacyCompactedEntryCount() > 0) {
+                    historyLoadResultNotifier.showLegacyPayloadCompacted(mainPanel, restoredHistoryStats);
                 }
                 setActiveEnvironmentId(state.activeEnvironmentId);
                 selectCollectionByName(varsCollectionCombo, state.selectedVariablesCollectionName);
@@ -12131,6 +12169,7 @@ public class ImporterPanel {
         runnerExecutionSequence = 0;
         runnerResultById.clear();
         runnerResultByName.clear();
+        runnerHistoryAdmissionRejections.clear();
 
         if (activeRunnerListener != null) {
             runner.removeListener(activeRunnerListener);
@@ -12434,6 +12473,7 @@ public class ImporterPanel {
         runnerCompletedQueueCount = 0;
         runnerResultById.clear();
         runnerResultByName.clear();
+        runnerHistoryAdmissionRejections.clear();
         runnerTerminalHandled = false;
         refreshRunnerQueueList(-1);
         if (runnerProgress != null) {
@@ -13079,14 +13119,25 @@ public class ImporterPanel {
             return;
         }
         HistoryEntry selected = detailPanel.getCurrentEntry();
-        HistoryEntry updated = historyStore.updateEvidenceMetadata(
+        HistoryAdmissionResult result = historyStore.updateEvidenceMetadataWithResult(
                 selected.id,
                 detailPanel.getPinnedCheckBox().isSelected(),
                 detailPanel.getAnalystNotesText(),
                 burp.history.HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText())
         );
+        HistoryEntry updated = result.accepted() && result.storedEntryId() != null
+                ? historyStore.getById(result.storedEntryId())
+                : null;
         if (updated == null) {
-            detailPanel.setEvidenceEditable(false, "Evidence is editable after this result is captured in History.");
+            HistoryEntry stored = historyStore.getById(selected.id);
+            if (stored != null) {
+                detailPanel.showEntry(stored);
+                setDetailEvidenceEditability(detailPanel, stored);
+            }
+            historyLoadResultNotifier.showMetadataRejected(mainPanel, result, historyStore.getRetentionStats());
+            if (historyPanel != null) {
+                historyPanel.refreshFromStore(selected.id);
+            }
             return;
         }
         detailPanel.showEntry(updated);
@@ -13100,6 +13151,10 @@ public class ImporterPanel {
     RequestEditorPanel getRequestEditorForTests() { return requestEditor; }
     JTree getRequestTreeForTests() { return requestTree; }
     HistoryPanel getHistoryPanelForTests() { return historyPanel; }
+    HistoryStore getHistoryStoreForTests() { return historyStore; }
+    void setHistoryLoadResultNotifierForTests(HistoryLoadResultNotifier notifier) {
+        historyLoadResultNotifier = notifier != null ? notifier : new HistoryLoadResultNotifier();
+    }
     HistoryDetailPanel getWorkbenchDetailPanelForTests() { return workbenchDetailPanel; }
     JTable getRunnerResultTableForTests() { return resultTable; }
     JList<ApiRequest> getRunnerQueueListForTests() { return runnerQueueList; }
@@ -13121,6 +13176,7 @@ public class ImporterPanel {
     JComboBox<EnvironmentRef> getEnvironmentComboForTests() { return environmentCombo; }
     JButton getActionsButtonForTests() { return actionsBtn; }
     JTextArea getImportLogAreaForTests() { return importLog; }
+    JTextArea getRunnerLogAreaForTests() { return runnerLog; }
     void queueRunnerRequestsForTests(List<ApiRequest> selected) { queueRunnerRequests(selected != null ? selected : Collections.emptyList()); }
 
     public JPanel getPanel() { return mainPanel; }
