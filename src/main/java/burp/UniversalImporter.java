@@ -19,9 +19,9 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
@@ -39,7 +39,7 @@ public class UniversalImporter {
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
     private final DebouncedSwingAction debouncedWorkspaceSave;
-    private final ExecutorService workspaceSaveExecutor;
+    private final ThreadPoolExecutor workspaceSaveExecutor;
     private volatile String lastSavedWorkspaceJson;
     private volatile boolean workspaceSaveClosed = false;
     private boolean followRedirects = true;
@@ -60,7 +60,13 @@ public class UniversalImporter {
         burp.runner.CollectionRunner runner = createCollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
         this.workspaceSaveExecutor = workspaceStateService != null
-                ? Executors.newSingleThreadExecutor(newWorkspaceSaveThreadFactory())
+                ? new ThreadPoolExecutor(
+                        1,
+                        1,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>(),
+                        newWorkspaceSaveThreadFactory())
                 : null;
         this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::scheduleWorkspaceStateSave);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
@@ -717,6 +723,22 @@ public class UniversalImporter {
 
     boolean isWorkspaceSaveExecutorTerminatedForTests() {
         return workspaceSaveExecutor == null || workspaceSaveExecutor.isTerminated();
+    }
+
+    Future<?> submitWorkspaceStateSaveForTests(WorkspaceState snapshot) {
+        return submitWorkspaceStateSave(snapshot, false);
+    }
+
+    int queuedWorkspaceStateSaveCountForTests() {
+        return workspaceSaveExecutor != null ? workspaceSaveExecutor.getQueue().size() : 0;
+    }
+
+    int activeWorkspaceStateSaveCountForTests() {
+        return workspaceSaveExecutor != null ? workspaceSaveExecutor.getActiveCount() : 0;
+    }
+
+    String lastSavedWorkspaceJsonForTests() {
+        return lastSavedWorkspaceJson;
     }
 
     private void scheduleWorkspaceStateSave() {

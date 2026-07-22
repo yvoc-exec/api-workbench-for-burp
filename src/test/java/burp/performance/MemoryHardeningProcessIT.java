@@ -60,13 +60,14 @@ class MemoryHardeningProcessIT {
         JsonObject runnerMetrics = metricsFor(results, "runner-sitemap-traffic");
         JsonObject ownership = logicalOwnership(results);
         assertAccounting(workspaceMetrics, runnerMetrics);
+        assertRetainedOwnershipMeasurements(results);
 
         JsonObject root = new JsonObject();
-        root.addProperty("schemaVersion", 1);
+        root.addProperty("schemaVersion", 2);
         root.addProperty("generatedAtUtc", Instant.now().toString());
         root.addProperty("repository", "api-workbench-for-burp");
         root.addProperty("branch", "main");
-        root.addProperty("startingSha", "1a38d9e74479f6e137982648c7fa08b88fec75c9");
+        root.addProperty("startingSha", "68401e62d8929546622cff28231c180b91f0e412");
         root.addProperty("javaVersion", System.getProperty("java.version"));
         root.addProperty("mavenVersion", System.getProperty("memory.hardening.maven.version", "3.9.9"));
         root.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
@@ -78,9 +79,10 @@ class MemoryHardeningProcessIT {
         JsonArray notes = new JsonArray();
         notes.add("Observed measurements, deterministic structural counts, estimated logical bytes, JVM heap samples, and project-growth proxy metrics are labeled separately.");
         notes.add(DISCLAIMER);
-        notes.add("Settled heap is an observation and is not a requirement that committed heap return to the operating system.");
+        notes.add("Retained-settle heap is sampled while scenario owner roots remain strongly reachable; release-settle heap is sampled after explicit owner release.");
+        notes.add("maximumSampledHeapBytes is sparse sampled heap, not a continuously observed JVM peak.");
         root.add("notes", notes);
-        root.addProperty("reportStatus", unclassified.isEmpty() ? "COMPLETE_BASELINE" : "INCOMPLETE");
+        root.addProperty("reportStatus", unclassified.isEmpty() ? "R1A_MEASUREMENTS_COMPLETE_WITH_DECLARED_PROXIES" : "INCOMPLETE");
 
         Path jsonReport = output.resolve("baseline-report.json");
         Path textReport = output.resolve("baseline-summary.txt");
@@ -91,7 +93,7 @@ class MemoryHardeningProcessIT {
         assertThat(jsonReport).exists().isNotEmptyFile();
         assertThat(textReport).exists().isNotEmptyFile();
         assertThat(unclassified).as("every child process must be classifiable").isEmpty();
-        assertThat(root.get("reportStatus").getAsString()).isEqualTo("COMPLETE_BASELINE");
+        assertThat(root.get("reportStatus").getAsString()).isEqualTo("R1A_MEASUREMENTS_COMPLETE_WITH_DECLARED_PROXIES");
     }
 
     private static JsonObject executeChild(String scenario, Path output) throws Exception {
@@ -157,15 +159,20 @@ class MemoryHardeningProcessIT {
         result.addProperty("elapsedMillis", elapsed);
         result.addProperty("configuredHeapBytes", 512L * 1024L * 1024L);
         result.addProperty("heapUsedBefore", 0);
-        result.addProperty("peakHeapBytes", 0);
+        result.addProperty("maximumSampledHeapBytes", 0);
         result.addProperty("heapAfterWorkload", 0);
-        result.addProperty("heapAfterSettle", 0);
+        result.addProperty("heapAfterRetainedSettle", 0);
+        result.addProperty("heapAfterReleaseSettle", 0);
         result.addProperty("payloadBytes", 0);
         result.addProperty("operationCount", 0);
         result.addProperty("logicalRetainedBytes", 0);
         result.addProperty("serializedWorkspaceBytes", 0);
         result.addProperty("retainedOwners", 0);
         result.addProperty("apiWorkbenchThreadCount", 0);
+        result.addProperty("apiWorkbenchThreadCountBefore", 0);
+        result.addProperty("apiWorkbenchThreadCountDuring", 0);
+        result.addProperty("apiWorkbenchThreadCountAfterClose", 0);
+        result.addProperty("apiWorkbenchThreadCountAfter", 0);
         result.addProperty("oom", oom);
         result.addProperty("timedOut", timeout);
         JsonArray warnings = new JsonArray();
@@ -208,10 +215,47 @@ class MemoryHardeningProcessIT {
             assertThat(workspace.get("cumulativeExtensionDataBytesSubmitted").getAsLong())
                     .isGreaterThanOrEqualTo(workspace.get("currentExtensionDataValueBytes").getAsLong());
         }
+        if (workspace.has("pendingSnapshotCountObserved")) {
+            assertThat(workspace.get("pendingSnapshotCountObserved").getAsInt()).isEqualTo(10);
+            assertThat(workspace.get("queuedDetachedWorkspaceStates").getAsInt()).isEqualTo(9);
+            assertThat(workspace.get("activeDetachedWorkspaceStates").getAsInt()).isEqualTo(1);
+        }
+        if (workspace.has("isolatedByteArrayJsonBytes")) {
+            assertThat(workspace.get("isolatedByteArrayJsonBytes").getAsLong())
+                    .isGreaterThan(workspace.get("byteArrayCanonicalRawBytes").getAsLong());
+        }
         if (runner.has("successfulAttempts") && runner.has("siteMapAddCalls")) {
             assertThat(runner.get("siteMapAddCalls").getAsLong())
                     .isEqualTo(runner.get("successfulAttempts").getAsLong());
         }
+    }
+
+    private static void assertRetainedOwnershipMeasurements(JsonArray results) {
+        for (String scenario : List.of("history-1000x64k", "history-100x2m", "exact-250x256k",
+                "workbench-snapshot-owners")) {
+            JsonObject result = resultFor(results, scenario);
+            if ("SUCCESS".equals(string(result, "exitClassification"))) {
+                assertThat(longValue(result, "heapAfterRetainedSettle"))
+                        .as(scenario + " retained owner heap")
+                        .isGreaterThan(longValue(result, "heapAfterReleaseSettle"));
+            }
+        }
+        JsonObject script = resultFor(results, "script-json-8m");
+        if ("SUCCESS".equals(string(script, "exitClassification"))) {
+            assertThat(longValue(script, "apiWorkbenchThreadCountDuring")).isPositive();
+            assertThat(longValue(script, "apiWorkbenchThreadCountAfter"))
+                    .isLessThan(longValue(script, "apiWorkbenchThreadCountDuring"));
+        }
+    }
+
+    private static JsonObject resultFor(JsonArray results, String name) {
+        for (JsonElement item : results) {
+            JsonObject result = item.getAsJsonObject();
+            if (name.equals(string(result, "scenarioName"))) {
+                return result;
+            }
+        }
+        throw new AssertionError("Missing memory scenario " + name);
     }
 
     private static String summary(JsonArray results, String status) {
@@ -223,8 +267,9 @@ class MemoryHardeningProcessIT {
             JsonObject result = item.getAsJsonObject();
             text.append(string(result, "scenarioName"))
                     .append(": ").append(string(result, "exitClassification"))
-                    .append(", peakHeapBytes=").append(longValue(result, "peakHeapBytes"))
-                    .append(", settledHeapBytes=").append(longValue(result, "heapAfterSettle"))
+                    .append(", maximumSampledHeapBytes=").append(longValue(result, "maximumSampledHeapBytes"))
+                    .append(", retainedSettleHeapBytes=").append(longValue(result, "heapAfterRetainedSettle"))
+                    .append(", releaseSettleHeapBytes=").append(longValue(result, "heapAfterReleaseSettle"))
                     .append(", logicalRetainedBytes=").append(longValue(result, "logicalRetainedBytes"))
                     .append('\n');
         }

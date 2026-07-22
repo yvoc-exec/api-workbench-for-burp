@@ -69,7 +69,7 @@ class RunnerProjectStorageAttributionTest {
             assertThat(one.approximateResponseBytes).isEqualTo(1024);
             assertThat(one.approximateRequestBytes).isPositive();
             assertThat(one.runnerResults).isEqualTo(1);
-            assertThat(one.generatedHistoryEntries).isEqualTo(1);
+            assertThat(one.requestCompleteCallbacks).isEqualTo(1);
         }
     }
 
@@ -221,5 +221,5 @@ class RunnerProjectStorageAttributionTest {
     private record Attribution(int attempts, int siteMapAdds, int approximateRequestBytes,
                                int approximateResponseBytes, int runnerResults, int completedResults,
                                int dependentResults, int adHocResults, int redirectHops,
-                               int generatedHistoryEntries) { }
+                               int requestCompleteCallbacks) { }
 }

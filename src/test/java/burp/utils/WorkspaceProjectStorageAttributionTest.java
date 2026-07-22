@@ -1,6 +1,7 @@
 package burp.utils;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryJsonSupport;
 import burp.models.WorkspaceState;
 import burp.performance.MemoryHardeningFixtureFactory;
 import org.junit.jupiter.api.Test;
@@ -10,11 +11,6 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,41 +49,6 @@ class WorkspaceProjectStorageAttributionTest {
     }
 
     @Test
-    void slowStoreMeasuresPendingDetachedRevisionsWithoutInferringPhysicalPages() throws Exception {
-        SlowRecordingStore store = new SlowRecordingStore();
-        WorkspaceStateService service = new WorkspaceStateService(store);
-        ExecutorService executor = Executors.newFixedThreadPool(10);
-        try {
-            for (int revision = 0; revision < 10; revision++) {
-                String json = WorkspaceStateJson.toJson(MemoryHardeningFixtureFactory.workspace(0, 0))
-                        + "\n" + revision;
-                executor.submit(() -> {
-                    store.pending.incrementAndGet();
-                    store.maxPending.accumulateAndGet(store.pending.get(), Math::max);
-                    try {
-                        service.saveJson(json);
-                    } finally {
-                        store.pending.decrementAndGet();
-                    }
-                });
-            }
-            assertThat(store.firstWriteStarted.await(5, TimeUnit.SECONDS)).isTrue();
-            Thread.sleep(100);
-            store.releaseWrites.countDown();
-            executor.shutdown();
-            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
-        } finally {
-            store.releaseWrites.countDown();
-            executor.shutdownNow();
-        }
-
-        assertThat(store.writeCount).isEqualTo(10);
-        assertThat(store.maxPending.get()).isGreaterThan(1);
-        assertThat(store.cumulativeExtensionDataBytesSubmitted)
-                .isGreaterThan(store.currentExtensionDataValueBytes);
-    }
-
-    @Test
     void historyExactEvidenceAndFidelityMetadataAreIncludedInWorkspaceJson() {
         WorkspaceState state = MemoryHardeningFixtureFactory.workspace(1, 4096);
         HistoryEntry entry = state.historyEntries.get(0);
@@ -102,30 +63,14 @@ class WorkspaceProjectStorageAttributionTest {
     }
 
     @Test
-    void byteArrayJsonInflationIsComparedWithRawAndReferenceBase64() {
+    void isolatedByteArrayJsonInflationIsComparedWithRawAndReferenceBase64() {
         byte[] raw = MemoryHardeningFixtureFactory.binaryBytes(64 * 1024);
-        WorkspaceState state = MemoryHardeningFixtureFactory.workspace(0, 0);
-        HistoryEntry entry = MemoryHardeningFixtureFactory.historyEntry(1, 64, 0);
-        entry.responseSnapshot.body = raw;
-        entry.responseSnapshot.originalBodyLength = raw.length;
-        entry.responseSnapshot.storedBodyLength = raw.length;
-        state.historyEntries.add(entry);
-        int jsonBytes = WorkspaceStateJson.toJson(state).getBytes(StandardCharsets.UTF_8).length;
+        int jsonBytes = HistoryJsonSupport.createGson().toJson(raw).getBytes(StandardCharsets.UTF_8).length;
         int base64Bytes = MemoryHardeningFixtureFactory.referenceBase64Length(raw);
 
         assertThat(base64Bytes).isGreaterThan(raw.length);
         assertThat(jsonBytes).isGreaterThan(base64Bytes);
-    }
-
-    @Test
-    void previousFullJsonRetentionProxyEqualsCurrentSerializedValue() {
-        RecordingStore store = new RecordingStore();
-        WorkspaceStateService service = new WorkspaceStateService(store);
-        service.save(MemoryHardeningFixtureFactory.workspace(1, 2048));
-        String lastSavedWorkspaceJson = store.currentValue;
-
-        assertThat(lastSavedWorkspaceJson.getBytes(StandardCharsets.UTF_8).length)
-                .isEqualTo(store.currentExtensionDataValueBytes);
+        assertThat((double) jsonBytes / raw.length).isGreaterThan(1.0);
     }
 
     static class RecordingStore implements WorkspaceStateService.StringStore {
@@ -172,21 +117,4 @@ class WorkspaceProjectStorageAttributionTest {
         }
     }
 
-    private static final class SlowRecordingStore extends RecordingStore {
-        final CountDownLatch firstWriteStarted = new CountDownLatch(1);
-        final CountDownLatch releaseWrites = new CountDownLatch(1);
-        final AtomicInteger pending = new AtomicInteger();
-        final AtomicInteger maxPending = new AtomicInteger();
-
-        @Override
-        public void set(String key, String value) {
-            firstWriteStarted.countDown();
-            try {
-                releaseWrites.await(5, TimeUnit.SECONDS);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-            }
-            super.set(key, value);
-        }
-    }
 }

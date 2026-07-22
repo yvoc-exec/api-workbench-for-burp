@@ -1,12 +1,16 @@
 package burp.performance;
 
+import burp.UniversalImporter;
 import burp.history.HistoryEntry;
+import burp.history.HistoryJsonSupport;
+import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.models.EnvironmentProfile;
 import burp.models.RunnerResult;
 import burp.models.WorkspaceState;
-import burp.parser.VariableResolver;
 import burp.runner.CollectionRunner;
-import burp.utils.ScriptEngine;
+import burp.scripts.ScriptExecutionResult;
+import burp.scripts.UnifiedScriptRuntime;
 import burp.utils.ScriptMode;
 import burp.utils.ExecutionResult;
 import burp.utils.SharedRequestPipeline;
@@ -16,12 +20,18 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.HighlightColor;
+import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.sitemap.SiteMap;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import javax.swing.JPanel;
+import java.lang.ref.Reference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,9 +43,11 @@ import java.util.Map;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -63,8 +75,10 @@ public final class MemoryHardeningScenarioMain {
         int threadsBefore = apiWorkbenchThreadCount();
         long[] peak = {before};
         ScenarioResult result;
+        ScenarioExecution execution = null;
         try {
-            result = run(scenario, peak);
+            execution = run(scenario, peak);
+            result = execution.result;
             result.exitClassification = "SUCCESS";
         } catch (OutOfMemoryError oom) {
             result = new ScenarioResult(scenario);
@@ -80,10 +94,19 @@ public final class MemoryHardeningScenarioMain {
         }
         result.configuredHeapBytes = runtime.maxMemory();
         result.heapUsedBefore = before;
-        result.peakHeapBytes = Math.max(peak[0], usedHeap(runtime));
+        result.maximumSampledHeapBytes = Math.max(peak[0], usedHeap(runtime));
         result.heapAfterWorkload = usedHeap(runtime);
+        if (execution != null) {
+            settle();
+            Reference.reachabilityFence(execution.retainedRoot);
+            result.heapAfterRetainedSettle = usedHeap(runtime);
+            result.apiWorkbenchThreadCountDuring = apiWorkbenchThreadCount();
+            execution.closeOwners();
+            result.apiWorkbenchThreadCountAfterClose = apiWorkbenchThreadCount();
+            execution.releaseOwners();
+        }
         settle();
-        result.heapAfterSettle = usedHeap(runtime);
+        result.heapAfterReleaseSettle = usedHeap(runtime);
         result.elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
         result.apiWorkbenchThreadCountBefore = threadsBefore;
         result.apiWorkbenchThreadCountAfter = apiWorkbenchThreadCount();
@@ -92,7 +115,7 @@ public final class MemoryHardeningScenarioMain {
         Files.writeString(resultFile, GSON.toJson(result), StandardCharsets.UTF_8);
     }
 
-    private static ScenarioResult run(String name, long[] peak) {
+    private static ScenarioExecution run(String name, long[] peak) {
         return switch (name) {
             case "history-1000x64k" -> history(name, 1000, 64 * 1024, peak);
             case "history-100x2m" -> history(name, 100, 2 * 1024 * 1024, peak);
@@ -108,7 +131,7 @@ public final class MemoryHardeningScenarioMain {
         };
     }
 
-    private static ScenarioResult history(String name, int count, int responseBytes, long[] peak) {
+    private static ScenarioExecution history(String name, int count, int responseBytes, long[] peak) {
         List<HistoryEntry> owners = new ArrayList<>(count);
         long logical = 0;
         for (int i = 0; i < count; i++) {
@@ -123,10 +146,10 @@ public final class MemoryHardeningScenarioMain {
         result.logicalRetainedBytes = logical;
         result.retainedOwners = owners.size();
         result.metrics.put("historyEntryOwners", owners.size());
-        return result;
+        return retain(result, owners);
     }
 
-    private static ScenarioResult runner(String name, int count, int responseBytes, long[] peak) {
+    private static ScenarioExecution runner(String name, int count, int responseBytes, long[] peak) {
         List<RunnerResult> owners = new ArrayList<>(count);
         long logical = 0;
         for (int i = 0; i < count; i++) {
@@ -144,10 +167,10 @@ public final class MemoryHardeningScenarioMain {
         result.retainedOwners = owners.size();
         result.metrics.put("runnerResultOwners", owners.size());
         result.metrics.put("fullResponseOwners", owners.size());
-        return result;
+        return retain(result, owners);
     }
 
-    private static ScenarioResult exact(String name, int count, int rawBytes, long[] peak) {
+    private static ScenarioExecution exact(String name, int count, int rawBytes, long[] peak) {
         List<ApiRequest> owners = new ArrayList<>(count);
         long logical = 0;
         for (int i = 0; i < count; i++) {
@@ -163,33 +186,44 @@ public final class MemoryHardeningScenarioMain {
         result.logicalRetainedBytes = logical;
         result.retainedOwners = owners.size();
         result.metrics.put("exactSnapshotOwners", owners.size());
-        return result;
+        return retain(result, owners);
     }
 
-    private static ScenarioResult scriptJson(String name, int bytes, long[] peak) {
+    private static ScenarioExecution scriptJson(String name, int bytes, long[] peak) {
         String body = "{\"payload\":\"" + "s".repeat(bytes - 20) + "\"}";
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Script memory baseline";
         ApiRequest request = new ApiRequest();
         request.postResponseScripts.add(new ApiRequest.Script(
-                "js", "pm.environment.set(\"captured\", jsonData.payload);"));
+                "js", "pm.environment.set('captured', pm.response.json().get('payload'));"));
+        collection.requests.add(request);
+        EnvironmentProfile environment = new EnvironmentProfile();
+        environment.id = "memory-script-environment";
+        environment.name = "Memory script environment";
         RunnerResult runner = new RunnerResult();
         runner.responseBody = body;
-        Map<String, String> context = new LinkedHashMap<>();
-        new ScriptEngine(null, ScriptMode.LIMITED).executePostResponse(
-                request, new VariableResolver(), context, runner, body, 200, Map.of());
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS);
+        ScriptExecutionResult scriptResult = runtime.executePostResponse(
+                collection, request, environment, "Runner", 1, body, 200, Map.of(), 1L, runner);
         sample(peak);
         ScenarioResult result = new ScenarioResult(name);
         result.operationCount = 1;
         result.payloadBytes = MemoryHardeningFixtureFactory.utf8Length(body);
         result.logicalRetainedBytes = MemoryHardeningFixtureFactory.utf8Length(body)
                 + MemoryHardeningFixtureFactory.utf8Length(runner.responseBody)
-                + context.values().stream().mapToLong(MemoryHardeningFixtureFactory::utf8Length).sum();
+                + scriptResult.variableMutations.stream()
+                        .map(mutation -> mutation.newValue)
+                        .mapToLong(MemoryHardeningFixtureFactory::utf8Length)
+                        .sum();
         result.retainedOwners = 3;
         result.metrics.put("responseStringOwners", 1);
-        result.metrics.put("scriptExtractedValueOwners", context.size());
-        return result;
+        result.metrics.put("scriptExtractedValueOwners", scriptResult.variableMutations.size());
+        result.metrics.put("unifiedRuntimeEnabled", runtime.isEnabled() ? 1 : 0);
+        return retain(result, List.of(body, collection, request, environment, runner, scriptResult, runtime),
+                runtime::close);
     }
 
-    private static ScenarioResult workspaceHistory(String name, int count, int bytes, long[] peak) {
+    private static ScenarioExecution workspaceHistory(String name, int count, int bytes, long[] peak) {
         WorkspaceState workspace = MemoryHardeningFixtureFactory.workspace(count, bytes);
         long logical = workspace.historyEntries.stream().mapToLong(HistoryEntry::estimatedStoredBytes).sum();
         sample(peak);
@@ -203,77 +237,87 @@ public final class MemoryHardeningScenarioMain {
         result.retainedOwners = workspace.historyEntries.size() + 2;
         result.metrics.put("historyEntryOwners", workspace.historyEntries.size());
         result.metrics.put("previousFullJsonRetainedBytes", result.serializedWorkspaceBytes);
-        return result;
+        return retain(result, List.of(workspace, json));
     }
 
-    private static ScenarioResult workspaceSaves(String name, long[] peak) {
-        List<String> pending = new ArrayList<>();
-        for (int i = 0; i < 10; i++) {
-            WorkspaceState state = MemoryHardeningFixtureFactory.workspace(2, 128 * 1024);
-            state.selectedRequestName = "revision-" + i;
-            String json = WorkspaceStateJson.toJson(state);
-            pending.add(json);
-            sample(peak);
-        }
-        BlockingStore store = new BlockingStore();
-        WorkspaceStateService service = workspaceService(store);
-        ExecutorService executor = Executors.newFixedThreadPool(10);
-        for (String json : pending) {
-            executor.submit(() -> {
-                store.pending.incrementAndGet();
-                store.maxPending.accumulateAndGet(store.pending.get(), Math::max);
-                try {
-                    service.saveJson(json);
-                } finally {
-                    store.pending.decrementAndGet();
-                }
-            });
-        }
+    private static ScenarioExecution workspaceSaves(String name, long[] peak) {
+        BlockingPersistedObject store = new BlockingPersistedObject();
+        UniversalImporter importer = new UniversalImporter(
+                mockImporterApi(), ScriptMode.DISABLED, new WorkspaceStateService(store.object));
         try {
-            store.firstWrite.await(5, TimeUnit.SECONDS);
-            Thread.sleep(100);
-            store.release.countDown();
-            executor.shutdown();
-            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("slow save workers did not finish");
-            }
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("slow save interrupted", ex);
-        } finally {
-            store.release.countDown();
-            executor.shutdownNow();
-        }
+            Future<?> baseline = submitWorkspaceSave(importer, MemoryHardeningFixtureFactory.workspace(0, 0));
+            baseline.get(10, TimeUnit.SECONDS);
+            store.resetMetrics();
+            store.block.set(true);
 
-        byte[] comparisonBytes = MemoryHardeningFixtureFactory.binaryBytes(64 * 1024);
-        WorkspaceState inflationState = MemoryHardeningFixtureFactory.workspace(0, 0);
-        HistoryEntry inflationEntry = MemoryHardeningFixtureFactory.historyEntry(999, 64, 0);
-        inflationEntry.responseSnapshot.body = comparisonBytes;
-        inflationState.historyEntries.add(inflationEntry);
-        long byteArrayJsonBytes = MemoryHardeningFixtureFactory.utf8Length(WorkspaceStateJson.toJson(inflationState));
-        long base64Bytes = MemoryHardeningFixtureFactory.referenceBase64Length(comparisonBytes);
-        ScenarioResult result = new ScenarioResult(name);
-        result.operationCount = 10;
-        result.logicalRetainedBytes = pending.stream().mapToLong(MemoryHardeningFixtureFactory::utf8Length).sum();
-        result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(pending.get(9));
-        result.retainedOwners = pending.size();
-        result.metrics.put("saveRequests", 10);
-        result.metrics.put("actualStoreWrites", store.writeCount);
-        result.metrics.put("cumulativeExtensionDataBytesSubmitted", store.cumulativeBytes);
-        result.metrics.put("currentExtensionDataValueBytes", store.currentBytes);
-        result.metrics.put("maximumSingleValueBytes", store.maximumBytes);
-        result.metrics.put("identicalWriteCount", store.identicalWrites);
-        result.metrics.put("byteArrayCanonicalRawBytes", comparisonBytes.length);
-        result.metrics.put("byteArrayJsonBytes", byteArrayJsonBytes);
-        result.metrics.put("byteArrayJsonInflationRatio", (double) byteArrayJsonBytes / comparisonBytes.length);
-        result.metrics.put("referenceBase64Bytes", base64Bytes);
-        result.metrics.put("referenceBase64Ratio", (double) base64Bytes / comparisonBytes.length);
-        result.metrics.put("pendingSnapshotCountObserved", store.maxPending.get());
-        result.metrics.put("previousFullJsonRetainedBytes", result.serializedWorkspaceBytes);
-        return result;
+            List<WorkspaceState> revisions = new ArrayList<>();
+            List<Future<?>> futures = new ArrayList<>();
+            long logicalBytes = 0;
+            for (int revision = 0; revision < 10; revision++) {
+                WorkspaceState state = MemoryHardeningFixtureFactory.workspace(2, 128 * 1024);
+                state.selectedRequestName = "revision-" + revision;
+                revisions.add(state);
+                logicalBytes = MemoryHardeningFixtureFactory.safeAdd(
+                        logicalBytes, MemoryHardeningFixtureFactory.utf8Length(WorkspaceStateJson.toJson(state)));
+                futures.add(submitWorkspaceSave(importer, state));
+                sample(peak);
+            }
+            if (!store.blockedWriteStarted.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("production workspace save did not reach blocked store");
+            }
+
+            byte[] comparisonBytes = MemoryHardeningFixtureFactory.binaryBytes(64 * 1024);
+            long isolatedByteArrayJsonBytes = MemoryHardeningFixtureFactory.utf8Length(
+                    HistoryJsonSupport.createGson().toJson(comparisonBytes));
+            long base64Bytes = MemoryHardeningFixtureFactory.referenceBase64Length(comparisonBytes);
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = 10;
+            result.logicalRetainedBytes = logicalBytes;
+            result.retainedOwners = revisions.size();
+            result.metrics.put("saveRequests", 10);
+            result.metrics.put("queuedDetachedWorkspaceStates", queuedWorkspaceSaves(importer));
+            result.metrics.put("activeDetachedWorkspaceStates", activeWorkspaceSaves(importer));
+            result.metrics.put("pendingSnapshotCountObserved",
+                    queuedWorkspaceSaves(importer) + activeWorkspaceSaves(importer));
+            result.metrics.put("byteArrayCanonicalRawBytes", comparisonBytes.length);
+            result.metrics.put("isolatedByteArrayJsonBytes", isolatedByteArrayJsonBytes);
+            result.metrics.put("isolatedByteArrayJsonInflationRatio",
+                    (double) isolatedByteArrayJsonBytes / comparisonBytes.length);
+            result.metrics.put("referenceBase64Bytes", base64Bytes);
+            result.metrics.put("referenceBase64Ratio", (double) base64Bytes / comparisonBytes.length);
+            String retainedJson = lastSavedWorkspaceJson(importer);
+            result.metrics.put("actualLastSavedWorkspaceJsonBytesDuringQueue",
+                    MemoryHardeningFixtureFactory.utf8Length(retainedJson));
+
+            Runnable close = () -> {
+                store.release.countDown();
+                try {
+                    for (Future<?> future : futures) {
+                        future.get(10, TimeUnit.SECONDS);
+                    }
+                } catch (Exception ex) {
+                    throw new IllegalStateException("production workspace saves did not finish", ex);
+                }
+                String actualLastSaved = lastSavedWorkspaceJson(importer);
+                result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(actualLastSaved);
+                result.metrics.put("actualStoreWrites", store.writeCount);
+                result.metrics.put("cumulativeExtensionDataBytesSubmitted", store.cumulativeBytes);
+                result.metrics.put("currentExtensionDataValueBytes", store.currentBytes);
+                result.metrics.put("maximumSingleValueBytes", store.maximumBytes);
+                result.metrics.put("identicalWriteCount", store.identicalWrites);
+                result.metrics.put("actualLastSavedWorkspaceJsonBytes", result.serializedWorkspaceBytes);
+                result.metrics.put("queuedDetachedWorkspaceStatesAfterDrain", queuedWorkspaceSaves(importer));
+                importer.cleanup();
+            };
+            return retain(result, List.of(importer, store, revisions, futures), close);
+        } catch (Exception ex) {
+            store.release.countDown();
+            importer.cleanup();
+            throw new IllegalStateException("production workspace queue measurement failed", ex);
+        }
     }
 
-    private static ScenarioResult runnerSiteMap(String name, long[] peak) {
+    private static ScenarioExecution runnerSiteMap(String name, long[] peak) {
         int attempts = 100;
         int bytes = 64 * 1024;
         MontoyaApi api = mock(MontoyaApi.class);
@@ -333,7 +377,7 @@ public final class MemoryHardeningScenarioMain {
         result.metrics.put("approximateRequestBytes", requestBytes);
         result.metrics.put("approximateResponseBytes", responseBytes);
         result.metrics.put("runnerResultCount", retained.size());
-        return result;
+        return retain(result, List.of(runner, retained));
     }
 
     private static HttpRequestResponse response(int bytes) {
@@ -362,15 +406,55 @@ public final class MemoryHardeningScenarioMain {
         }
     }
 
-    private static WorkspaceStateService workspaceService(WorkspaceStateService.StringStore store) {
+    private static Future<?> submitWorkspaceSave(UniversalImporter importer, WorkspaceState state) {
         try {
-            java.lang.reflect.Constructor<WorkspaceStateService> constructor =
-                    WorkspaceStateService.class.getDeclaredConstructor(WorkspaceStateService.StringStore.class);
-            constructor.setAccessible(true);
-            return constructor.newInstance(store);
+            java.lang.reflect.Method method = UniversalImporter.class.getDeclaredMethod(
+                    "submitWorkspaceStateSaveForTests", WorkspaceState.class);
+            method.setAccessible(true);
+            return (Future<?>) method.invoke(importer, state);
         } catch (ReflectiveOperationException ex) {
-            throw new IllegalStateException("workspace string-store test seam unavailable", ex);
+            throw new IllegalStateException("workspace submit test seam unavailable", ex);
         }
+    }
+
+    private static int queuedWorkspaceSaves(UniversalImporter importer) {
+        return workspaceSaveMetric(importer, "queuedWorkspaceStateSaveCountForTests");
+    }
+
+    private static int activeWorkspaceSaves(UniversalImporter importer) {
+        return workspaceSaveMetric(importer, "activeWorkspaceStateSaveCountForTests");
+    }
+
+    private static int workspaceSaveMetric(UniversalImporter importer, String methodName) {
+        try {
+            java.lang.reflect.Method method = UniversalImporter.class.getDeclaredMethod(methodName);
+            method.setAccessible(true);
+            return (int) method.invoke(importer);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("workspace queue test seam unavailable", ex);
+        }
+    }
+
+    private static String lastSavedWorkspaceJson(UniversalImporter importer) {
+        try {
+            java.lang.reflect.Method method = UniversalImporter.class.getDeclaredMethod(
+                    "lastSavedWorkspaceJsonForTests");
+            method.setAccessible(true);
+            return (String) method.invoke(importer);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("workspace previous-json test seam unavailable", ex);
+        }
+    }
+
+    private static MontoyaApi mockImporterApi() {
+        MontoyaApi api = mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        HttpRequestEditor requestEditor = mock(HttpRequestEditor.class);
+        when(requestEditor.uiComponent()).thenReturn(new JPanel());
+        when(api.userInterface().createHttpRequestEditor(any(EditorOptions.class))).thenReturn(requestEditor);
+        HttpResponseEditor responseEditor = mock(HttpResponseEditor.class);
+        when(responseEditor.uiComponent()).thenReturn(new JPanel());
+        when(api.userInterface().createHttpResponseEditor(any(EditorOptions.class))).thenReturn(responseEditor);
+        return api;
     }
 
     private static ExecutorService directExecutor() {
@@ -385,7 +469,7 @@ public final class MemoryHardeningScenarioMain {
         };
     }
 
-    private static ScenarioResult workbenchOwners(String name, long[] peak) {
+    private static ScenarioExecution workbenchOwners(String name, long[] peak) {
         IdentityHashMap<ApiRequest, byte[]> owners = new IdentityHashMap<>();
         for (int i = 0; i < 250; i++) {
             owners.put(MemoryHardeningFixtureFactory.fidelityRequest("workbench-" + i, 256),
@@ -399,10 +483,10 @@ public final class MemoryHardeningScenarioMain {
         result.retainedOwners = owners.size();
         result.metrics.put("workbenchSnapshotOwners", owners.size());
         result.warnings.add("Workbench owner count is a deterministic identity-map proxy; no live Swing send was performed.");
-        return result;
+        return retain(result, owners);
     }
 
-    private static ScenarioResult oauthStatus(String name, long[] peak) {
+    private static ScenarioExecution oauthStatus(String name, long[] peak) {
         StringBuilder swingDocument = new StringBuilder();
         String tokenSummary = "token acquired; value redacted";
         for (int i = 0; i < 10_000; i++) {
@@ -416,7 +500,8 @@ public final class MemoryHardeningScenarioMain {
         result.retainedOwners = 2;
         result.metrics.put("swingDocumentLength", swingDocument.length());
         result.metrics.put("retainedTokenSummaryTextLength", tokenSummary.length());
-        return result;
+        result.warnings.add("OAuth2 status measurement is a deterministic text-growth proxy; no live OAuth2Panel was used.");
+        return retain(result, List.of(swingDocument, tokenSummary));
     }
 
     private static void sample(long[] peak) {
@@ -466,39 +551,79 @@ public final class MemoryHardeningScenarioMain {
         }
     }
 
-    private static final class BlockingStore implements WorkspaceStateService.StringStore {
-        final CountDownLatch firstWrite = new CountDownLatch(1);
+    private static final class BlockingPersistedObject {
+        final PersistedObject object = mock(PersistedObject.class);
+        final AtomicBoolean block = new AtomicBoolean();
+        final CountDownLatch blockedWriteStarted = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
-        final AtomicInteger pending = new AtomicInteger();
-        final AtomicInteger maxPending = new AtomicInteger();
+        final AtomicReference<String> current = new AtomicReference<>();
         int writeCount;
         long cumulativeBytes;
-        int currentBytes;
-        int maximumBytes;
+        long currentBytes;
+        long maximumBytes;
         int identicalWrites;
-        String current;
 
-        public synchronized String get(String key) { return current; }
-
-        public void set(String key, String value) {
-            firstWrite.countDown();
-            try {
-                release.await(5, TimeUnit.SECONDS);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-            }
-            synchronized (this) {
-                String safe = value != null ? value : "";
-                int bytes = safe.getBytes(StandardCharsets.UTF_8).length;
-                if (safe.equals(current)) {
-                    identicalWrites++;
+        BlockingPersistedObject() {
+            when(object.getString(any(String.class))).thenAnswer(invocation -> current.get());
+            org.mockito.Mockito.doAnswer(invocation -> {
+                if (block.get()) {
+                    blockedWriteStarted.countDown();
+                    if (!release.await(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("blocked workspace persistence timed out");
+                    }
                 }
-                writeCount++;
-                cumulativeBytes += bytes;
-                currentBytes = bytes;
-                maximumBytes = Math.max(maximumBytes, bytes);
-                current = safe;
+                record(invocation.getArgument(1, String.class));
+                return null;
+            }).when(object).setString(any(String.class), any(String.class));
+        }
+
+        synchronized void resetMetrics() {
+            writeCount = 0;
+            cumulativeBytes = 0;
+            currentBytes = 0;
+            maximumBytes = 0;
+            identicalWrites = 0;
+        }
+
+        private synchronized void record(String value) {
+            String safe = value != null ? value : "";
+            if (safe.equals(current.get())) {
+                identicalWrites++;
             }
+            long bytes = MemoryHardeningFixtureFactory.utf8Length(safe);
+            writeCount++;
+            cumulativeBytes += bytes;
+            currentBytes = bytes;
+            maximumBytes = Math.max(maximumBytes, bytes);
+            current.set(safe);
+        }
+    }
+
+    private static ScenarioExecution retain(ScenarioResult result, Object owners) {
+        return retain(result, owners, () -> { });
+    }
+
+    private static ScenarioExecution retain(ScenarioResult result, Object owners, Runnable closeAction) {
+        return new ScenarioExecution(result, owners, closeAction);
+    }
+
+    private static final class ScenarioExecution {
+        final ScenarioResult result;
+        Object retainedRoot;
+        final Runnable closeAction;
+
+        ScenarioExecution(ScenarioResult result, Object retainedRoot, Runnable closeAction) {
+            this.result = result;
+            this.retainedRoot = retainedRoot;
+            this.closeAction = closeAction;
+        }
+
+        void closeOwners() {
+            closeAction.run();
+        }
+
+        void releaseOwners() {
+            retainedRoot = null;
         }
     }
 
@@ -508,9 +633,10 @@ public final class MemoryHardeningScenarioMain {
         long elapsedMillis;
         long configuredHeapBytes;
         long heapUsedBefore;
-        long peakHeapBytes;
+        long maximumSampledHeapBytes;
         long heapAfterWorkload;
-        long heapAfterSettle;
+        long heapAfterRetainedSettle;
+        long heapAfterReleaseSettle;
         long payloadBytes;
         int operationCount;
         long logicalRetainedBytes;
@@ -518,6 +644,8 @@ public final class MemoryHardeningScenarioMain {
         int retainedOwners;
         int apiWorkbenchThreadCount;
         int apiWorkbenchThreadCountBefore;
+        int apiWorkbenchThreadCountDuring;
+        int apiWorkbenchThreadCountAfterClose;
         int apiWorkbenchThreadCountAfter;
         boolean oom;
         boolean timedOut;
