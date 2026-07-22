@@ -170,9 +170,11 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             request.body = parseBody(obj.getAsJsonObject("body"));
             request.auth = parseAuth(obj.get("auth"));
             request.explicitAuth = parseAuth(obj.get("explicitAuth"));
-            request.authOverrideMode = AuthInheritanceResolver.normalizeAuthOverrideMode(getString(obj, "authOverrideMode", null), request);
             request.authInherited = getBoolean(obj, "authInherited", false);
             request.authExplicitlyDisabled = getBoolean(obj, "authExplicitlyDisabled", false);
+            String exportedAuthOverrideMode = getString(obj, "authOverrideMode", null);
+            request.authOverrideMode = null;
+            request.authOverrideMode = AuthInheritanceResolver.normalizeAuthOverrideMode(exportedAuthOverrideMode, request);
             request.authSource = getString(obj, "authSource", null);
             request.variables = parseVariables(obj.getAsJsonArray("variables"));
             request.preRequestScripts = parseScripts(obj.getAsJsonArray("preRequestScripts"));
@@ -462,7 +464,10 @@ public class ApiWorkbenchCollectionParser implements CollectionParser {
             if (entry.getKey() == null || entry.getValue() == null || !entry.getValue().isJsonArray()) {
                 continue;
             }
-            blocks.put(entry.getKey(), parseScriptBlocks(entry.getValue().getAsJsonArray()));
+            String path = RequestPathResolver.normalizeFolderPath(entry.getKey());
+            if (!path.isBlank()) {
+                blocks.put(path, parseScriptBlocks(entry.getValue().getAsJsonArray()));
+            }
         }
         return blocks;
     }

@@ -117,9 +117,10 @@ class CollectionExportRoundTripTest {
         JsonObject serialized = com.google.gson.JsonParser.parseString(Files.readString(output))
                 .getAsJsonObject().getAsJsonObject("collection").getAsJsonArray("requests")
                 .get(0).getAsJsonObject().getAsJsonObject("exactHttpRequest");
-        assertThat(serialized.has("httpVersion")).isFalse();
+        assertThat(serialized.get("httpVersion").getAsString()).isEqualTo("HTTP/1.0");
 
-        ApiRequest restored = new ApiWorkbenchCollectionParser().parse(output.toFile()).requests.get(0);
+        ApiCollection restoredCollection = new ApiWorkbenchCollectionParser().parse(output.toFile());
+        ApiRequest restored = restoredCollection.requests.get(0);
         assertThat(restored.exactHttpRequest.rawRequestBytes).isEqualTo(trusted);
         assertThat(restored.exactHttpRequest.pristine).isTrue();
         assertThat(restored.exactHttpRequest.invalidationReason == null
@@ -129,6 +130,13 @@ class CollectionExportRoundTripTest {
                 .isEqualTo(restored.computeSemanticFingerprint())
                 .isNotEqualTo(restored.computeLegacySemanticFingerprintV1());
         assertThat(new RequestBuilder(null).buildRequest(restored, null)).isEqualTo(trusted);
+
+        Path secondOutput = tempDir.resolve("legacy-second.api-workbench.json");
+        new CollectionExportService().exportCollection(restoredCollection,
+                new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                        secondOutput, false, null, Map.of()));
+        assertThat(com.google.gson.JsonParser.parseString(Files.readString(secondOutput)))
+                .isEqualTo(com.google.gson.JsonParser.parseString(Files.readString(output)));
 
         byte[] malformed = "not an HTTP request".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ApiRequest malformedRequest = legacyExactRequest(malformed);

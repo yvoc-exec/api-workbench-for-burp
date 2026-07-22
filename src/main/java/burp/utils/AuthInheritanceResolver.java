@@ -217,8 +217,13 @@ public final class AuthInheritanceResolver {
             if (explicit == null && request.auth != null && request.auth.type != null) {
                 explicit = copyAuth(request.auth);
             }
+            if (MODE_EXPLICIT.equals(mode) && explicit == null) {
+                mode = MODE_INHERIT;
+                request.authOverrideMode = mode;
+            }
             if (explicit != null && "none".equalsIgnoreCase(explicit.type)) {
                 mode = MODE_NONE;
+                request.authOverrideMode = mode;
             }
             if (MODE_NONE.equals(mode)) {
                 if (explicit == null) {
@@ -227,9 +232,11 @@ public final class AuthInheritanceResolver {
                     explicit.type = "none";
                 }
             }
-            applyResolvedAuth(request, explicit, requestLayerSource(request), false, MODE_NONE.equals(mode));
-            request.explicitAuth = copyAuth(explicit);
-            return;
+            if (!MODE_INHERIT.equals(mode)) {
+                applyResolvedAuth(request, explicit, requestLayerSource(request), false, MODE_NONE.equals(mode));
+                request.explicitAuth = copyAuth(explicit);
+                return;
+            }
         }
 
         ResolvedAuth resolved = resolveInheritedAuth(collection, request);
