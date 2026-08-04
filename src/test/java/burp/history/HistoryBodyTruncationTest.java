@@ -38,10 +38,11 @@ class HistoryBodyTruncationTest {
         HistoryBodyTruncator.apply(entry, policy(4, 100, 100));
 
         assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("POST /submit HTTP/1.1");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("X-Test: one");
-        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("efghij");
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("POST /submit HTTP/1.1");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("Host: api.example.test");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("X-Test: one");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).doesNotContain("efghij");
         assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
     }
 
@@ -76,10 +77,11 @@ class HistoryBodyTruncationTest {
 
         HistoryBodyTruncator.apply(entry, policy(4, 100, 100));
 
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer token");
-        assertThat(entry.requestSnapshot.rawRequestSentText).contains("Content-Type: text/plain");
-        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("efghij");
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("Host: api.example.test");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer token");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("Content-Type: text/plain");
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).doesNotContain("efghij");
     }
 
     @Test
@@ -160,8 +162,9 @@ class HistoryBodyTruncationTest {
         assertThat(hop.rawRequestBodyTruncated).isTrue();
         assertThat(hop.originalRawRequestBodyLength).isEqualTo(10L);
         assertThat(hop.storedRawRequestBodyLength).isEqualTo(4L);
-        assertThat(hop.rawRequestText).contains("POST /redirect-hop HTTP/1.1");
-        assertThat(hop.rawRequestText).doesNotContain("efghij");
+        assertThat(hop.rawRequestText).isNull();
+        assertThat(hop.preferredRawRequestText()).contains("POST /redirect-hop HTTP/1.1");
+        assertThat(hop.preferredRawRequestText()).doesNotContain("efghij");
         assertThat(hop.responseBodyTruncated).isTrue();
         assertThat(hop.originalResponseBodyLength).isEqualTo(10L);
         assertThat(hop.storedResponseBodyLength).isEqualTo(5L);
@@ -214,7 +217,8 @@ class HistoryBodyTruncationTest {
 
         RedirectHop hop = entry.redirectHops.get(0);
         String json = new HistoryJsonExportService().export(List.of(entry));
-        assertThat(hop.rawRequestText).doesNotContain(requestSuffix);
+        assertThat(hop.rawRequestText).isNull();
+        assertThat(hop.preferredRawRequestText()).doesNotContain(requestSuffix);
         assertThat(new String(hop.rawRequestBytes, StandardCharsets.UTF_8)).doesNotContain(requestSuffix);
         assertThat(new String(hop.responseBody, StandardCharsets.UTF_8)).doesNotContain(responseSuffix);
         assertThat(json).doesNotContain(requestSuffix);
@@ -264,8 +268,8 @@ class HistoryBodyTruncationTest {
         assertThat(stored.originalRawRequestBodyLength)
                 .isEqualTo("BROKEN-RAW-EVIDENCE-SUFFIX".getBytes(StandardCharsets.UTF_8).length);
         assertThat(stored.storedRawRequestBodyLength).isEqualTo(8L);
-        assertThat(stored.rawRequestText).doesNotContain("EVIDENCE-SUFFIX");
-        assertThat(stored.rawRequestText).isEqualTo(new String(stored.rawRequestBytes, StandardCharsets.UTF_8));
+        assertThat(stored.rawRequestText).isNull();
+        assertThat(stored.preferredRawRequestText()).doesNotContain("EVIDENCE-SUFFIX");
     }
 
     @Test
@@ -336,7 +340,8 @@ class HistoryBodyTruncationTest {
                 .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
         assertThat(entry.redirectHops.get(0).storedRawRequestBodyLength).isEqualTo(4);
         assertThat(entry.redirectHops.get(0).storedResponseBodyLength).isEqualTo(4);
-        assertThat(entry.redirectHops.get(0).rawRequestText)
+        assertThat(entry.redirectHops.get(0).rawRequestText).isNull();
+        assertThat(entry.redirectHops.get(0).preferredRawRequestText())
                 .isEqualTo(new String(entry.redirectHops.get(0).rawRequestBytes, StandardCharsets.UTF_8));
         assertThat(twice).isEqualTo(once);
     }
@@ -404,8 +409,7 @@ class HistoryBodyTruncationTest {
         assertThat(entry.requestSnapshot.originalRawBodyLength).isEqualTo(binaryBody.length);
         assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
         assertThat(entry.requestSnapshot.rawRequestSent).endsWith((byte) 0, (byte) 1, (byte) 2, (byte) 3);
-        assertThat(entry.requestSnapshot.rawRequestSentText)
-                .isEqualTo(new String(entry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8));
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
     }
 
     @Test

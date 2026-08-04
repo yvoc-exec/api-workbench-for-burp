@@ -123,7 +123,8 @@ class HistoryStoreTest {
         fromSnapshot.assertions.clear();
 
         HistoryEntry reread = store.getById(entry.id);
-        assertThat(reread.requestSnapshot.rawRequestSentText).contains("POST /login HTTP/1.1");
+        assertThat(reread.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(reread.requestSnapshot.preferredRawRequestText()).contains("POST /login HTTP/1.1");
         assertThat(reread.unresolvedVariables).contains("missing_password");
         assertThat(reread.assertions).isNotEmpty();
     }

@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -304,18 +305,20 @@ class HistoryPanelTest {
 
         ArgumentCaptor<HttpRequest> requestCaptor = ArgumentCaptor.forClass(HttpRequest.class);
         ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
-        verify(requestEditor).setRequest(requestCaptor.capture());
-        verify(responseEditor).setResponse(responseCaptor.capture());
+        verify(requestEditor, times(2)).setRequest(requestCaptor.capture());
+        verify(responseEditor, times(2)).setResponse(responseCaptor.capture());
 
-        assertThat(requestCaptor.getValue().method()).isEqualTo("POST");
-        assertThat(requestCaptor.getValue().headerValue("Authorization")).isEqualTo("Bearer {{token}}");
-        assertThat(requestCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
-        assertThat(requestCaptor.getValue().bodyToString()).contains("{\"username\":\"demo\",\"password\":\"{{password}}\"}");
+        HttpRequest displayedRequest = requestCaptor.getAllValues().get(1);
+        assertThat(displayedRequest.method()).isEqualTo("POST");
+        assertThat(displayedRequest.headerValue("Authorization")).isEqualTo("Bearer {{token}}");
+        assertThat(displayedRequest.headerValue("Content-Type")).isEqualTo("application/json");
+        assertThat(displayedRequest.bodyToString()).contains("{\"username\":\"demo\",\"password\":\"{{password}}\"}");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("POST /login HTTP/1.1");
         assertThat(panel.getDetailPanel().getRequestArea().getText()).contains("Authorization: Bearer {{token}}");
 
-        assertThat(responseCaptor.getValue().statusCode()).isEqualTo((short) 200);
-        assertThat(responseCaptor.getValue().headerValue("Content-Type")).isEqualTo("application/json");
+        HttpResponse displayedResponse = responseCaptor.getAllValues().get(1);
+        assertThat(displayedResponse.statusCode()).isEqualTo((short) 200);
+        assertThat(displayedResponse.headerValue("Content-Type")).isEqualTo("application/json");
         assertThat(responseCaptor.getValue().bodyToString()).contains("{\"ok\":true}");
         assertThat(panel.getDetailPanel().getResponseArea().getText()).contains("HTTP/1.1 200");
         assertThat(entry.requestSnapshot.urlTemplate).isEqualTo("{{base_url}}/login");

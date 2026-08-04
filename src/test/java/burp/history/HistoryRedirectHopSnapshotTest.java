@@ -179,7 +179,8 @@ class HistoryRedirectHopSnapshotTest {
         assertThat(entry.requestSnapshot.originalRawBodyLength)
                 .isEqualTo("BROKEN-EVIDENCE-SHOULD-BE-TRUNCATED".getBytes(StandardCharsets.UTF_8).length);
         assertThat(entry.requestSnapshot.rawRequestSent).hasSize(8);
-        assertThat(entry.requestSnapshot.rawRequestSentText).doesNotContain("TRUNCATED");
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).doesNotContain("TRUNCATED");
     }
 
     @Test

@@ -220,7 +220,8 @@ class HistoryEntryCompatibilityTest {
         assertThat(copy.requestSnapshot).isNotSameAs(entry.requestSnapshot);
         assertThat(copy.requestSnapshot.preferredRawRequestText()).isEqualTo("raw");
         copy.requestSnapshot.rawRequestSentText = "changed";
-        assertThat(entry.requestSnapshot.rawRequestSentText).isEqualTo("raw");
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(entry.requestSnapshot.preferredRawRequestText()).isEqualTo("raw");
     }
 
     @Test

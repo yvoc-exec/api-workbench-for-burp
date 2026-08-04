@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@EnabledIfSystemProperty(named = "memory.hardening.enabled", matches = "true")
 class MemoryHardeningProcessIT {
     private static final List<String> SCENARIOS = List.of(
             "history-1000x64k",

@@ -109,6 +109,7 @@ public class HistoryRequestSnapshot {
         copy.authoredRequest = copyRequest(source.authoredRequest);
         copy.rawRequestSent = source.rawRequestSent != null ? source.rawRequestSent.clone() : null;
         copy.rawRequestSentText = source.rawRequestSentText;
+        copy.canonicalizeRawEvidence();
         copy.resolvedUrl = source.resolvedUrl;
         copy.resolvedVariables = source.resolvedVariables != null ? new LinkedHashMap<>(source.resolvedVariables) : new LinkedHashMap<>();
         copy.bodyTruncated = source.bodyTruncated;
@@ -126,13 +127,35 @@ public class HistoryRequestSnapshot {
     }
 
     public String preferredRawRequestText() {
-        if (rawRequestSentText != null && !rawRequestSentText.isBlank()) {
-            return rawRequestSentText;
-        }
         if (rawRequestSent != null && rawRequestSent.length > 0) {
             return new String(rawRequestSent, StandardCharsets.UTF_8);
         }
+        if (rawRequestSentText != null && !rawRequestSentText.isBlank()) {
+            return rawRequestSentText;
+        }
         return "";
+    }
+
+    /**
+     * Retains exactly one raw request representation. Bytes win whenever they
+     * exist; legacy text is promoted only when the repository's UTF-8 raw
+     * message conversion round-trips every character without replacement.
+     */
+    public void canonicalizeRawEvidence() {
+        if (rawRequestSent != null && rawRequestSent.length > 0) {
+            rawRequestSentText = null;
+            return;
+        }
+        rawRequestSent = null;
+        if (rawRequestSentText == null || rawRequestSentText.isBlank()) {
+            rawRequestSentText = null;
+            return;
+        }
+        byte[] encoded = rawRequestSentText.getBytes(StandardCharsets.UTF_8);
+        if (rawRequestSentText.equals(new String(encoded, StandardCharsets.UTF_8))) {
+            rawRequestSent = encoded;
+            rawRequestSentText = null;
+        }
     }
 
     public boolean hasRawRequestSent() {
@@ -254,10 +277,9 @@ public class HistoryRequestSnapshot {
         if (bodyAsAuthored != null) {
             size += bodyAsAuthored.length;
         }
-        if (rawRequestSent != null) {
+        if (rawRequestSent != null && rawRequestSent.length > 0) {
             size += rawRequestSent.length;
-        }
-        if (rawRequestSentText != null) {
+        } else if (rawRequestSentText != null) {
             size += rawRequestSentText.getBytes(StandardCharsets.UTF_8).length;
         }
         if (resolvedUrl != null) {

@@ -368,6 +368,25 @@ public class HistoryStore {
         return copy;
     }
 
+    /** Returns newest-first immutable lightweight rows without cloning entries. */
+    public synchronized List<HistoryEntrySummary> snapshotSummaries() {
+        return snapshotSummaries(null);
+    }
+
+    /**
+     * Applies the existing filter against store-owned entries and returns only
+     * lightweight projections. No full entry crosses the store boundary.
+     */
+    public synchronized List<HistoryEntrySummary> snapshotSummaries(HistoryFilterCriteria criteria) {
+        List<HistoryEntrySummary> summaries = new ArrayList<>(entries.size());
+        for (HistoryEntry entry : entries) {
+            if (entry != null && (criteria == null || criteria.matches(entry))) {
+                summaries.add(HistoryEntrySummary.from(entry));
+            }
+        }
+        return List.copyOf(summaries);
+    }
+
     public synchronized HistoryEntry getById(String id) {
         HistoryEntry entry = findStoredEntry(id);
         return HistoryEntry.copyOf(entry);

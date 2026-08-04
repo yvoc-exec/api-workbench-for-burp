@@ -121,11 +121,14 @@ public class HistoryDetailPanel extends JPanel {
     }
 
     public void showEntry(HistoryEntry entry) {
-        currentEntry = entry;
         if (entry == null) {
             clear();
             return;
         }
+        // Release the previous entry and both native/fallback message graphs
+        // before installing the replacement detail.
+        clear();
+        currentEntry = entry;
 
         String requestMessage = HistoryNativeMessageFormatter.requestMessage(entry);
         requestArea.setText(requestMessage);

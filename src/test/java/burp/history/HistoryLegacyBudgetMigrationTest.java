@@ -182,9 +182,10 @@ class HistoryLegacyBudgetMigrationTest {
                 .isEqualTo(HistoryBodyTruncator.LEGACY_HISTORY_BUDGET_COMPACTION);
         assertThat(firstEntry.requestSnapshot.rawRequestSent)
                 .isEqualTo(secondEntry.requestSnapshot.rawRequestSent);
-        assertThat(firstEntry.requestSnapshot.rawRequestSentText)
-                .isEqualTo(secondEntry.requestSnapshot.rawRequestSentText)
-                .isEqualTo(new String(firstEntry.requestSnapshot.rawRequestSent, StandardCharsets.UTF_8));
+        assertThat(firstEntry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(secondEntry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(firstEntry.requestSnapshot.preferredRawRequestText())
+                .isEqualTo(secondEntry.requestSnapshot.preferredRawRequestText());
         assertThat(secondCurrentJson.get("historyEntries"))
                 .isEqualTo(firstCurrentJson.get("historyEntries"));
     }

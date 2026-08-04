@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.nio.charset.StandardCharsets;
 
 public class RedirectHop {
     public int hopNumber;
@@ -51,6 +52,7 @@ public class RedirectHop {
         copy.elapsedMs = source.elapsedMs;
         copy.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
         copy.rawRequestText = source.rawRequestText;
+        copy.canonicalizeRawEvidence();
         copy.rawRequestBodyTruncated = source.rawRequestBodyTruncated;
         copy.originalRawRequestBodyLength = source.originalRawRequestBodyLength;
         copy.storedRawRequestBodyLength = source.storedRawRequestBodyLength;
@@ -68,6 +70,31 @@ public class RedirectHop {
         copy.forwardedSensitiveHeaderNames = normalizeHeaderNames(source.forwardedSensitiveHeaderNames);
         copy.strippedSensitiveHeaderNames = normalizeHeaderNames(source.strippedSensitiveHeaderNames);
         return copy;
+    }
+
+    public String preferredRawRequestText() {
+        if (rawRequestBytes != null && rawRequestBytes.length > 0) {
+            return new String(rawRequestBytes, StandardCharsets.UTF_8);
+        }
+        return rawRequestText != null ? rawRequestText : "";
+    }
+
+    /** Applies the same bytes-first ownership rule as History requests. */
+    public void canonicalizeRawEvidence() {
+        if (rawRequestBytes != null && rawRequestBytes.length > 0) {
+            rawRequestText = null;
+            return;
+        }
+        rawRequestBytes = null;
+        if (rawRequestText == null || rawRequestText.isBlank()) {
+            rawRequestText = null;
+            return;
+        }
+        byte[] encoded = rawRequestText.getBytes(StandardCharsets.UTF_8);
+        if (rawRequestText.equals(new String(encoded, StandardCharsets.UTF_8))) {
+            rawRequestBytes = encoded;
+            rawRequestText = null;
+        }
     }
 
     public String safeSummary() {

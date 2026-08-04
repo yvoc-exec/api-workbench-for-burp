@@ -34,13 +34,14 @@ public class HistoryPanel extends JPanel {
     private final HistoryDetailPanel detailPanel;
     private final HistoryActionsPanel actionsPanel = new HistoryActionsPanel();
     private final JLabel usageLabel = new JLabel();
-    private final List<HistoryEntry> visibleEntries = new ArrayList<>();
+    private final List<HistoryEntrySummary> visibleSummaries = new ArrayList<>();
     private final JScrollPane tableScrollPane = new JScrollPane(table);
     private HistoryFilterCriteria currentCriteria = new HistoryFilterCriteria();
     private Consumer<HistoryEntry> loadInWorkbenchAction;
     private Consumer<HistoryEntry> replayFromHistoryAction;
     private Consumer<HistoryEntry> sendToRepeaterAction;
     private Runnable workspaceChangeListener;
+    private boolean refreshingSummaries;
 
     public HistoryPanel(HistoryStore historyStore,
                         HistoryExportService exportService,
@@ -116,20 +117,66 @@ public class HistoryPanel extends JPanel {
     }
 
     public HistoryEntry getSelectedEntry() {
-        List<HistoryEntry> selected = getSelectedEntries();
-        return selected.isEmpty() ? null : selected.get(0);
+        String id = getPrimarySelectedId();
+        if (id == null) {
+            return null;
+        }
+        HistoryEntry current = detailPanel.getCurrentEntry();
+        return current != null && Objects.equals(id, current.id) ? current : historyStore.getById(id);
     }
 
     public List<HistoryEntry> getSelectedEntries() {
+        return historyStore.getByIds(getSelectedIds());
+    }
+
+    public List<String> getSelectedIds() {
         int[] rows = table.getSelectedRows();
-        List<HistoryEntry> selected = new ArrayList<>();
+        List<String> ids = new ArrayList<>(rows.length);
         for (int row : rows) {
-            HistoryEntry entry = tableModel.getEntryAt(table.convertRowIndexToModel(row));
-            if (entry != null) {
-                selected.add(entry);
+            HistoryEntrySummary summary = tableModel.getSummaryAt(table.convertRowIndexToModel(row));
+            if (summary != null && !summary.id().isBlank()) {
+                ids.add(summary.id());
+            }
+        }
+        return ids;
+    }
+
+    private List<HistoryEntrySummary> getSelectedSummaries() {
+        int[] rows = table.getSelectedRows();
+        List<HistoryEntrySummary> selected = new ArrayList<>(rows.length);
+        for (int row : rows) {
+            HistoryEntrySummary summary = tableModel.getSummaryAt(table.convertRowIndexToModel(row));
+            if (summary != null) {
+                selected.add(summary);
             }
         }
         return selected;
+    }
+
+    private String getPrimarySelectedId() {
+        HistoryEntrySummary summary = getPrimarySelectedSummary();
+        return summary != null && !summary.id().isBlank() ? summary.id() : null;
+    }
+
+    private HistoryEntrySummary getPrimarySelectedSummary() {
+        int viewRow = table.getSelectedRow();
+        if (viewRow < 0) {
+            return null;
+        }
+        return tableModel.getSummaryAt(table.convertRowIndexToModel(viewRow));
+    }
+
+    private void showSelectedDetail() {
+        String selectedId = getPrimarySelectedId();
+        if (selectedId == null) {
+            detailPanel.clear();
+            return;
+        }
+        HistoryEntry current = detailPanel.getCurrentEntry();
+        if (current != null && Objects.equals(selectedId, current.id)) {
+            return;
+        }
+        detailPanel.showEntry(historyStore.getById(selectedId));
     }
 
     public void refreshFromStore() {
@@ -141,11 +188,7 @@ public class HistoryPanel extends JPanel {
         if (preferredSelectedId != null && !preferredSelectedId.isBlank()) {
             selectedIds.add(preferredSelectedId);
         } else {
-            for (HistoryEntry entry : getSelectedEntries()) {
-                if (entry != null && entry.id != null) {
-                    selectedIds.add(entry.id);
-                }
-            }
+            selectedIds.addAll(getSelectedIds());
         }
         refreshFromStore(selectedIds);
     }
@@ -163,21 +206,19 @@ public class HistoryPanel extends JPanel {
             return;
         }
         historyStore.clear();
+        table.clearSelection();
+        visibleSummaries.clear();
+        tableModel.setSummaries(List.of());
+        detailPanel.clear();
         refreshFromStore();
         updateUsageBanner();
         notifyWorkspaceChanged();
     }
 
     public void deleteSelectedEntries() {
-        List<HistoryEntry> selected = getSelectedEntries();
-        if (selected.isEmpty()) {
+        List<String> ids = getSelectedIds();
+        if (ids.isEmpty()) {
             return;
-        }
-        List<String> ids = new ArrayList<>();
-        for (HistoryEntry entry : selected) {
-            if (entry != null && entry.id != null) {
-                ids.add(entry.id);
-            }
         }
         historyStore.removeByIds(ids);
         refreshFromStore();
@@ -186,18 +227,14 @@ public class HistoryPanel extends JPanel {
     }
 
     public void togglePinSelectedEntries() {
-        List<HistoryEntry> selected = getSelectedEntries();
+        List<HistoryEntrySummary> selected = getSelectedSummaries();
         if (selected.isEmpty()) {
             return;
         }
-        boolean allPinned = selected.stream().allMatch(entry -> entry != null && entry.pinned);
-        List<String> ids = new ArrayList<>();
-        for (HistoryEntry entry : selected) {
-            if (entry != null && entry.id != null) {
-                ids.add(entry.id);
-            }
-        }
+        boolean allPinned = selected.stream().allMatch(HistoryEntrySummary::pinned);
+        List<String> ids = selected.stream().map(HistoryEntrySummary::id).toList();
         HistoryAdmissionResult result = historyStore.setPinnedAllWithResult(ids, !allPinned);
+        detailPanel.clear();
         refreshFromStore(ids);
         updateUsageBanner();
         if (result.accepted()) {
@@ -217,11 +254,10 @@ public class HistoryPanel extends JPanel {
     }
 
     public void saveSelectedMetadata() {
-        HistoryEntry selected = getSelectedEntry();
-        if (selected == null || selected.id == null) {
+        String entryId = getPrimarySelectedId();
+        if (entryId == null) {
             return;
         }
-        String entryId = selected.id;
         String notes = detailPanel.getAnalystNotesText();
         java.util.Collection<String> tags = HistoryBodyTruncator.normalizeTags(detailPanel.getTagsText());
         HistoryAdmissionResult result = historyStore.updateEvidenceMetadataWithResult(
@@ -230,10 +266,8 @@ public class HistoryPanel extends JPanel {
                 notes,
                 tags
         );
-        HistoryEntry updated = result.accepted() && result.storedEntryId() != null
-                ? historyStore.getById(result.storedEntryId())
-                : null;
-        refreshFromStore(updated != null ? updated.id : entryId);
+        detailPanel.clear();
+        refreshFromStore(result.accepted() && result.storedEntryId() != null ? result.storedEntryId() : entryId);
         updateUsageBanner();
         if (result.accepted()) {
             notifyWorkspaceChanged();
@@ -267,11 +301,11 @@ public class HistoryPanel extends JPanel {
     }
 
     public void copySelectedUrl() {
-        HistoryEntry entry = getSelectedEntry();
-        if (entry == null || entry.requestSnapshot == null || entry.requestSnapshot.urlTemplate == null) {
+        HistoryEntrySummary summary = getPrimarySelectedSummary();
+        if (summary == null) {
             return;
         }
-        copyToClipboard(entry.requestSnapshot.urlTemplate);
+        copyToClipboard(summary.urlTemplate());
     }
 
     public void copySelectedCurl() {
@@ -283,7 +317,11 @@ public class HistoryPanel extends JPanel {
     }
 
     public void compareSelected() {
-        List<HistoryEntry> selected = getSelectedEntries();
+        List<String> ids = getSelectedIds();
+        if (ids.size() != 2) {
+            return;
+        }
+        List<HistoryEntry> selected = historyStore.getByIds(ids);
         if (selected.size() != 2) {
             return;
         }
@@ -309,6 +347,7 @@ public class HistoryPanel extends JPanel {
     public void addHistoryEntry(HistoryEntry entry, boolean selectInsertedEntry) {
         HistoryAdmissionResult result = historyStore.admitEntry(entry);
         if (result.accepted()) {
+            detailPanel.clear();
             refreshFromStore(selectInsertedEntry ? result.storedEntryId() : null);
             notifyWorkspaceChanged();
             return;
@@ -367,8 +406,9 @@ public class HistoryPanel extends JPanel {
             if (e.getValueIsAdjusting()) {
                 return;
             }
-            HistoryEntry selected = getSelectedEntry();
-            detailPanel.showEntry(selected);
+            if (!refreshingSummaries) {
+                showSelectedDetail();
+            }
             updateActionState();
         });
     }
@@ -391,23 +431,22 @@ public class HistoryPanel extends JPanel {
 
     private void applyCurrentFilter(List<String> preferredSelectedIds) {
         currentCriteria = filterPanel.getCriteria();
-        List<HistoryEntry> all = historyStore.snapshot();
-        visibleEntries.clear();
-        for (HistoryEntry entry : all) {
-            if (currentCriteria == null || currentCriteria.matches(entry)) {
-                visibleEntries.add(entry);
-            }
+        refreshingSummaries = true;
+        try {
+            visibleSummaries.clear();
+            visibleSummaries.addAll(historyStore.snapshotSummaries(currentCriteria));
+            tableModel.setSummaries(visibleSummaries);
+            restoreSelection(preferredSelectedIds);
+        } finally {
+            refreshingSummaries = false;
         }
-        tableModel.setEntries(visibleEntries);
-        restoreSelection(preferredSelectedIds);
-        HistoryEntry selected = getSelectedEntry();
-        detailPanel.showEntry(selected);
+        showSelectedDetail();
         updateUsageBanner();
         updateActionState();
     }
 
     private void restoreSelection(List<String> preferredSelectedIds) {
-        if (visibleEntries.isEmpty()) {
+        if (visibleSummaries.isEmpty()) {
             table.clearSelection();
             return;
         }
@@ -446,10 +485,10 @@ public class HistoryPanel extends JPanel {
     }
 
     private void updateActionState() {
-        List<HistoryEntry> selected = getSelectedEntries();
+        List<HistoryEntrySummary> selected = getSelectedSummaries();
         boolean hasEntries = !historyStore.isEmpty();
         actionsPanel.updateSelectionState(table.getSelectedRowCount(), hasEntries);
-        boolean allPinned = !selected.isEmpty() && selected.stream().allMatch(entry -> entry != null && entry.pinned);
+        boolean allPinned = !selected.isEmpty() && selected.stream().allMatch(HistoryEntrySummary::pinned);
         actionsPanel.updatePinActionState(selected.size(), allPinned);
     }
 
@@ -499,11 +538,8 @@ public class HistoryPanel extends JPanel {
     }
 
     private void exportEntries(String format) {
-        List<HistoryEntry> entries = getSelectedEntries();
-        if (entries.isEmpty()) {
-            entries = historyStore.snapshot();
-        }
-        if (entries.isEmpty()) {
+        List<String> selectedIds = getSelectedIds();
+        if (selectedIds.isEmpty()) {
             return;
         }
         if (!notifier.confirmExportSensitiveData(this)) {
@@ -525,11 +561,11 @@ public class HistoryPanel extends JPanel {
         if (file == null) {
             return;
         }
-        List<HistoryEntry> detachedEntries = detachedHistoryEntries(entries);
-        if (detachedEntries.isEmpty()) {
+        List<HistoryEntry> entries = historyStore.getByIds(selectedIds);
+        if (entries.isEmpty()) {
             return;
         }
-        startHistoryExportWorker(format, detachedEntries, file.toPath());
+        startHistoryExportWorker(format, entries, file.toPath());
     }
 
     SwingWorker<Path, Void> startHistoryExportWorker(String format, List<HistoryEntry> detachedEntries, Path path) {
@@ -568,20 +604,6 @@ public class HistoryPanel extends JPanel {
                 }
             }
         };
-    }
-
-    private static List<HistoryEntry> detachedHistoryEntries(List<HistoryEntry> entries) {
-        List<HistoryEntry> detached = new ArrayList<>();
-        if (entries == null) {
-            return detached;
-        }
-        for (HistoryEntry entry : entries) {
-            HistoryEntry copy = HistoryEntry.copyOf(entry);
-            if (copy != null) {
-                detached.add(copy);
-            }
-        }
-        return detached;
     }
 
     private static String exceptionMessage(Throwable throwable) {

@@ -1,6 +1,7 @@
 package burp.performance;
 
 import burp.history.HistoryEntry;
+import burp.history.HistoryEntrySummary;
 import burp.history.HistoryAdmissionRejectionReason;
 import burp.history.HistoryAdmissionResult;
 import burp.history.HistoryRetentionPolicy;
@@ -14,11 +15,35 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.IdentityHashMap;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MemoryHardeningLogicalBudgetTest {
+
+    @Test
+    void r4HistorySummaryProjectionPreservesLogicalOwnershipForOneThousandEntries() {
+        HistoryStore store = new HistoryStore();
+        List<HistoryEntry> entries = new ArrayList<>(1_000);
+        for (int i = 0; i < 1_000; i++) {
+            entries.add(MemoryHardeningFixtureFactory.historyEntry(i, 4 * 1024, 32 * 1024));
+        }
+        store.addAll(entries);
+        long before = store.getRetentionStats().canonicalRetainedBytes();
+
+        List<HistoryEntrySummary> summaries = store.snapshotSummaries();
+        long after = store.getRetentionStats().canonicalRetainedBytes();
+        HistoryEntry canonical = store.getById("history-0");
+
+        assertThat(store.size()).isEqualTo(1_000);
+        assertThat(summaries).hasSize(1_000);
+        assertThat(after).isEqualTo(before);
+        assertThat(canonical.requestSnapshot.rawRequestSent).isNotEmpty();
+        assertThat(canonical.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(canonical.redirectHops)
+                .allSatisfy(hop -> assertThat(hop.rawRequestBytes == null || hop.rawRequestText == null).isTrue());
+    }
 
     @Test
     void deterministicLogicalRepresentationsAreAccountedSeparately() {

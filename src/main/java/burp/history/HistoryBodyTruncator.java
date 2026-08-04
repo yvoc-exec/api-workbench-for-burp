@@ -165,6 +165,11 @@ public final class HistoryBodyTruncator {
         if (snapshot == null) {
             return false;
         }
+        snapshot.canonicalizeRawEvidence();
+        if ((snapshot.rawRequestSent == null || snapshot.rawRequestSent.length == 0)
+                && snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank()) {
+            return compactLegacyTextFallback(snapshot, limit, LEGACY_HISTORY_BUDGET_COMPACTION);
+        }
         byte[] currentRaw = authoritativeRawRequestBytes(snapshot.rawRequestSent, snapshot.rawRequestSentText);
         if (currentRaw.length == 0) {
             return false;
@@ -179,7 +184,7 @@ public final class HistoryBodyTruncator {
         byte[] preview = legacyPreview(currentPayload, limit);
         byte[] storedRaw = parsed.bodyOffset() >= 0 ? rebuildRawMessage(parsed, preview) : preview;
         snapshot.rawRequestSent = storedRaw;
-        snapshot.rawRequestSentText = new String(storedRaw, StandardCharsets.UTF_8);
+        snapshot.rawRequestSentText = null;
         snapshot.storedRawBodyLength = preview.length;
         snapshot.rawBodyTruncated = true;
         snapshot.rawTruncationReason = LEGACY_HISTORY_BUDGET_COMPACTION;
@@ -189,6 +194,11 @@ public final class HistoryBodyTruncator {
     private static boolean compactLegacyRedirectRequest(burp.models.RedirectHop hop, int limit) {
         if (hop == null) {
             return false;
+        }
+        hop.canonicalizeRawEvidence();
+        if ((hop.rawRequestBytes == null || hop.rawRequestBytes.length == 0)
+                && hop.rawRequestText != null && !hop.rawRequestText.isBlank()) {
+            return compactLegacyTextFallback(hop, limit, LEGACY_HISTORY_BUDGET_COMPACTION);
         }
         byte[] currentRaw = authoritativeRawRequestBytes(hop.rawRequestBytes, hop.rawRequestText);
         if (currentRaw.length == 0) {
@@ -204,7 +214,7 @@ public final class HistoryBodyTruncator {
         byte[] preview = legacyPreview(currentPayload, limit);
         byte[] storedRaw = parsed.bodyOffset() >= 0 ? rebuildRawMessage(parsed, preview) : preview;
         hop.rawRequestBytes = storedRaw;
-        hop.rawRequestText = new String(storedRaw, StandardCharsets.UTF_8);
+        hop.rawRequestText = null;
         hop.storedRawRequestBodyLength = preview.length;
         hop.rawRequestBodyTruncated = true;
         hop.rawRequestTruncationReason = LEGACY_HISTORY_BUDGET_COMPACTION;
@@ -335,6 +345,7 @@ public final class HistoryBodyTruncator {
     }
 
     private static void truncateRawRequest(HistoryRequestSnapshot snapshot, HistoryRetentionPolicy policy) {
+        snapshot.canonicalizeRawEvidence();
         boolean hasRawEvidence = (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
                 || (snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank());
         if (!hasRawEvidence) {
@@ -351,12 +362,20 @@ public final class HistoryBodyTruncator {
             return;
         }
 
-        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, snapshot.rawRequestSentText);
+        // A legacy String containing malformed surrogate data cannot be
+        // losslessly promoted under the existing UTF-8 raw-message rules.
+        // Keep it as the canonical fallback instead of manufacturing bytes.
+        if (snapshot.rawRequestSent == null || snapshot.rawRequestSent.length == 0) {
+            truncateLegacyTextFallback(snapshot, policy.maxRequestBodyBytesPerEntry);
+            return;
+        }
+
+        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, null);
         byte[] rawBytes = parsed.rawBytes();
         byte[] bodyBytes = parsed.bodyBytes();
 
         snapshot.rawRequestSent = rawBytes;
-        snapshot.rawRequestSentText = parsed.rawText();
+        snapshot.rawRequestSentText = null;
         snapshot.parseWarning = firstNonBlank(snapshot.parseWarning, parsed.parseWarning());
 
         if (snapshot.rawBodyTruncated) {
@@ -382,7 +401,7 @@ public final class HistoryBodyTruncator {
             snapshot.storedRawBodyLength = storedBody.length;
             if (snapshot.rawBodyTruncated) {
                 snapshot.rawRequestSent = rebuildRawMessage(parsed, storedBody);
-                snapshot.rawRequestSentText = new String(snapshot.rawRequestSent, StandardCharsets.UTF_8);
+                snapshot.rawRequestSentText = null;
             }
             return;
         }
@@ -401,7 +420,7 @@ public final class HistoryBodyTruncator {
         snapshot.storedRawBodyLength = storedEvidence.length;
         if (snapshot.rawBodyTruncated) {
             snapshot.rawRequestSent = storedEvidence;
-            snapshot.rawRequestSentText = new String(snapshot.rawRequestSent, StandardCharsets.UTF_8);
+            snapshot.rawRequestSentText = null;
         }
     }
 
@@ -423,10 +442,16 @@ public final class HistoryBodyTruncator {
     }
 
     private static void truncateRedirectHopRawRequest(burp.models.RedirectHop hop, HistoryRetentionPolicy policy) {
+        hop.canonicalizeRawEvidence();
+        if ((hop.rawRequestBytes == null || hop.rawRequestBytes.length == 0)
+                && hop.rawRequestText != null && !hop.rawRequestText.isBlank()) {
+            truncateLegacyTextFallback(hop, policy.maxRequestBodyBytesPerEntry);
+            return;
+        }
         byte[] authoritativeRaw = authoritativeRawRequestBytes(hop.rawRequestBytes, hop.rawRequestText);
         if (authoritativeRaw.length == 0) {
             hop.rawRequestBytes = null;
-            hop.rawRequestText = "";
+            hop.rawRequestText = null;
             if (!hop.rawRequestBodyTruncated) {
                 hop.originalRawRequestBodyLength = 0L;
             } else if (hop.rawRequestTruncationReason == null || hop.rawRequestTruncationReason.isBlank()) {
@@ -479,7 +504,7 @@ public final class HistoryBodyTruncator {
         }
 
         hop.rawRequestBytes = storedRaw.length > 0 ? storedRaw.clone() : null;
-        hop.rawRequestText = new String(storedRaw, StandardCharsets.UTF_8);
+        hop.rawRequestText = null;
     }
 
     private static void truncateRedirectHopResponse(burp.models.RedirectHop hop, HistoryRetentionPolicy policy) {
@@ -592,12 +617,13 @@ public final class HistoryBodyTruncator {
             snapshot.parseWarning = "";
         }
 
+        snapshot.canonicalizeRawEvidence();
         boolean hasRawEvidence = (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
                 || (snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank());
-        if (hasRawEvidence) {
-            ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, snapshot.rawRequestSentText);
+        if (hasRawEvidence && snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0) {
+            ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, null);
             snapshot.rawRequestSent = parsed.rawBytes();
-            snapshot.rawRequestSentText = parsed.rawText();
+            snapshot.rawRequestSentText = null;
             snapshot.parseWarning = firstNonBlank(snapshot.parseWarning, parsed.parseWarning());
             byte[] bodyBytes = parsed.bodyBytes();
             if (snapshot.rawBodyTruncated) {
@@ -616,7 +642,7 @@ public final class HistoryBodyTruncator {
             } else {
                 populateRawBodyMetadata(snapshot, bodyBytes);
             }
-        } else {
+        } else if (!hasRawEvidence) {
             if (snapshot.originalRawBodyLength < 0) {
                 snapshot.originalRawBodyLength = 0L;
             }
@@ -756,6 +782,63 @@ public final class HistoryBodyTruncator {
             return rawRequestText.getBytes(StandardCharsets.UTF_8);
         }
         return new byte[0];
+    }
+
+    private static void truncateLegacyTextFallback(HistoryRequestSnapshot snapshot, long limit) {
+        compactLegacyTextFallback(snapshot, (int) Math.min(Integer.MAX_VALUE, Math.max(0L, limit)), RAW_REQUEST_EVIDENCE_LIMIT_REASON);
+    }
+
+    private static boolean compactLegacyTextFallback(HistoryRequestSnapshot snapshot, int limit, String reason) {
+        String current = snapshot.rawRequestSentText != null ? snapshot.rawRequestSentText : "";
+        byte[] logicalBytes = current.getBytes(StandardCharsets.UTF_8);
+        snapshot.originalRawBodyLength = preserveOriginalLength(snapshot.originalRawBodyLength, logicalBytes.length);
+        snapshot.fullRawBodySha256 = preserveOriginalHash(snapshot.fullRawBodySha256, logicalBytes);
+        if (logicalBytes.length <= limit) {
+            snapshot.storedRawBodyLength = logicalBytes.length;
+            return false;
+        }
+        snapshot.rawRequestSentText = utf8BoundedPrefix(current, limit);
+        snapshot.storedRawBodyLength = snapshot.rawRequestSentText.getBytes(StandardCharsets.UTF_8).length;
+        snapshot.rawBodyTruncated = true;
+        snapshot.rawTruncationReason = reason;
+        return true;
+    }
+
+    private static void truncateLegacyTextFallback(burp.models.RedirectHop hop, long limit) {
+        compactLegacyTextFallback(hop, (int) Math.min(Integer.MAX_VALUE, Math.max(0L, limit)), RAW_REQUEST_EVIDENCE_LIMIT_REASON);
+    }
+
+    private static boolean compactLegacyTextFallback(burp.models.RedirectHop hop, int limit, String reason) {
+        String current = hop.rawRequestText != null ? hop.rawRequestText : "";
+        byte[] logicalBytes = current.getBytes(StandardCharsets.UTF_8);
+        hop.originalRawRequestBodyLength = preserveOriginalLength(hop.originalRawRequestBodyLength, logicalBytes.length);
+        hop.fullRawRequestBodySha256 = preserveOriginalHash(hop.fullRawRequestBodySha256, logicalBytes);
+        if (logicalBytes.length <= limit) {
+            hop.storedRawRequestBodyLength = logicalBytes.length;
+            return false;
+        }
+        hop.rawRequestText = utf8BoundedPrefix(current, limit);
+        hop.storedRawRequestBodyLength = hop.rawRequestText.getBytes(StandardCharsets.UTF_8).length;
+        hop.rawRequestBodyTruncated = true;
+        hop.rawRequestTruncationReason = reason;
+        return true;
+    }
+
+    private static String utf8BoundedPrefix(String value, int maxBytes) {
+        if (value == null || value.isEmpty() || maxBytes <= 0) {
+            return "";
+        }
+        int low = 0;
+        int high = value.length();
+        while (low < high) {
+            int mid = (low + high + 1) >>> 1;
+            if (value.substring(0, mid).getBytes(StandardCharsets.UTF_8).length <= maxBytes) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return value.substring(0, low);
     }
 
     private static long preserveOriginalLength(long existingOriginalLength, int currentStoredLength) {

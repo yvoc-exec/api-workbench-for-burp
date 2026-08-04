@@ -121,8 +121,9 @@ class HistoryRequestSnapshotTest {
         assertThat(HistoryRequestSnapshot.copyOf(null)).isNull();
         assertThat(copy.headersAsAuthored).isNotNull().isEmpty();
         assertThat(copy.requestVariablesAsAuthored).isNotNull().isEmpty();
-        assertThat(copy.rawRequestSentText).isEqualTo("GET / HTTP/1.1\r\n\r\n");
+        assertThat(copy.rawRequestSentText).isNull();
         assertThat(copy.rawRequestSent).isEqualTo(source.rawRequestSent);
+        assertThat(copy.preferredRawRequestText()).isEqualTo("GET / HTTP/1.1\r\n\r\n");
         assertThat(copy.authoredRequest).isNotSameAs(source.authoredRequest);
         assertThat(copy.authoredRequest.headers).extracting(header -> header.key).containsExactly("X-Source");
     }
@@ -172,7 +173,7 @@ class HistoryRequestSnapshotTest {
     }
 
     @Test
-    void prefersExplicitRawTextThenBytesAndSupportsDisplayAndCurlFormatting() {
+    void prefersAuthoritativeRawBytesAndSupportsDisplayAndCurlFormatting() {
         HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
         snapshot.method = null;
         snapshot.urlTemplate = "https://api.example.test/quote";
@@ -185,7 +186,7 @@ class HistoryRequestSnapshotTest {
         snapshot.rawRequestSentText = "GET /raw HTTP/1.1\r\n\r\n";
         snapshot.rawRequestSent = "GET /bytes HTTP/1.1\r\n\r\n".getBytes(StandardCharsets.UTF_8);
 
-        assertThat(snapshot.preferredRawRequestText()).isEqualTo("GET /raw HTTP/1.1\r\n\r\n");
+        assertThat(snapshot.preferredRawRequestText()).isEqualTo("GET /bytes HTTP/1.1\r\n\r\n");
         assertThat(snapshot.hasRawRequestSent()).isTrue();
         assertThat(snapshot.displayBodyText()).isEqualTo("body with 'quote'");
         assertThat(snapshot.toCurlCommand()).contains("https://api.example.test/quote");
