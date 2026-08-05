@@ -301,11 +301,19 @@ public class HistoryPanel extends JPanel {
     }
 
     public void copySelectedUrl() {
-        HistoryEntrySummary summary = getPrimarySelectedSummary();
-        if (summary == null) {
+        String url = selectedUrlForCopy();
+        if (url == null) {
             return;
         }
-        copyToClipboard(summary.urlTemplate());
+        copyToClipboard(url);
+    }
+
+    String selectedUrlForCopy() {
+        HistoryEntry entry = getSelectedEntry();
+        if (entry == null || entry.requestSnapshot == null) {
+            return null;
+        }
+        return entry.requestSnapshot.urlTemplate;
     }
 
     public void copySelectedCurl() {

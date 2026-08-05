@@ -279,6 +279,55 @@ class HistoryPanelTest {
     }
 
     @Test
+    void copyUrlUsesExactSelectedEntryWhileTableKeepsBoundedSummary() {
+        String prefix = "https://api.example.test/";
+        String exactUrl = prefix
+                + "a".repeat(HistoryEntrySummary.URL_LIMIT - prefix.length() - 1)
+                + "\uD83D\uDE00"
+                + "/remaining-path?payload="
+                + "x".repeat(2_048);
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(), "long-url", Instant.parse("2026-06-15T06:00:00Z"));
+        entry.requestSnapshot.urlTemplate = exactUrl;
+        HistoryStore store = new HistoryStore();
+        store.addEntry(entry);
+        HistoryPanel panel = new HistoryPanel(
+                store, new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier());
+
+        panel.getHistoryTable().setRowSelectionInterval(0, 0);
+
+        String displayedUrl = panel.getHistoryTable().getValueAt(0, 8).toString();
+        assertThat(displayedUrl).hasSize(HistoryEntrySummary.URL_LIMIT);
+        assertThat(panel.selectedUrlForCopy())
+                .isEqualTo(exactUrl)
+                .hasSize(exactUrl.length())
+                .isNotEqualTo(displayedUrl);
+    }
+
+    @Test
+    void copyUrlResolverHandlesMissingSelectionAndMissingRequestData() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = HistoryTestFixtures.copyEntry(
+                HistoryTestFixtures.sampleWorkbenchEntry(), "copy-states", Instant.parse("2026-06-15T06:01:00Z"));
+        store.addEntry(entry);
+        HistoryPanel panel = new HistoryPanel(
+                store, new HistoryExportService(), new HistoryDiffService(), new RecordingNotifier());
+
+        assertThat(panel.selectedUrlForCopy()).isNull();
+
+        panel.getHistoryTable().setRowSelectionInterval(0, 0);
+        HistoryEntry selected = panel.getDetailPanel().getCurrentEntry();
+        selected.requestSnapshot = null;
+        assertThat(panel.selectedUrlForCopy()).isNull();
+
+        selected.requestSnapshot = new HistoryRequestSnapshot();
+        assertThat(panel.selectedUrlForCopy()).isNull();
+
+        selected.requestSnapshot.urlTemplate = "";
+        assertThat(panel.selectedUrlForCopy()).isEmpty();
+    }
+
+    @Test
     void nativeDetailViewersRenderTemplatedRequestAndResponseMessages() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = HistoryTestFixtures.copyEntry(HistoryTestFixtures.sampleWorkbenchEntry(),

@@ -62,6 +62,10 @@ class HistoryLightweightOwnershipTest {
         SwingUtilities.invokeAndWait(() -> panel.getHistoryTable().setRowSelectionInterval(0, 0));
         assertThat(store.fullFetches.get()).isEqualTo(1);
         assertThat(panel.getDetailPanel().getCurrentEntry()).isNotNull();
+        int fetchesAfterSelection = store.fullFetches.get();
+        assertThat(panel.selectedUrlForCopy()).isEqualTo(
+                panel.getDetailPanel().getCurrentEntry().requestSnapshot.urlTemplate);
+        assertThat(store.fullFetches.get()).isEqualTo(fetchesAfterSelection);
         SwingUtilities.invokeAndWait(panel::refreshFromStore);
         assertThat(store.fullFetches.get()).isEqualTo(1);
 
