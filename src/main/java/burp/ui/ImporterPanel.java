@@ -263,10 +263,7 @@ public class ImporterPanel {
     private volatile boolean runnerTerminalHandled = false;
     private int runnerExecutionSequence = 0;
     private int runnerCompletedQueueCount = 0;
-    private final Map<String, RunnerResult> runnerResultById = new HashMap<>();
-    private final Map<String, RunnerResult> runnerResultByName = new HashMap<>();
-    private final Set<RunnerResult> runnerHistoryAdmissionRejections =
-            Collections.newSetFromMap(new IdentityHashMap<>());
+    private JLabel runnerRetentionStatusLabel;
     private RunnerWarningPresenter runnerWarningPresenter = this::showRunnerWarningDialog;
 
     // Workbench environment selector
@@ -426,6 +423,7 @@ public class ImporterPanel {
             this.runner.setActiveEnvironmentProvider(collection -> getActiveEnvironment());
             this.runner.setOAuth2TokenSink(ImporterPanel.this::storeOAuth2TokenInActiveEnvironment);
             this.runner.setRuntimeVariableSink(scriptVariableMutationSink);
+            this.runner.setResultCaptureHandler(this::captureRunnerHistoryAttempt);
         }
         this.mainPanel = createUI();
         this.oauth2Panel.setVariablesChangeListener((vars, replaceMode) -> markOAuth2ConfigDirty());
@@ -1027,26 +1025,21 @@ public class ImporterPanel {
         return recordHistoryEntry(entry);
     }
 
-    private HistoryEntry recordRunnerHistoryAttempt(RunnerResult result) {
-        if (result == null) {
-            return null;
-        }
-        if (runnerHistoryAdmissionRejections.contains(result)) {
-            return null;
-        }
-        if (result.historyEntryId != null && !result.historyEntryId.isBlank()) {
-            HistoryEntry existing = historyStore.getById(result.historyEntryId);
-            if (existing != null) {
-                return existing;
-            }
+    private void captureRunnerHistoryAttempt(RunnerResult result) {
+        if (result == null || result.canonicalCaptureComplete) {
+            return;
         }
         ApiCollection collection = findCollectionByName(result.collectionName);
         ApiRequest request = findRequestById(result.requestId);
         ensureRequestId(request);
-        EnvironmentProfile active = getActiveEnvironment();
-        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, active, result);
+        HistoryEntry entry = buildRunnerHistoryEntry(collection, request, result, false);
         if (entry == null) {
-            return null;
+            result.historyEntryId = null;
+            result.fullEvidenceRetained = false;
+            result.evidenceRetentionMessage =
+                    "Full evidence not retained: History quota. Showing bounded Runner preview.";
+            result.canonicalCaptureComplete = true;
+            return;
         }
         if (entry.collectionName == null) {
             entry.collectionName = result.collectionName != null ? result.collectionName : (request != null ? request.sourceCollection : null);
@@ -1071,10 +1064,15 @@ public class ImporterPanel {
         HistoryEntry stored = recordHistoryEntry(entry);
         if (stored != null) {
             result.historyEntryId = stored.id;
+            result.fullEvidenceRetained = true;
+            result.evidenceRetentionMessage = "Full evidence retained in History.";
         } else {
-            runnerHistoryAdmissionRejections.add(result);
+            result.historyEntryId = null;
+            result.fullEvidenceRetained = false;
+            result.evidenceRetentionMessage =
+                    "Full evidence not retained: History quota. Showing bounded Runner preview.";
         }
-        return stored;
+        result.canonicalCaptureComplete = true;
     }
 
     private static String ensureRequestId(ApiRequest request) {
@@ -3101,28 +3099,6 @@ public class ImporterPanel {
         return entry;
     }
 
-    private void indexRunnerResult(RunnerResult result) {
-        if (result == null) {
-            return;
-        }
-        if (result.requestId != null && !result.requestId.isBlank()) {
-            runnerResultById.put(result.requestId, result);
-        }
-        String nameKey = runnerResultKey(result.collectionName, result.requestName);
-        if (!nameKey.isBlank()) {
-            runnerResultByName.put(nameKey, result);
-        }
-        if (result.requestName != null && !result.requestName.isBlank()) {
-            runnerResultByName.putIfAbsent(result.requestName, result);
-        }
-    }
-
-    private String runnerResultKey(String collectionName, String requestName) {
-        String collection = collectionName != null ? collectionName.trim() : "";
-        String request = requestName != null ? requestName.trim() : "";
-        return collection + "\u0000" + request;
-    }
-
     private int resolveRunnerQueueIndex(RunnerResult result) {
         if (result == null) {
             return -1;
@@ -3153,29 +3129,11 @@ public class ImporterPanel {
     }
 
     private RunnerResult findRunnerResultForTimeline(RunnerTimelineRow row) {
-        if (row == null) {
+        if (row == null || resultModel == null) {
             return null;
         }
-        RunnerResult byName = runnerResultByName.get(runnerResultKey(row.collectionName, row.requestName));
-        if (byName != null) {
-            return byName;
-        }
-        if (row.requestName != null && !row.requestName.isBlank()) {
-            byName = runnerResultByName.get(row.requestName);
-            if (byName != null) {
-                return byName;
-            }
-        }
-        if (row.requestName != null && !row.requestName.isBlank()) {
-            for (RunnerResult candidate : runnerResultById.values()) {
-                if (candidate != null && row.requestName.equals(candidate.requestName)) {
-                    if (row.collectionName == null || row.collectionName.isBlank() || row.collectionName.equals(candidate.collectionName)) {
-                        return candidate;
-                    }
-                }
-            }
-        }
-        return null;
+        RunnerResultSummary summary = resultModel.findLatestByRequestName(row.collectionName, row.requestName);
+        return summary != null ? summary.toCompatibilityResult() : null;
     }
 
     private RunnerTimelineRow buildTimelineRow(RunnerResult result) {
@@ -3216,9 +3174,10 @@ public class ImporterPanel {
         row.requestName = entry != null && entry.requestName != null ? entry.requestName : "";
         row.status = entry != null && entry.result != null && !entry.result.isBlank() ? entry.result : (entry != null ? entry.state : "");
         row.timeMs = entry != null ? parseDurationText(entry.duration) : 0L;
-        row.retries = entry != null && entry.requestResult != null ? Math.max(0, entry.requestResult.attemptNumber - 1) : 0;
-        row.varsChanged = entry != null && entry.requestResult != null && entry.requestResult.extractedVariables != null
-                ? entry.requestResult.extractedVariables.size()
+        row.retries = entry != null && entry.requestSummary != null
+                ? Math.max(0, entry.requestSummary.attemptNumber() - 1) : 0;
+        row.varsChanged = entry != null && entry.requestSummary != null
+                ? entry.requestSummary.extractedVariableCount()
                 : 0;
         row.assertions = entry != null && entry.message != null ? entry.message : "";
         return row;
@@ -3239,7 +3198,6 @@ public class ImporterPanel {
     private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestStart(RunnerResult result) {
         ApiRequest request = result != null ? findRequestById(result.requestId) : null;
         ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
-        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, null, true);
         return createExecutionEntry(
                 "REQUEST_STARTED",
                 "RUNNING",
@@ -3251,7 +3209,7 @@ public class ImporterPanel {
                 "",
                 "",
                 "Request started",
-                detailEntry,
+                null,
                 result,
                 null,
                 result != null ? result.requestId : null,
@@ -3262,10 +3220,6 @@ public class ImporterPanel {
     private RunnerExecutionTableModel.Entry buildExecutionRowFromRequestResult(RunnerResult result) {
         ApiRequest request = result != null ? findRequestById(result.requestId) : null;
         ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(result != null ? result.collectionName : null);
-        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, result, false);
-        if (result != null) {
-            indexRunnerResult(result);
-        }
         RunnerTimelineRow timelineRow = buildTimelineRow(result);
         return createExecutionEntry(
                 "REQUEST_COMPLETED",
@@ -3278,7 +3232,7 @@ public class ImporterPanel {
                 result != null && result.responseTimeMs > 0 ? result.responseTimeMs + " ms" : "",
                 result != null && result.scriptFlowControl != null ? result.scriptFlowControl.name() : "",
                 result != null && result.errorMessage != null && !result.errorMessage.isBlank() ? result.errorMessage : (result != null ? result.displayLogStatusLabel() : ""),
-                detailEntry,
+                null,
                 result,
                 timelineRow,
                 result != null ? result.requestId : null,
@@ -3287,11 +3241,13 @@ public class ImporterPanel {
     }
 
     private void appendRedirectHopRows(RunnerResult result) {
-        if (resultModel == null || result == null || result.redirectHops == null || result.redirectHops.isEmpty()) {
+        RunnerResultSummary summary = RunnerResultSummary.from(result);
+        if (resultModel == null || summary == null || summary.redirectSummaries().isEmpty()) {
             return;
         }
-        for (RedirectHop hop : result.redirectHops) {
-            RunnerExecutionTableModel.Entry redirectEntry = RunnerExecutionTableModel.fromRedirectHop(result, hop);
+        for (int i = 0; i < summary.redirectSummaries().size(); i++) {
+            RunnerExecutionTableModel.Entry redirectEntry = RunnerExecutionTableModel.fromRedirectSummary(
+                    summary, summary.redirectSummaries().get(i), i);
             if (redirectEntry != null) {
                 resultModel.addEntry(redirectEntry);
             }
@@ -3301,9 +3257,6 @@ public class ImporterPanel {
     private RunnerExecutionTableModel.Entry buildExecutionRowFromTimeline(RunnerTimelineRow row, RunnerResult associated) {
         ApiRequest request = associated != null ? findRequestById(associated.requestId) : null;
         ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(row != null ? row.collectionName : null);
-        HistoryEntry detailEntry = associated != null
-                ? buildRunnerHistoryEntry(collection, request, associated, false)
-                : buildRunnerCompleteEntry(Collections.emptyList());
         return createExecutionEntry(
                 "TIMELINE",
                 row != null && row.status != null ? row.status : (associated != null && associated.success ? "SUCCESS" : "INFO"),
@@ -3315,7 +3268,7 @@ public class ImporterPanel {
                 row != null && row.timeMs > 0 ? row.timeMs + " ms" : "",
                 row != null && row.retries > 0 ? "retries=" + row.retries : "",
                 row != null && row.assertions != null ? row.assertions : "",
-                detailEntry,
+                null,
                 associated,
                 row,
                 associated != null ? associated.requestId : null,
@@ -3351,8 +3304,6 @@ public class ImporterPanel {
         synthetic.errorMessage = reason;
         synthetic.attemptNumber = 1;
         synthetic.totalAttempts = 1;
-        indexRunnerResult(synthetic);
-        HistoryEntry detailEntry = buildRunnerHistoryEntry(collection, request, synthetic, false);
         return createExecutionEntry(
                 "SKIPPED",
                 "SKIPPED",
@@ -3364,7 +3315,7 @@ public class ImporterPanel {
                 "",
                 "SKIP_REQUEST",
                 reason != null && !reason.isBlank() ? reason : "Skipped by script",
-                detailEntry,
+                null,
                 synthetic,
                 null,
                 synthetic.requestId,
@@ -3920,11 +3871,11 @@ public class ImporterPanel {
             }
             int selectedRow = resultTable.getSelectedRow();
             if (selectedRow < 0) {
-                updateRunnerDetailPane(null);
+                clearRunnerDetailPane();
                 return;
             }
             RunnerExecutionTableModel.Entry row = resultModel.getEntryAt(selectedRow);
-            updateRunnerDetailPane(row != null ? row.detailEntry : null);
+            showRunnerDetail(row);
         });
 
         JPanel bottomPanel = new JPanel();
@@ -3938,8 +3889,13 @@ public class ImporterPanel {
         runnerProgress.setPreferredSize(new Dimension(180, 20));
         actionRow.add(runnerProgress, BorderLayout.WEST);
 
+        runnerRetentionStatusLabel = new JLabel();
+        runnerRetentionStatusLabel.setVisible(false);
+        runnerRetentionStatusLabel.setForeground(new Color(156, 32, 0));
+        actionRow.add(runnerRetentionStatusLabel, BorderLayout.CENTER);
+
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
-        JButton clearBtn = new JButton("Clear Runner");
+        JButton clearBtn = new JButton("Clear Results");
         clearBtn.addActionListener(e -> clearRunnerFromUi());
         pauseRunnerBtn = new JButton("Pause");
         pauseRunnerBtn.setEnabled(false);
@@ -12195,9 +12151,7 @@ public class ImporterPanel {
         runnerProgress.setValue(0);
         runnerExecutingQueueIndex = -1;
         runnerExecutionSequence = 0;
-        runnerResultById.clear();
-        runnerResultByName.clear();
-        runnerHistoryAdmissionRejections.clear();
+        updateRunnerRetentionStatus();
 
         if (activeRunnerListener != null) {
             runner.removeListener(activeRunnerListener);
@@ -12224,9 +12178,8 @@ public class ImporterPanel {
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestStart(result);
                     resultModel.addEntry(entry);
                     timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
-                    if (entry.detailEntry != null) {
-                        updateRunnerDetailPane(entry.detailEntry);
-                    }
+                    updateRunnerRetentionStatus();
+                    showRunnerDetail(entry);
                 });
             }
             @Override public void onSkip(String name, String reason) {
@@ -12235,23 +12188,16 @@ public class ImporterPanel {
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromSkip(name, reason);
                     resultModel.addEntry(entry);
                     timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
-                    if (entry.detailEntry != null) {
-                        updateRunnerDetailPane(entry.detailEntry);
-                    }
+                    updateRunnerRetentionStatus();
+                    showRunnerDetail(entry);
                 });
             }
             @Override public void onRequestComplete(RunnerResult result) {
                 SwingUtilities.invokeLater(() -> {
-                    if (result != null) {
-                        indexRunnerResult(result);
-                    }
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
-                    HistoryEntry storedEntry = recordRunnerHistoryAttempt(result);
-                    if (storedEntry != null) {
-                        entry.detailEntry = storedEntry;
-                    }
                     resultModel.addEntry(entry);
                     appendRedirectHopRows(result);
+                    updateRunnerRetentionStatus();
                     if (result != null && !result.dependentExecution && !result.adHocExecution) {
                         runnerCompletedQueueCount++;
                     }
@@ -12259,39 +12205,33 @@ public class ImporterPanel {
                     runnerProgress.setString(runnerCompletedQueueCount + "/" + runnerProgress.getMaximum());
                     String status = result != null ? result.displayLogStatusLabel() : "FAIL";
                     appendRunnerLog((resultModel.getRequestResultCount()) + ". " + (result != null && result.requestName != null ? result.requestName : "Request") + " -> " + status);
-                    if (!result.extractedVariables.isEmpty()) {
+                    if (result != null && !result.extractedVariables.isEmpty()) {
                         appendRunnerLog("   Extracted: " + result.extractedVariables);
                     }
                     runnerExecutingQueueIndex = -1;
                     updateRunnerQueueUiState();
-                    updateRunnerDetailPane(entry.detailEntry);
+                    showRunnerDetail(entry);
                     setRunnerControlsRunning(runner.isRunning());
                 });
             }
             @Override public void onAttemptComplete(RunnerResult result) {
                 SwingUtilities.invokeLater(() -> {
                     if (result != null) {
-                        indexRunnerResult(result);
                         if (!result.success && resultModel != null) {
                             RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRequestResult(result);
-                            HistoryEntry storedEntry = recordRunnerHistoryAttempt(result);
-                            if (storedEntry != null) {
-                                entry.detailEntry = storedEntry;
-                            }
                             resultModel.addEntry(entry);
                             appendRedirectHopRows(result);
-                            if (entry.detailEntry != null) {
-                                updateRunnerDetailPane(entry.detailEntry);
-                            }
+                            updateRunnerRetentionStatus();
+                            showRunnerDetail(entry);
                         }
                     }
-                    recordRunnerHistoryAttempt(result);
                 });
             }
             @Override public void onTimeline(RunnerTimelineRow row) {
                 SwingUtilities.invokeLater(() -> {
                     timelineModel.addRow(row);
                     resultModel.addEntry(buildExecutionRowFromTimeline(row, findRunnerResultForTimeline(row)));
+                    updateRunnerRetentionStatus();
                 });
             }
             @Override public void onComplete(List<RunnerResult> results) {
@@ -12329,6 +12269,7 @@ public class ImporterPanel {
                     }
                     RunnerExecutionTableModel.Entry entry = buildExecutionRowFromRunnerTerminal(terminal, results);
                     resultModel.addEntry(entry);
+                    updateRunnerRetentionStatus();
                     if (timelineModel != null) {
                         timelineModel.addRow(buildTimelineRowFromExecutionEntry(entry));
                     }
@@ -12345,6 +12286,7 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog(message);
                     resultModel.addEntry(buildExecutionRowFromDebug(message));
+                    updateRunnerRetentionStatus();
                 });
             }
             @Override public void onError(String message) {
@@ -12354,6 +12296,7 @@ public class ImporterPanel {
                 SwingUtilities.invokeLater(() -> {
                     appendRunnerLog("ERROR: " + message);
                     resultModel.addEntry(buildExecutionRowFromError(message));
+                    updateRunnerRetentionStatus();
                     setRunnerControlsRunning(false);
                     cancelRunnerBtn.setEnabled(false);
                     runnerExecutingQueueIndex = -1;
@@ -12481,7 +12424,7 @@ public class ImporterPanel {
 
     private void clearRunnerFromUi() {
         if (runner != null && runner.isRunning()) {
-            appendRunnerLog("Runner is running. Cancel it before clearing the queue.");
+            appendRunnerLog("Runner is running. Cancel it before clearing results.");
             return;
         }
 
@@ -12494,22 +12437,19 @@ public class ImporterPanel {
         if (runnerLog != null) {
             runnerLog.setText("");
         }
-        runnerQueuedRequests.clear();
         runnerQueueFresh = false;
         runnerExecutingQueueIndex = -1;
         runnerExecutionSequence = 0;
         runnerCompletedQueueCount = 0;
-        runnerResultById.clear();
-        runnerResultByName.clear();
-        runnerHistoryAdmissionRejections.clear();
         runnerTerminalHandled = false;
-        refreshRunnerQueueList(-1);
+        updateRunnerRetentionStatus();
         if (runnerProgress != null) {
             runnerProgress.setValue(0);
             runnerProgress.setString("0/0");
         }
         clearRunnerDetailPane();
         setRunnerControlsRunning(false);
+        updateRunnerQueueUiState();
     }
 
     private void updateRunnerQueueUiState() {
@@ -13113,17 +13053,115 @@ public class ImporterPanel {
         }
     }
 
-    private void updateRunnerDetailPane(HistoryEntry entry) {
+    private void showRunnerDetail(RunnerExecutionTableModel.Entry row) {
         if (runnerDetailPanel == null) {
             return;
         }
+        HistoryEntry entry = resolveRunnerDetail(row);
         if (entry == null) {
             clearRunnerDetailPane();
             return;
         }
-        HistoryEntry canonical = entry.id != null ? historyStore.getById(entry.id) : null;
-        runnerDetailPanel.showEntry(canonical != null ? canonical : entry);
-        setDetailEvidenceEditability(runnerDetailPanel, canonical != null ? canonical : entry);
+        runnerDetailPanel.showEntry(entry);
+        boolean linked = row != null && row.redirectHopIndex == null
+                && row.historyEntryId != null && !row.historyEntryId.isBlank();
+        runnerDetailPanel.setEvidenceEditable(linked, linked
+                ? "Selected entry evidence and analyst metadata"
+                : "Evidence is editable after this result is captured in History.");
+    }
+
+    private HistoryEntry resolveRunnerDetail(RunnerExecutionTableModel.Entry row) {
+        if (row == null) {
+            return null;
+        }
+        if (row.historyEntryId != null && !row.historyEntryId.isBlank()) {
+            HistoryEntry canonical = historyStore.getById(row.historyEntryId);
+            if (canonical == null) {
+                return boundedRunnerPreview(row);
+            }
+            if (row.redirectHopIndex == null) {
+                return canonical;
+            }
+            int index = row.redirectHopIndex;
+            if (canonical.redirectHops == null || index < 0 || index >= canonical.redirectHops.size()) {
+                return canonical;
+            }
+            RunnerResult parent = new RunnerResult();
+            parent.requestId = canonical.requestId;
+            parent.requestName = canonical.requestName;
+            parent.collectionId = canonical.collectionId;
+            parent.collectionName = canonical.collectionName;
+            parent.folderPath = canonical.folderPath;
+            parent.attemptNumber = canonical.attemptNumber;
+            parent.totalAttempts = canonical.totalAttempts;
+            parent.initialResolvedUrl = canonical.initialResolvedUrl;
+            parent.redirectTerminationReason = canonical.redirectTerminationReason;
+            return HistoryEntry.fromRedirectHop(parent, canonical.redirectHops.get(index));
+        }
+        if ("REQUEST_STARTED".equals(row.type)) {
+            ApiRequest request = findRequestById(row.requestId);
+            ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(row.collectionName);
+            return buildRunnerHistoryEntry(collection, request, null, true);
+        }
+        return boundedRunnerPreview(row);
+    }
+
+    private HistoryEntry boundedRunnerPreview(RunnerExecutionTableModel.Entry row) {
+        RunnerResultSummary summary = row != null ? row.requestSummary : null;
+        if (summary == null) {
+            HistoryEntry event = new HistoryEntry();
+            event.id = UUID.randomUUID().toString();
+            event.timestamp = java.time.Instant.now();
+            event.source = HistorySource.RUNNER;
+            event.requestName = row != null ? row.requestName : "Runner Event";
+            event.collectionName = row != null ? row.collectionName : "Runner";
+            event.result = "RUN_ERROR".equals(row != null ? row.type : null) ? HistoryResult.ERROR : HistoryResult.UNKNOWN;
+            event.resultClassification = row != null ? row.state : "Runner event";
+            event.scriptOutputSummaryText = row != null && row.message != null ? row.message : "";
+            event.metadataSummaryText = event.scriptOutputSummaryText;
+            return event;
+        }
+        RunnerResult compact = summary.toCompatibilityResult();
+        ApiRequest request = findRequestById(summary.requestId());
+        ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(summary.collectionName());
+        HistoryEntry preview = HistoryEntry.fromRunnerAttempt(collection, request, getActiveEnvironment(), compact);
+        if (preview == null) {
+            return null;
+        }
+        preview.id = UUID.randomUUID().toString();
+        if (preview.requestSnapshot == null) {
+            preview.requestSnapshot = new HistoryRequestSnapshot();
+            preview.requestSnapshot.method = summary.method();
+            preview.requestSnapshot.urlTemplate = summary.requestUrl();
+            preview.requestSnapshot.resolvedUrl = summary.finalResolvedUrl();
+        }
+        if (preview.responseSnapshot == null) {
+            preview.responseSnapshot = new HistoryResponseSnapshot();
+        }
+        String bodyPreview = summary.responseBodyPreview();
+        preview.responseSnapshot.body = bodyPreview != null ? bodyPreview.getBytes(StandardCharsets.UTF_8) : null;
+        preview.responseSnapshot.originalBodyLength = summary.responseBodyLength();
+        preview.responseSnapshot.storedBodyLength = preview.responseSnapshot.body != null
+                ? preview.responseSnapshot.body.length : 0L;
+        preview.responseSnapshot.bodyTruncated = preview.responseSnapshot.originalBodyLength
+                > preview.responseSnapshot.storedBodyLength;
+        preview.responseSnapshot.truncationReason = preview.responseSnapshot.bodyTruncated
+                ? "Bounded Runner preview; full evidence was not retained." : "";
+        String retention = summary.evidenceRetentionMessage() != null
+                ? summary.evidenceRetentionMessage()
+                : "Full evidence not retained. Showing bounded Runner preview.";
+        preview.metadataSummaryText = (preview.metadataSummaryText != null && !preview.metadataSummaryText.isBlank()
+                ? preview.metadataSummaryText + "\n" : "") + "Evidence Retention: " + retention;
+        return preview;
+    }
+
+    private void updateRunnerRetentionStatus() {
+        if (runnerRetentionStatusLabel == null || resultModel == null) {
+            return;
+        }
+        long removed = resultModel.getRemovedCompletedRowCount();
+        runnerRetentionStatusLabel.setText(removed > 0 ? "Older completed results removed: " + removed : "");
+        runnerRetentionStatusLabel.setVisible(removed > 0);
     }
 
     private void clearRunnerDetailPane() {

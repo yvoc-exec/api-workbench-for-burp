@@ -37,7 +37,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 /**
@@ -61,7 +60,9 @@ public class CollectionRunner {
     private volatile boolean pauseRequested = false;
     private volatile boolean singleStepRequested = false;
     private volatile boolean requestInFlight = false;
-    private final List<RunnerResult> results = new CopyOnWriteArrayList<>();
+    private final Object resultsLock = new Object();
+    private final List<RunnerResultSummary> resultSummaries = new ArrayList<>();
+    private volatile RunnerResultCaptureHandler resultCaptureHandler;
     private final Map<ApiCollection, Map<String, String>> extractedVarsByCollection =
             Collections.synchronizedMap(new IdentityHashMap<>());
     private final Map<String, String> extractedVars = new ConcurrentHashMap<>();
@@ -96,6 +97,10 @@ public class CollectionRunner {
 
     public void removeListener(RunnerListener listener) {
         listeners.remove(listener);
+    }
+
+    public void setResultCaptureHandler(RunnerResultCaptureHandler handler) {
+        resultCaptureHandler = handler;
     }
 
     public void setDelayMs(int delayMs) { this.delayMs = delayMs; }
@@ -252,7 +257,9 @@ public class CollectionRunner {
             singleStepRequested = false;
         }
         lastTerminationResult = null;
-        results.clear();
+        synchronized (resultsLock) {
+            resultSummaries.clear();
+        }
         extractedVars.clear();
         extractedVarsByCollection.clear();
         RunLifecycle lifecycle = new RunLifecycle();
@@ -347,10 +354,10 @@ public class CollectionRunner {
                     }
 
                     RunnerResult result = outcome.result;
-                    results.add(result);
                     requestInFlight = false;
-                    fireOnRequestComplete(result);
-                    if (outcome.state == RequestOutcomeState.CANCELLED || result.cancellationState != RunnerCancellationState.NOT_CANCELLED) {
+                    boolean cancelledResult = outcome.state == RequestOutcomeState.CANCELLED
+                            || result.cancellationState != RunnerCancellationState.NOT_CANCELLED;
+                    if (cancelledResult) {
                         termination.stop(RunnerTerminationType.CANCELLED,
                                 "User cancelled the runner.",
                                 result,
@@ -358,9 +365,8 @@ public class CollectionRunner {
                                 "cancelled",
                                 null,
                                 null);
-                        break;
                     }
-                    if (!result.dependentExecution && !result.adHocExecution) {
+                    if (!cancelledResult && !result.dependentExecution && !result.adHocExecution) {
                         completedQueuedCount.incrementAndGet();
                     }
 
@@ -368,15 +374,11 @@ public class CollectionRunner {
                     boolean statusFailed = hasStatusAtLeast400(result);
                     boolean executionFailed = !result.success;
                     boolean anyFailure = executionFailed || assertionFailed || statusFailed;
-                    if (anyFailure) {
+                    if (!cancelledResult && anyFailure) {
                         failedResultCount.incrementAndGet();
                     }
 
-                    if (cancelled || Thread.currentThread().isInterrupted()) {
-                        break;
-                    }
-
-                    if (activeStopConditions.stopOnError && executionFailed) {
+                    if (!termination.isSet() && activeStopConditions.stopOnError && executionFailed) {
                         termination.stop(RunnerTerminationType.STOPPED_ON_ERROR,
                                 "Stopped on error: " + safeRunnerReason(result.errorMessage),
                                 result,
@@ -384,9 +386,8 @@ public class CollectionRunner {
                                 "stopOnError",
                                 null,
                                 null);
-                        break;
                     }
-                    if (activeStopConditions.stopOnAssertionFailure && assertionFailed) {
+                    if (!termination.isSet() && activeStopConditions.stopOnAssertionFailure && assertionFailed) {
                         termination.stop(RunnerTerminationType.STOPPED_ON_ASSERTION_FAILURE,
                                 "Stopped on assertion failure for " + safeRunnerLabel(result.requestName),
                                 result,
@@ -394,9 +395,8 @@ public class CollectionRunner {
                                 "stopOnAssertionFailure",
                                 null,
                                 null);
-                        break;
                     }
-                    if (activeStopConditions.stopOnStatusAtLeast400 && statusFailed) {
+                    if (!termination.isSet() && activeStopConditions.stopOnStatusAtLeast400 && statusFailed) {
                         termination.stop(RunnerTerminationType.STOPPED_ON_STATUS,
                                 "Stopped on status >= 400 for " + safeRunnerLabel(result.requestName) + " (" + result.statusCode + ")",
                                 result,
@@ -404,9 +404,8 @@ public class CollectionRunner {
                                 "stopOnStatusAtLeast400",
                                 null,
                                 null);
-                        break;
                     }
-                    if (activeStopConditions.stopAfterFailureCount > 0 &&
+                    if (!termination.isSet() && activeStopConditions.stopAfterFailureCount > 0 &&
                         failedResultCount.get() >= activeStopConditions.stopAfterFailureCount) {
                         termination.stop(RunnerTerminationType.STOPPED_ON_FAILURE_COUNT,
                                 "Stopped after failure count reached: " +
@@ -416,11 +415,13 @@ public class CollectionRunner {
                                 "stopAfterFailureCount",
                                 null,
                                 null);
-                        break;
                     }
 
-                    int nextIndex = applyFlowControl(activeSourceCollections, ordered, i, result, flowControlJumps, maxFlowControlJumps, termination);
-                    if (nextIndex == Integer.MIN_VALUE) {
+                    int nextIndex = termination.isSet() ? Integer.MIN_VALUE : applyFlowControl(
+                            activeSourceCollections, ordered, i, result,
+                            flowControlJumps, maxFlowControlJumps, termination);
+                    retainCompletedResult(result, true);
+                    if (cancelled || Thread.currentThread().isInterrupted() || nextIndex == Integer.MIN_VALUE) {
                         break;
                     }
                     if (nextIndex >= 0) {
@@ -1027,6 +1028,10 @@ public class CollectionRunner {
         if (source != null) {
             snapshot.requestName = source.requestName;
             snapshot.requestId = source.requestId;
+            snapshot.historyEntryId = source.historyEntryId;
+            snapshot.canonicalCaptureComplete = source.canonicalCaptureComplete;
+            snapshot.fullEvidenceRetained = source.fullEvidenceRetained;
+            snapshot.evidenceRetentionMessage = source.evidenceRetentionMessage;
             snapshot.collectionId = source.collectionId;
             snapshot.collectionName = source.collectionName;
             snapshot.folderPath = source.folderPath;
@@ -1454,21 +1459,20 @@ public class CollectionRunner {
             currentRunLifecycle = null;
         }
         recordRunnerTerminationDiagnostic(terminalResult);
-        fireTerminalCallbacks(terminalResult, new ArrayList<>(results));
+        fireTerminalCallbacks(terminalResult, getResultSummaries());
         if (executor != null) {
             executor.shutdown();
         }
     }
 
-    private void fireTerminalCallbacks(RunnerTerminationResult termination, List<RunnerResult> resultsSnapshot) {
+    private void fireTerminalCallbacks(RunnerTerminationResult termination, List<RunnerResultSummary> summariesSnapshot) {
         SwingUtilities.invokeLater(() -> {
-            List<RunnerResult> snapshot = resultsSnapshot != null ? resultsSnapshot : Collections.emptyList();
             for (RunnerListener l : listeners) {
-                l.onTerminal(termination, snapshot);
+                l.onTerminal(termination, compatibilityResults(summariesSnapshot));
             }
             for (RunnerListener l : listeners) {
                 if (termination == null || termination.isCompleted()) {
-                    l.onComplete(snapshot);
+                    l.onComplete(compatibilityResults(summariesSnapshot));
                 } else {
                     l.onError(safeTerminalLegacyMessage(termination));
                 }
@@ -1661,8 +1665,7 @@ public class CollectionRunner {
                 child.dependentDepth = currentDepth;
                 child.targetResolutionForm = resolution.form;
                 child.qualifiedTargetPath = resolution.qualifiedPath;
-                results.add(child);
-                fireOnRequestComplete(child);
+                retainCompletedResult(child, false);
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.dependentExecution ? "Dependent request executed" : "Request executed",
@@ -1757,8 +1760,7 @@ public class CollectionRunner {
                 child.parentRequestName = context.request != null ? context.request.name : null;
                 child.parentRequestId = context.request != null ? context.request.id : null;
                 child.dependentDepth = currentDepth;
-                results.add(child);
-                fireOnRequestComplete(child);
+                retainCompletedResult(child, false);
                 CollectionRunner.this.recordRunnerDiagnostic(child,
                         child.success ? DiagnosticSeverity.INFO : DiagnosticSeverity.ERROR,
                         child.adHocExecution ? "Ad-hoc request executed" : "Request executed",
@@ -2255,8 +2257,75 @@ public class CollectionRunner {
 
     private void publishAttempt(ApiRequest request, ApiCollection collection, RunnerResult result) {
         RunnerResult snapshot = snapshotAttemptResult(result, null, result != null ? result.attemptNumber : 1, result != null ? result.totalAttempts : 1);
-        fireOnAttemptComplete(snapshot);
+        captureCanonicalResult(snapshot);
+        propagateCaptureOutcome(result, snapshot);
+        RunnerResultSummary summary = snapshot.toSummary();
+        snapshot.releaseHeavyPayloadAfterCanonicalCapture();
+        fireOnAttemptComplete(summary.toCompatibilityResult());
         fireOnTimeline(buildTimelineRow(request, collection, result, result != null ? result.attemptNumber : 1, result != null ? result.totalAttempts : 1));
+    }
+
+    private void captureCanonicalResult(RunnerResult result) {
+        if (result == null || result.canonicalCaptureComplete) {
+            return;
+        }
+        RunnerResultCaptureHandler handler = resultCaptureHandler;
+        if (handler == null) {
+            result.fullEvidenceRetained = false;
+            result.evidenceRetentionMessage =
+                    "Full evidence not retained: no History capture handler. Showing bounded Runner preview.";
+            result.canonicalCaptureComplete = true;
+            return;
+        }
+        try {
+            Runnable capture = () -> handler.capture(result);
+            if (SwingUtilities.isEventDispatchThread()) {
+                capture.run();
+            } else {
+                SwingUtilities.invokeAndWait(capture);
+            }
+            if (result.evidenceRetentionMessage == null || result.evidenceRetentionMessage.isBlank()) {
+                result.evidenceRetentionMessage = result.fullEvidenceRetained
+                        ? "Full evidence retained in History."
+                        : "Full evidence not retained: History capture failed. Showing bounded Runner preview.";
+            }
+        } catch (Exception exception) {
+            Throwable cause = exception.getCause() != null ? exception.getCause() : exception;
+            String message = burp.diagnostics.DiagnosticSanitizer.sanitizeText(
+                    cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName());
+            result.historyEntryId = null;
+            result.fullEvidenceRetained = false;
+            result.evidenceRetentionMessage = "Full evidence not retained: History capture failed"
+                    + (message != null && !message.isBlank() ? " (" + message + ")" : "")
+                    + ". Showing bounded Runner preview.";
+        } finally {
+            result.canonicalCaptureComplete = true;
+        }
+    }
+
+    private static void propagateCaptureOutcome(RunnerResult target, RunnerResult captured) {
+        if (target == null || captured == null) {
+            return;
+        }
+        target.historyEntryId = captured.historyEntryId;
+        target.fullEvidenceRetained = captured.fullEvidenceRetained;
+        target.evidenceRetentionMessage = captured.evidenceRetentionMessage;
+        target.canonicalCaptureComplete = captured.canonicalCaptureComplete;
+    }
+
+    private void retainCompletedResult(RunnerResult result, boolean releaseOriginal) {
+        if (result == null) {
+            return;
+        }
+        captureCanonicalResult(result);
+        RunnerResultSummary summary = result.toSummary();
+        synchronized (resultsLock) {
+            resultSummaries.add(summary);
+        }
+        if (releaseOriginal) {
+            result.releaseHeavyPayloadAfterCanonicalCapture();
+        }
+        fireOnRequestComplete(summary.toCompatibilityResult());
     }
 
     private boolean waitForRetryDelay(int delayMillis) throws InterruptedException {
@@ -2284,6 +2353,10 @@ public class CollectionRunner {
         if (source != null) {
             snapshot.requestName = source.requestName;
             snapshot.requestId = source.requestId;
+            snapshot.historyEntryId = source.historyEntryId;
+            snapshot.canonicalCaptureComplete = source.canonicalCaptureComplete;
+            snapshot.fullEvidenceRetained = source.fullEvidenceRetained;
+            snapshot.evidenceRetentionMessage = source.evidenceRetentionMessage;
             snapshot.collectionId = source.collectionId;
             snapshot.collectionName = source.collectionName;
             snapshot.folderPath = source.folderPath;
@@ -2352,6 +2425,7 @@ public class CollectionRunner {
             snapshot.scriptFlowMessage = source.scriptFlowMessage;
             snapshot.scriptFlowNextRequestName = source.scriptFlowNextRequestName;
             snapshot.scriptFlowNextRequestId = source.scriptFlowNextRequestId;
+            snapshot.dependentRequestCount = source.dependentRequestCount;
         }
         if (exec != null) {
             if (exec.requestHeaders != null) {
@@ -2552,7 +2626,29 @@ public class CollectionRunner {
     }
 
     public boolean isRunning() { return running; }
-    public List<RunnerResult> getResults() { return new ArrayList<>(results); }
+
+    public List<RunnerResultSummary> getResultSummaries() {
+        synchronized (resultsLock) {
+            return List.copyOf(resultSummaries);
+        }
+    }
+
+    public List<RunnerResult> getResults() {
+        return compatibilityResults(getResultSummaries());
+    }
+
+    private static List<RunnerResult> compatibilityResults(List<RunnerResultSummary> summaries) {
+        if (summaries == null || summaries.isEmpty()) {
+            return List.of();
+        }
+        List<RunnerResult> results = new ArrayList<>(summaries.size());
+        for (RunnerResultSummary summary : summaries) {
+            if (summary != null) {
+                results.add(summary.toCompatibilityResult());
+            }
+        }
+        return List.copyOf(results);
+    }
     public Map<String, String> getExtractedVariables() { return new HashMap<>(extractedVars); }
 
     private boolean waitIfPausedOrStepConsumed() throws InterruptedException {
@@ -2691,6 +2787,11 @@ public class CollectionRunner {
         COMPLETED,
         CANCELLED,
         FAILED_BEFORE_RESULT
+    }
+
+    @FunctionalInterface
+    public interface RunnerResultCaptureHandler {
+        void capture(RunnerResult result);
     }
 
     public interface RunnerListener {

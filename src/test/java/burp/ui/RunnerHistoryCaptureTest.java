@@ -45,14 +45,15 @@ class RunnerHistoryCaptureTest {
 
         ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
-                "recordRunnerHistoryAttempt",
+                "captureRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
                 attemptOne);
-        HistoryEntry storedAttemptTwo = ImporterPanelTestSupport.invoke(
+        ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
-                "recordRunnerHistoryAttempt",
+                "captureRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
                 attemptTwo);
+        HistoryEntry storedAttemptTwo = bundle.panel.getHistoryStoreForTests().getById(attemptTwo.historyEntryId);
 
         ImporterPanelTestSupport.awaitCondition(
                 () -> bundle.panel.getWorkspaceStateSnapshot().historyEntries.size() == 2,
@@ -77,6 +78,8 @@ class RunnerHistoryCaptureTest {
         assertThat(entries.get(0).redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/next");
         assertThat(entries.get(1).redirectHops.get(0).targetUrl).isEqualTo("https://api.example.test/next");
         assertThat(attemptTwo.historyEntryId).isEqualTo(storedAttemptTwo.id);
+        assertThat(attemptOne.canonicalCaptureComplete).isTrue();
+        assertThat(attemptTwo.fullEvidenceRetained).isTrue();
 
         javax.swing.SwingUtilities.invokeAndWait(() -> {
             bundle.panel.getRunnerDetailPanelForTests().showEntry(storedAttemptTwo);

@@ -131,6 +131,8 @@ class CollectionRunnerTest {
                 activeEnvironment.putAll(changedVars);
             }
         });
+        Map<String, String> capturedExtractions = new ConcurrentHashMap<>();
+        runner.setResultCaptureHandler(result -> capturedExtractions.putAll(result.extractedVariables));
 
         ApiCollection collection = new ApiCollection();
         collection.name = "Active Env Collection";
@@ -153,7 +155,7 @@ class CollectionRunnerTest {
                 .doesNotContainKey("session");
 
         assertThat(runner.getResults()).hasSize(1);
-        assertThat(runner.getResults().get(0).extractedVariables)
+        assertThat(capturedExtractions)
                 .containsEntry("session", "from-active-env");
     }
 

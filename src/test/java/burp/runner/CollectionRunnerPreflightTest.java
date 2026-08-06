@@ -75,6 +75,8 @@ class CollectionRunnerPreflightTest {
         Harness harness = harness(null, null);
         harness.request.url = "https://example.test/{{missing}}";
         harness.runner.setExecutionPolicy(ExecutionPolicy.runnerDefaults(false));
+        List<String> capturedUnresolved = new CopyOnWriteArrayList<>();
+        harness.runner.setResultCaptureHandler(result -> capturedUnresolved.addAll(result.unresolvedVariables));
         runAndWait(harness.runner, harness.collection, harness.request);
         System.out.println("UNRESOLVED_ALLOW status=" + harness.runner.getResults().get(0).preflightStatus
                 + " msg=" + harness.runner.getResults().get(0).preflightMessage
@@ -82,7 +84,7 @@ class CollectionRunnerPreflightTest {
                 + " success=" + harness.runner.getResults().get(0).success);
 
         assertThat(harness.sendCount.get()).isEqualTo(1);
-        assertThat(harness.runner.getResults().get(0).unresolvedVariables).contains("missing");
+        assertThat(capturedUnresolved).contains("missing");
         assertThat(harness.runner.getResults().get(0).preflightStatus).isEqualTo(ExecutionPreflightStatus.READY);
     }
 

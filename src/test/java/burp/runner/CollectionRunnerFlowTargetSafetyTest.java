@@ -68,6 +68,7 @@ class CollectionRunnerFlowTargetSafetyTest {
     @Test
     void runRequestAmbiguityExecutesNothing() throws Exception {
         CollectionRunner runner = scriptRunner();
+        List<String> capturedWarnings = captureWarnings(runner);
         ApiRequest childA = child("a", "Child", "folder-a");
         ApiRequest childB = child("b", "Child", "folder-b");
         ApiRequest parent = RunnerScriptTestFixtures.request(
@@ -85,13 +86,14 @@ class CollectionRunnerFlowTargetSafetyTest {
         run(runner, collection, List.of(parent));
 
         assertThat(runner.getResults()).hasSize(1);
-        assertThat(runner.getResults().get(0).scriptWarnings)
+        assertThat(capturedWarnings)
                 .anySatisfy(message -> assertThat(message).contains("Flow target is ambiguous"));
     }
 
     @Test
     void runRequestDisabledTargetExecutesNothing() throws Exception {
         CollectionRunner runner = scriptRunner();
+        List<String> capturedWarnings = captureWarnings(runner);
         ApiRequest child = child("child", "Child", "folder-a");
         child.disabled = true;
         ApiRequest parent = RunnerScriptTestFixtures.request(
@@ -109,7 +111,7 @@ class CollectionRunnerFlowTargetSafetyTest {
         run(runner, collection, List.of(parent));
 
         assertThat(runner.getResults()).hasSize(1);
-        assertThat(runner.getResults().get(0).scriptWarnings)
+        assertThat(capturedWarnings)
                 .anySatisfy(message -> assertThat(message).contains("Flow target is disabled"));
     }
 
@@ -164,6 +166,7 @@ class CollectionRunnerFlowTargetSafetyTest {
     @Test
     void ambiguityDiagnosticListsQualifiedCandidates() throws Exception {
         CollectionRunner runner = scriptRunner();
+        List<String> capturedWarnings = captureWarnings(runner);
         ApiRequest childA = child("a", "Child", "folder-a");
         ApiRequest childB = child("b", "Child", "folder-b");
         ApiRequest parent = RunnerScriptTestFixtures.request(
@@ -181,7 +184,7 @@ class CollectionRunnerFlowTargetSafetyTest {
         run(runner, collection, List.of(parent));
 
         assertThat(runner.getResults()).hasSize(1);
-        assertThat(runner.getResults().get(0).scriptWarnings)
+        assertThat(capturedWarnings)
                 .anySatisfy(message -> {
                     assertThat(message).contains("Collection/folder-a/Child");
                     assertThat(message).contains("Collection/folder-b/Child");
@@ -201,6 +204,12 @@ class CollectionRunnerFlowTargetSafetyTest {
                 RunnerScriptTestFixtures.mockRunnerApi(sendCount, captured, () -> RunnerScriptTestFixtures.mockResponse(200, "OK", "text/plain")));
         runner.setDelayMs(0);
         return runner;
+    }
+
+    private static List<String> captureWarnings(CollectionRunner runner) {
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        runner.setResultCaptureHandler(result -> warnings.addAll(result.scriptWarnings));
+        return warnings;
     }
 
     private static void run(CollectionRunner runner, ApiCollection collection, List<ApiRequest> requests) throws Exception {

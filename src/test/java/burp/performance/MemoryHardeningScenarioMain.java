@@ -10,7 +10,9 @@ import burp.history.HistoryStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.RedirectHop;
 import burp.models.RunnerResult;
+import burp.models.RunnerResultSummary;
 import burp.models.WorkspaceState;
 import burp.runner.CollectionRunner;
 import burp.scripts.ScriptExecutionResult;
@@ -20,6 +22,7 @@ import burp.utils.ExecutionResult;
 import burp.utils.SharedRequestPipeline;
 import burp.utils.WorkspaceStateService;
 import burp.utils.WorkspaceStateJson;
+import burp.ui.RunnerExecutionTableModel;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
@@ -177,24 +180,124 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static ScenarioExecution runner(String name, int count, int responseBytes, long[] peak) {
-        List<RunnerResult> owners = new ArrayList<>(count);
-        long logical = 0;
+        HistoryStore historyOwners = new HistoryStore();
+        historyOwners.setRetentionPolicy(HistoryRetentionPolicy.defaultPolicy());
+        List<RunnerResultSummary> summaryOwners = new ArrayList<>(count);
+        List<RunnerResult> compactCompatibilityOwners = new ArrayList<>(count);
+        RunnerExecutionTableModel runnerRows = new RunnerExecutionTableModel();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "memory-collection";
+        collection.name = "Memory Baseline";
+        EnvironmentProfile environment = MemoryHardeningFixtureFactory.environment(64);
+        int historyBackedResults = 0;
+        int historyRejectedResults = 0;
+        int fullResponseOwnersAfterCapture = 0;
+        int rawRequestOwnersAfterCapture = 0;
+        int redirectPayloadOwnersAfterCapture = 0;
+        long logical = 0L;
         for (int i = 0; i < count; i++) {
+            ApiRequest request = MemoryHardeningFixtureFactory.fidelityRequest("runner-" + i, 0);
+            collection.requests = List.of(request);
             RunnerResult result = MemoryHardeningFixtureFactory.runnerResult(i, 256, responseBytes);
-            owners.add(result);
-            logical = MemoryHardeningFixtureFactory.safeAdd(logical,
-                    result.rawRequestBytes.length + MemoryHardeningFixtureFactory.utf8Length(result.rawRequestText)
-                            + MemoryHardeningFixtureFactory.utf8Length(result.responseBody));
+            result.redirectsEnabled = true;
+            result.redirectHops.add(runnerRedirectFixture(i));
+
+            HistoryEntry historyEntry = HistoryEntry.fromRunnerAttempt(collection, request, environment, result);
+            HistoryAdmissionResult admission = historyOwners.admitEntry(historyEntry);
+            if (admission.accepted()) {
+                historyBackedResults++;
+                result.historyEntryId = admission.storedEntryId();
+                result.fullEvidenceRetained = true;
+                result.evidenceRetentionMessage = "Full evidence retained in History";
+            } else {
+                historyRejectedResults++;
+                result.fullEvidenceRetained = false;
+                result.evidenceRetentionMessage = "Full evidence not retained: History admission rejected";
+            }
+            result.canonicalCaptureComplete = true;
+
+            RunnerResultSummary summary = result.toSummary();
+            if (!result.releaseHeavyPayloadAfterCanonicalCapture()) {
+                throw new IllegalStateException("Runner payload release was rejected after canonical capture");
+            }
+            summaryOwners.add(summary);
+            compactCompatibilityOwners.add(summary.toCompatibilityResult());
+            runnerRows.addSummary(summary);
+            logical = MemoryHardeningFixtureFactory.safeAdd(logical, retainedRunnerSummaryBytes(summary));
+
+            if (result.responseBody != null || result.responseHeaders != null) {
+                fullResponseOwnersAfterCapture++;
+            }
+            if (result.rawRequestBytes != null || result.rawRequestText != null
+                    || result.requestHeaders != null || result.requestBody != null) {
+                rawRequestOwnersAfterCapture++;
+            }
+            if (result.redirectHops.stream().anyMatch(hop -> hop != null
+                    && (hop.rawRequestBytes != null || hop.rawRequestText != null || hop.responseBody != null))) {
+                redirectPayloadOwnersAfterCapture++;
+            }
             sample(peak);
+        }
+        if (summaryOwners.size() != count || fullResponseOwnersAfterCapture != 0
+                || rawRequestOwnersAfterCapture != 0 || redirectPayloadOwnersAfterCapture != 0) {
+            throw new IllegalStateException("Runner canonical ownership invariants were not satisfied");
         }
         ScenarioResult result = new ScenarioResult(name);
         result.operationCount = count;
         result.payloadBytes = responseBytes;
         result.logicalRetainedBytes = logical;
-        result.retainedOwners = owners.size();
-        result.metrics.put("runnerResultOwners", owners.size());
-        result.metrics.put("fullResponseOwners", owners.size());
-        return retain(result, owners);
+        result.retainedOwners = summaryOwners.size() + compactCompatibilityOwners.size();
+        result.metrics.put("attemptedResults", count);
+        result.metrics.put("summaryOwners", summaryOwners.size());
+        result.metrics.put("compactCompatibilityOwners", compactCompatibilityOwners.size());
+        result.metrics.put("fullResponseOwnersAfterCapture", fullResponseOwnersAfterCapture);
+        result.metrics.put("rawRequestOwnersAfterCapture", rawRequestOwnersAfterCapture);
+        result.metrics.put("redirectPayloadOwnersAfterCapture", redirectPayloadOwnersAfterCapture);
+        result.metrics.put("historyBackedResults", historyBackedResults);
+        result.metrics.put("historyRejectedResults", historyRejectedResults);
+        result.metrics.put("removedRunnerRows", runnerRows.getRemovedCompletedRowCount());
+        result.metrics.put("logicalRetainedBytes", logical);
+        return retain(result, List.of(historyOwners, summaryOwners, compactCompatibilityOwners, runnerRows));
+    }
+
+    private static RedirectHop runnerRedirectFixture(int index) {
+        RedirectHop hop = new RedirectHop();
+        hop.hopNumber = 1;
+        hop.sourceMethod = "GET";
+        hop.sourceUrl = "https://example.test/runner/start/" + index;
+        hop.targetUrl = "https://example.test/runner/" + index;
+        hop.statusCode = 302;
+        hop.elapsedMs = 1L;
+        hop.followed = true;
+        hop.rawRequestBytes = MemoryHardeningFixtureFactory.rawHttpRequest(256);
+        hop.rawRequestText = new String(hop.rawRequestBytes, StandardCharsets.ISO_8859_1);
+        hop.responseBody = MemoryHardeningFixtureFactory.binaryBytes(64 * 1024);
+        return hop;
+    }
+
+    private static long retainedRunnerSummaryBytes(RunnerResultSummary summary) {
+        long retained = 0L;
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.requestId()));
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.requestName()));
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.historyEntryId()));
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.requestUrl()));
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.responseBodyPreview()));
+        retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                MemoryHardeningFixtureFactory.utf8Length(summary.evidenceRetentionMessage()));
+        for (RunnerResultSummary.RedirectSummary redirect : summary.redirectSummaries()) {
+            retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                    MemoryHardeningFixtureFactory.utf8Length(redirect.sourceUrl()));
+            retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                    MemoryHardeningFixtureFactory.utf8Length(redirect.targetUrl()));
+            retained = MemoryHardeningFixtureFactory.safeAdd(retained,
+                    MemoryHardeningFixtureFactory.utf8Length(redirect.failureReason()));
+        }
+        return retained;
     }
 
     private static ScenarioExecution exact(String name, int count, int rawBytes, long[] peak) {

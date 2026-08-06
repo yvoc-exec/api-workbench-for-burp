@@ -62,7 +62,9 @@ class CollectionRunnerCanonicalModelTest {
                 .doesNotContain("disabled-query", "disabled-field");
         assertThat(runner.getResults()).hasSize(1);
         RunnerResult result = runner.getResults().get(0);
-        assertThat(result.rawRequestBytes).containsExactly(baseline);
+        assertThat(result.rawRequestBytes).isNull();
+        assertThat(result.responseBody).isNull();
+        assertThat(result.evidenceRetentionMessage).contains("no History capture handler");
         assertThat(result.totalAttempts).isEqualTo(2);
     }
 

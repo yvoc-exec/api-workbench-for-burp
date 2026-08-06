@@ -12,7 +12,9 @@ import burp.testsupport.RunnerScriptTestFixtures;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,6 +54,12 @@ class CollectionRunnerAdHocRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Ad Hoc Collection", parent);
+        AtomicReference<String> capturedRawRequest = new AtomicReference<>();
+        runner.setResultCaptureHandler(result -> {
+            if (result.adHocExecution) {
+                capturedRawRequest.set(result.rawRequestText);
+            }
+        });
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -67,10 +75,10 @@ class CollectionRunnerAdHocRequestTest {
         assertThat(adHocResult.requestName).isEqualTo("AdHoc POST");
         assertThat(adHocResult.method).isEqualTo("POST");
         assertThat(adHocResult.requestUrl).isEqualTo("https://api.example.test/ad-hoc");
-        assertThat(adHocResult.rawRequestText).contains("POST /ad-hoc HTTP/1.1");
-        assertThat(adHocResult.rawRequestText).contains("Host: api.example.test");
-        assertThat(adHocResult.rawRequestText).contains("X-AdHoc: true");
-        assertThat(adHocResult.rawRequestText).contains("{\"adHoc\":true}");
+        assertThat(capturedRawRequest.get()).contains("POST /ad-hoc HTTP/1.1");
+        assertThat(capturedRawRequest.get()).contains("Host: api.example.test");
+        assertThat(capturedRawRequest.get()).contains("X-AdHoc: true");
+        assertThat(capturedRawRequest.get()).contains("{\"adHoc\":true}");
         assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (ad hoc)");
         assertThat(parentResult.scriptFlowControl).isEqualTo(ScriptFlowControl.SEND_AD_HOC_REQUEST);
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
@@ -98,6 +106,12 @@ class CollectionRunnerAdHocRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Ad Hoc String Collection", parent);
+        AtomicReference<String> capturedRawRequest = new AtomicReference<>();
+        runner.setResultCaptureHandler(result -> {
+            if (result.adHocExecution) {
+                capturedRawRequest.set(result.rawRequestText);
+            }
+        });
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -108,8 +122,8 @@ class CollectionRunnerAdHocRequestTest {
         assertThat(adHocResult.adHocExecution).isTrue();
         assertThat(adHocResult.method).isEqualTo("GET");
         assertThat(adHocResult.requestUrl).isEqualTo("https://api.example.test/ping");
-        assertThat(adHocResult.rawRequestText).contains("GET /ping HTTP/1.1");
-        assertThat(adHocResult.rawRequestText).contains("Host: api.example.test");
+        assertThat(capturedRawRequest.get()).contains("GET /ping HTTP/1.1");
+        assertThat(capturedRawRequest.get()).contains("Host: api.example.test");
         assertThat(adHocResult.displayStatusLabel()).isEqualTo("200 (ad hoc)");
     }
 
@@ -133,6 +147,8 @@ class CollectionRunnerAdHocRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Ad Hoc Invalid Collection", parent);
+        List<String> capturedWarnings = new CopyOnWriteArrayList<>();
+        runner.setResultCaptureHandler(result -> capturedWarnings.addAll(result.scriptWarnings));
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -141,7 +157,7 @@ class CollectionRunnerAdHocRequestTest {
         assertThat(runner.getResults()).hasSize(1);
         RunnerResult parentResult = runner.getResults().get(0);
         assertThat(parentResult.success).isTrue();
-        assertThat(parentResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("sendAdHocRequest requires a URL"));
+        assertThat(capturedWarnings).anySatisfy(warning -> assertThat(warning).contains("sendAdHocRequest requires a URL"));
         assertThat(parentResult.scriptDependentRequestResults).isEmpty();
         assertThat(parentResult.dependentRequestCount).isZero();
         assertThat(parentResult.scriptFlowControl).isEqualTo(ScriptFlowControl.CONTINUE);

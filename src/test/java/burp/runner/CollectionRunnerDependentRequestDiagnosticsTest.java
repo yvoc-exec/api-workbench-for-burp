@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,6 +66,18 @@ class CollectionRunnerDependentRequestDiagnosticsTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Diagnostics Collection", parent, child);
+        EnvironmentProfile environment = new EnvironmentProfile();
+        environment.name = "Dev";
+        environment.variables.put("base_url", "https://api.example.test");
+        AtomicReference<HistoryEntry> capturedChildHistory = new AtomicReference<>();
+        runner.setResultCaptureHandler(result -> {
+            if ("diag-child".equals(result.requestId)) {
+                HistoryEntry history = HistoryEntry.fromRunnerAttempt(collection, child, environment, result);
+                capturedChildHistory.set(history);
+                result.historyEntryId = history.id;
+                result.fullEvidenceRetained = true;
+            }
+        });
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -75,10 +88,8 @@ class CollectionRunnerDependentRequestDiagnosticsTest {
         assertThat(runner.getResults().get(0).triggeredByScript).isTrue();
         assertThat(runner.getResults().get(1).dependentRequestCount).isEqualTo(1);
 
-        EnvironmentProfile environment = new EnvironmentProfile();
-        environment.name = "Dev";
-        environment.variables.put("base_url", "https://api.example.test");
-        HistoryEntry history = HistoryEntry.fromRunnerAttempt(collection, child, environment, runner.getResults().get(0));
+        HistoryEntry history = capturedChildHistory.get();
+        assertThat(history).isNotNull();
         assertThat(history.result).isEqualTo(burp.history.HistoryResult.SUCCESS);
         assertThat(history.requestSnapshot.hasRawRequestSent()).isTrue();
         assertThat(history.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("diag child"));

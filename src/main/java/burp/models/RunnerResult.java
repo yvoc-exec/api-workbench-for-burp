@@ -21,6 +21,10 @@ public class RunnerResult {
     public String requestName;
     public String requestId;
     public String historyEntryId;
+    public boolean canonicalCaptureComplete;
+    public boolean fullEvidenceRetained;
+    public String evidenceRetentionMessage;
+    private boolean heavyPayloadReleased;
     public String collectionId;
     public String collectionName;
     public String folderPath;
@@ -92,6 +96,60 @@ public class RunnerResult {
     public FlowTargetResolutionForm targetResolutionForm = FlowTargetResolutionForm.NONE;
     public String qualifiedTargetPath;
     public RunnerCancellationState cancellationState = RunnerCancellationState.NOT_CANCELLED;
+
+    public RunnerResultSummary toSummary() {
+        return RunnerResultSummary.from(this);
+    }
+
+    public synchronized boolean releaseHeavyPayloadAfterCanonicalCapture() {
+        if (!canonicalCaptureComplete) {
+            return false;
+        }
+        if (heavyPayloadReleased) {
+            return true;
+        }
+        if (responseBodyPreview == null && responseBody != null) {
+            responseBodyPreview = responseBody.length() > RunnerResultSummary.RESPONSE_PREVIEW_LIMIT
+                    ? responseBody.substring(0, RunnerResultSummary.RESPONSE_PREVIEW_LIMIT) + "..."
+                    : responseBody;
+        }
+        if (responseBodyLength <= 0 && responseBody != null) {
+            responseBodyLength = responseBody.length();
+        }
+        requestHeaders = null;
+        requestBody = null;
+        rawRequestBytes = null;
+        rawRequestText = null;
+        responseHeaders = null;
+        responseBody = null;
+        if (redirectHops != null) {
+            for (RedirectHop hop : redirectHops) {
+                if (hop != null) {
+                    hop.rawRequestBytes = null;
+                    hop.rawRequestText = null;
+                    hop.responseBody = null;
+                }
+            }
+        }
+        if (scriptDependentRequestResults != null) {
+            for (ScriptDependentRequestResult dependent : scriptDependentRequestResults) {
+                if (dependent != null && dependent.runnerResult != null
+                        && dependent.runnerResult.canonicalCaptureComplete) {
+                    dependent.runnerResult.releaseHeavyPayloadAfterCanonicalCapture();
+                }
+            }
+        }
+        heavyPayloadReleased = true;
+        return true;
+    }
+
+    public synchronized boolean isHeavyPayloadReleased() {
+        return heavyPayloadReleased;
+    }
+
+    void markHeavyPayloadReleasedForCompatibility() {
+        heavyPayloadReleased = true;
+    }
 
     public boolean isSkippedByScript() {
         return scriptFlowControl == ScriptFlowControl.SKIP_REQUEST;

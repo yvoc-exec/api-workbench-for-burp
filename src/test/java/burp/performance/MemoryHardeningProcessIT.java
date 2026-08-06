@@ -69,7 +69,7 @@ class MemoryHardeningProcessIT {
         root.addProperty("generatedAtUtc", Instant.now().toString());
         root.addProperty("repository", "api-workbench-for-burp");
         root.addProperty("branch", "main");
-        root.addProperty("startingSha", "6cdcf45f5e4c81471fe446b8548f056c015523f5");
+        root.addProperty("startingSha", "c8099ac5c1df4cec8759f99d0be52fcecad6f63c");
         root.addProperty("javaVersion", System.getProperty("java.version"));
         root.addProperty("mavenVersion", System.getProperty("memory.hardening.maven.version", "3.9.9"));
         root.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
@@ -85,7 +85,7 @@ class MemoryHardeningProcessIT {
         notes.add("maximumSampledHeapBytes is sparse sampled heap, not a continuously observed JVM peak.");
         root.add("notes", notes);
         String reportStatus = unclassified.isEmpty()
-                ? "R3_HISTORY_HARD_BOUND_ENFORCED_WITH_DECLARED_PROXIES"
+                ? "R5_RUNNER_CANONICAL_OWNERSHIP_ENFORCED_WITH_DECLARED_PROXIES"
                 : "INCOMPLETE";
         root.addProperty("reportStatus", reportStatus);
 
@@ -99,9 +99,10 @@ class MemoryHardeningProcessIT {
         assertThat(textReport).exists().isNotEmptyFile();
         assertThat(unclassified).as("every child process must be classifiable").isEmpty();
         assertHistoryHardBounds(results);
+        assertRunnerCanonicalOwnership(results);
         assertDeclaredClassifications(results);
         assertThat(root.get("reportStatus").getAsString())
-                .isEqualTo("R3_HISTORY_HARD_BOUND_ENFORCED_WITH_DECLARED_PROXIES");
+                .isEqualTo("R5_RUNNER_CANONICAL_OWNERSHIP_ENFORCED_WITH_DECLARED_PROXIES");
     }
 
     private static JsonObject executeChild(String scenario, Path output) throws Exception {
@@ -290,13 +291,33 @@ class MemoryHardeningProcessIT {
 
     private static void assertDeclaredClassifications(JsonArray results) {
         assertThat(string(resultFor(results, "runner-200x2m"), "exitClassification"))
-                .isEqualTo("OOM_REPORTED");
+                .isEqualTo("SUCCESS");
         assertThat(string(resultFor(results, "workspace-history-80m"), "exitClassification"))
                 .isEqualTo("OOM_REPORTED");
         for (JsonElement item : results) {
             JsonObject result = item.getAsJsonObject();
             assertThat(string(result, "exitClassification")).isNotEqualTo("TIMEOUT");
         }
+    }
+
+    private static void assertRunnerCanonicalOwnership(JsonArray results) {
+        JsonObject runner = resultFor(results, "runner-200x2m");
+        JsonObject metrics = runner.getAsJsonObject("metrics");
+        long attempted = longValue(metrics, "attemptedResults");
+        assertThat(attempted).isEqualTo(200L);
+        assertThat(longValue(metrics, "summaryOwners")).isEqualTo(attempted);
+        assertThat(longValue(metrics, "compactCompatibilityOwners")).isEqualTo(attempted);
+        assertThat(longValue(metrics, "fullResponseOwnersAfterCapture")).isZero();
+        assertThat(longValue(metrics, "rawRequestOwnersAfterCapture")).isZero();
+        assertThat(longValue(metrics, "redirectPayloadOwnersAfterCapture")).isZero();
+        assertThat(longValue(metrics, "historyBackedResults")
+                + longValue(metrics, "historyRejectedResults")).isEqualTo(attempted);
+        assertThat(longValue(metrics, "removedRunnerRows")).isZero();
+        assertThat(longValue(runner, "logicalRetainedBytes"))
+                .isPositive()
+                .isLessThan(attempted * 16L * 1024L);
+        assertThat(longValue(metrics, "logicalRetainedBytes"))
+                .isEqualTo(longValue(runner, "logicalRetainedBytes"));
     }
 
     private static JsonObject resultFor(JsonArray results, String name) {

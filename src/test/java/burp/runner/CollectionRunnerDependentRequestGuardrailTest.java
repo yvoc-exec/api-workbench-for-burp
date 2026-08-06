@@ -11,6 +11,7 @@ import burp.testsupport.RunnerScriptTestFixtures;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,6 +38,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Guardrail Collection", parent);
+        List<String> capturedWarnings = captureWarnings(runner);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -45,7 +47,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
         assertThat(runner.getResults()).hasSize(1);
         RunnerResult parentResult = runner.getResults().get(0);
         assertThat(parentResult.success).isTrue();
-        assertThat(parentResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request recursion detected"));
+        assertThat(capturedWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request recursion detected"));
         assertThat(parentResult.scriptDependentRequestResults).isEmpty();
         assertThat(parentResult.dependentRequestCount).isZero();
     }
@@ -83,6 +85,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Guardrail Collection", parent, child);
+        List<String> capturedWarnings = captureWarnings(runner);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -91,7 +94,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
         assertThat(runner.getResults()).hasSize(3);
         RunnerResult childResult = runner.getResults().get(0);
         RunnerResult parentResult = runner.getResults().get(2);
-        assertThat(childResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request recursion detected"));
+        assertThat(capturedWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request recursion detected"));
         assertThat(childResult.success).isTrue();
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
@@ -155,6 +158,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Depth Collection", requestA, requestB, requestC, requestD, requestE);
+        List<String> capturedWarnings = captureWarnings(runner);
 
         runner.runCollections(List.of(collection), List.of(requestA));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -162,7 +166,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
         assertThat(sendCount.get()).isEqualTo(4);
         assertThat(runner.getResults()).hasSize(4);
         assertThat(runner.getResults().get(0).requestName).isEqualTo("D");
-        assertThat(runner.getResults().get(0).scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request depth limit reached"));
+        assertThat(capturedWarnings).anySatisfy(warning -> assertThat(warning).contains("Dependent request depth limit reached"));
         assertThat(runner.getResults().get(3).requestName).isEqualTo("A");
         assertThat(runner.getResults().get(3).dependentRequestCount).isEqualTo(1);
     }
@@ -203,6 +207,7 @@ class CollectionRunnerDependentRequestGuardrailTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Disabled Collection", parent, child);
+        List<String> capturedWarnings = captureWarnings(runner);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -211,8 +216,14 @@ class CollectionRunnerDependentRequestGuardrailTest {
         assertThat(runner.getResults()).hasSize(1);
         RunnerResult parentResult = runner.getResults().get(0);
         assertThat(parentResult.success).isTrue();
-        assertThat(parentResult.scriptWarnings).anySatisfy(warning -> assertThat(warning).contains("Flow target is disabled"));
+        assertThat(capturedWarnings).anySatisfy(warning -> assertThat(warning).contains("Flow target is disabled"));
         assertThat(parentResult.scriptDependentRequestResults).isEmpty();
         assertThat(parentResult.dependentRequestCount).isZero();
+    }
+
+    private static List<String> captureWarnings(CollectionRunner runner) {
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        runner.setResultCaptureHandler(result -> warnings.addAll(result.scriptWarnings));
+        return warnings;
     }
 }

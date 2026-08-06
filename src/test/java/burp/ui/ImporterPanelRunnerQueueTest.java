@@ -74,7 +74,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ImporterPanelRunnerQueueTest {
 
     @Test
-    void clearRunnerClearsResultsTimelineLogAndQueuedRequests() throws Exception {
+    void clearResultsPreservesQueueAndClearsResultsTimelineAndLog() throws Exception {
         ImporterPanel panel = newPanel();
         ApiCollection collection = collection("Checkout", request("Queued 1"), request("Queued 2"));
         panel.restoreWorkspaceCollections(List.of(collection));
@@ -87,11 +87,12 @@ class ImporterPanelRunnerQueueTest {
         invokePrivate(panel, "clearRunnerFromUi");
         drainEdt();
 
-        assertThat(queue(panel)).isEmpty();
+        assertThat(queue(panel)).extracting(r -> ((ApiRequest) r).name)
+                .containsExactly("Queued 1", "Queued 2");
         assertThat(resultModel(panel).getRowCount()).isZero();
         assertThat(timelineModel(panel).getRowCount()).isZero();
         assertThat(runnerLog(panel).getText()).isEmpty();
-        assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isFalse();
+        assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isTrue();
     }
 
     @Test
@@ -125,7 +126,7 @@ class ImporterPanelRunnerQueueTest {
     }
 
     @Test
-    void startRunnerDoesNotRunWhenQueueCleared() throws Exception {
+    void startRunnerStillRunsPreservedQueueAfterResultsAreCleared() throws Exception {
         CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
         ImporterPanel panel = newPanel(runner);
         panel.restoreWorkspaceCollections(List.of(collection("Checkout", request("One"))));
@@ -137,9 +138,8 @@ class ImporterPanelRunnerQueueTest {
         invokePrivate(panel, "startRunner", new Class<?>[]{boolean.class}, false);
         drainEdt();
 
-        Mockito.verify(runner, Mockito.never()).runCollections(Mockito.anyList(), Mockito.anyList());
-        assertThat(runnerLog(panel).getText()).contains("No requests queued");
-        assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isFalse();
+        Mockito.verify(runner).runCollections(Mockito.anyList(), Mockito.argThat(requests -> requests.size() == 1));
+        assertThat(runnerLog(panel).getText()).doesNotContain("No requests queued");
     }
 
     @Test

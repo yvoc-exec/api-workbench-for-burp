@@ -101,21 +101,22 @@ class ImporterPanelHistoryAdmissionTest {
         result.totalAttempts = 3;
         result.retryReason = "status 503";
 
-        HistoryEntry stored = ImporterPanelTestSupport.invoke(
+        ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
-                "recordRunnerHistoryAttempt",
+                "captureRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
                 result);
-        HistoryEntry duplicateCallback = ImporterPanelTestSupport.invoke(
+        ImporterPanelTestSupport.invokeVoid(
                 bundle.panel,
-                "recordRunnerHistoryAttempt",
+                "captureRunnerHistoryAttempt",
                 new Class<?>[]{RunnerResult.class},
                 result);
         ImporterPanelTestSupport.awaitEdt();
 
-        assertThat(stored).isNull();
-        assertThat(duplicateCallback).isNull();
         assertThat(result.historyEntryId).isNull();
+        assertThat(result.canonicalCaptureComplete).isTrue();
+        assertThat(result.fullEvidenceRetained).isFalse();
+        assertThat(result.evidenceRetentionMessage).contains("History quota");
         assertThat(result.attemptNumber).isEqualTo(2);
         assertThat(result.totalAttempts).isEqualTo(3);
         assertThat(result.retryReason).isEqualTo("status 503");

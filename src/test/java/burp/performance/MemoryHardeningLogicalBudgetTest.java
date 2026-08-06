@@ -9,6 +9,7 @@ import burp.history.HistoryStore;
 import burp.models.ApiRequest;
 import burp.models.RedirectHop;
 import burp.models.RunnerResult;
+import burp.models.RunnerResultSummary;
 import burp.models.WorkspaceState;
 import burp.utils.WorkspaceStateJson;
 import org.junit.jupiter.api.Test;
@@ -135,5 +136,34 @@ class MemoryHardeningLogicalBudgetTest {
         assertThat(results).allSatisfy(result -> assertThat(result.responseBody).hasSize(1024));
         assertThat(workbenchOwners).hasSize(2);
         assertThat(workbenchOwners.values()).allSatisfy(bytes -> assertThat(bytes).hasSize(128));
+    }
+
+    @Test
+    void runnerCanonicalLifecycleLeavesOnlyBoundedSummaryEvidence() {
+        RunnerResult result = MemoryHardeningFixtureFactory.runnerResult(1, 4096, 2 * 1024 * 1024);
+        RedirectHop redirect = new RedirectHop();
+        redirect.sourceUrl = "https://example.test/start";
+        redirect.targetUrl = result.requestUrl;
+        redirect.rawRequestBytes = MemoryHardeningFixtureFactory.rawHttpRequest(1024);
+        redirect.rawRequestText = new String(redirect.rawRequestBytes, StandardCharsets.ISO_8859_1);
+        redirect.responseBody = MemoryHardeningFixtureFactory.binaryBytes(64 * 1024);
+        result.redirectHops.add(redirect);
+        result.canonicalCaptureComplete = true;
+        result.fullEvidenceRetained = true;
+        result.historyEntryId = "history-runner-1";
+
+        RunnerResultSummary summary = result.toSummary();
+        assertThat(result.releaseHeavyPayloadAfterCanonicalCapture()).isTrue();
+        RunnerResult compact = summary.toCompatibilityResult();
+
+        assertThat(summary.responseBodyLength()).isEqualTo(2 * 1024 * 1024);
+        assertThat(summary.responseBodyPreview()).hasSizeLessThanOrEqualTo(
+                RunnerResultSummary.RESPONSE_PREVIEW_LIMIT + 3);
+        assertThat(result.responseBody).isNull();
+        assertThat(result.rawRequestBytes).isNull();
+        assertThat(result.redirectHops.get(0).responseBody).isNull();
+        assertThat(compact.responseBody).isNull();
+        assertThat(compact.rawRequestBytes).isNull();
+        assertThat(compact.historyEntryId).isEqualTo("history-runner-1");
     }
 }

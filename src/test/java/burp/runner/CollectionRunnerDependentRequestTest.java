@@ -90,6 +90,7 @@ class CollectionRunnerDependentRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Dependent Collection", parent, child);
+        List<HistoryEntry> capturedHistory = captureHistory(runner, collection, environment);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -101,6 +102,8 @@ class CollectionRunnerDependentRequestTest {
         RunnerResult firstChild = runner.getResults().get(0);
         RunnerResult secondChild = runner.getResults().get(1);
         RunnerResult parentResult = runner.getResults().get(2);
+        List<HistoryEntry> childHistory = historiesFor(capturedHistory, "child-1");
+        HistoryEntry parentHistory = historiesFor(capturedHistory, "parent-1").get(0);
 
         assertThat(List.of(firstChild.requestName, secondChild.requestName, parentResult.requestName))
                 .containsExactly("Child", "Child", "Parent");
@@ -117,23 +120,23 @@ class CollectionRunnerDependentRequestTest {
         assertThat(parentResult.dependentRequestCount).isEqualTo(2);
         assertThat(parentResult.scriptDependentRequestResults).hasSize(2);
         assertThat(parentResult.scriptFlowControl).isEqualTo(ScriptFlowControl.RUN_REQUEST);
-        assertThat(parentResult.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("parent pre"));
+        assertThat(parentHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("parent pre"));
 
-        assertThat(firstChild.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child pre"));
-        assertThat(firstChild.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child post"));
+        assertThat(childHistory.get(0).scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child pre"));
+        assertThat(childHistory.get(0).scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child post"));
         assertThat(firstChild.assertions).hasSize(1);
         assertThat(firstChild.assertions.get(0).passed).isTrue();
-        assertThat(firstChild.rawRequestText).contains("Authorization: Bearer runner-token");
-        assertThat(firstChild.rawRequestText).contains("?child=1");
-        assertThat(firstChild.rawRequestText).contains("HTTP/1.1");
+        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
+        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("?child=1");
+        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("HTTP/1.1");
         assertThat(firstChild.requestUrl).isEqualTo("https://api.example.test/child?child=1");
         assertThat(firstChild.displayStatusLabel()).isEqualTo("201 (dependent)");
 
-        assertThat(secondChild.rawRequestText).contains("Authorization: Bearer runner-token");
+        assertThat(childHistory.get(1).requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
         assertThat(secondChild.requestUrl).isEqualTo("https://api.example.test/child?child=1");
         assertThat(secondChild.displayStatusLabel()).isEqualTo("201 (dependent)");
 
-        HistoryEntry firstChildHistory = HistoryEntry.fromRunnerAttempt(collection, child, environment, firstChild);
+        HistoryEntry firstChildHistory = childHistory.get(0);
         assertThat(firstChildHistory.result).isEqualTo(HistoryResult.SUCCESS);
         assertThat(firstChildHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
         assertThat(firstChildHistory.requestSnapshot.rawRequestSentText).contains("?child=1");
@@ -193,6 +196,7 @@ class CollectionRunnerDependentRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Duplicate Collection", parent, targetOne, targetTwo);
+        List<HistoryEntry> capturedHistory = captureHistory(runner, collection, environment);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -201,7 +205,8 @@ class CollectionRunnerDependentRequestTest {
         assertThat(runner.getResults()).hasSize(2);
         assertThat(listener.timelineRows).hasSize(2);
         assertThat(runner.getResults().get(0).requestId).isEqualTo("child-two");
-        assertThat(runner.getResults().get(0).rawRequestText).contains("X-Target: second");
+        assertThat(historiesFor(capturedHistory, "child-two").get(0).requestSnapshot.rawRequestSentText)
+                .contains("X-Target: second");
         assertThat(runner.getResults().get(0).requestUrl).isEqualTo("https://api.example.test/child-two");
         assertThat(runner.getResults().get(0).parentRequestId).isEqualTo("parent-dup");
         assertThat(runner.getResults().get(1).requestId).isEqualTo("parent-dup");
@@ -274,6 +279,7 @@ class CollectionRunnerDependentRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Bruno Collection", parent, child);
+        List<HistoryEntry> capturedHistory = captureHistory(runner, collection, environment);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -282,18 +288,19 @@ class CollectionRunnerDependentRequestTest {
         assertThat(runner.getResults()).hasSize(2);
         RunnerResult childResult = runner.getResults().get(0);
         RunnerResult parentResult = runner.getResults().get(1);
+        HistoryEntry childHistory = historiesFor(capturedHistory, "bruno-child").get(0);
         assertThat(childResult.requestId).isEqualTo("bruno-child");
         assertThat(childResult.dependentExecution).isTrue();
         assertThat(childResult.adHocExecution).isFalse();
-        assertThat(childResult.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child pre"));
-        assertThat(childResult.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child post"));
+        assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child pre"));
+        assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child post"));
         assertThat(childResult.assertions).hasSize(1);
-        assertThat(childResult.rawRequestText).contains("Authorization: Bearer bruno-runner");
-        assertThat(childResult.rawRequestText).contains("dialect=bruno");
+        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer bruno-runner");
+        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("dialect=bruno");
         assertThat(childResult.displayStatusLabel()).isEqualTo("201 (dependent)");
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
-        assertThat(childResult.resolvedVariables).containsEntry("bruno_token", "bruno-runner");
+        assertThat(childHistory.requestSnapshot.resolvedVariables).containsEntry("bruno_token", "bruno-runner");
         assertThat(environment.variables).doesNotContainKey("bruno_token");
         assertThat(listener.timelineRows).extracting(row -> row.status).contains("201", "201");
     }
@@ -340,6 +347,7 @@ class CollectionRunnerDependentRequestTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("Native Collection", parent, child);
+        List<HistoryEntry> capturedHistory = captureHistory(runner, collection, environment);
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -348,15 +356,41 @@ class CollectionRunnerDependentRequestTest {
         assertThat(runner.getResults()).hasSize(2);
         RunnerResult childResult = runner.getResults().get(0);
         RunnerResult parentResult = runner.getResults().get(1);
+        HistoryEntry childHistory = historiesFor(capturedHistory, "native-child").get(0);
         assertThat(childResult.requestId).isEqualTo("native-child");
         assertThat(childResult.dependentExecution).isTrue();
         assertThat(childResult.triggeredByScript).isTrue();
-        assertThat(childResult.rawRequestText).contains("Authorization: Bearer native-runner");
-        assertThat(childResult.rawRequestText).contains("PUT /native-child?native=1 HTTP/1.1");
-        assertThat(childResult.rawRequestText).contains("Host: api.example.test");
-        assertThat(childResult.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("native child pre"));
+        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer native-runner");
+        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("PUT /native-child?native=1 HTTP/1.1");
+        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
+        assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("native child pre"));
         assertThat(childResult.displayStatusLabel()).isEqualTo("200 (dependent)");
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
+    }
+
+    private static List<HistoryEntry> captureHistory(CollectionRunner runner,
+                                                     ApiCollection collection,
+                                                     EnvironmentProfile environment) {
+        List<HistoryEntry> captured = new CopyOnWriteArrayList<>();
+        runner.setResultCaptureHandler(result -> {
+            ApiRequest request = collection.requests.stream()
+                    .filter(candidate -> candidate != null && candidate.id != null
+                            && candidate.id.equals(result.requestId))
+                    .findFirst()
+                    .orElseThrow();
+            HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, environment, result);
+            captured.add(entry);
+            result.historyEntryId = entry.id;
+            result.fullEvidenceRetained = true;
+            result.evidenceRetentionMessage = "Captured by dependent-request test";
+        });
+        return captured;
+    }
+
+    private static List<HistoryEntry> historiesFor(List<HistoryEntry> entries, String requestId) {
+        return entries.stream()
+                .filter(entry -> entry != null && requestId.equals(entry.requestId))
+                .toList();
     }
 }

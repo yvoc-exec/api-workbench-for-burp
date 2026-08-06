@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,6 +99,17 @@ class CollectionRunnerDependentRequestHistoryTest {
                 ScriptScope.REQUEST);
 
         ApiCollection collection = RunnerScriptTestFixtures.collection("History Collection", parent, child);
+        AtomicReference<HistoryEntry> capturedChildHistory = new AtomicReference<>();
+        runner.setResultCaptureHandler(result -> {
+            ApiRequest source = "history-child".equals(result.requestId) ? child : parent;
+            HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, source, environment, result);
+            if ("history-child".equals(result.requestId)) {
+                capturedChildHistory.set(entry);
+            }
+            result.historyEntryId = entry.id;
+            result.fullEvidenceRetained = true;
+            result.evidenceRetentionMessage = "Captured by dependent-history test";
+        });
 
         runner.runCollections(List.of(collection), List.of(parent));
         RunnerScriptTestFixtures.waitForRunnerToStop(runner);
@@ -125,8 +137,9 @@ class CollectionRunnerDependentRequestHistoryTest {
         assertThat(publishedChildAttempt.targetResolutionForm).isEqualTo(FlowTargetResolutionForm.UNIQUE_NAME);
         assertThat(publishedChildAttempt.qualifiedTargetPath).isEqualTo("History Collection/History Child");
 
-        HistoryEntry childHistory = HistoryEntry.fromRunnerAttempt(collection, child, environment, publishedChildAttempt);
+        HistoryEntry childHistory = capturedChildHistory.get();
 
+        assertThat(childHistory).isNotNull();
         assertThat(childHistory.source.name()).isEqualTo("RUNNER");
         assertThat(childHistory.result).isEqualTo(HistoryResult.SUCCESS);
         assertThat(childHistory.requestSnapshot.hasRawRequestSent()).isTrue();
