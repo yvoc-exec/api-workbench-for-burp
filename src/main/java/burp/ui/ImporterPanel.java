@@ -12205,8 +12205,9 @@ public class ImporterPanel {
                     runnerProgress.setString(runnerCompletedQueueCount + "/" + runnerProgress.getMaximum());
                     String status = result != null ? result.displayLogStatusLabel() : "FAIL";
                     appendRunnerLog((resultModel.getRequestResultCount()) + ". " + (result != null && result.requestName != null ? result.requestName : "Request") + " -> " + status);
-                    if (result != null && !result.extractedVariables.isEmpty()) {
-                        appendRunnerLog("   Extracted: " + result.extractedVariables);
+                    String extractedVariables = formatExtractedVariableLog(entry != null ? entry.requestSummary : null);
+                    if (extractedVariables != null) {
+                        appendRunnerLog("   " + extractedVariables);
                     }
                     runnerExecutingQueueIndex = -1;
                     updateRunnerQueueUiState();
@@ -12427,6 +12428,10 @@ public class ImporterPanel {
             appendRunnerLog("Runner is running. Cancel it before clearing results.");
             return;
         }
+        if (runner != null && !runner.clearRetainedResults() && runner.isRunning()) {
+            appendRunnerLog("Runner is running. Cancel it before clearing results.");
+            return;
+        }
 
         if (resultModel != null) {
             resultModel.clear();
@@ -12450,6 +12455,19 @@ public class ImporterPanel {
         clearRunnerDetailPane();
         setRunnerControlsRunning(false);
         updateRunnerQueueUiState();
+    }
+
+    private static String formatExtractedVariableLog(RunnerResultSummary summary) {
+        if (summary == null || summary.extractedVariableCount() <= 0) {
+            return null;
+        }
+        List<String> names = summary.extractedVariableNames();
+        if (names == null || names.isEmpty()) {
+            return "Extracted variables: " + summary.extractedVariableCount();
+        }
+        String suffix = names.size() < summary.extractedVariableCount() ? ", ..." : "";
+        return "Extracted variables (" + summary.extractedVariableCount() + "): "
+                + String.join(", ", names) + suffix;
     }
 
     private void updateRunnerQueueUiState() {

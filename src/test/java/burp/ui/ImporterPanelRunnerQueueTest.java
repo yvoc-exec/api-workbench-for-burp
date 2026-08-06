@@ -8,11 +8,13 @@ import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
+import burp.history.HistoryEntry;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerPreviewRow;
 import burp.models.RunnerResult;
+import burp.models.RunnerResultSummary;
 import burp.models.RunnerTerminationResult;
 import burp.models.RunnerTerminationType;
 import burp.models.WorkspaceState;
@@ -75,9 +77,16 @@ class ImporterPanelRunnerQueueTest {
 
     @Test
     void clearResultsPreservesQueueAndClearsResultsTimelineAndLog() throws Exception {
-        ImporterPanel panel = newPanel();
+        CollectionRunner runner = new CollectionRunner(null, null, null);
+        retainRunnerResult(runner, runnerResult("Retained", true, 200));
+        ImporterPanel panel = newPanel(runner);
         ApiCollection collection = collection("Checkout", request("Queued 1"), request("Queued 2"));
         panel.restoreWorkspaceCollections(List.of(collection));
+
+        HistoryEntry historyEntry = new HistoryEntry();
+        historyEntry.id = "preserved-history";
+        historyEntry.requestName = "Preserved";
+        panel.getHistoryStoreForTests().addEntry(historyEntry);
 
         List<ApiRequest> queued = queue(panel, request("Queued 1"), request("Queued 2"));
         assertThat(queued).hasSize(2);
@@ -92,6 +101,9 @@ class ImporterPanelRunnerQueueTest {
         assertThat(resultModel(panel).getRowCount()).isZero();
         assertThat(timelineModel(panel).getRowCount()).isZero();
         assertThat(runnerLog(panel).getText()).isEmpty();
+        assertThat(runner.getResultSummaries()).isEmpty();
+        assertThat(runner.getResults()).isEmpty();
+        assertThat(panel.getHistoryStoreForTests().getById("preserved-history")).isNotNull();
         assertThat(((JButton) privateField(panel, "startRunnerBtn")).isEnabled()).isTrue();
     }
 
@@ -128,6 +140,7 @@ class ImporterPanelRunnerQueueTest {
     @Test
     void startRunnerStillRunsPreservedQueueAfterResultsAreCleared() throws Exception {
         CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        Mockito.when(runner.clearRetainedResults()).thenReturn(true);
         ImporterPanel panel = newPanel(runner);
         panel.restoreWorkspaceCollections(List.of(collection("Checkout", request("One"))));
 
@@ -140,6 +153,36 @@ class ImporterPanelRunnerQueueTest {
 
         Mockito.verify(runner).runCollections(Mockito.anyList(), Mockito.argThat(requests -> requests.size() == 1));
         assertThat(runnerLog(panel).getText()).doesNotContain("No requests queued");
+    }
+
+    @Test
+    void runnerLogReportsExtractedNamesWithoutPlaceholderValues() throws Exception {
+        CollectionRunner runner = Mockito.mock(CollectionRunner.class, Mockito.RETURNS_DEEP_STUBS);
+        ImporterPanel panel = newPanel(runner);
+        ApiRequest request = request("Extract");
+        ApiCollection collection = collection("Collection", request);
+        panel.restoreWorkspaceCollections(List.of(collection));
+        invokePrivateArgs(panel, "startRunnerExecution",
+                new Class<?>[]{List.class, boolean.class}, List.of(request), false);
+
+        ArgumentCaptor<CollectionRunner.RunnerListener> listenerCaptor =
+                ArgumentCaptor.forClass(CollectionRunner.RunnerListener.class);
+        Mockito.verify(runner).addListener(listenerCaptor.capture());
+
+        RunnerResult fullResult = runnerResult("Extract", true, 200);
+        fullResult.extractedVariables.put("token", "secret");
+        fullResult.extractedVariables.put("userId", "42");
+        RunnerResult compactResult = RunnerResultSummary.from(fullResult).toCompatibilityResult();
+
+        listenerCaptor.getValue().onRequestComplete(compactResult);
+        drainEdt();
+
+        assertThat(runnerLog(panel).getText())
+                .contains("Extracted variables (2):")
+                .contains("token")
+                .contains("userId")
+                .doesNotContain("token=")
+                .doesNotContain("userId=");
     }
 
     @Test
@@ -1009,6 +1052,14 @@ class ImporterPanelRunnerQueueTest {
         Mockito.when(responseEditor.uiComponent()).thenReturn(new JPanel());
         Mockito.when(importer.getApi().userInterface().createHttpResponseEditor(Mockito.any(EditorOptions.class))).thenReturn(responseEditor);
         return new ImporterPanel(importer, runner, Mockito.mock(burp.auth.OAuth2Manager.class, Mockito.RETURNS_DEEP_STUBS), burp.utils.ScriptMode.DISABLED);
+    }
+
+    private static void retainRunnerResult(CollectionRunner runner, RunnerResult result) throws Exception {
+        result.canonicalCaptureComplete = true;
+        Method method = CollectionRunner.class.getDeclaredMethod(
+                "retainCompletedResult", RunnerResult.class, boolean.class);
+        method.setAccessible(true);
+        method.invoke(runner, result, true);
     }
 
     private static ImporterPanel newRealPanel(MontoyaApi api) {

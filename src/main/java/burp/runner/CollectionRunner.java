@@ -44,6 +44,8 @@ import java.util.function.Function;
  * Like Postman Collection Runner but inside Burp Suite.
  */
 public class CollectionRunner {
+    private static final int MAX_RETAINED_RESULT_SUMMARIES = 5_000;
+
     private final MontoyaApi api;
     private final burp.utils.SharedRequestPipeline pipeline;
     private final List<RunnerListener> listeners = new ArrayList<>();
@@ -61,7 +63,8 @@ public class CollectionRunner {
     private volatile boolean singleStepRequested = false;
     private volatile boolean requestInFlight = false;
     private final Object resultsLock = new Object();
-    private final List<RunnerResultSummary> resultSummaries = new ArrayList<>();
+    private final Deque<RunnerResultSummary> resultSummaries = new ArrayDeque<>();
+    private long discardedResultSummaryCount;
     private volatile RunnerResultCaptureHandler resultCaptureHandler;
     private final Map<ApiCollection, Map<String, String>> extractedVarsByCollection =
             Collections.synchronizedMap(new IdentityHashMap<>());
@@ -259,6 +262,7 @@ public class CollectionRunner {
         lastTerminationResult = null;
         synchronized (resultsLock) {
             resultSummaries.clear();
+            discardedResultSummaryCount = 0L;
         }
         extractedVars.clear();
         extractedVarsByCollection.clear();
@@ -2320,7 +2324,11 @@ public class CollectionRunner {
         captureCanonicalResult(result);
         RunnerResultSummary summary = result.toSummary();
         synchronized (resultsLock) {
-            resultSummaries.add(summary);
+            if (resultSummaries.size() >= MAX_RETAINED_RESULT_SUMMARIES) {
+                resultSummaries.removeFirst();
+                discardedResultSummaryCount++;
+            }
+            resultSummaries.addLast(summary);
         }
         if (releaseOriginal) {
             result.releaseHeavyPayloadAfterCanonicalCapture();
@@ -2635,6 +2643,26 @@ public class CollectionRunner {
 
     public List<RunnerResult> getResults() {
         return compatibilityResults(getResultSummaries());
+    }
+
+    public long getDiscardedResultSummaryCount() {
+        synchronized (resultsLock) {
+            return discardedResultSummaryCount;
+        }
+    }
+
+    public boolean clearRetainedResults() {
+        if (running) {
+            return false;
+        }
+        synchronized (resultsLock) {
+            if (running) {
+                return false;
+            }
+            resultSummaries.clear();
+            discardedResultSummaryCount = 0L;
+            return true;
+        }
     }
 
     private static List<RunnerResult> compatibilityResults(List<RunnerResultSummary> summaries) {

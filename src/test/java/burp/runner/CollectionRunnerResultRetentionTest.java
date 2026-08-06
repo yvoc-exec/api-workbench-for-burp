@@ -15,6 +15,7 @@ import burp.utils.SharedRequestPipeline;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,8 @@ import java.util.function.BooleanSupplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class CollectionRunnerResultRetentionTest {
+    private static final int RETAINED_SUMMARY_LIMIT = 5_000;
+
     @Test
     void captureSeesFullEvidenceWhileCallbacksAndRetentionAreCompact() {
         AtomicInteger sends = new AtomicInteger();
@@ -98,6 +101,74 @@ class CollectionRunnerResultRetentionTest {
                 .containsExactly("history-attempt-2");
         assertThat(runner.getResultSummaries()).extracting(RunnerResultSummary::historyEntryId)
                 .containsExactly("history-attempt-2");
+    }
+
+    @Test
+    void retainedSummariesAreBoundedAndDiscardTheOldestResult() throws Exception {
+        CollectionRunner runner = new CollectionRunner(null, null, null);
+
+        for (int i = 0; i <= RETAINED_SUMMARY_LIMIT; i++) {
+            retain(runner, compactableResult("request-" + i), true);
+        }
+
+        assertThat(runner.getResultSummaries()).hasSize(RETAINED_SUMMARY_LIMIT);
+        assertThat(runner.getResultSummaries().get(0).requestName()).isEqualTo("request-1");
+        assertThat(runner.getResultSummaries().get(RETAINED_SUMMARY_LIMIT - 1).requestName())
+                .isEqualTo("request-5000");
+        assertThat(runner.getDiscardedResultSummaryCount()).isEqualTo(1L);
+    }
+
+    @Test
+    void clearRetainedResultsClearsSummaryAndCompatibilityOwnership() throws Exception {
+        CollectionRunner runner = new CollectionRunner(null, null, null);
+        retain(runner, compactableResult("request"), true);
+
+        assertThat(runner.clearRetainedResults()).isTrue();
+
+        assertThat(runner.getResultSummaries()).isEmpty();
+        assertThat(runner.getResults()).isEmpty();
+        assertThat(runner.getDiscardedResultSummaryCount()).isZero();
+    }
+
+    @Test
+    void repeatedRunAndClearCyclesDoNotRetainSummaries() {
+        AtomicInteger sends = new AtomicInteger();
+        CollectionRunner runner = RunnerScriptTestFixtures.newRunner(
+                RunnerScriptTestFixtures.mockRunnerApi(
+                        sends, new CopyOnWriteArrayList<>(),
+                        () -> RunnerScriptTestFixtures.mockResponse(200, "ok", "text/plain")));
+        runner.setDelayMs(0);
+        runner.setResultCaptureHandler(result -> {
+            result.historyEntryId = "history-" + sends.get();
+            result.fullEvidenceRetained = true;
+        });
+        ApiRequest request = RunnerScriptTestFixtures.request(
+                "request", "Request", 1, "Collection", "https://api.example.test/items",
+                null, RunnerScriptTestFixtures.nativeDialect(), burp.scripts.ScriptPhase.PRE_REQUEST,
+                burp.scripts.ScriptScope.REQUEST);
+        ApiCollection collection = RunnerScriptTestFixtures.collection("Collection", request);
+
+        for (int cycle = 0; cycle < 5; cycle++) {
+            runner.runCollections(List.of(collection), List.of(request));
+            RunnerScriptTestFixtures.waitForRunnerToStop(runner);
+            assertThat(runner.getResultSummaries()).hasSize(1);
+            assertThat(runner.clearRetainedResults()).isTrue();
+            assertThat(runner.getResultSummaries()).isEmpty();
+        }
+    }
+
+    private static RunnerResult compactableResult(String requestName) {
+        RunnerResult result = new RunnerResult();
+        result.requestName = requestName;
+        result.canonicalCaptureComplete = true;
+        return result;
+    }
+
+    private static void retain(CollectionRunner runner, RunnerResult result, boolean releaseOriginal) throws Exception {
+        Method method = CollectionRunner.class.getDeclaredMethod(
+                "retainCompletedResult", RunnerResult.class, boolean.class);
+        method.setAccessible(true);
+        method.invoke(runner, result, releaseOriginal);
     }
 
     private static void assertCompact(RunnerResult result) {
