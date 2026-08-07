@@ -9,6 +9,7 @@ import burp.history.HistoryRetentionPolicy;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.RedirectCrossOriginMode;
+import burp.models.RedirectHop;
 import burp.models.RedirectPolicy;
 import burp.models.TrustedRedirectRule;
 import burp.models.EnvironmentProfile;
@@ -32,8 +33,183 @@ import java.util.List;
 import java.util.LinkedHashSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WorkspaceStateJsonTest {
+
+    @Test
+    void productionJsonIsCompactBase64AndPreservesAllWorkspaceEvidenceBytes() {
+        byte[] exact = new byte[]{0, 1, -1, 42};
+        byte[] authored = "authored".getBytes(StandardCharsets.UTF_8);
+        byte[] raw = "POST / HTTP/1.1\r\n\r\nraw".getBytes(StandardCharsets.UTF_8);
+        byte[] response = new byte[]{9, 8, 7, -128};
+        byte[] hopRequest = "GET /next HTTP/1.1\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] hopResponse = new byte[]{5, 4, 3, 2, 1};
+
+        ApiRequest request = new ApiRequest();
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = exact;
+        ApiCollection collection = new ApiCollection();
+        collection.id = "collection";
+        collection.requests.add(request);
+
+        HistoryEntry entry = new HistoryEntry();
+        entry.id = "history";
+        entry.requestSnapshot = new HistoryRequestSnapshot();
+        entry.requestSnapshot.bodyAsAuthored = authored;
+        entry.requestSnapshot.rawRequestSent = raw;
+        entry.responseSnapshot = new HistoryResponseSnapshot();
+        entry.responseSnapshot.body = response;
+        RedirectHop hop = new RedirectHop();
+        hop.rawRequestBytes = hopRequest;
+        hop.responseBody = hopResponse;
+        entry.redirectHops.add(hop);
+
+        WorkspaceState state = new WorkspaceState();
+        state.collections.add(collection);
+        state.historyEntries.add(entry);
+
+        String json = WorkspaceStateJson.toJson(state);
+        WorkspaceState restored = WorkspaceStateJson.fromJson(json);
+
+        assertThat(json).contains("\"awb:b64:v1:").doesNotContain("\n");
+        assertThat(json).doesNotContain("\"rawRequestBytes\":[")
+                .doesNotContain("\"bodyAsAuthored\":[")
+                .doesNotContain("\"responseBody\":[");
+        assertThat(restored.collections.get(0).requests.get(0).exactHttpRequest.rawRequestBytes)
+                .isEqualTo(exact);
+        assertThat(restored.historyEntries.get(0).requestSnapshot.bodyAsAuthored)
+                .isEqualTo(authored);
+        assertThat(restored.historyEntries.get(0).requestSnapshot.rawRequestSent)
+                .isEqualTo(raw);
+        assertThat(restored.historyEntries.get(0).responseSnapshot.body)
+                .isEqualTo(response);
+        assertThat(restored.historyEntries.get(0).redirectHops.get(0).rawRequestBytes)
+                .isEqualTo(hopRequest);
+        assertThat(restored.historyEntries.get(0).redirectHops.get(0).responseBody)
+                .isEqualTo(hopResponse);
+    }
+
+    @Test
+    void legacyNumericByteArraysRemainReadableAndMalformedBase64FailsClosed() {
+        String legacy = """
+                {"version":2,"collections":[{"id":"c","requests":[{
+                  "exactHttpRequest":{"rawRequestBytes":[71,-1,255]}
+                }]}]}
+                """;
+
+        WorkspaceState restored = WorkspaceStateJson.fromJson(legacy);
+
+        assertThat(restored.collections.get(0).requests.get(0).exactHttpRequest.rawRequestBytes)
+                .containsExactly(71, -1, -1);
+        assertThatThrownBy(() -> WorkspaceStateJson.fromJson("""
+                {"version":2,"collections":[{"requests":[{
+                  "exactHttpRequest":{"rawRequestBytes":"awb:b64:v1:not-valid!"}
+                }]}]}
+                """))
+                .isInstanceOf(com.google.gson.JsonParseException.class)
+                .hasMessageContaining("malformed Base64")
+                .satisfies(error -> assertThat(error.getMessage()).doesNotContain("not-valid"));
+    }
+    @Test
+    void bytePreflightRejectsOversizedLegacyAndBase64ValuesWithSmallLimit() {
+        String oversizedLegacy = """
+                {"version":2,"collections":[{"requests":[{
+                  "exactHttpRequest":{"rawRequestBytes":[0,1,2,3,4,5,6,7,8]}
+                }]}],"trailing":
+                """;
+        String oversizedBase64 = """
+                {"version":2,"collections":[{"requests":[{
+                  "exactHttpRequest":{"rawRequestBytes":"awb:b64:v1:AAECAwQFBgcICQ=="}
+                }]}]}
+                """;
+
+        assertThatThrownBy(() -> WorkspaceStateJson.fromJson(oversizedLegacy, 8))
+                .isInstanceOf(com.google.gson.JsonParseException.class)
+                .hasMessageContaining("8 byte limit");
+        assertThatThrownBy(() -> WorkspaceStateJson.fromJson(oversizedBase64, 8))
+                .isInstanceOf(com.google.gson.JsonParseException.class)
+                .hasMessageContaining("8 byte limit");
+    }
+
+    @Test
+    void boundedSinglePassSerializationReturnsExactMetadataAndStopsAtLimit() {
+        WorkspaceState state = new WorkspaceState();
+        state.selectedRequestName = "snowman-\u2603";
+        ApiCollection collection = new ApiCollection();
+        collection.id = "collection";
+        ApiRequest request = new ApiRequest();
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = new byte[]{0, 1, 2, 3, 4, 5};
+        collection.requests.add(request);
+        state.collections.add(collection);
+
+        WorkspaceStateJson.SerializedWorkspace serialized =
+                WorkspaceStateJson.serializeDetachedWithMetadata(state, 16_384L);
+
+        assertThat(serialized.json()).isEqualTo(WorkspaceStateJson.serializeDetached(state));
+        assertThat(serialized.utf8Length())
+                .isEqualTo(WorkspaceStateService.utf8Length(serialized.json()));
+        assertThat(serialized.sha256())
+                .isEqualTo(WorkspaceStateService.sha256(serialized.json()));
+        assertThatThrownBy(() -> WorkspaceStateJson.serializeDetachedWithMetadata(state, 32L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("32 byte limit");
+    }
+
+    @Test
+    void consumingSerializationReleasesDetachedPayloadAfterPreservingExactBytes() {
+        byte[] exact = new byte[]{0, 1, 2, (byte) 0xff};
+        byte[] response = new byte[]{9, 8, 7, (byte) 0x80};
+        WorkspaceState detached = new WorkspaceState();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "consumed-collection";
+        ApiRequest request = new ApiRequest();
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = exact.clone();
+        collection.requests.add(request);
+        detached.collections.add(collection);
+        HistoryEntry history = new HistoryEntry();
+        history.id = "consumed-history";
+        history.responseSnapshot = new HistoryResponseSnapshot();
+        history.responseSnapshot.body = response.clone();
+        history.responseSnapshot.originalBodyLength = response.length;
+        history.responseSnapshot.storedBodyLength = response.length;
+        history.ensureDefaults();
+        detached.historyEntries.add(history);
+        WorkspaceStateJson.normalizeForSave(detached);
+
+        WorkspaceStateJson.SerializedWorkspace serialized =
+                WorkspaceStateJson.serializeDetachedWithMetadataAndRelease(detached, 16_384L);
+        WorkspaceState parsed = WorkspaceStateJson.fromJson(serialized.json());
+
+        assertThat(detached.collections).isEmpty();
+        assertThat(detached.historyEntries).isEmpty();
+        assertThat(parsed.collections.get(0).requests.get(0).exactHttpRequest.rawRequestBytes)
+                .isEqualTo(exact);
+        assertThat(parsed.historyEntries.get(0).responseSnapshot.body).isEqualTo(response);
+        assertThat(serialized.utf8Length())
+                .isEqualTo(WorkspaceStateService.utf8Length(serialized.json()));
+        assertThat(serialized.sha256()).isEqualTo(WorkspaceStateService.sha256(serialized.json()));
+    }
+
+
+    @Test
+    void prettyTestJsonHasSameTreeAsCompactProductionJson() {
+        WorkspaceState state = new WorkspaceState();
+        state.requestTreePaths.put("z", "last");
+        state.requestTreePaths.put("a", "first");
+
+        String compact = WorkspaceStateJson.toJson(state);
+        String pretty = WorkspaceStateJson.toPrettyJsonForTests(state);
+
+        assertThat(compact).doesNotContain("\n");
+        assertThat(pretty).contains("\n");
+        assertThat(JsonParser.parseString(pretty)).isEqualTo(JsonParser.parseString(compact));
+        assertThat(compact.indexOf("\"a\""))
+                .isLessThan(compact.indexOf("\"z\""));
+        assertThat(WorkspaceStateJson.toJson(state)).isEqualTo(compact);
+    }
 
     @Test
     void newWorkspaceSerializesCurrentVersion() {
@@ -153,13 +329,25 @@ class WorkspaceStateJsonTest {
     }
 
     @Test
-    void serializationDoesNotMutateCallerVersion() {
+    void copyingSerializationDoesNotMutateCallerVersion() {
         WorkspaceState state = new WorkspaceState();
         state.version = 1;
 
-        WorkspaceStateJson.toJson(state);
+        WorkspaceStateJson.toJsonCopying(state);
 
         assertThat(state.version).isEqualTo(1);
+    }
+
+    @Test
+    void detachedSerializationNormalizesTheOwnedWorkspaceInPlace() {
+        WorkspaceState detached = new WorkspaceState();
+        detached.version = 1;
+
+        String json = WorkspaceStateJson.toJson(detached);
+
+        assertThat(detached.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
+        assertThat(JsonParser.parseString(json).getAsJsonObject().get("version").getAsInt())
+                .isEqualTo(WorkspaceState.CURRENT_VERSION);
     }
 
     @Test
@@ -1267,10 +1455,11 @@ class WorkspaceStateJsonTest {
         assertThat(parsed.runnerRetryConnectionFailures).isTrue();
         assertThat(parsed.runnerRetryTimeouts).isTrue();
         assertThat(parsed.runnerRetryNonIdempotentMethods).isTrue();
-        assertThat(json).contains("\"runnerRetryableMethods\": [\n    \"GET\",\n    \"PATCH\",\n    \"POST\"\n  ]");
-        assertThat(json).contains("\"runnerRetryableStatusCodes\": [\n    418,\n    500,\n    503\n  ]");
-        assertThat(WorkspaceStateJson.toJson(parsed)).contains("\"runnerRetryableMethods\": [\n    \"GET\",\n    \"PATCH\",\n    \"POST\"\n  ]");
-        assertThat(WorkspaceStateJson.toJson(parsed)).contains("\"runnerRetryableStatusCodes\": [\n    418,\n    500,\n    503\n  ]");
+        assertThat(json).contains("\"runnerRetryableMethods\":[\"GET\",\"PATCH\",\"POST\"]");
+        assertThat(json).contains("\"runnerRetryableStatusCodes\":[418,500,503]");
+        assertThat(WorkspaceStateJson.toJson(parsed))
+                .contains("\"runnerRetryableMethods\":[\"GET\",\"PATCH\",\"POST\"]")
+                .contains("\"runnerRetryableStatusCodes\":[418,500,503]");
     }
 
     @Test

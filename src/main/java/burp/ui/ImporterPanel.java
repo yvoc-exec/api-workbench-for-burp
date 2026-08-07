@@ -4721,6 +4721,7 @@ public class ImporterPanel {
                 environmentProfiles.add(profile);
             }
         }
+        stabilizeLiveWorkspaceIdentities();
         if (activeEnvironmentId != null && environmentProfiles.stream().noneMatch(profile -> profile != null && Objects.equals(profile.id, activeEnvironmentId))) {
             activeEnvironmentId = null;
         }
@@ -7592,7 +7593,42 @@ public class ImporterPanel {
         return copyWorkspaceStateFromModel();
     }
 
+    private void stabilizeLiveWorkspaceIdentities() {
+        Set<String> collectionIds = new LinkedHashSet<>();
+        for (ApiCollection collection : loadedCollections) {
+            if (collection == null) {
+                continue;
+            }
+            collection.ensureId();
+            while (collection.id != null && collectionIds.contains(collection.id)) {
+                collection.id = UUID.randomUUID().toString();
+            }
+            if (collection.id != null) {
+                collectionIds.add(collection.id);
+            }
+        }
+
+        Set<String> environmentIds = new LinkedHashSet<>();
+        for (EnvironmentProfile profile : environmentProfiles) {
+            if (profile == null) {
+                continue;
+            }
+            profile.ensureDefaults();
+            profile.ensureId();
+            while (profile.id != null && environmentIds.contains(profile.id)) {
+                profile.id = UUID.randomUUID().toString();
+            }
+            if (profile.id != null) {
+                environmentIds.add(profile.id);
+            }
+        }
+        if (activeEnvironmentId != null && !environmentIds.contains(activeEnvironmentId)) {
+            activeEnvironmentId = null;
+        }
+    }
+
     private WorkspaceState copyWorkspaceStateFromModel() {
+        stabilizeLiveWorkspaceIdentities();
         WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
         state.environments = getEnvironmentProfilesSnapshot();
         state.activeEnvironmentId = activeEnvironmentId;
@@ -9650,6 +9686,7 @@ public class ImporterPanel {
             }
             environmentProfiles.add(profile);
         }
+        stabilizeLiveWorkspaceIdentities();
 
         updateEnvironmentComboModel();
         if (!hasActive && firstImportedId != null) {
@@ -9725,6 +9762,7 @@ public class ImporterPanel {
             profile.ensureId();
             environmentProfiles.add(profile);
         }
+        stabilizeLiveWorkspaceIdentities();
         boolean activeChanged = firstImported != null;
         if (activeChanged) {
             commitOAuth2ConfigUiToActiveEnvironment();

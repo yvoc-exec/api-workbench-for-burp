@@ -73,8 +73,12 @@ class WorkspaceFailureRecoveryTest {
             assertThat(backing.get("api_workbench_workspace_state_json")).isEqualTo(savedJson);
             assertThat(backing.get("api_workbench_workspace_state_json")).doesNotContain("Petstore-Modified");
 
-            String lastSaved = ImporterPanelTestSupport.getField(importer, "lastSavedWorkspaceJson");
-            assertThat(lastSaved).isEqualTo(savedJson);
+            String lastSavedDigest = ImporterPanelTestSupport.getField(
+                    importer, "lastSavedWorkspaceSha256");
+            long lastSavedLength = ImporterPanelTestSupport.getField(
+                    importer, "lastSavedWorkspaceLength");
+            assertThat(lastSavedDigest).isEqualTo(WorkspaceStateService.sha256(savedJson));
+            assertThat(lastSavedLength).isEqualTo(WorkspaceStateService.utf8Length(savedJson));
         } finally {
             importer.cleanup();
         }

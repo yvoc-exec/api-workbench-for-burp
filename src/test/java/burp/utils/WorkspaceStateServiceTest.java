@@ -9,8 +9,66 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WorkspaceStateServiceTest {
+
+    @Test
+    void saveSerializedEnforcesUtf8LimitAndSuppliedLengthWithoutReplacingPreviousValue() {
+        Map<String, String> backing = new HashMap<>();
+        backing.put("api_workbench_workspace_state_json", "previous");
+        WorkspaceStateService service = new WorkspaceStateService(store(backing), 10L);
+        String exact = "1234567890";
+
+        WorkspaceSaveResult saved = service.saveSerialized(
+                1L, exact, 10L, WorkspaceStateService.sha256(exact));
+        WorkspaceSaveResult tooLarge = service.saveSerialized(
+                2L, exact + "x", 11L, WorkspaceStateService.sha256(exact + "x"));
+        WorkspaceSaveResult mismatch = service.saveSerialized(
+                3L, exact, 9L, WorkspaceStateService.sha256(exact));
+
+        assertThat(saved.status()).isEqualTo(WorkspaceSaveResult.Status.SAVED);
+        assertThat(saved.persisted()).isTrue();
+        assertThat(tooLarge.status()).isEqualTo(WorkspaceSaveResult.Status.REJECTED_TOO_LARGE);
+        assertThat(mismatch.status()).isEqualTo(WorkspaceSaveResult.Status.FAILED);
+        assertThat(backing.get("api_workbench_workspace_state_json")).isEqualTo(exact);
+    }
+
+    @Test
+    void loadRejectsOversizedTextBeforeParsingWithoutIncludingContent() {
+        Map<String, String> backing = new HashMap<>();
+        backing.put("api_workbench_workspace_state_json", "secret-value");
+        WorkspaceStateService service = new WorkspaceStateService(store(backing), 5L);
+
+        assertThatThrownBy(service::loadJson)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("5 byte limit")
+                .satisfies(error -> assertThat(error.getMessage()).doesNotContain("secret-value"));
+    }
+
+    @Test
+    void storageFailureReturnsMetadataOnlyFailureAndPreservesPreviousValue() {
+        Map<String, String> backing = new HashMap<>();
+        backing.put("api_workbench_workspace_state_json", "previous");
+        WorkspaceStateService service = new WorkspaceStateService(new WorkspaceStateService.StringStore() {
+            @Override
+            public String get(String key) {
+                return backing.get(key);
+            }
+
+            @Override
+            public void set(String key, String value) {
+                throw new IllegalStateException("secret storage detail");
+            }
+        }, 100L);
+
+        WorkspaceSaveResult result = service.saveSerialized(
+                4L, "replacement", 11L, WorkspaceStateService.sha256("replacement"));
+
+        assertThat(result.status()).isEqualTo(WorkspaceSaveResult.Status.FAILED);
+        assertThat(result.failureReason()).isEqualTo("Workspace persistence failed.");
+        assertThat(backing.get("api_workbench_workspace_state_json")).isEqualTo("previous");
+    }
 
     @Test
     void saveAndLoadRoundTripThroughExtensionData() {
@@ -55,6 +113,20 @@ class WorkspaceStateServiceTest {
     }
 
     @Test
+    void compatibilitySaveDoesNotMutateCallerOwnedWorkspace() {
+        Map<String, String> backing = new HashMap<>();
+        WorkspaceStateService service = new WorkspaceStateService(store(backing));
+        WorkspaceState source = new WorkspaceState();
+        source.version = 1;
+
+        service.save(source);
+
+        assertThat(source.version).isEqualTo(1);
+        assertThat(WorkspaceStateJson.fromJson(backing.get("api_workbench_workspace_state_json")).version)
+                .isEqualTo(WorkspaceState.CURRENT_VERSION);
+    }
+
+    @Test
     void saveJsonWritesRawPayloadDirectly() {
         Map<String, String> backing = new HashMap<>();
         WorkspaceStateService service = new WorkspaceStateService(new WorkspaceStateService.StringStore() {
@@ -73,5 +145,19 @@ class WorkspaceStateServiceTest {
         service.saveJson(rawJson);
 
         assertThat(backing).containsEntry("api_workbench_workspace_state_json", rawJson);
+    }
+
+    private static WorkspaceStateService.StringStore store(Map<String, String> backing) {
+        return new WorkspaceStateService.StringStore() {
+            @Override
+            public String get(String key) {
+                return backing.get(key);
+            }
+
+            @Override
+            public void set(String key, String value) {
+                backing.put(key, value);
+            }
+        };
     }
 }

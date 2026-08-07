@@ -20,6 +20,8 @@ import burp.scripts.UnifiedScriptRuntime;
 import burp.utils.ScriptMode;
 import burp.utils.ExecutionResult;
 import burp.utils.SharedRequestPipeline;
+import burp.utils.Base64ByteArrayTypeAdapter;
+import burp.utils.WorkspaceSaveResult;
 import burp.utils.WorkspaceStateService;
 import burp.utils.WorkspaceStateJson;
 import burp.ui.RunnerExecutionTableModel;
@@ -354,20 +356,58 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static ScenarioExecution workspaceHistory(String name, int count, int bytes, long[] peak) {
-        WorkspaceState workspace = MemoryHardeningFixtureFactory.workspace(count, bytes);
-        long logical = workspace.historyEntries.stream().mapToLong(HistoryEntry::estimatedStoredBytes).sum();
-        sample(peak);
-        String json = WorkspaceStateJson.toJson(workspace);
-        sample(peak);
-        ScenarioResult result = new ScenarioResult(name);
-        result.operationCount = count;
-        result.payloadBytes = bytes;
-        result.logicalRetainedBytes = logical;
-        result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(json);
-        result.retainedOwners = workspace.historyEntries.size() + 2;
-        result.metrics.put("historyEntryOwners", workspace.historyEntries.size());
-        result.metrics.put("previousFullJsonRetainedBytes", result.serializedWorkspaceBytes);
-        return retain(result, List.of(workspace, json));
+        BlockingPersistedObject store = new BlockingPersistedObject();
+        UniversalImporter importer = new UniversalImporter(
+                mockImporterApi(), ScriptMode.DISABLED, new WorkspaceStateService(store.object));
+        try {
+            HistoryStore historyStore = importerHistoryStore(importer);
+            settle();
+            for (int i = 0; i < count; i++) {
+                HistoryEntry entry = MemoryHardeningFixtureFactory.historyEntry(i, 256, bytes);
+                entry.redirectHops.clear();
+                HistoryAdmissionResult admission = historyStore.admitEntry(entry);
+                if (!admission.accepted()) {
+                    throw new IllegalStateException("live History workload was rejected at entry " + i);
+                }
+                sample(peak);
+            }
+            long logical = historyStore.getRetentionStats().canonicalRetainedBytes();
+            settle();
+            sample(peak);
+
+            importer.requestWorkspaceStateSaveNowFromModel();
+            sample(peak);
+            if (store.current.get() == null || store.writeCount != 1) {
+                throw new IllegalStateException("production workspace save did not persist the live History model");
+            }
+            long serializedBytes = store.currentBytes;
+            store.current.set(null);
+            org.mockito.Mockito.clearInvocations(store.object);
+
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = count;
+            result.payloadBytes = bytes;
+            result.logicalRetainedBytes = logical;
+            result.serializedWorkspaceBytes = serializedBytes;
+            result.retainedOwners = historyStore.size() + 2;
+            result.metrics.put("historyEntryOwners", historyStore.size());
+            result.metrics.put("productionUiCapturePath", 1);
+            result.metrics.put("activeSnapshotCountObserved", activeWorkspaceSaves(importer));
+            result.metrics.put("pendingSnapshotCountObserved", pendingWorkspaceSaves(importer));
+            result.metrics.put("maxCoordinatorSnapshotCount", maxWorkspaceSaveSnapshots(importer));
+            result.metrics.put("previousFullJsonRetainedBytes", 0L);
+            result.metrics.put("compactWorkspaceBytes", result.serializedWorkspaceBytes);
+            result.metrics.put("actualStoreWrites", store.writeCount);
+            Runnable close = () -> {
+                closeWorkspaceSaveCoordinator(importer);
+                importer.getUI().cleanup();
+                result.metrics.put("workerThreadsAfterClose", workspaceSaveWorkerThreadCount());
+            };
+            return retain(result, List.of(importer, store), close);
+        } catch (RuntimeException failure) {
+            importer.cleanup();
+            throw failure;
+        }
     }
 
     private static ScenarioExecution workspaceSaves(String name, long[] peak) {
@@ -380,13 +420,11 @@ public final class MemoryHardeningScenarioMain {
             store.resetMetrics();
             store.block.set(true);
 
-            List<WorkspaceState> revisions = new ArrayList<>();
             List<Future<?>> futures = new ArrayList<>();
             long logicalBytes = 0;
             for (int revision = 0; revision < 10; revision++) {
                 WorkspaceState state = MemoryHardeningFixtureFactory.workspace(2, 128 * 1024);
                 state.selectedRequestName = "revision-" + revision;
-                revisions.add(state);
                 logicalBytes = MemoryHardeningFixtureFactory.safeAdd(
                         logicalBytes, MemoryHardeningFixtureFactory.utf8Length(WorkspaceStateJson.toJson(state)));
                 futures.add(submitWorkspaceSave(importer, state));
@@ -403,43 +441,59 @@ public final class MemoryHardeningScenarioMain {
             ScenarioResult result = new ScenarioResult(name);
             result.operationCount = 10;
             result.logicalRetainedBytes = logicalBytes;
-            result.retainedOwners = revisions.size();
+            result.retainedOwners = activeWorkspaceSaves(importer) + pendingWorkspaceSaves(importer);
             result.metrics.put("saveRequests", 10);
-            result.metrics.put("queuedDetachedWorkspaceStates", queuedWorkspaceSaves(importer));
-            result.metrics.put("activeDetachedWorkspaceStates", activeWorkspaceSaves(importer));
-            result.metrics.put("pendingSnapshotCountObserved",
-                    queuedWorkspaceSaves(importer) + activeWorkspaceSaves(importer));
+            result.metrics.put("requestedRevisions", 10);
+            result.metrics.put("activeSnapshotCountObserved", activeWorkspaceSaves(importer));
+            result.metrics.put("pendingSnapshotCountObserved", pendingWorkspaceSaves(importer));
+            result.metrics.put("maxCoordinatorSnapshotCount", maxWorkspaceSaveSnapshots(importer));
+            result.metrics.put("executorQueuedDetachedSnapshots", 0);
             result.metrics.put("byteArrayCanonicalRawBytes", comparisonBytes.length);
-            result.metrics.put("isolatedByteArrayJsonBytes", isolatedByteArrayJsonBytes);
+            result.metrics.put("legacyNumericArrayEquivalentBytes", isolatedByteArrayJsonBytes);
             result.metrics.put("isolatedByteArrayJsonInflationRatio",
                     (double) isolatedByteArrayJsonBytes / comparisonBytes.length);
-            result.metrics.put("referenceBase64Bytes", base64Bytes);
+            result.metrics.put("compactByteEncodingBytes",
+                    base64Bytes + Base64ByteArrayTypeAdapter.PREFIX.length());
             result.metrics.put("referenceBase64Ratio", (double) base64Bytes / comparisonBytes.length);
-            String retainedJson = lastSavedWorkspaceJson(importer);
-            result.metrics.put("actualLastSavedWorkspaceJsonBytesDuringQueue",
-                    MemoryHardeningFixtureFactory.utf8Length(retainedJson));
+            result.metrics.put("retainedPreviousJsonBytes", 0L);
+            result.metrics.put("lastSubmittedRevision", workspaceSaveLongMetric(
+                    importer, "highestSubmittedWorkspaceRevisionForTests"));
 
             Runnable close = () -> {
                 store.release.countDown();
+                int superseded = 0;
                 try {
                     for (Future<?> future : futures) {
-                        future.get(10, TimeUnit.SECONDS);
+                        Object value = future.get(10, TimeUnit.SECONDS);
+                        if (value instanceof WorkspaceSaveResult saveResult
+                                && saveResult.status() == WorkspaceSaveResult.Status.SUPERSEDED) {
+                            superseded++;
+                        }
                     }
                 } catch (Exception ex) {
                     throw new IllegalStateException("production workspace saves did not finish", ex);
                 }
-                String actualLastSaved = lastSavedWorkspaceJson(importer);
-                result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(actualLastSaved);
+                result.serializedWorkspaceBytes = store.currentBytes;
+                result.metrics.put("persistedRevisions", store.writeCount);
+                result.metrics.put("supersededRevisions", superseded);
                 result.metrics.put("actualStoreWrites", store.writeCount);
                 result.metrics.put("cumulativeExtensionDataBytesSubmitted", store.cumulativeBytes);
                 result.metrics.put("currentExtensionDataValueBytes", store.currentBytes);
                 result.metrics.put("maximumSingleValueBytes", store.maximumBytes);
                 result.metrics.put("identicalWriteCount", store.identicalWrites);
-                result.metrics.put("actualLastSavedWorkspaceJsonBytes", result.serializedWorkspaceBytes);
-                result.metrics.put("queuedDetachedWorkspaceStatesAfterDrain", queuedWorkspaceSaves(importer));
+                result.metrics.put("serializedWorkspaceBytes", result.serializedWorkspaceBytes);
+                result.metrics.put("activeSnapshotsAfterDrain", activeWorkspaceSaves(importer));
+                result.metrics.put("pendingSnapshotsAfterDrain", pendingWorkspaceSaves(importer));
+                result.metrics.put("lastCompletedRevision", workspaceSaveLongMetric(
+                        importer, "highestCompletedWorkspaceRevisionForTests"));
+                result.metrics.put("lastPersistedRevision", workspaceSaveLongMetric(
+                        importer, "lastSuccessfulWorkspaceRevisionForTests"));
+                result.metrics.put("latestRequestedRevision", workspaceSaveLongMetric(
+                        importer, "latestRequestedWorkspaceRevisionForTests"));
                 importer.cleanup();
+                result.metrics.put("workerThreadsAfterClose", workspaceSaveWorkerThreadCount());
             };
-            return retain(result, List.of(importer, store, revisions, futures), close);
+            return retain(result, List.of(importer, store, futures), close);
         } catch (Exception ex) {
             store.release.countDown();
             importer.cleanup();
@@ -564,12 +618,39 @@ public final class MemoryHardeningScenarioMain {
         }
     }
 
-    private static int queuedWorkspaceSaves(UniversalImporter importer) {
-        return workspaceSaveMetric(importer, "queuedWorkspaceStateSaveCountForTests");
+    private static int pendingWorkspaceSaves(UniversalImporter importer) {
+        return workspaceSaveMetric(importer, "pendingWorkspaceStateSaveCountForTests");
     }
 
     private static int activeWorkspaceSaves(UniversalImporter importer) {
         return workspaceSaveMetric(importer, "activeWorkspaceStateSaveCountForTests");
+    }
+
+    private static HistoryStore importerHistoryStore(UniversalImporter importer) {
+        try {
+            java.lang.reflect.Field field = importer.getUI().getClass().getDeclaredField("historyStore");
+            field.setAccessible(true);
+            return (HistoryStore) field.get(importer.getUI());
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("live importer History store test seam unavailable", ex);
+        }
+    }
+
+    private static void closeWorkspaceSaveCoordinator(UniversalImporter importer) {
+        try {
+            java.lang.reflect.Field field = UniversalImporter.class.getDeclaredField("workspaceSaveCoordinator");
+            field.setAccessible(true);
+            AutoCloseable coordinator = (AutoCloseable) field.get(importer);
+            if (coordinator != null) {
+                coordinator.close();
+            }
+        } catch (Exception ex) {
+            throw new IllegalStateException("workspace save coordinator cleanup test seam unavailable", ex);
+        }
+    }
+
+    private static int maxWorkspaceSaveSnapshots(UniversalImporter importer) {
+        return workspaceSaveMetric(importer, "maxWorkspaceStateSaveSnapshotCountForTests");
     }
 
     private static int workspaceSaveMetric(UniversalImporter importer, String methodName) {
@@ -582,15 +663,24 @@ public final class MemoryHardeningScenarioMain {
         }
     }
 
-    private static String lastSavedWorkspaceJson(UniversalImporter importer) {
+    private static long workspaceSaveLongMetric(UniversalImporter importer, String methodName) {
         try {
-            java.lang.reflect.Method method = UniversalImporter.class.getDeclaredMethod(
-                    "lastSavedWorkspaceJsonForTests");
+            java.lang.reflect.Method method = UniversalImporter.class.getDeclaredMethod(methodName);
             method.setAccessible(true);
-            return (String) method.invoke(importer);
+            return (long) method.invoke(importer);
         } catch (ReflectiveOperationException ex) {
-            throw new IllegalStateException("workspace previous-json test seam unavailable", ex);
+            throw new IllegalStateException("workspace revision test seam unavailable", ex);
         }
+    }
+
+    private static int workspaceSaveWorkerThreadCount() {
+        int count = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && thread.getName().startsWith("awb-workspace-save")) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static MontoyaApi mockImporterApi() {

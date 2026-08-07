@@ -69,7 +69,7 @@ class MemoryHardeningProcessIT {
         root.addProperty("generatedAtUtc", Instant.now().toString());
         root.addProperty("repository", "api-workbench-for-burp");
         root.addProperty("branch", "main");
-        root.addProperty("startingSha", "c8099ac5c1df4cec8759f99d0be52fcecad6f63c");
+        root.addProperty("startingSha", "0af88191751eaac925d6b4fa038b407f0058fa2a");
         root.addProperty("javaVersion", System.getProperty("java.version"));
         root.addProperty("mavenVersion", System.getProperty("memory.hardening.maven.version", "3.9.9"));
         root.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
@@ -85,7 +85,7 @@ class MemoryHardeningProcessIT {
         notes.add("maximumSampledHeapBytes is sparse sampled heap, not a continuously observed JVM peak.");
         root.add("notes", notes);
         String reportStatus = unclassified.isEmpty()
-                ? "R5_RUNNER_CANONICAL_OWNERSHIP_ENFORCED_WITH_DECLARED_PROXIES"
+                ? "R6_WORKSPACE_SAVE_COALESCING_AND_COMPACT_SERIALIZATION_ENFORCED"
                 : "INCOMPLETE";
         root.addProperty("reportStatus", reportStatus);
 
@@ -100,9 +100,10 @@ class MemoryHardeningProcessIT {
         assertThat(unclassified).as("every child process must be classifiable").isEmpty();
         assertHistoryHardBounds(results);
         assertRunnerCanonicalOwnership(results);
+        assertWorkspaceHistoryProductionOwnership(results);
         assertDeclaredClassifications(results);
         assertThat(root.get("reportStatus").getAsString())
-                .isEqualTo("R5_RUNNER_CANONICAL_OWNERSHIP_ENFORCED_WITH_DECLARED_PROXIES");
+                .isEqualTo("R6_WORKSPACE_SAVE_COALESCING_AND_COMPACT_SERIALIZATION_ENFORCED");
     }
 
     private static JsonObject executeChild(String scenario, Path output) throws Exception {
@@ -224,15 +225,19 @@ class MemoryHardeningProcessIT {
             assertThat(workspace.get("cumulativeExtensionDataBytesSubmitted").getAsLong())
                     .isGreaterThanOrEqualTo(workspace.get("currentExtensionDataValueBytes").getAsLong());
         }
-        if (workspace.has("pendingSnapshotCountObserved")) {
-            assertThat(workspace.get("pendingSnapshotCountObserved").getAsInt()).isEqualTo(10);
-            assertThat(workspace.get("queuedDetachedWorkspaceStates").getAsInt()).isEqualTo(9);
-            assertThat(workspace.get("activeDetachedWorkspaceStates").getAsInt()).isEqualTo(1);
-        }
-        if (workspace.has("isolatedByteArrayJsonBytes")) {
-            assertThat(workspace.get("isolatedByteArrayJsonBytes").getAsLong())
-                    .isGreaterThan(workspace.get("byteArrayCanonicalRawBytes").getAsLong());
-        }
+        assertThat(workspace.get("requestedRevisions").getAsInt()).isEqualTo(10);
+        assertThat(workspace.get("persistedRevisions").getAsInt()).isEqualTo(2);
+        assertThat(workspace.get("supersededRevisions").getAsInt()).isEqualTo(8);
+        assertThat(workspace.get("activeSnapshotCountObserved").getAsInt()).isLessThanOrEqualTo(1);
+        assertThat(workspace.get("pendingSnapshotCountObserved").getAsInt()).isLessThanOrEqualTo(1);
+        assertThat(workspace.get("maxCoordinatorSnapshotCount").getAsInt()).isLessThanOrEqualTo(2);
+        assertThat(workspace.get("executorQueuedDetachedSnapshots").getAsInt()).isLessThanOrEqualTo(1);
+        assertThat(workspace.get("retainedPreviousJsonBytes").getAsLong()).isZero();
+        assertThat(workspace.get("lastPersistedRevision").getAsLong())
+                .isEqualTo(workspace.get("latestRequestedRevision").getAsLong());
+        assertThat(workspace.get("workerThreadsAfterClose").getAsInt()).isZero();
+        assertThat(workspace.get("compactByteEncodingBytes").getAsLong())
+                .isLessThan(workspace.get("legacyNumericArrayEquivalentBytes").getAsLong());
         assertThat(runner.get("defaultOffRunnerAttempts").getAsLong()).isEqualTo(100);
         assertThat(runner.get("defaultOffSuccessfulAttempts").getAsLong()).isEqualTo(100);
         assertThat(runner.get("defaultOffSiteMapAddCalls").getAsLong()).isZero();
@@ -293,7 +298,7 @@ class MemoryHardeningProcessIT {
         assertThat(string(resultFor(results, "runner-200x2m"), "exitClassification"))
                 .isEqualTo("SUCCESS");
         assertThat(string(resultFor(results, "workspace-history-80m"), "exitClassification"))
-                .isEqualTo("OOM_REPORTED");
+                .isEqualTo("SUCCESS");
         for (JsonElement item : results) {
             JsonObject result = item.getAsJsonObject();
             assertThat(string(result, "exitClassification")).isNotEqualTo("TIMEOUT");
@@ -318,6 +323,21 @@ class MemoryHardeningProcessIT {
                 .isLessThan(attempted * 16L * 1024L);
         assertThat(longValue(metrics, "logicalRetainedBytes"))
                 .isEqualTo(longValue(runner, "logicalRetainedBytes"));
+    }
+
+    private static void assertWorkspaceHistoryProductionOwnership(JsonArray results) {
+        JsonObject workspace = resultFor(results, "workspace-history-80m");
+        JsonObject metrics = workspace.getAsJsonObject("metrics");
+        assertThat(longValue(metrics, "productionUiCapturePath")).isEqualTo(1L);
+        assertThat(longValue(metrics, "historyEntryOwners")).isEqualTo(80L);
+        assertThat(longValue(metrics, "activeSnapshotCountObserved")).isZero();
+        assertThat(longValue(metrics, "pendingSnapshotCountObserved")).isZero();
+        assertThat(longValue(metrics, "maxCoordinatorSnapshotCount")).isEqualTo(1L);
+        assertThat(longValue(metrics, "previousFullJsonRetainedBytes")).isZero();
+        assertThat(longValue(metrics, "workerThreadsAfterClose")).isZero();
+        assertThat(longValue(metrics, "actualStoreWrites")).isEqualTo(1L);
+        assertThat(longValue(workspace, "logicalRetainedBytes")).isPositive();
+        assertThat(longValue(workspace, "serializedWorkspaceBytes")).isPositive();
     }
 
     private static JsonObject resultFor(JsonArray results, String name) {

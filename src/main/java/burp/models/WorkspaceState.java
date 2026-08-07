@@ -149,7 +149,21 @@ public class WorkspaceState {
         }
         for (EnvironmentProfile profile : source) {
             if (profile != null) {
-                out.add(profile.copy());
+                EnvironmentProfile copy = new EnvironmentProfile();
+                copy.id = profile.id;
+                copy.name = profile.name;
+                copy.sourceFormat = profile.sourceFormat;
+                copy.sourceFileName = profile.sourceFileName;
+                copy.variables = profile.variables != null
+                        ? new LinkedHashMap<>(profile.variables)
+                        : new LinkedHashMap<>();
+                copy.runtimeVariables = profile.runtimeVariables != null
+                        ? new LinkedHashMap<>(profile.runtimeVariables)
+                        : new LinkedHashMap<>();
+                copy.oauth2 = profile.oauth2 != null
+                        ? profile.oauth2.copy()
+                        : new OAuth2EnvironmentState();
+                out.add(copy);
             }
         }
         return out;
@@ -170,14 +184,17 @@ public class WorkspaceState {
 
     private static ApiCollection copyCollection(ApiCollection src) {
         ApiCollection copy = new ApiCollection();
-        if (src != null) {
-            src.ensureDefaults();
+        if (src == null) {
+            return copy;
         }
         copy.id = src.id;
         copy.name = src.name;
         copy.description = src.description;
         copy.format = src.format;
         copy.version = src.version;
+        copy.sourceMetadata = src.sourceMetadata != null
+                ? new LinkedHashMap<>(src.sourceMetadata)
+                : new LinkedHashMap<>();
         copy.auth = copyAuth(src.auth);
         copy.folderPaths = src.folderPaths != null ? new ArrayList<>(src.folderPaths) : new ArrayList<>();
         copy.folderAuthModes = src.folderAuthModes != null ? new LinkedHashMap<>(src.folderAuthModes) : new LinkedHashMap<>();
@@ -200,7 +217,9 @@ public class WorkspaceState {
         }
         ApiRequest.Auth copy = new ApiRequest.Auth();
         copy.type = src.type;
-        copy.properties.putAll(src.properties);
+        if (src.properties != null) {
+            copy.properties.putAll(src.properties);
+        }
         return copy;
     }
 

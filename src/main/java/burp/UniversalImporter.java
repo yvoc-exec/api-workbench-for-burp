@@ -19,16 +19,15 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Core importer logic. Handles parsing, variable resolution, and sending to Burp tools.
  */
 public class UniversalImporter {
+    private static final long WORKSPACE_SHUTDOWN_TIMEOUT_SECONDS = 10L;
     static final String WORKSPACE_SAVE_THREAD_NAME_PREFIX = "awb-workspace-save";
 
     private final MontoyaApi api;
@@ -39,9 +38,14 @@ public class UniversalImporter {
     private final ImporterPanel ui;
     private final WorkspaceStateService workspaceStateService;
     private final DebouncedSwingAction debouncedWorkspaceSave;
-    private final ThreadPoolExecutor workspaceSaveExecutor;
-    private volatile String lastSavedWorkspaceJson;
-    private volatile boolean workspaceSaveClosed = false;
+    private final WorkspaceSaveCoordinator workspaceSaveCoordinator;
+    private final AtomicLong workspaceRevisionCounter = new AtomicLong();
+    private final AtomicBoolean workspaceSaveClosed = new AtomicBoolean();
+    private final AtomicBoolean cleanupStarted = new AtomicBoolean();
+    private volatile long latestRequestedWorkspaceRevision;
+    private volatile long lastSuccessfulWorkspaceRevision;
+    private volatile String lastSavedWorkspaceSha256;
+    private volatile long lastSavedWorkspaceLength = -1L;
     private boolean followRedirects = true;
     private boolean debugRawRequest = false;
 
@@ -59,14 +63,10 @@ public class UniversalImporter {
         this.pipeline = createSharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = createCollectionRunner(api, pipeline, oauth2Manager);
         this.ui = new ImporterPanel(this, runner, oauth2Manager, scriptMode);
-        this.workspaceSaveExecutor = workspaceStateService != null
-                ? new ThreadPoolExecutor(
-                        1,
-                        1,
-                        0L,
-                        TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(),
-                        newWorkspaceSaveThreadFactory())
+        this.workspaceSaveCoordinator = workspaceStateService != null
+                ? new WorkspaceSaveCoordinator(
+                        WORKSPACE_SAVE_THREAD_NAME_PREFIX,
+                        this::persistDetachedWorkspaceState)
                 : null;
         this.debouncedWorkspaceSave = new DebouncedSwingAction(3000, this::scheduleWorkspaceStateSave);
         this.ui.setWorkspaceChangeListener(this::requestWorkspaceStateSave);
@@ -611,18 +611,49 @@ public class UniversalImporter {
     }
 
     public void cleanup() {
+        cleanupWithin(WORKSPACE_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    void cleanupWithin(long timeout, TimeUnit unit) {
+        if (!cleanupStarted.compareAndSet(false, true)) {
+            return;
+        }
+        long started = System.nanoTime();
+        long timeoutNanos = unit != null && timeout > 0L ? unit.toNanos(timeout) : 0L;
+        long deadline = timeoutNanos >= Long.MAX_VALUE - started
+                ? Long.MAX_VALUE
+                : started + timeoutNanos;
         try {
-            if (ui != null) {
-                ui.cleanup();
+            if (debouncedWorkspaceSave != null) {
+                debouncedWorkspaceSave.close();
+            }
+            if (workspaceSaveCoordinator != null && !workspaceSaveClosed.get()) {
+                long revision = allocateWorkspaceRevision();
+                try {
+                    WorkspaceState detached = captureWorkspaceStateSnapshot(true);
+                    submitWorkspaceStateSave(revision, detached, false);
+                } catch (Exception e) {
+                    logWorkspaceStateError("save", unwrapWorkspaceStateSaveException(e));
+                }
             }
         } finally {
-            if (pipeline != null) {
-                pipeline.close();
+            workspaceSaveClosed.set(true);
+            if (workspaceSaveCoordinator != null) {
+                long remaining = Math.max(0L, deadline - System.nanoTime());
+                WorkspaceSaveResult result = workspaceSaveCoordinator.closeWithin(
+                        remaining, TimeUnit.NANOSECONDS);
+                logWorkspaceSaveFailure("save", result);
             }
-            flushWorkspaceStateSave();
-            workspaceSaveClosed = true;
-            shutdownWorkspaceSaveExecutor();
-            clearVariables();
+            try {
+                if (ui != null) {
+                    ui.cleanup();
+                }
+            } finally {
+                if (pipeline != null) {
+                    pipeline.close();
+                }
+                clearVariables();
+            }
         }
     }
 
@@ -631,15 +662,22 @@ public class UniversalImporter {
             return;
         }
         try {
-            WorkspaceState state = workspaceStateService.load();
+            String json = workspaceStateService.loadJson();
+            if (json == null || json.isBlank()) {
+                return;
+            }
+            long loadedLength = WorkspaceStateService.utf8Length(json);
+            String loadedSha256 = WorkspaceStateService.sha256(json);
+            WorkspaceState state = WorkspaceStateJson.fromJson(json);
+            lastSavedWorkspaceLength = loadedLength;
+            lastSavedWorkspaceSha256 = loadedSha256;
+            lastSuccessfulWorkspaceRevision = 0L;
             if (!hasRestorableWorkspaceState(state)) {
                 return;
             }
-            String restoreJson = WorkspaceStateJson.toJson(state);
-            lastSavedWorkspaceJson = restoreJson;
             SwingUtilities.invokeLater(() -> {
                 try {
-                    if (!Objects.equals(lastSavedWorkspaceJson, restoreJson)) {
+                    if (latestRequestedWorkspaceRevision != 0L) {
                         if (api != null) {
                             api.logging().logToOutput("Workspace state restore skipped because newer workspace state was saved before restore executed.");
                         }
@@ -676,37 +714,26 @@ public class UniversalImporter {
     }
 
     void requestWorkspaceStateSave() {
-        if (!workspaceSaveClosed && debouncedWorkspaceSave != null) {
+        if (!cleanupStarted.get() && !workspaceSaveClosed.get() && debouncedWorkspaceSave != null) {
+            latestRequestedWorkspaceRevision = workspaceRevisionCounter.incrementAndGet();
             debouncedWorkspaceSave.restart();
         }
     }
 
     public void requestWorkspaceStateSaveNow() {
-        flushWorkspaceStateSave();
+        requestImmediateWorkspaceStateSave(true);
     }
 
     public void requestWorkspaceStateSaveNowFromModel() {
-        if (workspaceSaveClosed) {
-            return;
-        }
-        if (debouncedWorkspaceSave != null) {
-            debouncedWorkspaceSave.stop();
-        }
-        persistWorkspaceStateSnapshot(true, false);
+        requestImmediateWorkspaceStateSave(false);
     }
 
     void flushWorkspaceStateSave() {
-        if (debouncedWorkspaceSave != null) {
-            debouncedWorkspaceSave.stop();
-        }
-        saveWorkspaceState();
+        requestImmediateWorkspaceStateSave(true);
     }
 
     void saveWorkspaceState() {
-        if (workspaceSaveClosed) {
-            return;
-        }
-        persistWorkspaceStateSnapshot(true);
+        requestImmediateWorkspaceStateSave(true);
     }
 
     WorkspaceState captureWorkspaceStateSnapshot() throws Exception {
@@ -717,106 +744,163 @@ public class UniversalImporter {
         if (workspaceStateService == null || ui == null) {
             return new WorkspaceState();
         }
-        return SwingEdt.call(() -> WorkspaceState.copyOf(
-                persistRequestEditorState ? ui.getWorkspaceStateSnapshot() : ui.getWorkspaceStateSnapshotFromModel()));
+        return SwingEdt.call(() -> persistRequestEditorState
+                ? ui.getWorkspaceStateSnapshot()
+                : ui.getWorkspaceStateSnapshotFromModel());
+    }
+
+    boolean isWorkspaceSaveCoordinatorTerminatedForTests() {
+        return workspaceSaveCoordinator == null || workspaceSaveCoordinator.metrics().workerTerminated();
     }
 
     boolean isWorkspaceSaveExecutorTerminatedForTests() {
-        return workspaceSaveExecutor == null || workspaceSaveExecutor.isTerminated();
+        return isWorkspaceSaveCoordinatorTerminatedForTests();
     }
 
-    Future<?> submitWorkspaceStateSaveForTests(WorkspaceState snapshot) {
-        return submitWorkspaceStateSave(snapshot, false);
-    }
-
-    int queuedWorkspaceStateSaveCountForTests() {
-        return workspaceSaveExecutor != null ? workspaceSaveExecutor.getQueue().size() : 0;
+    CompletableFuture<WorkspaceSaveResult> submitWorkspaceStateSaveForTests(WorkspaceState snapshot) {
+        long revision = allocateWorkspaceRevision();
+        return submitWorkspaceStateSave(revision, WorkspaceState.copyOf(snapshot), false);
     }
 
     int activeWorkspaceStateSaveCountForTests() {
-        return workspaceSaveExecutor != null ? workspaceSaveExecutor.getActiveCount() : 0;
+        return workspaceSaveCoordinator != null
+                ? workspaceSaveCoordinator.metrics().activeSnapshotCount()
+                : 0;
     }
 
-    String lastSavedWorkspaceJsonForTests() {
-        return lastSavedWorkspaceJson;
+    int pendingWorkspaceStateSaveCountForTests() {
+        return workspaceSaveCoordinator != null
+                ? workspaceSaveCoordinator.metrics().pendingSnapshotCount()
+                : 0;
+    }
+
+    int maxWorkspaceStateSaveSnapshotCountForTests() {
+        return workspaceSaveCoordinator != null
+                ? workspaceSaveCoordinator.metrics().maximumSnapshotCountObserved()
+                : 0;
+    }
+
+    String lastSavedWorkspaceSha256ForTests() {
+        return lastSavedWorkspaceSha256;
+    }
+
+    long lastSavedWorkspaceLengthForTests() {
+        return lastSavedWorkspaceLength;
+    }
+
+    long lastSuccessfulWorkspaceRevisionForTests() {
+        return lastSuccessfulWorkspaceRevision;
+    }
+
+    long latestRequestedWorkspaceRevisionForTests() {
+        return latestRequestedWorkspaceRevision;
+    }
+
+    long highestSubmittedWorkspaceRevisionForTests() {
+        return workspaceSaveCoordinator != null
+                ? workspaceSaveCoordinator.metrics().highestSubmittedRevision()
+                : -1L;
+    }
+
+    long highestCompletedWorkspaceRevisionForTests() {
+        return workspaceSaveCoordinator != null
+                ? workspaceSaveCoordinator.metrics().highestCompletedRevision()
+                : -1L;
+    }
+
+    WorkspaceSaveResult flushWorkspaceSaveCoordinatorForTests() {
+        return workspaceSaveCoordinator != null ? workspaceSaveCoordinator.flushLatest() : null;
     }
 
     private void scheduleWorkspaceStateSave() {
-        if (workspaceSaveClosed) {
+        if (cleanupStarted.get() || workspaceSaveClosed.get()) {
             return;
         }
-        persistWorkspaceStateSnapshot(false);
-    }
-
-    private void persistWorkspaceStateSnapshot(boolean waitForCompletion) {
-        persistWorkspaceStateSnapshot(waitForCompletion, true);
-    }
-
-    private void persistWorkspaceStateSnapshot(boolean waitForCompletion, boolean persistRequestEditorState) {
-        if (workspaceStateService == null || ui == null) {
-            return;
-        }
+        long revision = latestRequestedWorkspaceRevision;
         try {
-            WorkspaceState snapshot = captureWorkspaceStateSnapshot(persistRequestEditorState);
-            Future<?> future = submitWorkspaceStateSave(snapshot, !waitForCompletion);
-            if (waitForCompletion && future != null) {
-                future.get();
-            }
+            WorkspaceState detached = captureWorkspaceStateSnapshot(true);
+            submitWorkspaceStateSave(revision, detached, true);
         } catch (Exception e) {
             logWorkspaceStateError("save", unwrapWorkspaceStateSaveException(e));
         }
     }
 
-    private Future<?> submitWorkspaceStateSave(WorkspaceState snapshot, boolean logFailuresInBackground) {
-        if (workspaceSaveExecutor == null || workspaceSaveClosed) {
-            return CompletableFuture.completedFuture(null);
-        }
-        return workspaceSaveExecutor.submit(() -> {
-            try {
-                persistWorkspaceStateSnapshotJson(snapshot);
-                return null;
-            } catch (Exception e) {
-                if (logFailuresInBackground) {
-                    logWorkspaceStateError("save", e);
-                    return null;
-                }
-                throw e;
-            }
-        });
-    }
-
-    private void persistWorkspaceStateSnapshotJson(WorkspaceState snapshot) {
-        WorkspaceState safeSnapshot = WorkspaceState.copyOf(snapshot);
-        String json = WorkspaceStateJson.toJson(safeSnapshot);
-        if (Objects.equals(json, lastSavedWorkspaceJson)) {
+    private void requestImmediateWorkspaceStateSave(boolean persistRequestEditorState) {
+        if (cleanupStarted.get()
+                || workspaceSaveClosed.get()
+                || workspaceStateService == null
+                || ui == null) {
             return;
         }
-        workspaceStateService.saveJson(json);
-        lastSavedWorkspaceJson = json;
-    }
-
-    private void shutdownWorkspaceSaveExecutor() {
-        if (workspaceSaveExecutor == null) {
-            return;
+        if (debouncedWorkspaceSave != null) {
+            debouncedWorkspaceSave.stop();
         }
-        workspaceSaveExecutor.shutdown();
+        long revision = allocateWorkspaceRevision();
         try {
-            if (!workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-                workspaceSaveExecutor.shutdownNow();
-                workspaceSaveExecutor.awaitTermination(10, TimeUnit.SECONDS);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            workspaceSaveExecutor.shutdownNow();
+            WorkspaceState detached = captureWorkspaceStateSnapshot(persistRequestEditorState);
+            WorkspaceSaveResult result = submitWorkspaceStateSave(revision, detached, false).join();
+            logWorkspaceSaveFailure("save", result);
+        } catch (Exception e) {
+            logWorkspaceStateError("save", unwrapWorkspaceStateSaveException(e));
         }
     }
 
-    private static ThreadFactory newWorkspaceSaveThreadFactory() {
-        return runnable -> {
-            Thread thread = new Thread(runnable, WORKSPACE_SAVE_THREAD_NAME_PREFIX + "-1");
-            thread.setDaemon(true);
-            return thread;
-        };
+    private long allocateWorkspaceRevision() {
+        long revision = workspaceRevisionCounter.incrementAndGet();
+        latestRequestedWorkspaceRevision = revision;
+        return revision;
+    }
+
+    private CompletableFuture<WorkspaceSaveResult> submitWorkspaceStateSave(
+            long revision,
+            WorkspaceState detached,
+            boolean logFailuresInBackground) {
+        if (workspaceSaveCoordinator == null || workspaceSaveClosed.get()) {
+            return CompletableFuture.completedFuture(new WorkspaceSaveResult(
+                    revision,
+                    WorkspaceSaveResult.Status.CLOSED,
+                    0L,
+                    null,
+                    "Workspace saving is closed."));
+        }
+        CompletableFuture<WorkspaceSaveResult> future = workspaceSaveCoordinator.submit(revision, detached);
+        if (logFailuresInBackground) {
+            future.thenAccept(result -> logWorkspaceSaveFailure("save", result));
+        }
+        return future;
+    }
+
+    private WorkspaceSaveResult persistDetachedWorkspaceState(long revision, WorkspaceState detached) {
+        try {
+            WorkspaceStateJson.normalizeForSave(detached);
+            WorkspaceStateJson.SerializedWorkspace serialized =
+                    WorkspaceStateJson.serializeDetachedWithMetadataAndRelease(
+                            detached,
+                            workspaceStateService.maxSerializedWorkspaceBytes());
+            long length = serialized.utf8Length();
+            String sha256 = serialized.sha256();
+            if (length == lastSavedWorkspaceLength && Objects.equals(sha256, lastSavedWorkspaceSha256)) {
+                lastSuccessfulWorkspaceRevision = revision;
+                return new WorkspaceSaveResult(
+                        revision, WorkspaceSaveResult.Status.UNCHANGED, length, sha256, null);
+            }
+            WorkspaceSaveResult result = workspaceStateService.saveSerialized(
+                    revision, serialized);
+            if (result.status() == WorkspaceSaveResult.Status.SAVED) {
+                lastSavedWorkspaceLength = length;
+                lastSavedWorkspaceSha256 = sha256;
+                lastSuccessfulWorkspaceRevision = revision;
+            }
+            return result;
+        } catch (RuntimeException e) {
+            return new WorkspaceSaveResult(
+                    revision,
+                    WorkspaceSaveResult.Status.FAILED,
+                    0L,
+                    null,
+                    "Workspace normalization or serialization failed ("
+                            + e.getClass().getSimpleName() + ").");
+        }
     }
 
     private Exception unwrapWorkspaceStateSaveException(Exception exception) {
@@ -825,6 +909,16 @@ public class UniversalImporter {
             return cause;
         }
         return exception;
+    }
+
+    private void logWorkspaceSaveFailure(String action, WorkspaceSaveResult result) {
+        if (result == null
+                || result.successful()
+                || result.status() == WorkspaceSaveResult.Status.SUPERSEDED) {
+            return;
+        }
+        logWorkspaceStateError(action, new IllegalStateException(
+                result.failureReason() != null ? result.failureReason() : result.status().name()));
     }
 
 
@@ -845,4 +939,3 @@ public class UniversalImporter {
         void onResult(ImportResult result);
     }
 }
-

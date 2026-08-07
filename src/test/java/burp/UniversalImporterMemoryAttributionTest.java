@@ -8,6 +8,7 @@ import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.models.WorkspaceState;
 import burp.performance.MemoryHardeningFixtureFactory;
 import burp.utils.ScriptMode;
+import burp.utils.WorkspaceSaveResult;
 import burp.utils.WorkspaceStateService;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -16,48 +17,64 @@ import javax.swing.JPanel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Future;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class UniversalImporterMemoryAttributionTest {
 
     @Test
-    void realWorkspaceExecutorRetainsDetachedQueuedStatesAndActualPreviousJson() throws Exception {
+    void workspaceCoordinatorRetainsOnlyActiveAndLatestPendingWithoutPreviousJson() throws Exception {
         BlockingPersistedObject store = new BlockingPersistedObject();
         UniversalImporter importer = new UniversalImporter(
                 mockApi(), ScriptMode.DISABLED, new WorkspaceStateService(store.object));
         try {
             WorkspaceState baseline = MemoryHardeningFixtureFactory.workspace(0, 0);
             importer.submitWorkspaceStateSaveForTests(baseline).get(10, TimeUnit.SECONDS);
-            assertThat(importer.lastSavedWorkspaceJsonForTests()).isEqualTo(store.current.get());
+            assertThat(importer.lastSavedWorkspaceSha256ForTests())
+                    .isEqualTo(WorkspaceStateService.sha256(store.current.get()));
+            assertThat(importer.lastSavedWorkspaceLengthForTests())
+                    .isEqualTo(WorkspaceStateService.utf8Length(store.current.get()));
 
             store.block.set(true);
-            List<Future<?>> saves = new ArrayList<>();
+            List<CompletableFuture<WorkspaceSaveResult>> saves = new ArrayList<>();
             for (int revision = 0; revision < 10; revision++) {
                 WorkspaceState state = MemoryHardeningFixtureFactory.workspace(1, 32 * 1024);
                 state.selectedRequestName = "revision-" + revision;
                 saves.add(importer.submitWorkspaceStateSaveForTests(state));
             }
 
-            assertThat(store.blockedWriteStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.blockedWriteStarted.await(5, TimeUnit.SECONDS))
+                    .as("save statuses: %s", saves.stream()
+                            .map(save -> save.isDone()
+                                    ? save.join().status() + ":" + save.join().failureReason()
+                                    : "PENDING")
+                            .toList())
+                    .isTrue();
             assertThat(importer.activeWorkspaceStateSaveCountForTests()).isEqualTo(1);
-            assertThat(importer.queuedWorkspaceStateSaveCountForTests()).isEqualTo(9);
+            assertThat(importer.pendingWorkspaceStateSaveCountForTests()).isEqualTo(1);
+            assertThat(importer.maxWorkspaceStateSaveSnapshotCountForTests()).isEqualTo(2);
+            assertThat(saves.subList(1, 9)).allSatisfy(save ->
+                    assertThat(save.join().status()).isEqualTo(WorkspaceSaveResult.Status.SUPERSEDED));
 
             store.release.countDown();
-            for (Future<?> save : saves) {
+            for (CompletableFuture<WorkspaceSaveResult> save : saves) {
                 save.get(10, TimeUnit.SECONDS);
             }
 
-            assertThat(store.writes.get()).isEqualTo(11);
-            assertThat(importer.queuedWorkspaceStateSaveCountForTests()).isZero();
-            assertThat(importer.lastSavedWorkspaceJsonForTests())
-                    .isSameAs(store.current.get())
-                    .contains("revision-9");
+            assertThat(store.writes.get()).isEqualTo(3);
+            assertThat(importer.activeWorkspaceStateSaveCountForTests()).isZero();
+            assertThat(importer.pendingWorkspaceStateSaveCountForTests()).isZero();
+            assertThat(store.current.get()).contains("revision-9");
+            assertThat(importer.lastSuccessfulWorkspaceRevisionForTests())
+                    .isEqualTo(importer.latestRequestedWorkspaceRevisionForTests());
+            assertThatThrownBy(() -> UniversalImporter.class.getDeclaredField("lastSavedWorkspaceJson"))
+                    .isInstanceOf(NoSuchFieldException.class);
         } finally {
             store.release.countDown();
             importer.cleanup();

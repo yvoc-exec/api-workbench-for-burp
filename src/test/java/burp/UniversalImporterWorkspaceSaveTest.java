@@ -5,6 +5,10 @@ import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.ui.editor.EditorOptions;
 import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
+import burp.history.HistoryEntry;
+import burp.history.HistoryRequestSnapshot;
+import burp.history.HistoryResponseSnapshot;
+import burp.history.HistoryStore;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -35,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -137,7 +142,10 @@ class UniversalImporterWorkspaceSaveTest {
 
             String baselineJson = fixture.store.currentValue();
             assertThat(workspaceNameFromJson(baselineJson)).isEqualTo("baseline-workspace");
-            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(baselineJson);
+            assertThat(fixture.importer.lastSavedWorkspaceSha256ForTests())
+                    .isEqualTo(WorkspaceStateService.sha256(baselineJson));
+            assertThat(fixture.importer.lastSavedWorkspaceLengthForTests())
+                    .isEqualTo(WorkspaceStateService.utf8Length(baselineJson));
 
             fixture.store.failNextWrite("debounced boom");
             applyWorkspaceStateWithoutAutoSave(fixture.importer, workspaceState("failed-workspace", "Failed"));
@@ -147,9 +155,11 @@ class UniversalImporterWorkspaceSaveTest {
             awaitErrorCount(fixture.logs, 1);
             assertThat(fixture.logs.errors).singleElement().satisfies(error -> assertThat(error)
                     .contains("Workspace state save failed")
-                    .contains("debounced boom"));
+                    .contains("Workspace persistence failed")
+                    .doesNotContain("failed-workspace"));
             assertThat(fixture.store.currentValue()).isEqualTo(baselineJson);
-            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(baselineJson);
+            assertThat(fixture.importer.lastSavedWorkspaceSha256ForTests())
+                    .isEqualTo(WorkspaceStateService.sha256(baselineJson));
         } finally {
             fixture.importer.cleanup();
         }
@@ -177,7 +187,10 @@ class UniversalImporterWorkspaceSaveTest {
 
             String recoveredJson = fixture.store.currentValue();
             assertThat(workspaceNameFromJson(recoveredJson)).isEqualTo("recovered-workspace");
-            assertThat(lastSavedWorkspaceJson(fixture.importer)).isEqualTo(recoveredJson);
+            assertThat(fixture.importer.lastSavedWorkspaceSha256ForTests())
+                    .isEqualTo(WorkspaceStateService.sha256(recoveredJson));
+            assertThat(fixture.importer.lastSavedWorkspaceLengthForTests())
+                    .isEqualTo(WorkspaceStateService.utf8Length(recoveredJson));
             assertThat(fixture.logs.errors).hasSize(1);
             assertThat(isWorkspaceSaveExecutorTerminated(fixture.importer)).isFalse();
         } finally {
@@ -796,6 +809,92 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
+    void productionCaptureDetachesCollectionsEnvironmentsAndHistoryExactlyAtUiBoundary() throws Exception {
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        UniversalImporter importer = new UniversalImporter(
+                mockApi(), burp.utils.ScriptMode.DISABLED, new WorkspaceStateService(persistedObject));
+        try {
+            ImporterPanel ui = importer.getUI();
+            ApiCollection collection = new ApiCollection();
+            collection.id = "capture-collection";
+            collection.name = "Capture";
+            ApiRequest request = new ApiRequest();
+            request.id = "capture-request";
+            request.name = "Captured request";
+            request.method = "POST";
+            request.url = "https://capture.example.test/original";
+            request.body = new ApiRequest.Body();
+            request.body.mode = "raw";
+            request.body.raw = "original-body";
+            collection.requests.add(request);
+
+            EnvironmentProfile environment = new EnvironmentProfile();
+            environment.id = "capture-environment";
+            environment.name = "Capture";
+            environment.variables.put("baseUrl", "https://capture.example.test");
+
+            WorkspaceState restored = WorkspaceState.fromCollections(List.of(collection));
+            restored.environments = new ArrayList<>(List.of(environment));
+            restored.activeEnvironmentId = environment.id;
+            SwingUtilities.invokeAndWait(() -> ui.restoreWorkspaceState(restored));
+
+            byte[] rawRequest = "POST /capture HTTP/1.1\r\n\r\nrequest".getBytes(StandardCharsets.UTF_8);
+            byte[] responseBody = new byte[]{0, 1, 2, (byte) 0xff};
+            HistoryEntry history = new HistoryEntry();
+            history.id = "capture-history";
+            history.timestamp = Instant.parse("2026-08-07T00:00:00Z");
+            history.requestSnapshot = new HistoryRequestSnapshot();
+            history.requestSnapshot.rawRequestSent = rawRequest;
+            history.responseSnapshot = new HistoryResponseSnapshot();
+            history.responseSnapshot.body = responseBody;
+            history.responseSnapshot.originalBodyLength = responseBody.length;
+            history.responseSnapshot.storedBodyLength = responseBody.length;
+            history.ensureDefaults();
+            HistoryStore historyStore = ImporterPanelTestSupport.getField(ui, "historyStore");
+            assertThat(historyStore.admitEntry(history).accepted()).isTrue();
+
+            WorkspaceState captured = importer.captureWorkspaceStateSnapshot(false);
+            List<ApiCollection> liveCollections = ImporterPanelTestSupport.getField(ui, "loadedCollections");
+            List<EnvironmentProfile> liveEnvironments = ImporterPanelTestSupport.getField(ui, "environmentProfiles");
+            List<HistoryEntry> liveHistory = ImporterPanelTestSupport.getField(historyStore, "entries");
+
+            assertThat(captured.collections.get(0)).isNotSameAs(liveCollections.get(0));
+            assertThat(captured.collections.get(0).requests.get(0)).isNotSameAs(liveCollections.get(0).requests.get(0));
+            assertThat(captured.environments.get(0)).isNotSameAs(liveEnvironments.get(0));
+            assertThat(captured.environments.get(0).variables).isNotSameAs(liveEnvironments.get(0).variables);
+            assertThat(captured.historyEntries.get(0)).isNotSameAs(liveHistory.get(0));
+            assertThat(captured.historyEntries.get(0).requestSnapshot.rawRequestSent)
+                    .isEqualTo(rawRequest)
+                    .isNotSameAs(liveHistory.get(0).requestSnapshot.rawRequestSent);
+            assertThat(captured.historyEntries.get(0).responseSnapshot.body)
+                    .isEqualTo(responseBody)
+                    .isNotSameAs(liveHistory.get(0).responseSnapshot.body);
+
+            liveCollections.get(0).requests.get(0).url = "https://capture.example.test/live-mutated";
+            liveEnvironments.get(0).variables.put("baseUrl", "https://live-mutated.example.test");
+            liveHistory.get(0).requestSnapshot.rawRequestSent[0] = 'X';
+            liveHistory.get(0).responseSnapshot.body[0] = 9;
+
+            WorkspaceState saved = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(captured));
+            assertThat(saved.collections.get(0).requests.get(0).url)
+                    .isEqualTo("https://capture.example.test/original");
+            assertThat(saved.environments.get(0).variables)
+                    .containsEntry("baseUrl", "https://capture.example.test");
+            assertThat(saved.historyEntries.get(0).requestSnapshot.rawRequestSent).isEqualTo(rawRequest);
+            assertThat(saved.historyEntries.get(0).responseSnapshot.body).isEqualTo(responseBody);
+
+            captured.collections.get(0).requests.get(0).body.raw = "snapshot-mutated";
+            captured.environments.get(0).variables.put("snapshot", "mutated");
+            captured.historyEntries.get(0).responseSnapshot.body[1] = 8;
+            assertThat(liveCollections.get(0).requests.get(0).body.raw).isEqualTo("original-body");
+            assertThat(liveEnvironments.get(0).variables).doesNotContainKey("snapshot");
+            assertThat(liveHistory.get(0).responseSnapshot.body[1]).isEqualTo((byte) 1);
+        } finally {
+            importer.cleanup();
+        }
+    }
+
+    @Test
     void workspaceRestoreRestoresActiveEnvironmentSelection() throws Exception {
         ImporterPanel ui = newImporterUi();
         EnvironmentProfile profile = new EnvironmentProfile();
@@ -1406,12 +1505,6 @@ class UniversalImporterWorkspaceSaveTest {
                 && state.collections.get(0) != null
                 ? state.collections.get(0).name
                 : null;
-    }
-
-    private static String lastSavedWorkspaceJson(UniversalImporter importer) throws Exception {
-        Field field = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceJson");
-        field.setAccessible(true);
-        return (String) field.get(importer);
     }
 
     private static boolean isWorkspaceSaveExecutorTerminated(UniversalImporter importer) throws Exception {

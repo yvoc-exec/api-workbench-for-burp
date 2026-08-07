@@ -27,8 +27,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -209,7 +207,7 @@ class WorkspaceConcurrentSaveTest {
 
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateA));
             settleWorkspaceSaveWork(fixture.importer);
-            setLastSavedWorkspaceJson(fixture.importer, baselineJson);
+            setLastSavedWorkspaceMetadata(fixture.importer, baselineJson);
             fixture.store.seed(baselineJson);
 
             fixture.store.resetWriteTracking();
@@ -258,6 +256,9 @@ class WorkspaceConcurrentSaveTest {
             WorkspaceState stateB = workspaceState("workspace-mix-b", "env-mix-b", true, "queue-b", "history-b");
 
             runOnEdt(() -> fixture.importer.getUI().restoreWorkspaceState(stateA));
+            settleWorkspaceSaveWork(fixture.importer);
+            setLastSavedWorkspaceMetadata(
+                    fixture.importer, WorkspaceStateJson.toJson(new WorkspaceState()));
             fixture.store.resetWriteTracking();
             fixture.store.blockNextWrite();
 
@@ -358,6 +359,76 @@ class WorkspaceConcurrentSaveTest {
             if (!isWorkspaceSaveExecutorTerminated(fixture.importer)) {
                 fixture.importer.cleanup();
             }
+        }
+    }
+
+    @Test
+    void boundedCleanupInterruptsBlockedSaveAndPreservesLastSuccessfulWorkspace() throws Exception {
+        WorkspaceOwnerFixture fixture = newWorkspaceOwnerFixture();
+        WorkspaceState baseline =
+                workspaceState("workspace-cleanup-baseline", "env-cleanup-baseline", false, "queue-a", "history-a");
+        WorkspaceState pending =
+                workspaceState("workspace-cleanup-pending", "env-cleanup-pending", true, "queue-b", "history-b");
+        String baselineJson = WorkspaceStateJson.toJson(baseline);
+        try {
+            fixture.store.seed(baselineJson);
+            setLastSavedWorkspaceMetadata(fixture.importer, baselineJson);
+            fixture.store.resetWriteTracking();
+            fixture.store.blockNextWrite();
+
+            submitWorkspaceSaveDirectly(fixture.importer, Long.MAX_VALUE - 1L, pending);
+            assertThat(fixture.store.firstWriteEntered.await(5L, TimeUnit.SECONDS))
+                    .isTrue();
+
+            long startedAt = System.nanoTime();
+            invokeCleanupWithin(fixture.importer, 100L);
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+            assertThat(elapsedMillis).isLessThan(2_000L);
+            waitForWorkspaceSaveExecutorTermination(fixture.importer);
+            assertThat(isWorkspaceSaveExecutorTerminated(fixture.importer)).isTrue();
+            assertThat(fixture.store.currentValue()).isEqualTo(baselineJson);
+            assertExactState(WorkspaceStateJson.fromJson(fixture.store.currentValue()), baseline);
+        } finally {
+            if (!isWorkspaceSaveExecutorTerminated(fixture.importer)) {
+                fixture.store.allowBlockedWrite();
+                fixture.importer.cleanup();
+            }
+        }
+    }
+
+    @Test
+    void liveIdentityRepairMakesConsecutiveUnchangedSavesDeterministic() throws Exception {
+        WorkspaceOwnerFixture fixture = newWorkspaceOwnerFixture();
+        try {
+            installLiveWorkspaceWithMissingAndDuplicateIds(fixture.importer);
+            fixture.store.resetWriteTracking();
+
+            fixture.importer.requestWorkspaceStateSaveNow();
+            drainWorkspaceSaveExecutor(fixture.importer);
+            String firstJson = fixture.store.currentValue();
+            WorkspaceState first = WorkspaceStateJson.fromJson(firstJson);
+
+            assertThat(first.collections).hasSize(3);
+            assertThat(first.collections)
+                    .extracting(collection -> collection.id)
+                    .allSatisfy(id -> assertThat(id).isNotBlank())
+                    .doesNotHaveDuplicates();
+            assertThat(first.environments).hasSize(3);
+            assertThat(first.environments)
+                    .extracting(environment -> environment.id)
+                    .allSatisfy(id -> assertThat(id).isNotBlank())
+                    .doesNotHaveDuplicates();
+
+            fixture.importer.requestWorkspaceStateSaveNow();
+            drainWorkspaceSaveExecutor(fixture.importer);
+
+            assertThat(fixture.store.writeCount.get()).isEqualTo(1);
+            assertThat(fixture.store.currentValue()).isEqualTo(firstJson);
+            assertThat(WorkspaceStateService.sha256(fixture.store.currentValue()))
+                    .isEqualTo(WorkspaceStateService.sha256(firstJson));
+        } finally {
+            fixture.importer.cleanup();
         }
     }
 
@@ -563,6 +634,89 @@ class WorkspaceConcurrentSaveTest {
         }
     }
 
+    private static void submitWorkspaceSaveDirectly(
+            UniversalImporter importer,
+            long revision,
+            WorkspaceState state) {
+        try {
+            Field field = UniversalImporter.class.getDeclaredField("workspaceSaveCoordinator");
+            field.setAccessible(true);
+            WorkspaceSaveCoordinator coordinator = (WorkspaceSaveCoordinator) field.get(importer);
+            coordinator.submit(revision, WorkspaceState.copyOf(state));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Failed to submit workspace save directly", e);
+        }
+    }
+
+    private static void invokeCleanupWithin(UniversalImporter importer, long timeoutMillis) {
+        try {
+            Method method = UniversalImporter.class.getDeclaredMethod(
+                    "cleanupWithin", long.class, TimeUnit.class);
+            method.setAccessible(true);
+            method.invoke(importer, timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            throw new AssertionError("Failed to run bounded workspace cleanup", e);
+        }
+    }
+
+    private static void waitForWorkspaceSaveExecutorTermination(UniversalImporter importer) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2L);
+        while (!isWorkspaceSaveExecutorTerminated(importer) && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(10L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted while waiting for workspace save worker", e);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void installLiveWorkspaceWithMissingAndDuplicateIds(UniversalImporter importer) {
+        runOnEdt(() -> {
+            try {
+                Field collectionsField = importer.getUI().getClass().getDeclaredField("loadedCollections");
+                Field environmentsField = importer.getUI().getClass().getDeclaredField("environmentProfiles");
+                Field activeEnvironmentField = importer.getUI().getClass().getDeclaredField("activeEnvironmentId");
+                collectionsField.setAccessible(true);
+                environmentsField.setAccessible(true);
+                activeEnvironmentField.setAccessible(true);
+
+                List<ApiCollection> collections = (List<ApiCollection>) collectionsField.get(importer.getUI());
+                collections.clear();
+                ApiCollection missingCollection = new ApiCollection();
+                missingCollection.name = "missing-collection-id";
+                ApiCollection firstDuplicateCollection = new ApiCollection();
+                firstDuplicateCollection.id = "duplicate-collection";
+                firstDuplicateCollection.name = "first-duplicate-collection";
+                ApiCollection secondDuplicateCollection = new ApiCollection();
+                secondDuplicateCollection.id = "duplicate-collection";
+                secondDuplicateCollection.name = "second-duplicate-collection";
+                collections.add(missingCollection);
+                collections.add(firstDuplicateCollection);
+                collections.add(secondDuplicateCollection);
+
+                List<EnvironmentProfile> environments =
+                        (List<EnvironmentProfile>) environmentsField.get(importer.getUI());
+                environments.clear();
+                EnvironmentProfile missingEnvironment = new EnvironmentProfile();
+                missingEnvironment.name = "missing-environment-id";
+                EnvironmentProfile firstDuplicateEnvironment = new EnvironmentProfile();
+                firstDuplicateEnvironment.id = "duplicate-environment";
+                firstDuplicateEnvironment.name = "first-duplicate-environment";
+                EnvironmentProfile secondDuplicateEnvironment = new EnvironmentProfile();
+                secondDuplicateEnvironment.id = "duplicate-environment";
+                secondDuplicateEnvironment.name = "second-duplicate-environment";
+                environments.add(missingEnvironment);
+                environments.add(firstDuplicateEnvironment);
+                environments.add(secondDuplicateEnvironment);
+                activeEnvironmentField.set(importer.getUI(), "duplicate-environment");
+            } catch (ReflectiveOperationException e) {
+                throw new AssertionError("Failed to install live identity fixture", e);
+            }
+        });
+    }
+
     private static void setDebounceDelay(UniversalImporter importer, int delayMs) {
         try {
             Field debouncedField = UniversalImporter.class.getDeclaredField("debouncedWorkspaceSave");
@@ -594,13 +748,16 @@ class WorkspaceConcurrentSaveTest {
         runOnEdt(() -> { });
     }
 
-    private static void setLastSavedWorkspaceJson(UniversalImporter importer, String json) {
+    private static void setLastSavedWorkspaceMetadata(UniversalImporter importer, String json) {
         try {
-            Field field = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceJson");
-            field.setAccessible(true);
-            field.set(importer, json);
+            Field digestField = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceSha256");
+            Field lengthField = UniversalImporter.class.getDeclaredField("lastSavedWorkspaceLength");
+            digestField.setAccessible(true);
+            lengthField.setAccessible(true);
+            digestField.set(importer, WorkspaceStateService.sha256(json));
+            lengthField.setLong(importer, WorkspaceStateService.utf8Length(json));
         } catch (Exception e) {
-            throw new AssertionError("Failed to control last saved workspace JSON", e);
+            throw new AssertionError("Failed to control last saved workspace metadata", e);
         }
     }
 
@@ -621,16 +778,13 @@ class WorkspaceConcurrentSaveTest {
 
     private static void drainWorkspaceSaveExecutor(UniversalImporter importer) {
         try {
-            Field executorField = UniversalImporter.class.getDeclaredField("workspaceSaveExecutor");
-            executorField.setAccessible(true);
-            ExecutorService executor = (ExecutorService) executorField.get(importer);
-            if (executor != null && !executor.isShutdown()) {
-                Future<?> future = executor.submit(() -> null);
-                future.get(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            }
+            Method flush = UniversalImporter.class.getDeclaredMethod(
+                    "flushWorkspaceSaveCoordinatorForTests");
+            flush.setAccessible(true);
+            flush.invoke(importer);
             runOnEdt(() -> { });
         } catch (Exception e) {
-            throw new AssertionError("Failed to drain workspace save executor", e);
+            throw new AssertionError("Failed to drain workspace save coordinator", e);
         }
     }
 
@@ -726,7 +880,14 @@ class WorkspaceConcurrentSaveTest {
                 blockedWriteSnapshot.set(WorkspaceState.copyOf(parsed));
                 blockedWriteLabel.set(parsed.collections.get(0).name);
                 firstWriteEntered.countDown();
-                await(allowFirstWrite);
+                try {
+                    if (!allowFirstWrite.await(5L, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Blocked workspace store was not released.");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Blocked workspace store was interrupted.", e);
+                }
             }
             parsedSnapshots.add(parsed);
             writeLabels.add(parsed.collections.get(0).name);

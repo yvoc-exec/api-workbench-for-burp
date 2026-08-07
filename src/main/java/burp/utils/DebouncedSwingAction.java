@@ -4,10 +4,11 @@ import javax.swing.Timer;
 
 public class DebouncedSwingAction {
     private final Timer timer;
+    private volatile boolean closed;
 
     public DebouncedSwingAction(int delayMs, Runnable action) {
         this.timer = new Timer(Math.max(50, delayMs), e -> {
-            if (action != null) {
+            if (!closed && action != null) {
                 action.run();
             }
         });
@@ -15,10 +16,21 @@ public class DebouncedSwingAction {
     }
 
     public void restart() {
-        timer.restart();
+        if (!closed) {
+            timer.restart();
+        }
     }
 
     public void stop() {
         timer.stop();
+    }
+
+    public void close() {
+        closed = true;
+        timer.stop();
+    }
+
+    public boolean isClosed() {
+        return closed;
     }
 }

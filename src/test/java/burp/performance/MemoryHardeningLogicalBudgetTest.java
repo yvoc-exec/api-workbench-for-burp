@@ -81,11 +81,12 @@ class MemoryHardeningLogicalBudgetTest {
     @Test
     void workspaceSerializationAndExactSnapshotBytesHaveDeterministicLengths() {
         WorkspaceState state = MemoryHardeningFixtureFactory.workspace(2, 8192);
-        String json = WorkspaceStateJson.toJson(state);
         ApiRequest request = state.collections.get(0).requests.get(0);
         request.exactHttpRequest = MemoryHardeningFixtureFactory.exactSnapshot(16 * 1024);
+        String json = WorkspaceStateJson.toJson(state);
 
         assertThat(json.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(16 * 1024);
+        assertThat(json).contains("awb:b64:v1:").doesNotContain("\"rawRequestBytes\":[");
         assertThat(request.exactHttpRequest.rawRequestBytes).hasSize(16 * 1024);
     }
 
