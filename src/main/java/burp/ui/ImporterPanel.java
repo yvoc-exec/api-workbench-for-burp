@@ -278,27 +278,38 @@ public class ImporterPanel {
     }
 
     static final class WorkbenchSendSnapshot {
+        final String historyEntryId;
         final String metaText;
         final String scriptOutputText;
         final String assertionsText;
         final String failureReason;
         final String sendModeLabel;
         final long timestampMillis;
-        HistoryEntry detailEntry;
-
-        WorkbenchSendSnapshot(String metaText,
-                              String failureReason,
-                              String sendModeLabel,
-                              long timestampMillis) {
-            this(metaText, "", "", failureReason, sendModeLabel, timestampMillis);
-        }
-
         WorkbenchSendSnapshot(String metaText,
                               String scriptOutputText,
                               String assertionsText,
                               String failureReason,
                               String sendModeLabel,
                               long timestampMillis) {
+            this(null, metaText, scriptOutputText, assertionsText, failureReason,
+                    sendModeLabel, timestampMillis);
+        }
+
+        WorkbenchSendSnapshot(String metaText,
+                              String failureReason,
+                              String sendModeLabel,
+                              long timestampMillis) {
+            this(null, metaText, "", "", failureReason, sendModeLabel, timestampMillis);
+        }
+
+        WorkbenchSendSnapshot(String historyEntryId,
+                              String metaText,
+                              String scriptOutputText,
+                              String assertionsText,
+                              String failureReason,
+                              String sendModeLabel,
+                              long timestampMillis) {
+            this.historyEntryId = historyEntryId;
             this.metaText = metaText;
             this.scriptOutputText = scriptOutputText;
             this.assertionsText = assertionsText;
@@ -985,7 +996,8 @@ public class ImporterPanel {
                 sendResult != null ? sendResult.executionResult : null,
                 1,
                 1,
-                unresolvedVariables);
+                unresolvedVariables,
+                historyStore.getRetentionPolicy());
         if (entry == null) {
             return null;
         }
@@ -996,7 +1008,8 @@ public class ImporterPanel {
             entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
         }
         if (sendResult != null && sendResult.executionResult == null && sendResult.response != null && sendResult.response.response() != null) {
-            entry.responseSnapshot = HistoryResponseSnapshot.from(sendResult.response.response());
+            entry.responseSnapshot = HistoryResponseSnapshot.from(
+                    sendResult.response.response(), historyStore.getRetentionPolicy());
             entry.statusCode = entry.responseSnapshot != null ? entry.responseSnapshot.statusCode : entry.statusCode;
             entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null ? entry.responseSnapshot.body.length : 0L;
             entry.durationMillis = sendResult.elapsedMs;
@@ -2235,17 +2248,14 @@ public class ImporterPanel {
                                                   String sendModeLabel,
                                                   HistoryEntry storedEntry) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry detailEntry = storedEntry != null
-                ? storedEntry
-                : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
+                storedEntry != null ? storedEntry.id : null,
                 buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment),
                 buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
                 buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
                 null,
                 sendModeLabel,
                 System.currentTimeMillis());
-        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -2264,17 +2274,14 @@ public class ImporterPanel {
                                                   String sendModeLabel,
                                                   HistoryEntry storedEntry) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry detailEntry = storedEntry != null
-                ? storedEntry
-                : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
+                storedEntry != null ? storedEntry.id : null,
                 buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment),
                 buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
                 buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
                 reason,
                 sendModeLabel,
                 System.currentTimeMillis());
-        snapshot.detailEntry = detailEntry;
         applyWorkbenchSendSnapshot(sentRequest, sentCollection, snapshot);
     }
 
@@ -2285,7 +2292,6 @@ public class ImporterPanel {
         if (findCollectionByRequest(sentRequest) == null) {
             return;
         }
-        snapshot.detailEntry = boundedWorkbenchDetailEntry(snapshot.detailEntry);
         workbenchSendSnapshots.put(sentRequest, snapshot);
         if (isWorkbenchRequestSelection(sentRequest, sentCollection)) {
             displayWorkbenchSendSnapshot(snapshot);
@@ -2357,36 +2363,34 @@ public class ImporterPanel {
             return;
         }
         if (workbenchDetailPanel != null) {
-            HistoryEntry detailEntry = snapshot.detailEntry != null
-                    ? HistoryEntry.copyOf(snapshot.detailEntry)
-                    : new HistoryEntry();
-            HistoryEntry canonical = detailEntry.id != null ? historyStore.getById(detailEntry.id) : null;
-            if (canonical != null) {
-                detailEntry = canonical;
+            HistoryEntry detailEntry = snapshot.historyEntryId != null
+                    ? historyStore.getById(snapshot.historyEntryId)
+                    : null;
+            boolean evidenceUnavailable = detailEntry == null;
+            if (evidenceUnavailable) {
+                detailEntry = new HistoryEntry();
+                detailEntry.id = snapshot.historyEntryId != null
+                        ? snapshot.historyEntryId : UUID.randomUUID().toString();
+                detailEntry.source = HistorySource.WORKBENCH;
+                detailEntry.timestamp = java.time.Instant.ofEpochMilli(snapshot.timestampMillis);
             }
-            detailEntry.metadataSummaryText = snapshot.metaText;
+            detailEntry.metadataSummaryText = evidenceUnavailable
+                    ? appendMetadataLine(snapshot.metaText,
+                    "Payload evidence is no longer retained in History.")
+                    : snapshot.metaText;
             detailEntry.scriptOutputSummaryText = snapshot.scriptOutputText;
             detailEntry.assertionsSummaryText = snapshot.assertionsText;
             detailEntry.errorMessage = snapshot.failureReason;
-            if (detailEntry.source == null) {
-                detailEntry.source = HistorySource.WORKBENCH;
-            }
-            if (detailEntry.timestamp == null) {
-                detailEntry.timestamp = java.time.Instant.now();
-            }
-            if (detailEntry.id == null || detailEntry.id.isBlank()) {
-                detailEntry.id = UUID.randomUUID().toString();
-            }
             workbenchDetailPanel.showEntry(detailEntry);
             setDetailEvidenceEditability(workbenchDetailPanel, detailEntry);
         }
     }
 
-    private HistoryEntry boundedWorkbenchDetailEntry(HistoryEntry entry) {
-        if (entry == null) {
-            return null;
+    private static String appendMetadataLine(String metadata, String line) {
+        if (metadata == null || metadata.isBlank()) {
+            return line;
         }
-        return burp.history.HistoryBodyTruncator.apply(entry, historyStore.getRetentionPolicy());
+        return metadata + '\n' + line;
     }
 
     private void clearWorkbenchDetailPane() {
@@ -2456,7 +2460,7 @@ public class ImporterPanel {
         if (result != null && result.response != null && result.response.response() != null) {
             var response = result.response.response();
             statusCode = response.statusCode();
-            responseBytes = response.body() != null ? response.body().getBytes().length : 0;
+            responseBytes = response.body() != null ? response.body().length() : 0;
         }
         meta.append("Duration: ").append(result != null ? result.elapsedMs : 0L).append(" ms\n");
         meta.append("Status: ").append(statusCode > 0 ? statusCode : "Not yet sent").append("\n");
@@ -2465,7 +2469,10 @@ public class ImporterPanel {
         meta.append("Script Mode: ").append(scriptMode != null ? scriptMode.label : "").append("\n");
         meta.append("Flow Control State: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowControl != null ? result.executionResult.scriptFlowControl : "CONTINUE").append("\n");
         meta.append("Flow Message: ").append(result != null && result.executionResult != null && result.executionResult.scriptFlowMessage != null ? result.executionResult.scriptFlowMessage : "").append("\n");
-        meta.append("Raw Request Available: ").append(result != null && result.rawRequestText != null ? "yes" : "no").append("\n");
+        boolean rawRequestAvailable = result != null
+                && ((result.executionResult != null && result.executionResult.rawRequestBytes != null)
+                || result.rawRequestText != null);
+        meta.append("Raw Request Available: ").append(rawRequestAvailable ? "yes" : "no").append("\n");
         meta.append("Response Available: ").append(result != null && result.response != null && result.response.response() != null ? "yes" : "no").append("\n");
         meta.append("Response bytes: ").append(responseBytes).append("\n");
         meta.append("Send mode: ").append(sendModeLabel != null ? sendModeLabel : "").append("\n");
@@ -2573,63 +2580,10 @@ public class ImporterPanel {
         return sb.toString().trim();
     }
 
-    private HistoryEntry buildWorkbenchExecutionEntry(ApiCollection sentCollection,
-                                                      ApiRequest sentRequest,
-                                                      UniversalImporter.SingleSendResult result,
-                                                      String sendModeLabel,
-                                                      String failureReason,
-                                                      EnvironmentProfile activeEnvironment) {
-        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(
-                sentCollection,
-                sentRequest,
-                activeEnvironment,
-                result != null ? result.executionResult : null,
-                1,
-                1,
-                Collections.emptyList());
-        if (entry == null) {
-            return null;
-        }
-        VariableResolver resolver = RuntimeResolverFactory.build(sentCollection, sentRequest, activeEnvironment, null);
-        String resolvedUrl = result != null && result.executionResult != null && result.executionResult.initialResolvedUrl != null && !result.executionResult.initialResolvedUrl.isBlank()
-                ? result.executionResult.initialResolvedUrl
-                : result != null && result.resolvedUrl != null && !result.resolvedUrl.isBlank()
-                ? result.resolvedUrl
-                : resolver.resolve(sentRequest != null ? sentRequest.url : null);
-        String finalResolvedUrl = result != null && result.executionResult != null && result.executionResult.finalResolvedUrl != null && !result.executionResult.finalResolvedUrl.isBlank()
-                ? result.executionResult.finalResolvedUrl
-                : resolvedUrl;
-        if (entry.requestSnapshot != null) {
-            entry.requestSnapshot.resolvedUrl = resolvedUrl;
-            entry.requestSnapshot.resolvedVariables = result != null && result.executionResult != null && result.executionResult.resolvedVariables != null
-                    ? new LinkedHashMap<>(result.executionResult.resolvedVariables)
-                    : resolver.getVariables();
-        }
-        entry.initialResolvedUrl = resolvedUrl;
-        entry.finalResolvedUrl = finalResolvedUrl;
-        entry.host = parseHost(finalResolvedUrl);
-        entry.scriptMode = scriptMode != null ? scriptMode.label : null;
-        entry.scriptDialect = result != null && result.executionResult != null ? result.executionResult.scriptEngineName : null;
-        entry.variablesSummaryText = buildRuntimeVariableSummaryText(
-                sentCollection,
-                sentRequest,
-                activeEnvironment,
-                entry.requestSnapshot != null ? entry.requestSnapshot.resolvedVariables : Collections.emptyMap(),
-                result != null && result.executionResult != null ? result.executionResult.scriptVariableMutations : Collections.emptyList(),
-                "Workbench",
-                false);
-        entry.scriptOutputSummaryText = buildWorkbenchScriptOutputText(result != null ? result.executionResult : null);
-        entry.assertionsSummaryText = buildWorkbenchAssertionsText(result != null ? result.executionResult : null);
-        if (failureReason != null && !failureReason.isBlank()) {
-            entry.errorMessage = failureReason;
-        }
-        entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
-        return entry;
-    }
-
     private HistoryEntry buildWorkbenchPreviewEntry(ApiCollection collection, ApiRequest request, String sendModeLabel) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(collection, request, activeEnvironment, null, 1, 1, Collections.emptyList());
+        HistoryEntry entry = HistoryEntry.fromWorkbenchExecution(collection, request, activeEnvironment,
+                null, 1, 1, Collections.emptyList(), historyStore.getRetentionPolicy());
         if (entry == null) {
             return null;
         }
@@ -2661,7 +2615,8 @@ public class ImporterPanel {
 
     private HistoryEntry buildRunnerHistoryEntry(ApiCollection collection, ApiRequest request, RunnerResult result, boolean preview) {
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
-        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(collection, request, activeEnvironment, result);
+        HistoryEntry entry = HistoryEntry.fromRunnerAttempt(
+                collection, request, activeEnvironment, result, historyStore.getRetentionPolicy());
         if (entry == null) {
             return null;
         }
@@ -7577,11 +7532,23 @@ public class ImporterPanel {
             commitOAuth2ConfigUiToActiveEnvironment();
             persistCurrentRequestEditorState();
         });
-        return copyWorkspaceStateFromModel();
+        return copyWorkspaceStateFromModel(false);
     }
 
     public WorkspaceState getWorkspaceStateSnapshotFromModel() {
-        return copyWorkspaceStateFromModel();
+        return copyWorkspaceStateFromModel(false);
+    }
+
+    public WorkspaceState getWorkspaceStateSnapshotForPersistence() {
+        runWithWorkspaceChangeNotificationsSuppressed(() -> {
+            commitOAuth2ConfigUiToActiveEnvironment();
+            persistCurrentRequestEditorState();
+        });
+        return copyWorkspaceStateFromModel(true);
+    }
+
+    public WorkspaceState getWorkspaceStateSnapshotFromModelForPersistence() {
+        return copyWorkspaceStateFromModel(true);
     }
 
     public HistoryRetentionPolicy getHistoryRetentionPolicySnapshot() {
@@ -7622,16 +7589,20 @@ public class ImporterPanel {
         }
     }
 
-    private WorkspaceState copyWorkspaceStateFromModel() {
+    private WorkspaceState copyWorkspaceStateFromModel(boolean shareHistoryPayload) {
         stabilizeLiveWorkspaceIdentities();
-        WorkspaceState state = WorkspaceState.fromCollections(loadedCollections);
+        WorkspaceState state = WorkspaceState.fromCollectionsSharingExactTransport(loadedCollections);
         state.environments = getEnvironmentProfilesSnapshot();
         state.activeEnvironmentId = activeEnvironmentId;
         Map<String, String> uiTreePaths = collectRequestTreePaths();
         Map<String, String> modelTreePaths = collectRequestTreePathsFromRequestModels();
         state.requestTreePaths = mergeRequestTreePaths(uiTreePaths, modelTreePaths);
         state.expandedTreePathKeys = collectExpandedTreePathKeys();
-        historyPersistenceService.writeStore(state, historyStore);
+        if (shareHistoryPayload) {
+            historyPersistenceService.writeStoreSharingPayload(state, historyStore);
+        } else {
+            historyPersistenceService.writeStore(state, historyStore);
+        }
         state.diagnosticsCaptureEnabled = DiagnosticStore.getInstance().isCaptureEnabled();
         if (tabbedPane != null) {
             state.selectedTabIndex = tabbedPane.getSelectedIndex();
@@ -13175,7 +13146,8 @@ public class ImporterPanel {
         RunnerResult compact = summary.toCompatibilityResult();
         ApiRequest request = findRequestById(summary.requestId());
         ApiCollection collection = request != null ? findCollectionByRequest(request) : findCollectionByName(summary.collectionName());
-        HistoryEntry preview = HistoryEntry.fromRunnerAttempt(collection, request, getActiveEnvironment(), compact);
+        HistoryEntry preview = HistoryEntry.fromRunnerAttempt(
+                collection, request, getActiveEnvironment(), compact, historyStore.getRetentionPolicy());
         if (preview == null) {
             return null;
         }

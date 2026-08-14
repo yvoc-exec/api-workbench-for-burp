@@ -267,31 +267,11 @@ public class ScriptExecutionContext {
         if (request == null) {
             return;
         }
-        ApiRequest restored = copyRequest(snapshot);
-        request.id = restored.id;
-        request.name = restored.name;
-        request.path = restored.path;
-        request.sourceCollection = restored.sourceCollection;
-        request.method = restored.method;
-        request.url = restored.url;
-        request.description = restored.description;
-        request.headers = restored.headers;
-        request.body = restored.body;
-        request.auth = restored.auth;
-        request.editorMaterialized = restored.editorMaterialized;
-        request.buildMode = restored.buildMode;
-        request.suppressedAutoHeaders = restored.suppressedAutoHeaders;
-        request.variables = restored.variables;
-        request.preRequestScripts = restored.preRequestScripts;
-        request.postResponseScripts = restored.postResponseScripts;
-        request.scriptBlocks = restored.scriptBlocks;
-        request.disabled = restored.disabled;
-        request.sequenceOrder = restored.sequenceOrder;
-        request.authInherited = restored.authInherited;
-        request.authExplicitlyDisabled = restored.authExplicitlyDisabled;
-        request.authSource = restored.authSource;
-        request.authOverrideMode = restored.authOverrideMode;
-        request.explicitAuth = restored.explicitAuth;
+        if (snapshot != null) {
+            snapshot.applyTo(request);
+        } else {
+            new ApiRequest().applyTo(request);
+        }
         if (variableStore != null) {
             variableStore.refreshRequestState();
         }

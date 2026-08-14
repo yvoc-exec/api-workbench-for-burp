@@ -204,11 +204,6 @@ class ImporterPanelSendPreflightIntegrationTest {
     }
 
     private static String workbenchRawRequestText(WorkbenchHarness harness) {
-        var snapshot = harness.panel.getWorkbenchSendSnapshot(harness.request);
-        if (snapshot != null && snapshot.detailEntry != null && snapshot.detailEntry.requestSnapshot != null
-                && snapshot.detailEntry.requestSnapshot.rawRequestSentText != null) {
-            return snapshot.detailEntry.requestSnapshot.rawRequestSentText;
-        }
         return !harness.capturedRequests.isEmpty() ? rawRequestText(harness.capturedRequests.get(0)) : "";
     }
 

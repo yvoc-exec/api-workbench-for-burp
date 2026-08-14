@@ -122,6 +122,18 @@ public class HistoryEntry {
                                                       int attemptNumber,
                                                       int totalAttempts,
                                                       Collection<String> unresolvedVariables) {
+        return fromWorkbenchExecution(collection, request, environment, exec, attemptNumber,
+                totalAttempts, unresolvedVariables, HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public static HistoryEntry fromWorkbenchExecution(ApiCollection collection,
+                                                      ApiRequest request,
+                                                      EnvironmentProfile environment,
+                                                      ExecutionResult exec,
+                                                      int attemptNumber,
+                                                      int totalAttempts,
+                                                      Collection<String> unresolvedVariables,
+                                                      HistoryRetentionPolicy retentionPolicy) {
         HistoryEntry entry = createBase(
                 HistorySource.WORKBENCH,
                 collection,
@@ -131,7 +143,7 @@ public class HistoryEntry {
                 totalAttempts
         );
         entry.timestamp = Instant.now();
-        entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
+        entry.requestSnapshot = HistoryRequestSnapshot.fromBorrowingExactTransport(request);
         entry.unresolvedVariables = normalizeStrings(unresolvedVariables);
 
         if (exec != null) {
@@ -139,7 +151,7 @@ public class HistoryEntry {
             entry.errorMessage = exec.errorMessage;
             entry.statusCode = determineStatusCode(exec, null);
             entry.responseSnapshot = exec.response != null
-                    ? HistoryResponseSnapshot.from(exec.response.response())
+                    ? HistoryResponseSnapshot.from(exec.response.response(), retentionPolicy)
                     : null;
             entry.responseSizeBytes = entry.responseSnapshot != null
                     && entry.responseSnapshot.body != null
@@ -169,17 +181,9 @@ public class HistoryEntry {
 
             if (entry.requestSnapshot != null) {
                 if (exec.requestSent) {
-                    entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes != null
-                            ? exec.rawRequestBytes.clone()
-                            : null;
-                    entry.requestSnapshot.rawRequestSentText = exec.rawRequestText != null
-                            ? exec.rawRequestText
-                            : (exec.rawRequestBytes != null
-                            ? new String(
-                                    exec.rawRequestBytes,
-                                    java.nio.charset.StandardCharsets.UTF_8
-                            )
-                            : null);
+                    entry.requestSnapshot.rawRequestSent = exec.rawRequestBytes;
+                    entry.requestSnapshot.rawRequestSentText = exec.rawRequestBytes == null
+                            ? exec.rawRequestText : null;
                 }
                 entry.requestSnapshot.resolvedUrl = exec.resolvedUrl;
                 entry.requestSnapshot.resolvedVariables = exec.resolvedVariables != null
@@ -224,7 +228,7 @@ public class HistoryEntry {
                     ? exec.initialResolvedUrl
                     : exec.resolvedUrl;
             entry.redirectTerminationReason = exec.redirectTerminationReason;
-            entry.redirectHops = copyRedirectHops(exec.redirectHops);
+            entry.redirectHops = copyRedirectHopsBorrowingPayload(exec.redirectHops);
 
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {
                 entry.result = HistoryResult.FAILURE;
@@ -254,18 +258,27 @@ public class HistoryEntry {
                 ? entry.result.displayName()
                 : null;
         entry.metadataSummaryText = buildExecutionMetadataText(entry);
-        return entry;
+        return HistoryBodyTruncator.apply(entry, retentionPolicy);
     }
 
     public static HistoryEntry fromRunnerAttempt(ApiCollection collection,
                                                  ApiRequest request,
                                                  EnvironmentProfile environment,
                                                  RunnerResult result) {
+        return fromRunnerAttempt(collection, request, environment, result,
+                HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public static HistoryEntry fromRunnerAttempt(ApiCollection collection,
+                                                 ApiRequest request,
+                                                 EnvironmentProfile environment,
+                                                 RunnerResult result,
+                                                 HistoryRetentionPolicy retentionPolicy) {
         HistoryEntry entry = createBase(HistorySource.RUNNER, collection, request, environment,
                 result != null ? Math.max(1, result.attemptNumber) : 1,
                 result != null ? Math.max(1, result.totalAttempts) : 1);
         entry.timestamp = Instant.now();
-        entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
+        entry.requestSnapshot = HistoryRequestSnapshot.fromBorrowingExactTransport(request);
         if (result != null) {
             if ((entry.collectionId == null || entry.collectionId.isBlank()) && result.collectionId != null) {
                 entry.collectionId = result.collectionId;
@@ -280,7 +293,7 @@ public class HistoryEntry {
             entry.durationMillis = result.responseTimeMs;
             entry.requestSizeBytes = estimateRequestSize(result);
             entry.responseSizeBytes = result.responseSize;
-            entry.responseSnapshot = HistoryResponseSnapshot.from(result);
+            entry.responseSnapshot = HistoryResponseSnapshot.from(result, retentionPolicy);
             entry.errorMessage = result.errorMessage;
             entry.requestSent = result.requestSent;
             entry.retryDecision = result.retryDecision;
@@ -327,17 +340,14 @@ public class HistoryEntry {
             entry.initialResolvedUrl = result.initialResolvedUrl != null ? result.initialResolvedUrl : result.requestUrl;
             entry.finalResolvedUrl = result.finalResolvedUrl != null ? result.finalResolvedUrl : result.requestUrl;
             entry.redirectTerminationReason = result.redirectTerminationReason;
-            entry.redirectHops = copyRedirectHops(result.redirectHops);
+            entry.redirectHops = copyRedirectHopsBorrowingPayload(result.redirectHops);
             entry.host = result.host != null && !result.host.isBlank() ? result.host : parseHost(entry.finalResolvedUrl);
             entry.resultClassification = entry.result != null ? entry.result.displayName() : null;
             if (entry.requestSnapshot != null) {
                 if (result.requestSent) {
-                    entry.requestSnapshot.rawRequestSent = result.rawRequestBytes != null ? result.rawRequestBytes.clone() : null;
-                    entry.requestSnapshot.rawRequestSentText = result.rawRequestText != null
-                            ? result.rawRequestText
-                            : (result.rawRequestBytes != null
-                            ? new String(result.rawRequestBytes, java.nio.charset.StandardCharsets.UTF_8)
-                            : null);
+                    entry.requestSnapshot.rawRequestSent = result.rawRequestBytes;
+                    entry.requestSnapshot.rawRequestSentText = result.rawRequestBytes == null
+                            ? result.rawRequestText : null;
                 }
                 entry.requestSnapshot.resolvedUrl = result.requestUrl;
                 entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
@@ -367,7 +377,7 @@ public class HistoryEntry {
                 && entry.result != HistoryResult.TIMEOUT) {
             entry.result = HistoryResult.ERROR;
         }
-        return entry;
+        return HistoryBodyTruncator.apply(entry, retentionPolicy);
     }
 
     public static HistoryEntry fromRedirectHop(RunnerResult parent, RedirectHop hop) {
@@ -433,14 +443,20 @@ public class HistoryEntry {
     }
 
     public static HistoryEntry copyOf(HistoryEntry source) {
-        return copyOf(source, true);
+        return copyOf(source, true, false);
     }
 
     static HistoryEntry copyOfWithoutAuthoredExactTransport(HistoryEntry source) {
-        return copyOf(source, false);
+        return copyOf(source, false, false);
     }
 
-    private static HistoryEntry copyOf(HistoryEntry source, boolean includeAuthoredExactTransport) {
+    public static HistoryEntry copyForPersistenceSharingPayload(HistoryEntry source) {
+        return copyOf(source, true, true);
+    }
+
+    private static HistoryEntry copyOf(HistoryEntry source,
+                                       boolean includeAuthoredExactTransport,
+                                       boolean sharePayload) {
         if (source == null) {
             return null;
         }
@@ -470,10 +486,14 @@ public class HistoryEntry {
         copy.requestName = source.requestName;
         copy.environmentId = source.environmentId;
         copy.environmentName = source.environmentName;
-        copy.requestSnapshot = includeAuthoredExactTransport
+        copy.requestSnapshot = sharePayload
+                ? HistoryRequestSnapshot.copyForPersistenceSharingPayload(source.requestSnapshot)
+                : includeAuthoredExactTransport
                 ? HistoryRequestSnapshot.copyOf(source.requestSnapshot)
                 : HistoryRequestSnapshot.copyOfWithoutExactTransport(source.requestSnapshot);
-        copy.responseSnapshot = HistoryResponseSnapshot.copyOf(source.responseSnapshot);
+        copy.responseSnapshot = sharePayload
+                ? HistoryResponseSnapshot.copyForPersistenceSharingBody(source.responseSnapshot)
+                : HistoryResponseSnapshot.copyOf(source.responseSnapshot);
         copy.statusCode = source.statusCode;
         copy.durationMillis = source.durationMillis;
         copy.requestSizeBytes = source.requestSizeBytes;
@@ -510,7 +530,9 @@ public class HistoryEntry {
         copy.initialResolvedUrl = source.initialResolvedUrl;
         copy.finalResolvedUrl = source.finalResolvedUrl;
         copy.redirectTerminationReason = source.redirectTerminationReason;
-        copy.redirectHops = copyRedirectHops(source.redirectHops);
+        copy.redirectHops = sharePayload
+                ? copyRedirectHopsBorrowingPayload(source.redirectHops)
+                : copyRedirectHops(source.redirectHops);
         copy.host = source.host;
         copy.scriptMode = source.scriptMode;
         copy.scriptDialect = source.scriptDialect;
@@ -1114,6 +1136,20 @@ public class HistoryEntry {
         }
         for (RedirectHop hop : hops) {
             RedirectHop hopCopy = RedirectHop.copyOf(hop);
+            if (hopCopy != null) {
+                copy.add(hopCopy);
+            }
+        }
+        return copy;
+    }
+
+    private static List<RedirectHop> copyRedirectHopsBorrowingPayload(List<RedirectHop> hops) {
+        List<RedirectHop> copy = new ArrayList<>();
+        if (hops == null) {
+            return copy;
+        }
+        for (RedirectHop hop : hops) {
+            RedirectHop hopCopy = RedirectHop.copyBorrowingPayload(hop);
             if (hopCopy != null) {
                 copy.add(hopCopy);
             }

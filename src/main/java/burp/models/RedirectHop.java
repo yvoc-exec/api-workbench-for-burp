@@ -38,6 +38,15 @@ public class RedirectHop {
     }
 
     public static RedirectHop copyOf(RedirectHop source) {
+        return copyOf(source, false);
+    }
+
+    /** Detaches hop metadata while borrowing execution-owned payload until bounded capture. */
+    public static RedirectHop copyBorrowingPayload(RedirectHop source) {
+        return copyOf(source, true);
+    }
+
+    private static RedirectHop copyOf(RedirectHop source, boolean borrowPayload) {
         if (source == null) {
             return null;
         }
@@ -50,7 +59,8 @@ public class RedirectHop {
         copy.targetUrl = source.targetUrl;
         copy.targetMethod = source.targetMethod;
         copy.elapsedMs = source.elapsedMs;
-        copy.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
+        copy.rawRequestBytes = source.rawRequestBytes != null && !borrowPayload
+                ? source.rawRequestBytes.clone() : source.rawRequestBytes;
         copy.rawRequestText = source.rawRequestText;
         copy.canonicalizeRawEvidence();
         copy.rawRequestBodyTruncated = source.rawRequestBodyTruncated;
@@ -59,7 +69,8 @@ public class RedirectHop {
         copy.fullRawRequestBodySha256 = source.fullRawRequestBodySha256;
         copy.rawRequestTruncationReason = source.rawRequestTruncationReason;
         copy.responseHeadersText = source.responseHeadersText;
-        copy.responseBody = source.responseBody != null ? source.responseBody.clone() : null;
+        copy.responseBody = source.responseBody != null && !borrowPayload
+                ? source.responseBody.clone() : source.responseBody;
         copy.responseBodyTruncated = source.responseBodyTruncated;
         copy.originalResponseBodyLength = source.originalResponseBodyLength;
         copy.storedResponseBodyLength = source.storedResponseBodyLength;

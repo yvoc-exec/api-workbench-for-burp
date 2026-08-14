@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.auth.OAuth2Config;
 import burp.auth.OAuth2Manager;
 import burp.auth.TokenStore;
+import burp.history.HistoryBodyTruncator;
 import burp.diagnostics.DiagnosticEvent;
 import burp.diagnostics.DiagnosticOperation;
 import burp.diagnostics.DiagnosticSeverity;
@@ -16,9 +17,11 @@ import burp.ui.history.HistoryNativeHttpMessageFactory;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.models.RedirectHop;
 import burp.models.RedirectPolicy;
 import burp.models.RedirectTerminationReason;
+import burp.parser.HistoryRawHttpMessageParser;
 import burp.parser.VariableResolver;
 import burp.scripts.ScriptAssertionResult;
 import burp.scripts.ExecutionSource;
@@ -48,6 +51,7 @@ import java.util.function.BooleanSupplier;
  * Default placeholder values are applied only when a key remains unresolved.
  */
 public class SharedRequestPipeline implements AutoCloseable {
+    static final int MAX_EXECUTION_TEXT_PREVIEW_BYTES = 1 * 1024 * 1024;
     enum ExecutionIntent {
         PREVIEW,
         LIVE
@@ -653,7 +657,7 @@ public class SharedRequestPipeline implements AutoCloseable {
         ExecutionPreflightResult preflight = null;
         byte[] rawRequest;
         try {
-            rawRequest = requestBuilder.buildRequest(requestForBuild, resolver);
+            rawRequest = requestBuilder.buildRequestForExecution(requestForBuild, resolver);
         } catch (Exception buildError) {
             if (result != null) {
                 result.success = false;
@@ -681,7 +685,8 @@ public class SharedRequestPipeline implements AutoCloseable {
             }
             return result;
         }
-        String rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
+        RequestDisplay requestDisplay = describeRawRequest(rawRequest);
+        String rawRequestText = requestDisplay.completeText;
         String resolvedUrl = resolver.resolve(requestForBuild != null ? requestForBuild.url : null);
         String effectiveOrigin = originDisplay(resolvedUrl);
         String originalOrigin = originDisplay(originalResolvedUrl);
@@ -692,8 +697,8 @@ public class SharedRequestPipeline implements AutoCloseable {
             result.rawRequestBytes = rawRequest;
             result.rawRequestText = rawRequestText;
             result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
-            result.requestHeaders = splitRawRequest(rawRequest)[0];
-            result.requestBody = splitRawRequest(rawRequest)[1];
+            result.requestHeaders = requestDisplay.headers;
+            result.requestBody = requestDisplay.body;
             result.resolvedUrl = resolvedUrl;
             result.originalResolvedUrl = originalResolvedUrl;
             result.effectiveResolvedUrl = resolvedUrl;
@@ -920,16 +925,17 @@ public class SharedRequestPipeline implements AutoCloseable {
             if (storedVars != null && !storedVars.isEmpty()) {
                 resolver.addAll(storedVars);
                 try {
-                    rawRequest = requestBuilder.buildRequest(requestForBuild, resolver);
-                    rawRequestText = new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8);
+                    rawRequest = requestBuilder.buildRequestForExecution(requestForBuild, resolver);
+                    requestDisplay = describeRawRequest(rawRequest);
+                    rawRequestText = requestDisplay.completeText;
                     resolvedUrl = resolver.resolve(requestForBuild != null ? requestForBuild.url : null);
                     effectiveOrigin = originDisplay(resolvedUrl);
                     if (result != null) {
                         result.rawRequestBytes = rawRequest;
                         result.rawRequestText = rawRequestText;
                         result.resolvedVariables = new LinkedHashMap<>(resolver.getVariables());
-                        result.requestHeaders = splitRawRequest(rawRequest)[0];
-                        result.requestBody = splitRawRequest(rawRequest)[1];
+                        result.requestHeaders = requestDisplay.headers;
+                        result.requestBody = requestDisplay.body;
                         result.resolvedUrl = resolvedUrl;
                         result.effectiveResolvedUrl = resolvedUrl;
                     }
@@ -966,7 +972,9 @@ public class SharedRequestPipeline implements AutoCloseable {
             httpRequest = burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
                     service, burp.api.montoya.core.ByteArray.byteArray(requestBytes));
         } catch (Throwable factoryError) {
-            String fallbackRaw = rawRequestText;
+            String fallbackRaw = rawRequestText != null
+                    ? rawRequestText
+                    : new String(requestBytes, java.nio.charset.StandardCharsets.UTF_8);
             httpRequest = HistoryNativeHttpMessageFactory.request(fallbackRaw);
         }
         result.builtRequest = httpRequest;
@@ -976,7 +984,7 @@ public class SharedRequestPipeline implements AutoCloseable {
         RedirectExecutor.RedirectRequest redirectRequest = new RedirectExecutor.RedirectRequest();
         redirectRequest.initialRequest = httpRequest;
         redirectRequest.initialUrl = resolvedUrl;
-        redirectRequest.initialRawRequestBytes = requestBytes.clone();
+        redirectRequest.initialRawRequestBytes = requestBytes;
         redirectRequest.followRedirects = followRedirects;
         redirectRequest.redirectPolicy = redirectPolicy != null ? redirectPolicy : RedirectPolicy.defaults();
         redirectRequest.responseTimeoutMillis = effectivePolicy.responseTimeoutMillis;
@@ -1037,9 +1045,7 @@ public class SharedRequestPipeline implements AutoCloseable {
         result.timeoutMillis = redirectResult.timeoutMillis > 0 ? redirectResult.timeoutMillis : effectivePolicy.responseTimeoutMillis;
         result.redirectHops.clear();
         if (redirectResult.redirectHops != null) {
-            for (RedirectHop hop : redirectResult.redirectHops) {
-                result.redirectHops.add(RedirectHop.copyOf(hop));
-            }
+            result.redirectHops.addAll(redirectResult.redirectHops);
         }
         result.success = redirectResult.success;
         result.errorMessage = redirectResult.errorMessage;
@@ -1843,39 +1849,41 @@ public class SharedRequestPipeline implements AutoCloseable {
         return msg;
     }
 
-    private String[] splitRawRequest(byte[] rawRequest) {
+    private static RequestDisplay describeRawRequest(byte[] rawRequest) {
         if (rawRequest == null || rawRequest.length == 0) {
-            return new String[]{"", ""};
+            return new RequestDisplay("", "", "");
         }
-
-        byte[] separator = "\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        int separatorIndex = indexOf(rawRequest, separator);
-        if (separatorIndex < 0) {
-            return new String[]{new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8), ""};
+        HistoryRawHttpMessageParser.RequestLayout layout =
+                HistoryRawHttpMessageParser.inspectRequest(rawRequest);
+        int bodyOffset = layout.bodyOffset();
+        int headerLength = bodyOffset >= 0 ? Math.max(0, bodyOffset - layout.separatorLength()) : 0;
+        String headers = headerLength > 0
+                ? new String(rawRequest, 0, headerLength, java.nio.charset.StandardCharsets.ISO_8859_1)
+                : "[Request headers unavailable]";
+        int bodyLength = bodyOffset >= 0 ? rawRequest.length - bodyOffset : 0;
+        String body;
+        if (bodyLength == 0) {
+            body = "";
+        } else if (bodyLength <= MAX_EXECUTION_TEXT_PREVIEW_BYTES
+                && ExactHttpRequestSnapshot.isValidUtf8(rawRequest, bodyOffset, bodyLength)) {
+            body = new String(rawRequest, bodyOffset, bodyLength,
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } else {
+            boolean binary = !ExactHttpRequestSnapshot.isValidUtf8(
+                    rawRequest, bodyOffset, bodyLength);
+            body = "[Body omitted: originalLength=" + bodyLength
+                    + " bytes; SHA-256="
+                    + HistoryBodyTruncator.sha256Hex(rawRequest, bodyOffset, bodyLength)
+                    + "; reason=" + (binary ? "binary" : "large") + "]";
         }
-
-        String headerText = new String(rawRequest, 0, separatorIndex, java.nio.charset.StandardCharsets.UTF_8);
-        int bodyStart = separatorIndex + separator.length;
-        String bodyText = bodyStart <= rawRequest.length
-                ? new String(rawRequest, bodyStart, rawRequest.length - bodyStart, java.nio.charset.StandardCharsets.UTF_8)
-                : "";
-        return new String[]{headerText, bodyText};
+        String completeText = rawRequest.length <= MAX_EXECUTION_TEXT_PREVIEW_BYTES
+                && ExactHttpRequestSnapshot.isValidUtf8(rawRequest, 0, rawRequest.length)
+                ? new String(rawRequest, java.nio.charset.StandardCharsets.UTF_8)
+                : null;
+        return new RequestDisplay(completeText, headers, body);
     }
 
-    private int indexOf(byte[] haystack, byte[] needle) {
-        if (haystack == null || needle == null || needle.length == 0 || haystack.length < needle.length) {
-            return -1;
-        }
-        outer:
-        for (int i = 0; i <= haystack.length - needle.length; i++) {
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
-                }
-            }
-            return i;
-        }
-        return -1;
+    private record RequestDisplay(String completeText, String headers, String body) {
     }
 
     private void recordDiagnostic(DiagnosticOperation operation,

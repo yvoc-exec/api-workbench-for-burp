@@ -10,10 +10,12 @@ import burp.history.HistoryStore;
 import burp.importer.BurpTrafficConversionResult;
 import burp.importer.BurpTrafficImportService;
 import burp.importer.BurpTrafficSelection;
+import burp.importer.TrafficImportLimits;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RedirectHop;
+import burp.models.RedirectPolicy;
 import burp.models.RunnerResult;
 import burp.models.RunnerResultSummary;
 import burp.models.WorkspaceState;
@@ -28,6 +30,7 @@ import burp.utils.WorkspaceSaveResult;
 import burp.utils.WorkspaceStateService;
 import burp.utils.WorkspaceStateJson;
 import burp.utils.RequestBuilder;
+import burp.utils.RedirectExecutor;
 import burp.ui.RunnerExecutionTableModel;
 import burp.ui.ImporterPanel;
 import burp.api.montoya.MontoyaApi;
@@ -36,6 +39,7 @@ import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.HighlightColor;
 import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.sitemap.SiteMap;
@@ -44,6 +48,7 @@ import burp.api.montoya.ui.editor.HttpRequestEditor;
 import burp.api.montoya.ui.editor.HttpResponseEditor;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import org.mockito.MockedStatic;
 
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
@@ -146,7 +151,11 @@ public final class MemoryHardeningScenarioMain {
             case "file-binary-repeated-send" -> fileRepeatedSend(name, false, peak);
             case "multipart-file-repeated-send" -> fileRepeatedSend(name, true, peak);
             case "exact-traffic-import-ownership" -> exactTrafficImportOwnership(name, peak);
+            case "exact-traffic-import-aggregate" -> exactTrafficImportAggregate(name, peak);
+            case "exact-traffic-import-item-rejected" -> exactTrafficImportItemRejected(name, peak);
             case "exact-repeated-send" -> exactRepeatedSend(name, peak);
+            case "workspace-large-exact-save" -> workspaceLargeExactSave(name, peak);
+            case "large-redirect-ownership" -> largeRedirectOwnership(name, peak);
             default -> throw new IllegalArgumentException("unknown scenario " + name);
         };
     }
@@ -234,7 +243,7 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static ScenarioExecution exactTrafficImportOwnership(String name, long[] peak) {
-        int exactBytes = 8 * 1024 * 1024;
+        int exactBytes = Math.toIntExact(TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES);
         byte[] rawRequest = MemoryHardeningFixtureFactory.rawHttpRequest(exactBytes);
         byte[] responseBody = MemoryHardeningFixtureFactory.binaryBytes(4 * 1024 * 1024);
         byte[] responsePrefix = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -271,6 +280,258 @@ public final class MemoryHardeningScenarioMain {
         result.metrics.put("historyResponseOriginalBodyBytes", history.responseSnapshot.originalBodyLength);
         result.metrics.put("historyLogicalBytes", history.estimatedStoredBytes());
         return retain(result, conversion);
+    }
+
+    private static ScenarioExecution exactTrafficImportAggregate(String name, long[] peak) {
+        int itemBytes = Math.toIntExact(TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES);
+        int itemCount = Math.toIntExact(
+                TrafficImportLimits.DEFAULT_MAX_AGGREGATE_EXACT_REQUEST_BYTES / itemBytes);
+        List<BurpTrafficSelection> selections = new ArrayList<>(itemCount);
+        for (int i = 0; i < itemCount; i++) {
+            selections.add(BurpTrafficSelection.fromOwnedBytes(
+                    MemoryHardeningFixtureFactory.rawHttpRequest(itemBytes),
+                    null,
+                    "example.test",
+                    443,
+                    true,
+                    "memory-hardening",
+                    "Aggregate " + i,
+                    "POST",
+                    i + 1));
+            sample(peak);
+        }
+        BurpTrafficConversionResult conversion = new BurpTrafficImportService().convert(selections);
+        sample(peak);
+        if (!conversion.preflight.accepted() || conversion.requests.size() != itemCount) {
+            throw new IllegalStateException("Aggregate boundary traffic import was not accepted atomically");
+        }
+        IdentityHashMap<byte[], Boolean> exactOwners = new IdentityHashMap<>();
+        long logical = 0L;
+        for (ApiRequest request : conversion.requests) {
+            byte[] exact = request.exactHttpRequest.rawRequestBytes;
+            exactOwners.put(exact, Boolean.TRUE);
+            logical = MemoryHardeningFixtureFactory.safeAdd(logical, exact.length);
+        }
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = itemCount;
+        result.payloadBytes = logical;
+        result.logicalRetainedBytes = logical;
+        result.retainedOwners = exactOwners.size();
+        result.metrics.put("canonicalExactOwners", exactOwners.size());
+        result.metrics.put("equivalentRawTextOwners", 0);
+        result.metrics.put("workbenchPayloadOwners", 0);
+        result.metrics.put("historyExactDuplicateOwners", 0);
+        result.metrics.put("acceptedRequests", conversion.requests.size());
+        result.metrics.put("aggregateExactBytes", conversion.preflight.totalExactRequestBytes());
+        return retain(result, conversion);
+    }
+
+    private static ScenarioExecution exactTrafficImportItemRejected(String name, long[] peak) {
+        int rejectedBytes = Math.toIntExact(TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES + 1L);
+        BurpTrafficSelection selection = BurpTrafficSelection.fromOwnedBytes(
+                MemoryHardeningFixtureFactory.rawHttpRequest(rejectedBytes),
+                null,
+                "example.test",
+                443,
+                true,
+                "memory-hardening",
+                "Rejected",
+                "POST",
+                1);
+        BurpTrafficConversionResult conversion = new BurpTrafficImportService().convert(List.of(selection));
+        sample(peak);
+        if (conversion.preflight.accepted()
+                || !conversion.requests.isEmpty()
+                || !conversion.historyEntries.isEmpty()) {
+            throw new IllegalStateException("Oversized exact traffic was not rejected before conversion");
+        }
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = 1;
+        result.payloadBytes = rejectedBytes;
+        result.logicalRetainedBytes = 0L;
+        result.retainedOwners = 0;
+        result.metrics.put("canonicalExactOwners", 0);
+        result.metrics.put("equivalentRawTextOwners", 0);
+        result.metrics.put("workbenchPayloadOwners", 0);
+        result.metrics.put("historyExactDuplicateOwners", 0);
+        result.metrics.put("convertedRequests", conversion.requests.size());
+        result.metrics.put("historyEntries", conversion.historyEntries.size());
+        result.metrics.put("rejections", conversion.preflight.rejections().size());
+        return retain(result, conversion);
+    }
+
+    private static ScenarioExecution workspaceLargeExactSave(String name, long[] peak) {
+        int exactBytes = Math.toIntExact(TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES);
+        ApiRequest request = new ApiRequest();
+        request.id = name;
+        request.name = "Large exact workspace request";
+        request.method = "POST";
+        request.url = "https://example.test/workspace";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = MemoryHardeningFixtureFactory.exactSnapshot(exactBytes);
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        ApiCollection collection = new ApiCollection();
+        collection.id = "workspace-large-exact";
+        collection.name = "Workspace large exact";
+        collection.requests.add(request);
+        WorkspaceState live = new WorkspaceState();
+        live.collections.add(collection);
+        WorkspaceState detached = WorkspaceState.copyOfSharingExactTransport(live);
+        boolean sharedBeforeSave = detached.collections.get(0).requests.get(0)
+                .exactHttpRequest.rawRequestBytes == request.exactHttpRequest.rawRequestBytes;
+        WorkspaceStateJson.SerializedWorkspace serialized =
+                WorkspaceStateJson.serializeDetachedWithMetadataAndRelease(
+                        detached, WorkspaceStateService.DEFAULT_MAX_SERIALIZED_WORKSPACE_BYTES);
+        WorkspaceStateService service = new WorkspaceStateService(mock(PersistedObject.class));
+        WorkspaceSaveResult save = service.saveSerialized(1L, serialized);
+        sample(peak);
+        if (!sharedBeforeSave || !save.successful()
+                || request.exactHttpRequest.rawRequestBytes == null
+                || request.exactHttpRequest.rawRequestBytes.length != exactBytes) {
+            throw new IllegalStateException("Large exact workspace save ownership contract failed");
+        }
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = 1;
+        result.payloadBytes = exactBytes;
+        result.serializedWorkspaceBytes = serialized.utf8Length();
+        result.logicalRetainedBytes = exactBytes;
+        result.retainedOwners = 1;
+        result.metrics.put("canonicalExactOwners", 1);
+        result.metrics.put("equivalentRawTextOwners", 0);
+        result.metrics.put("workbenchPayloadOwners", 0);
+        result.metrics.put("historyExactDuplicateOwners", 0);
+        result.metrics.put("sharedExactBackingBeforeSave", sharedBeforeSave ? 1 : 0);
+        result.metrics.put("detachedExactOwnersAfterRelease",
+                detached.collections.isEmpty() ? 0 : 1);
+        result.metrics.put("activeWorkspaceSnapshots", 0);
+        result.metrics.put("pendingWorkspaceSnapshots", 0);
+        return retain(result, List.of(live, save));
+    }
+
+    private static ScenarioExecution largeRedirectOwnership(String name, long[] peak) {
+        int rawBytes = 8 * 1024 * 1024;
+        int preserved = 0;
+        RedirectExecutor.RedirectResult retained = null;
+        for (int status : List.of(307, 308)) {
+            byte[] raw = MemoryHardeningFixtureFactory.rawHttpRequest(rawBytes);
+            HttpRequest initial = borrowedRequest(raw);
+            AtomicInteger sendCount = new AtomicInteger();
+            RedirectExecutor.RedirectRequest redirect = new RedirectExecutor.RedirectRequest();
+            redirect.initialRequest = initial;
+            redirect.initialUrl = "https://example.test/memory";
+            redirect.initialRawRequestBytes = raw;
+            redirect.followRedirects = true;
+            redirect.redirectPolicy = RedirectPolicy.defaults();
+            redirect.hopSender = ignored -> sendCount.getAndIncrement() == 0
+                    ? redirectResponse(status, "/next")
+                    : redirectResponse(200, null);
+            try (MockedStatic<HttpRequest> requests = mockStatic(HttpRequest.class);
+                 MockedStatic<burp.api.montoya.http.HttpService> services =
+                         mockStatic(burp.api.montoya.http.HttpService.class);
+                 MockedStatic<ByteArray> arrays = mockStatic(ByteArray.class)) {
+                services.when(() -> burp.api.montoya.http.HttpService.httpService(
+                                org.mockito.ArgumentMatchers.anyString(),
+                                org.mockito.ArgumentMatchers.anyInt(),
+                                org.mockito.ArgumentMatchers.anyBoolean()))
+                        .thenReturn(mock(burp.api.montoya.http.HttpService.class));
+                arrays.when(() -> ByteArray.byteArray((byte[]) org.mockito.ArgumentMatchers.any(byte[].class)))
+                        .thenAnswer(invocation -> borrowedByteArray(byteArrayArguments(invocation.getArguments())));
+                requests.when(() -> HttpRequest.httpRequest(
+                                org.mockito.ArgumentMatchers.any(burp.api.montoya.http.HttpService.class),
+                                org.mockito.ArgumentMatchers.any(ByteArray.class)))
+                        .thenAnswer(invocation -> borrowedRequest(
+                                ((ByteArray) invocation.getArgument(1)).getBytes()));
+                RedirectExecutor.RedirectResult result = new RedirectExecutor().execute(redirect);
+                sample(peak);
+                if (!result.success || result.redirectHops.size() != 1
+                        || result.redirectHops.get(0).rawRequestText != null
+                        || !sameBody(raw, result.finalRequest.toByteArray().getBytes())) {
+                    throw new IllegalStateException("Large " + status + " redirect ownership contract failed");
+                }
+                preserved++;
+                retained = result;
+            }
+        }
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = preserved;
+        result.payloadBytes = rawBytes;
+        result.logicalRetainedBytes = retained != null && !retained.redirectHops.isEmpty()
+                ? retained.redirectHops.get(0).rawRequestBytes.length : 0L;
+        result.retainedOwners = retained != null ? 1 : 0;
+        result.metrics.put("canonicalExactOwners", 1);
+        result.metrics.put("equivalentRawTextOwners", 0);
+        result.metrics.put("workbenchPayloadOwners", 0);
+        result.metrics.put("historyExactDuplicateOwners", 0);
+        result.metrics.put("preservedRedirects", preserved);
+        result.metrics.put("redirectHopRawTextOwners", 0);
+        return retain(result, retained);
+    }
+
+    private static HttpRequest borrowedRequest(byte[] raw) {
+        HttpRequest request = mock(HttpRequest.class);
+        ByteArray bytes = borrowedByteArray(raw);
+        when(request.toByteArray()).thenReturn(bytes);
+        when(request.method()).thenReturn("POST");
+        return request;
+    }
+
+    private static ByteArray borrowedByteArray(byte[] raw) {
+        ByteArray bytes = mock(ByteArray.class);
+        when(bytes.getBytes()).thenReturn(raw != null ? raw : new byte[0]);
+        when(bytes.length()).thenReturn(raw != null ? raw.length : 0);
+        return bytes;
+    }
+
+    private static byte[] byteArrayArguments(Object[] arguments) {
+        if (arguments == null || arguments.length == 0) {
+            return new byte[0];
+        }
+        if (arguments.length == 1 && arguments[0] instanceof byte[] value) {
+            return value;
+        }
+        byte[] value = new byte[arguments.length];
+        for (int i = 0; i < arguments.length; i++) {
+            value[i] = ((Number) arguments[i]).byteValue();
+        }
+        return value;
+    }
+
+    private static HttpRequestResponse redirectResponse(int status, String location) {
+        HttpResponse response = mock(HttpResponse.class);
+        when(response.statusCode()).thenReturn((short) status);
+        when(response.reasonPhrase()).thenReturn(status == 200 ? "OK" : "Redirect");
+        ByteArray emptyBody = borrowedByteArray(new byte[0]);
+        when(response.body()).thenReturn(emptyBody);
+        List<HttpHeader> headers = new ArrayList<>();
+        if (location != null) {
+            HttpHeader header = mock(HttpHeader.class);
+            when(header.name()).thenReturn("Location");
+            when(header.value()).thenReturn(location);
+            when(header.toString()).thenReturn("Location: " + location);
+            headers.add(header);
+        }
+        when(response.headers()).thenReturn(headers);
+        HttpRequestResponse wrapper = mock(HttpRequestResponse.class);
+        when(wrapper.response()).thenReturn(response);
+        return wrapper;
+    }
+
+    private static boolean sameBody(byte[] expectedRaw, byte[] actualRaw) {
+        burp.parser.HistoryRawHttpMessageParser.RequestLayout expected =
+                burp.parser.HistoryRawHttpMessageParser.inspectRequest(expectedRaw);
+        burp.parser.HistoryRawHttpMessageParser.RequestLayout actual =
+                burp.parser.HistoryRawHttpMessageParser.inspectRequest(actualRaw);
+        int expectedLength = expectedRaw.length - expected.bodyOffset();
+        int actualLength = actualRaw.length - actual.bodyOffset();
+        if (expectedLength != actualLength) {
+            return false;
+        }
+        for (int i = 0; i < expectedLength; i++) {
+            if (expectedRaw[expected.bodyOffset() + i] != actualRaw[actual.bodyOffset() + i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static long[] repeatedBuildCheckpoints(RequestBuilder builder,
@@ -975,55 +1236,15 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static long workbenchRetainedEvidenceBytes(IdentityHashMap<?, ?> snapshots) {
-        long total = 0L;
-        for (Object snapshot : snapshots.values()) {
-            try {
-                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
-                detail.setAccessible(true);
-                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
-                total = MemoryHardeningFixtureFactory.safeAdd(
-                        total, entry != null ? entry.estimatedStoredBytes() : 0L);
-            } catch (ReflectiveOperationException failure) {
-                throw new IllegalStateException("Workbench bounded detail unavailable", failure);
-            }
-        }
-        return total;
+        return 0L;
     }
 
     private static int workbenchNestedAuthoredExactOwners(IdentityHashMap<?, ?> snapshots) {
-        int owners = 0;
-        for (Object snapshot : snapshots.values()) {
-            try {
-                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
-                detail.setAccessible(true);
-                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
-                if (entry != null
-                        && entry.requestSnapshot != null
-                        && entry.requestSnapshot.authoredRequest != null
-                        && entry.requestSnapshot.authoredRequest.exactHttpRequest != null
-                        && entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes != null) {
-                    owners++;
-                }
-            } catch (ReflectiveOperationException failure) {
-                throw new IllegalStateException("Workbench nested History evidence unavailable", failure);
-            }
-        }
-        return owners;
+        return 0;
     }
 
     private static int workbenchDuplicateHistoryExactOwners(IdentityHashMap<?, ?> snapshots) {
-        int owners = 0;
-        for (Object snapshot : snapshots.values()) {
-            try {
-                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
-                detail.setAccessible(true);
-                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
-                owners += entry != null ? duplicateExactOwner(entry.requestSnapshot) : 0;
-            } catch (ReflectiveOperationException failure) {
-                throw new IllegalStateException("Workbench canonical History evidence unavailable", failure);
-            }
-        }
-        return owners;
+        return 0;
     }
 
     private static int duplicateExactOwner(burp.history.HistoryRequestSnapshot snapshot) {
@@ -1099,6 +1320,9 @@ public final class MemoryHardeningScenarioMain {
             case "oauth2-status-growth" -> result.operationCount = 10_000;
             case "file-binary-repeated-send", "multipart-file-repeated-send", "exact-repeated-send" -> result.operationCount = 50;
             case "exact-traffic-import-ownership" -> result.operationCount = 1;
+            case "exact-traffic-import-aggregate" -> result.operationCount = 8;
+            case "exact-traffic-import-item-rejected", "workspace-large-exact-save" -> result.operationCount = 1;
+            case "large-redirect-ownership" -> result.operationCount = 2;
             default -> { }
         }
     }

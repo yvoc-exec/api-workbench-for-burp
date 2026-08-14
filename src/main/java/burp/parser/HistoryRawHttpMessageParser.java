@@ -4,108 +4,96 @@ import burp.history.HistoryHeader;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
 public final class HistoryRawHttpMessageParser {
     private static final Pattern HTTP_VERSION_PATTERN = Pattern.compile("HTTP/\\d+(?:\\.\\d+)?");
+    private static final int MAX_INSPECTED_HEADER_BYTES = 1024 * 1024;
 
     private HistoryRawHttpMessageParser() {
     }
 
-    public static ParsedRawHttpMessage parseRequest(byte[] rawRequestBytes, String rawRequestText) {
-        byte[] rawBytes = rawRequestBytes != null && rawRequestBytes.length > 0
-                ? rawRequestBytes.clone()
-                : rawRequestText != null
-                ? rawRequestText.getBytes(StandardCharsets.UTF_8)
-                : new byte[0];
-        String rawText = new String(rawBytes, StandardCharsets.UTF_8);
-        return parse(rawBytes, rawText, true);
-    }
-
-    static ParsedRawHttpMessage parse(byte[] rawBytes, String rawText, boolean request) {
-        byte[] safeBytes = rawBytes != null ? rawBytes.clone() : new byte[0];
-        String safeText = new String(safeBytes, StandardCharsets.UTF_8);
-        int crlfBoundary = indexOf(safeBytes, new byte[]{'\r', '\n', '\r', '\n'});
-        int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(safeBytes, new byte[]{'\n', '\n'});
+    /** Inspects framing without owning request bytes or materializing body text. */
+    public static RequestLayout inspectRequest(byte[] rawRequestBytes) {
+        byte[] raw = rawRequestBytes != null ? rawRequestBytes : new byte[0];
+        int crlfBoundary = indexOf(raw, new byte[]{'\r', '\n', '\r', '\n'});
+        int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(raw, new byte[]{'\n', '\n'});
         int boundary = crlfBoundary >= 0 ? crlfBoundary : lfBoundary;
-        String separator = crlfBoundary >= 0 ? "\r\n\r\n" : (lfBoundary >= 0 ? "\n\n" : "");
         int separatorLength = crlfBoundary >= 0 ? 4 : (lfBoundary >= 0 ? 2 : 0);
         int bodyOffset = boundary >= 0 ? boundary + separatorLength : -1;
-        byte[] headerBytes = boundary >= 0 ? slice(safeBytes, 0, boundary) : safeBytes.clone();
-        byte[] bodyBytes = bodyOffset >= 0 ? slice(safeBytes, bodyOffset, safeBytes.length) : new byte[0];
-        String headerText = new String(headerBytes, StandardCharsets.UTF_8);
-        List<String> headerLines = splitLines(headerText);
-        String startLine = !headerLines.isEmpty() ? headerLines.get(0).trim() : "";
-        String method = "";
-        String target = "";
-        String httpVersion = "";
-        String parseWarning = "";
-        boolean trustedRequest = false;
-        List<HistoryHeader> headers = new ArrayList<>();
-
-        if (request) {
-            if (boundary < 0 && safeBytes.length > 0) {
-                parseWarning = "MISSING_HEADER_BODY_SEPARATOR";
-            } else {
-                String[] parts = startLine.isBlank() ? new String[0] : startLine.split("\\s+");
-                boolean validRequestLine = parts.length == 3
-                        && !parts[0].isBlank()
-                        && !parts[1].isBlank()
-                        && !parts[2].isBlank()
-                        && isHttpToken(parts[0])
-                        && HTTP_VERSION_PATTERN.matcher(parts[2]).matches();
-                if (!validRequestLine) {
-                    parseWarning = "MALFORMED_HTTP_REQUEST_LINE";
-                } else {
-                    boolean validHeaders = true;
-                    for (int i = 1; i < headerLines.size(); i++) {
-                        String line = headerLines.get(i);
-                        if (line == null || line.isBlank()) {
-                            continue;
-                        }
-                        int colon = line.indexOf(':');
-                        if (colon <= 0) {
-                            validHeaders = false;
-                            break;
-                        }
-                        String name = line.substring(0, colon);
-                        if (name.isBlank() || !isHttpToken(name)) {
-                            validHeaders = false;
-                            break;
-                        }
-                        String value = line.substring(colon + 1).trim();
-                        headers.add(new HistoryHeader(name, value, false));
-                    }
-                    if (!validHeaders) {
-                        headers = new ArrayList<>();
-                        parseWarning = "MALFORMED_HTTP_HEADER";
-                    } else {
-                        method = parts[0];
-                        target = parts[1];
-                        httpVersion = parts[2];
-                        trustedRequest = true;
-                    }
-                }
-            }
+        String separator = crlfBoundary >= 0 ? "\r\n\r\n" : (lfBoundary >= 0 ? "\n\n" : "");
+        if (raw.length == 0) {
+            return RequestLayout.invalid(separator, bodyOffset, "MISSING_RAW_REQUEST");
+        }
+        if (boundary < 0) {
+            return RequestLayout.invalid(separator, -1, "MISSING_HEADER_BODY_SEPARATOR");
+        }
+        if (boundary > MAX_INSPECTED_HEADER_BYTES) {
+            return RequestLayout.invalid(separator, bodyOffset, "HTTP_HEADER_SECTION_LIMIT");
         }
 
-        String bodyText = trustedRequest ? new String(bodyBytes, StandardCharsets.UTF_8) : "";
+        String headerText = new String(raw, 0, boundary, StandardCharsets.ISO_8859_1);
+        List<String> headerLines = splitLines(headerText);
+        String startLine = !headerLines.isEmpty() ? headerLines.get(0).trim() : "";
+        String[] parts = startLine.isBlank() ? new String[0] : startLine.split("\\s+");
+        boolean validRequestLine = parts.length == 3
+                && !parts[0].isBlank()
+                && !parts[1].isBlank()
+                && !parts[2].isBlank()
+                && isHttpToken(parts[0])
+                && HTTP_VERSION_PATTERN.matcher(parts[2]).matches();
+        if (!validRequestLine) {
+            return new RequestLayout(false, startLine, "", "", "", List.of(),
+                    separator, boundary, separatorLength, bodyOffset, "MALFORMED_HTTP_REQUEST_LINE");
+        }
+
+        List<HistoryHeader> headers = new ArrayList<>();
+        for (int i = 1; i < headerLines.size(); i++) {
+            String line = headerLines.get(i);
+            if (line == null || line.isBlank()) {
+                continue;
+            }
+            int colon = line.indexOf(':');
+            if (colon <= 0) {
+                return new RequestLayout(false, startLine, "", "", "", List.of(),
+                        separator, boundary, separatorLength, bodyOffset, "MALFORMED_HTTP_HEADER");
+            }
+            String name = line.substring(0, colon);
+            if (name.isBlank() || !isHttpToken(name)) {
+                return new RequestLayout(false, startLine, "", "", "", List.of(),
+                        separator, boundary, separatorLength, bodyOffset, "MALFORMED_HTTP_HEADER");
+            }
+            headers.add(new HistoryHeader(name, trimOptionalWhitespace(line.substring(colon + 1)), false));
+        }
+        return new RequestLayout(true, startLine, parts[0], parts[1], parts[2], headers,
+                separator, boundary, separatorLength, bodyOffset, "");
+    }
+
+    /** Defensive compatibility representation; hot paths use inspectRequest. */
+    public static ParsedRawHttpMessage parseRequest(byte[] rawRequestBytes, String rawRequestText) {
+        byte[] raw = rawRequestBytes != null && rawRequestBytes.length > 0
+                ? rawRequestBytes
+                : rawRequestText != null ? rawRequestText.getBytes(StandardCharsets.UTF_8) : new byte[0];
+        RequestLayout layout = inspectRequest(raw);
+        byte[] body = layout.bodyOffset() >= 0
+                ? Arrays.copyOfRange(raw, layout.bodyOffset(), raw.length)
+                : new byte[0];
         return new ParsedRawHttpMessage(
-                safeBytes,
-                safeText,
-                separator,
-                startLine,
-                method,
-                target,
-                httpVersion,
-                headers,
-                bodyBytes,
-                bodyText,
-                parseWarning,
-                trustedRequest,
-                bodyOffset
-        );
+                raw,
+                new String(raw, StandardCharsets.UTF_8),
+                layout.separator(),
+                layout.startLine(),
+                layout.method(),
+                layout.target(),
+                layout.httpVersion(),
+                layout.headers(),
+                body,
+                layout.trustedRequest() ? new String(body, StandardCharsets.UTF_8) : "",
+                layout.parseWarning(),
+                layout.trustedRequest(),
+                layout.bodyOffset());
     }
 
     private static boolean isHttpToken(String value) {
@@ -128,7 +116,7 @@ public final class HistoryRawHttpMessageParser {
     }
 
     private static int indexOf(byte[] haystack, byte[] needle) {
-        if (haystack == null || needle == null || haystack.length == 0 || needle.length == 0 || needle.length > haystack.length) {
+        if (haystack == null || needle == null || needle.length == 0 || needle.length > haystack.length) {
             return -1;
         }
         outer:
@@ -143,26 +131,63 @@ public final class HistoryRawHttpMessageParser {
         return -1;
     }
 
-    private static byte[] slice(byte[] source, int start, int end) {
-        if (source == null || start < 0 || end < start || start >= source.length) {
-            return new byte[0];
+    private static List<String> splitLines(String text) {
+        if (text == null || text.isEmpty()) {
+            return List.of();
         }
-        int actualEnd = Math.min(end, source.length);
-        byte[] out = new byte[Math.max(0, actualEnd - start)];
-        System.arraycopy(source, start, out, 0, out.length);
-        return out;
+        return Arrays.asList(text.replace("\r", "").split("\n", -1));
     }
 
-    private static List<String> splitLines(String text) {
-        List<String> lines = new ArrayList<>();
-        if (text == null || text.isEmpty()) {
-            return lines;
+    private static String trimOptionalWhitespace(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
         }
-        String[] split = text.replace("\r", "").split("\n", -1);
-        for (String line : split) {
-            lines.add(line);
+        int start = 0;
+        int end = value.length();
+        while (start < end && (value.charAt(start) == ' ' || value.charAt(start) == '\t')) {
+            start++;
         }
-        return lines;
+        while (end > start && (value.charAt(end - 1) == ' ' || value.charAt(end - 1) == '\t')) {
+            end--;
+        }
+        return value.substring(start, end);
+    }
+
+    public record RequestLayout(
+            boolean trustedRequest,
+            String startLine,
+            String method,
+            String target,
+            String httpVersion,
+            List<HistoryHeader> headers,
+            String separator,
+            int headerLength,
+            int separatorLength,
+            int bodyOffset,
+            String parseWarning) {
+        public RequestLayout {
+            startLine = startLine != null ? startLine : "";
+            method = method != null ? method : "";
+            target = target != null ? target : "";
+            httpVersion = httpVersion != null ? httpVersion : "";
+            headers = headers != null ? List.copyOf(headers) : List.of();
+            separator = separator != null ? separator : "";
+            parseWarning = parseWarning != null ? parseWarning : "";
+        }
+
+        static RequestLayout invalid(String separator, int bodyOffset, String warning) {
+            return new RequestLayout(false, "", "", "", "", List.of(), separator,
+                    bodyOffset >= 0 ? Math.max(0, bodyOffset - separator.length()) : -1,
+                    separator.length(), bodyOffset, warning);
+        }
+
+        public int bodyLength(int rawLength) {
+            return bodyOffset >= 0 && rawLength >= bodyOffset ? rawLength - bodyOffset : 0;
+        }
+
+        public boolean isTrustedRequest() {
+            return trustedRequest;
+        }
     }
 
     public record ParsedRawHttpMessage(
@@ -178,8 +203,7 @@ public final class HistoryRawHttpMessageParser {
             String bodyText,
             String parseWarning,
             boolean trustedRequest,
-            int bodyOffset
-    ) {
+            int bodyOffset) {
         public ParsedRawHttpMessage {
             rawBytes = rawBytes != null ? rawBytes.clone() : new byte[0];
             headers = headers != null ? List.copyOf(headers) : List.of();

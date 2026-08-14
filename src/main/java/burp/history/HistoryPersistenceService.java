@@ -72,6 +72,15 @@ public class HistoryPersistenceService {
         state.historyEntries = store.snapshot();
     }
 
+    public void writeStoreSharingPayload(WorkspaceState state, HistoryStore store) {
+        if (state == null || store == null) {
+            return;
+        }
+        state.historyRetentionPolicy = store.getRetentionPolicy();
+        state.historyRetentionPolicyVersion = currentOrFuturePolicyVersion(state.historyRetentionPolicyVersion);
+        state.historyEntries = store.snapshotForPersistenceSharingPayload();
+    }
+
     private static int currentOrFuturePolicyVersion(Integer version) {
         return version != null && version > HistoryRetentionPolicy.CURRENT_POLICY_VERSION
                 ? version

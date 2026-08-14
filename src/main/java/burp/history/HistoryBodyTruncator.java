@@ -3,6 +3,7 @@ package burp.history;
 import burp.models.ApiRequest;
 import burp.parser.HistoryRawHttpMessageParser;
 import burp.parser.HistoryRawHttpMessageParser.ParsedRawHttpMessage;
+import burp.parser.HistoryRawHttpMessageParser.RequestLayout;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -37,14 +38,20 @@ public final class HistoryBodyTruncator {
         truncateResponseSnapshot(entry.responseSnapshot, safePolicy);
         truncateRedirectHops(entry.redirectHops, safePolicy);
 
-        entry.requestSizeBytes = entry.requestSnapshot != null && entry.requestSnapshot.rawRequestSent != null && entry.requestSnapshot.rawRequestSent.length > 0
-                ? entry.requestSnapshot.rawRequestSent.length
-                : entry.requestSnapshot != null
-                ? entry.requestSnapshot.approximateSizeBytes()
-                : 0L;
-        entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null
-                ? entry.responseSnapshot.body.length
-                : 0L;
+        if (entry.requestSizeBytes <= 0L) {
+            entry.requestSizeBytes = entry.requestSnapshot != null
+                    && entry.requestSnapshot.rawRequestSent != null
+                    && entry.requestSnapshot.rawRequestSent.length > 0
+                    ? entry.requestSnapshot.rawRequestSent.length
+                    : entry.requestSnapshot != null
+                    ? entry.requestSnapshot.approximateSizeBytes()
+                    : 0L;
+        }
+        if (entry.responseSizeBytes <= 0L) {
+            entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null
+                    ? entry.responseSnapshot.body.length
+                    : 0L;
+        }
         return entry;
     }
 
@@ -124,14 +131,18 @@ public final class HistoryBodyTruncator {
 
         if (changed) {
             entry.legacyBudgetCompacted = true;
-            entry.requestSizeBytes = entry.requestSnapshot != null
-                    && entry.requestSnapshot.rawRequestSent != null
-                    && entry.requestSnapshot.rawRequestSent.length > 0
-                    ? entry.requestSnapshot.rawRequestSent.length
-                    : entry.requestSnapshot != null ? entry.requestSnapshot.approximateSizeBytes() : 0L;
-            entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null
-                    ? entry.responseSnapshot.body.length
-                    : 0L;
+            if (entry.requestSizeBytes <= 0L) {
+                entry.requestSizeBytes = entry.requestSnapshot != null
+                        && entry.requestSnapshot.rawRequestSent != null
+                        && entry.requestSnapshot.rawRequestSent.length > 0
+                        ? entry.requestSnapshot.rawRequestSent.length
+                        : entry.requestSnapshot != null ? entry.requestSnapshot.approximateSizeBytes() : 0L;
+            }
+            if (entry.responseSizeBytes <= 0L) {
+                entry.responseSizeBytes = entry.responseSnapshot != null && entry.responseSnapshot.body != null
+                        ? entry.responseSnapshot.body.length
+                        : 0L;
+            }
         }
         return changed;
     }
@@ -334,7 +345,7 @@ public final class HistoryBodyTruncator {
         ensureRequestDefaults(snapshot);
         snapshot.canonicalizeExactTransportOwnership();
 
-        byte[] authoredOriginal = snapshot.bodyAsAuthored != null ? snapshot.bodyAsAuthored.clone() : new byte[0];
+        byte[] authoredOriginal = snapshot.bodyAsAuthored != null ? snapshot.bodyAsAuthored : new byte[0];
         if (snapshot.bodyTruncated) {
             preserveTruncatedRequestMetadata(snapshot, authoredOriginal);
         } else {
@@ -369,7 +380,7 @@ public final class HistoryBodyTruncator {
         if (exact == null || exact.length == 0) {
             return;
         }
-        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(exact, null);
+        RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(exact);
         long retainedPayloadBytes = parsed.bodyOffset() >= 0 ? exact.length - parsed.bodyOffset() : exact.length;
         if (retainedPayloadBytes <= maxBodyBytes) {
             return;
@@ -405,25 +416,22 @@ public final class HistoryBodyTruncator {
             return;
         }
 
-        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, null);
-        byte[] rawBytes = parsed.rawBytes();
-        byte[] bodyBytes = parsed.bodyBytes();
-
-        snapshot.rawRequestSent = rawBytes;
+        byte[] rawBytes = snapshot.rawRequestSent;
+        RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(rawBytes);
         snapshot.rawRequestSentText = null;
         snapshot.parseWarning = firstNonBlank(snapshot.parseWarning, parsed.parseWarning());
 
-        if (snapshot.rawBodyTruncated) {
-            preserveTruncatedRawMetadata(snapshot, parsed.bodyOffset() >= 0 ? bodyBytes : rawBytes);
-        } else {
-            populateRawBodyMetadata(snapshot, parsed.bodyOffset() >= 0 ? bodyBytes : rawBytes);
-            snapshot.rawTruncationReason = "";
-        }
-
         if (parsed.bodyOffset() >= 0) {
-            byte[] storedBody = bodyBytes;
-            if (bodyBytes.length > policy.maxRequestBodyBytesPerEntry) {
-                storedBody = truncateBytes(bodyBytes, policy.maxRequestBodyBytesPerEntry);
+            int bodyLength = rawBytes.length - parsed.bodyOffset();
+            if (snapshot.rawBodyTruncated) {
+                preserveTruncatedRawMetadata(snapshot, rawBytes, parsed.bodyOffset(), bodyLength);
+            } else {
+                populateRawBodyMetadata(snapshot, rawBytes, parsed.bodyOffset(), bodyLength);
+                snapshot.rawTruncationReason = "";
+            }
+            int retainedBodyLength = (int) Math.min(bodyLength, policy.maxRequestBodyBytesPerEntry);
+            if (bodyLength > policy.maxRequestBodyBytesPerEntry) {
+                snapshot.rawRequestSent = truncateRawMessage(rawBytes, parsed.bodyOffset(), retainedBodyLength);
                 snapshot.rawBodyTruncated = true;
                 snapshot.rawTruncationReason = RAW_REQUEST_BODY_LIMIT_REASON;
             } else if (!snapshot.rawBodyTruncated) {
@@ -433,17 +441,19 @@ public final class HistoryBodyTruncator {
                 snapshot.rawTruncationReason = RAW_REQUEST_BODY_LIMIT_REASON;
             }
 
-            snapshot.storedRawBodyLength = storedBody.length;
-            if (snapshot.rawBodyTruncated) {
-                snapshot.rawRequestSent = rebuildRawMessage(parsed, storedBody);
-                snapshot.rawRequestSentText = null;
-            }
+            snapshot.storedRawBodyLength = retainedBodyLength;
             return;
         }
 
-        byte[] storedEvidence = rawBytes;
+        if (snapshot.rawBodyTruncated) {
+            preserveTruncatedRawMetadata(snapshot, rawBytes, 0, rawBytes.length);
+        } else {
+            populateRawBodyMetadata(snapshot, rawBytes, 0, rawBytes.length);
+            snapshot.rawTruncationReason = "";
+        }
+        int retainedEvidenceLength = (int) Math.min(rawBytes.length, policy.maxRequestBodyBytesPerEntry);
         if (rawBytes.length > policy.maxRequestBodyBytesPerEntry) {
-            storedEvidence = truncateBytes(rawBytes, policy.maxRequestBodyBytesPerEntry);
+            snapshot.rawRequestSent = truncateBytes(rawBytes, policy.maxRequestBodyBytesPerEntry);
             snapshot.rawBodyTruncated = true;
             snapshot.rawTruncationReason = RAW_REQUEST_EVIDENCE_LIMIT_REASON;
         } else if (!snapshot.rawBodyTruncated) {
@@ -452,11 +462,7 @@ public final class HistoryBodyTruncator {
         } else if (snapshot.rawTruncationReason == null || snapshot.rawTruncationReason.isBlank()) {
             snapshot.rawTruncationReason = RAW_REQUEST_EVIDENCE_LIMIT_REASON;
         }
-        snapshot.storedRawBodyLength = storedEvidence.length;
-        if (snapshot.rawBodyTruncated) {
-            snapshot.rawRequestSent = storedEvidence;
-            snapshot.rawRequestSentText = null;
-        }
+        snapshot.storedRawBodyLength = retainedEvidenceLength;
     }
 
     private static void truncateRedirectHops(java.util.List<burp.models.RedirectHop> hops, HistoryRetentionPolicy policy) {
@@ -502,24 +508,25 @@ public final class HistoryBodyTruncator {
             return;
         }
 
-        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(authoritativeRaw, null);
+        RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(authoritativeRaw);
         byte[] storedRaw = authoritativeRaw;
         String reason = "";
 
         if (parsed.bodyOffset() >= 0) {
-            byte[] storedBody = parsed.bodyBytes();
-            long originalLength = preserveOriginalLength(hop.originalRawRequestBodyLength, storedBody.length);
-            String fullHash = preserveOriginalHash(hop.fullRawRequestBodySha256, storedBody);
-            if (storedBody.length > policy.maxRequestBodyBytesPerEntry) {
-                storedBody = truncateBytes(storedBody, policy.maxRequestBodyBytesPerEntry);
+            int bodyLength = authoritativeRaw.length - parsed.bodyOffset();
+            long originalLength = preserveOriginalLength(hop.originalRawRequestBodyLength, bodyLength);
+            String fullHash = preserveOriginalHash(
+                    hop.fullRawRequestBodySha256, authoritativeRaw, parsed.bodyOffset(), bodyLength);
+            int retainedBodyLength = (int) Math.min(bodyLength, policy.maxRequestBodyBytesPerEntry);
+            if (bodyLength > policy.maxRequestBodyBytesPerEntry) {
+                storedRaw = truncateRawMessage(authoritativeRaw, parsed.bodyOffset(), retainedBodyLength);
                 reason = RAW_REQUEST_BODY_LIMIT_REASON;
             } else if (hop.rawRequestBodyTruncated) {
                 reason = firstNonBlank(hop.rawRequestTruncationReason, RAW_REQUEST_BODY_LIMIT_REASON);
             }
-            storedRaw = rebuildRawMessage(parsed, storedBody);
-            hop.rawRequestBodyTruncated = hop.rawRequestBodyTruncated || storedBody.length < parsed.bodyBytes().length;
+            hop.rawRequestBodyTruncated = hop.rawRequestBodyTruncated || retainedBodyLength < bodyLength;
             hop.originalRawRequestBodyLength = originalLength;
-            hop.storedRawRequestBodyLength = storedBody.length;
+            hop.storedRawRequestBodyLength = retainedBodyLength;
             hop.fullRawRequestBodySha256 = fullHash;
             hop.rawRequestTruncationReason = hop.rawRequestBodyTruncated ? reason : "";
         } else {
@@ -538,12 +545,12 @@ public final class HistoryBodyTruncator {
             hop.rawRequestTruncationReason = hop.rawRequestBodyTruncated ? reason : "";
         }
 
-        hop.rawRequestBytes = storedRaw.length > 0 ? storedRaw.clone() : null;
+        hop.rawRequestBytes = storedRaw.length > 0 ? storedRaw : null;
         hop.rawRequestText = null;
     }
 
     private static void truncateRedirectHopResponse(burp.models.RedirectHop hop, HistoryRetentionPolicy policy) {
-        byte[] storedBody = hop.responseBody != null ? hop.responseBody.clone() : new byte[0];
+        byte[] storedBody = hop.responseBody != null ? hop.responseBody : new byte[0];
         if (storedBody.length == 0) {
             hop.responseBody = null;
             if (!hop.responseBodyTruncated) {
@@ -583,7 +590,7 @@ public final class HistoryBodyTruncator {
 
         ensureResponseDefaults(snapshot);
 
-        byte[] original = snapshot.body != null ? snapshot.body.clone() : new byte[0];
+        byte[] original = snapshot.body != null ? snapshot.body : new byte[0];
         if (snapshot.bodyTruncated) {
             preserveTruncatedResponseMetadata(snapshot, original);
         } else {
@@ -656,26 +663,27 @@ public final class HistoryBodyTruncator {
         boolean hasRawEvidence = (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
                 || (snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank());
         if (hasRawEvidence && snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0) {
-            ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(snapshot.rawRequestSent, null);
-            snapshot.rawRequestSent = parsed.rawBytes();
+            RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(snapshot.rawRequestSent);
             snapshot.rawRequestSentText = null;
             snapshot.parseWarning = firstNonBlank(snapshot.parseWarning, parsed.parseWarning());
-            byte[] bodyBytes = parsed.bodyBytes();
+            int offset = parsed.bodyOffset() >= 0 ? parsed.bodyOffset() : 0;
+            int bodyLength = snapshot.rawRequestSent.length - offset;
             if (snapshot.rawBodyTruncated) {
-                if (snapshot.originalRawBodyLength <= 0 && bodyBytes.length > 0) {
-                    snapshot.originalRawBodyLength = bodyBytes.length;
+                if (snapshot.originalRawBodyLength <= 0 && bodyLength > 0) {
+                    snapshot.originalRawBodyLength = bodyLength;
                 }
-                if (snapshot.storedRawBodyLength <= 0 && bodyBytes.length > 0) {
-                    snapshot.storedRawBodyLength = bodyBytes.length;
+                if (snapshot.storedRawBodyLength <= 0 && bodyLength > 0) {
+                    snapshot.storedRawBodyLength = bodyLength;
                 }
                 if (snapshot.fullRawBodySha256 == null || snapshot.fullRawBodySha256.isBlank()) {
-                    snapshot.fullRawBodySha256 = bodyBytes.length > 0 ? sha256Hex(bodyBytes) : "";
+                    snapshot.fullRawBodySha256 = bodyLength > 0
+                            ? sha256Hex(snapshot.rawRequestSent, offset, bodyLength) : "";
                 }
                 if (snapshot.rawTruncationReason == null || snapshot.rawTruncationReason.isBlank()) {
                     snapshot.rawTruncationReason = RAW_REQUEST_BODY_LIMIT_REASON;
                 }
             } else {
-                populateRawBodyMetadata(snapshot, bodyBytes);
+                populateRawBodyMetadata(snapshot, snapshot.rawRequestSent, offset, bodyLength);
             }
         } else if (!hasRawEvidence) {
             if (snapshot.originalRawBodyLength < 0) {
@@ -737,23 +745,37 @@ public final class HistoryBodyTruncator {
     }
 
     private static void populateRawBodyMetadata(HistoryRequestSnapshot snapshot, byte[] original) {
-        long originalLength = original != null ? original.length : 0L;
+        populateRawBodyMetadata(snapshot, original, 0, original != null ? original.length : 0);
+    }
+
+    private static void populateRawBodyMetadata(HistoryRequestSnapshot snapshot,
+                                                byte[] original,
+                                                int offset,
+                                                int length) {
+        long originalLength = Math.max(0, length);
         snapshot.originalRawBodyLength = originalLength;
-        snapshot.fullRawBodySha256 = originalLength > 0 ? sha256Hex(original) : "";
+        snapshot.fullRawBodySha256 = originalLength > 0 ? sha256Hex(original, offset, length) : "";
         if (!snapshot.rawBodyTruncated) {
             snapshot.storedRawBodyLength = originalLength;
         }
     }
 
     private static void preserveTruncatedRawMetadata(HistoryRequestSnapshot snapshot, byte[] storedBody) {
-        if (snapshot.originalRawBodyLength <= 0 && storedBody.length > 0) {
-            snapshot.originalRawBodyLength = storedBody.length;
+        preserveTruncatedRawMetadata(snapshot, storedBody, 0, storedBody != null ? storedBody.length : 0);
+    }
+
+    private static void preserveTruncatedRawMetadata(HistoryRequestSnapshot snapshot,
+                                                     byte[] storedBody,
+                                                     int offset,
+                                                     int length) {
+        if (snapshot.originalRawBodyLength <= 0 && length > 0) {
+            snapshot.originalRawBodyLength = length;
         }
-        if (snapshot.storedRawBodyLength <= 0 && storedBody.length > 0) {
-            snapshot.storedRawBodyLength = storedBody.length;
+        if (snapshot.storedRawBodyLength <= 0 && length > 0) {
+            snapshot.storedRawBodyLength = length;
         }
         if (snapshot.fullRawBodySha256 == null || snapshot.fullRawBodySha256.isBlank()) {
-            snapshot.fullRawBodySha256 = storedBody.length > 0 ? sha256Hex(storedBody) : "";
+            snapshot.fullRawBodySha256 = length > 0 ? sha256Hex(storedBody, offset, length) : "";
         }
         if (snapshot.rawTruncationReason == null || snapshot.rawTruncationReason.isBlank()) {
             snapshot.rawTruncationReason = RAW_REQUEST_BODY_LIMIT_REASON;
@@ -784,7 +806,7 @@ public final class HistoryBodyTruncator {
 
     private static byte[] truncateBytes(byte[] bytes, long maxBytes) {
         if (bytes == null || bytes.length == 0 || maxBytes <= 0 || bytes.length <= maxBytes) {
-            return bytes != null ? bytes.clone() : new byte[0];
+            return bytes != null ? bytes : new byte[0];
         }
         int length = (int) Math.min(bytes.length, maxBytes);
         byte[] out = new byte[length];
@@ -811,12 +833,33 @@ public final class HistoryBodyTruncator {
 
     private static byte[] authoritativeRawRequestBytes(byte[] rawRequestBytes, String rawRequestText) {
         if (rawRequestBytes != null && rawRequestBytes.length > 0) {
-            return rawRequestBytes.clone();
+            return rawRequestBytes;
         }
         if (rawRequestText != null && !rawRequestText.isBlank()) {
             return rawRequestText.getBytes(StandardCharsets.UTF_8);
         }
         return new byte[0];
+    }
+
+    private static byte[] truncateRawMessage(byte[] source, int bodyOffset, int retainedBodyLength) {
+        int safeOffset = Math.max(0, Math.min(bodyOffset, source != null ? source.length : 0));
+        int safeBodyLength = Math.max(0, Math.min(retainedBodyLength,
+                source != null ? source.length - safeOffset : 0));
+        byte[] out = new byte[safeOffset + safeBodyLength];
+        if (source != null && out.length > 0) {
+            System.arraycopy(source, 0, out, 0, out.length);
+        }
+        return out;
+    }
+
+    private static String preserveOriginalHash(String existingHash,
+                                               byte[] originalBytes,
+                                               int offset,
+                                               int length) {
+        if (existingHash != null && !existingHash.isBlank()) {
+            return existingHash;
+        }
+        return originalBytes != null && length > 0 ? sha256Hex(originalBytes, offset, length) : "";
     }
 
     private static void truncateLegacyTextFallback(HistoryRequestSnapshot snapshot, long limit) {

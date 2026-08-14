@@ -200,6 +200,110 @@ class BurpTrafficImportServiceTest {
         assertThat(request.exactHttpRequest.rawRequestBytes[0]).isEqualTo((byte) 'G');
     }
 
+    @Test
+    void defaultItemBudgetAcceptsExactBoundaryAndRejectsPlusOneAtomically() {
+        byte[] atLimit = validRequestOfSize((int) TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES);
+        byte[] overLimit = validRequestOfSize(atLimit.length + 1);
+
+        BurpTrafficConversionResult accepted = service.convert(List.of(ownedSelection(atLimit, 1)));
+        BurpTrafficConversionResult rejected = service.convert(List.of(ownedSelection(overLimit, 1)));
+
+        assertThat(accepted.preflight.accepted()).isTrue();
+        assertThat(accepted.requests).hasSize(1);
+        assertThat(rejected.preflight.accepted()).isFalse();
+        assertThat(rejected.preflight.rejections()).extracting(r -> r.reasonCode())
+                .contains(TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_ITEM_LIMIT);
+        assertThat(rejected.requests).isEmpty();
+        assertThat(rejected.historyEntries).isEmpty();
+    }
+
+    @Test
+    void configuredItemBudgetClampsAndEnforcesOneAndSixtyFourMibBoundaries() {
+        BurpTrafficImportService oneMib = new BurpTrafficImportService(
+                Clock.systemUTC(), new TrafficImportLimits(TrafficImportLimits.MIB, 128L * TrafficImportLimits.MIB));
+        assertThat(oneMib.preflight(List.of(ownedSelection(
+                validRequestOfSize((int) TrafficImportLimits.MIB), 1))).accepted()).isTrue();
+        assertThat(oneMib.preflight(List.of(ownedSelection(
+                validRequestOfSize((int) TrafficImportLimits.MIB + 1), 1))).accepted()).isFalse();
+
+        TrafficImportLimits clamped = new TrafficImportLimits(Long.MAX_VALUE, Long.MAX_VALUE);
+        assertThat(clamped.maxExactRequestBytes()).isEqualTo(64L * TrafficImportLimits.MIB);
+        assertThat(clamped.maxAggregateExactRequestBytes()).isEqualTo(512L * TrafficImportLimits.MIB);
+        BurpTrafficImportService sixtyFourMib = new BurpTrafficImportService(Clock.systemUTC(), clamped);
+        assertThat(sixtyFourMib.preflight(List.of(ownedSelection(
+                validRequestOfSize((int) clamped.maxExactRequestBytes()), 1))).accepted()).isTrue();
+    }
+
+    @Test
+    void aggregateBudgetAcceptsBoundaryAndRejectsPlusOneWithoutConversion() {
+        int itemSize = (int) TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES;
+        byte[] fullItem = validRequestOfSize(itemSize);
+        List<BurpTrafficSelection> atLimit = new java.util.ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            atLimit.add(ownedSelection(fullItem, i));
+        }
+        assertThat(service.preflight(atLimit).accepted()).isTrue();
+
+        byte[] minimum = validRequestOfSize(64);
+        List<BurpTrafficSelection> overLimit = new java.util.ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            overLimit.add(ownedSelection(fullItem, i));
+        }
+        overLimit.add(ownedSelection(validRequestOfSize(itemSize - minimum.length + 1), 7));
+        overLimit.add(ownedSelection(minimum, 8));
+        BurpTrafficConversionResult rejected = service.convert(overLimit);
+
+        assertThat(rejected.preflight.totalExactRequestBytes())
+                .isEqualTo(TrafficImportLimits.DEFAULT_MAX_AGGREGATE_EXACT_REQUEST_BYTES + 1);
+        assertThat(rejected.preflight.rejections()).extracting(r -> r.reasonCode())
+                .contains(TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_AGGREGATE_LIMIT);
+        assertThat(rejected.requests).isEmpty();
+        assertThat(rejected.historyEntries).isEmpty();
+    }
+
+    @Test
+    void aggregateLengthOverflowFailsClosed() {
+        TrafficImportPreflightResult preflight = service.preflight(List.of(
+                BurpTrafficSelection.rejectedMetadata(Long.MAX_VALUE, 0L, "Proxy", 1),
+                BurpTrafficSelection.rejectedMetadata(1L, 0L, "Proxy", 2)));
+
+        assertThat(preflight.accepted()).isFalse();
+        assertThat(preflight.rejections()).extracting(r -> r.reasonCode())
+                .contains(TrafficImportPreflightResult.ReasonCode.LENGTH_OVERFLOW);
+    }
+
+    @Test
+    void identicalAuthoredAndSentExactHistoryUsesOnePayloadOwner() {
+        BurpTrafficSelection selection = BurpTrafficSelection.fromOwnedBytes(
+                requestBytes("POST /same HTTP/1.1\r\nHost: api.example.test\r\n\r\nsame"),
+                responseBytes("HTTP/1.1 200 OK\r\n\r\nok"),
+                "api.example.test", 443, true, "Proxy", null, null, 1);
+        ApiRequest request = service.convertRequest(selection);
+
+        HistoryEntry entry = service.convertHistory(selection, request,
+                new HistoryRetentionPolicy(100, 1024 * 1024, 1024 * 1024, 1024 * 1024, true));
+
+        assertThat(entry.requestSnapshot.authoredExactRequestBytes)
+                .isSameAs(entry.requestSnapshot.rawRequestSent);
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+    }
+
+    private static BurpTrafficSelection ownedSelection(byte[] raw, int encounterIndex) {
+        return BurpTrafficSelection.fromOwnedBytes(raw, null, "api.example.test", 443,
+                true, "Proxy", null, null, encounterIndex);
+    }
+
+    private static byte[] validRequestOfSize(int totalSize) {
+        byte[] header = requestBytes("POST /budget HTTP/1.1\r\nHost: api.example.test\r\n\r\n");
+        if (totalSize < header.length) {
+            throw new IllegalArgumentException("fixture too small");
+        }
+        byte[] raw = new byte[totalSize];
+        System.arraycopy(header, 0, raw, 0, header.length);
+        java.util.Arrays.fill(raw, header.length, raw.length, (byte) 'x');
+        return raw;
+    }
+
     private static BurpTrafficSelection selection(byte[] rawRequest,
                                                   byte[] rawResponse,
                                                   String host,

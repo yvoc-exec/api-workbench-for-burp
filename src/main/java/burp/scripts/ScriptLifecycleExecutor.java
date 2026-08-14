@@ -1,7 +1,6 @@
 package burp.scripts;
 
 import burp.models.ApiRequest;
-import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.capabilities.ScriptCapabilityAnalyzer;
 import burp.scripts.capabilities.ScriptCapabilityFinding;
 import burp.scripts.capabilities.ScriptCapabilityReport;
@@ -126,10 +125,6 @@ public class ScriptLifecycleExecutor {
 
     private void restoreRequest(ScriptExecutionContext context, ApiRequest snapshot) {
         context.restoreRequest(snapshot);
-        if (context.request != null) {
-            context.request.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(
-                    snapshot != null ? snapshot.exactHttpRequest : null);
-        }
     }
 
     private String scriptLabel(ScriptBlock block) {

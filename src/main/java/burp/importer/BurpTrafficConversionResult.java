@@ -10,6 +10,7 @@ public final class BurpTrafficConversionResult {
     public final List<ApiRequest> requests = new ArrayList<>();
     public final List<HistoryEntry> historyEntries = new ArrayList<>();
     public final List<Failure> failures = new ArrayList<>();
+    public TrafficImportPreflightResult preflight;
 
     public boolean hasFailures() {
         return !failures.isEmpty();

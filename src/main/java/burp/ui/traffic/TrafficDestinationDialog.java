@@ -1,6 +1,7 @@
 package burp.ui.traffic;
 
 import burp.models.ApiCollection;
+import burp.importer.TrafficImportPreflightResult;
 import burp.ui.DialogParentResolver;
 
 import javax.swing.BorderFactory;
@@ -85,6 +86,19 @@ public final class TrafficDestinationDialog {
         preserveExact.setEnabled(!model.hasBinaryRequest());
 
         int row = 0;
+        TrafficImportPreflightResult preflight = model.preflight();
+        if (preflight != null) {
+            addRow(form, gbc, row++, "Selected requests:",
+                    new JLabel(String.valueOf(preflight.selectionCount())));
+            addRow(form, gbc, row++, "Exact request bytes:",
+                    new JLabel(String.valueOf(preflight.totalExactRequestBytes())));
+            addRow(form, gbc, row++, "Response bytes observed:",
+                    new JLabel(String.valueOf(preflight.totalResponseBytes())));
+            addRow(form, gbc, row++, "Per-item retained exact limit:",
+                    new JLabel(String.valueOf(preflight.configuredPerItemLimit())));
+            addRow(form, gbc, row++, "Operation exact limit:",
+                    new JLabel(String.valueOf(preflight.configuredAggregateLimit())));
+        }
         addRow(form, gbc, row++, "Destination collection:", collectionCombo);
         addRow(form, gbc, row++, "New collection name:", newCollectionName);
         addRow(form, gbc, row++, "Destination folder:", folder);

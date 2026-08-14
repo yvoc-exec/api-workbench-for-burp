@@ -76,16 +76,30 @@ public class WorkspaceState {
         return state;
     }
 
+    /** Detaches collection metadata while borrowing immutable exact transport bytes. */
+    public static WorkspaceState fromCollectionsSharingExactTransport(List<ApiCollection> source) {
+        WorkspaceState state = new WorkspaceState();
+        state.collections = copyCollections(source, true);
+        return state;
+    }
+
     public static WorkspaceState copyOf(WorkspaceState source) {
-        return copyOf(source, false);
+        return copyOf(source, false, false);
     }
 
     /** Detaches mutable workspace metadata while sharing immutable exact-request byte backing. */
     public static WorkspaceState copyOfSharingExactTransport(WorkspaceState source) {
-        return copyOf(source, true);
+        return copyOf(source, true, false);
     }
 
-    private static WorkspaceState copyOf(WorkspaceState source, boolean shareExactTransport) {
+    /** Detaches mutable state while borrowing immutable exact and History payload arrays. */
+    public static WorkspaceState copyOfSharingPersistencePayload(WorkspaceState source) {
+        return copyOf(source, true, true);
+    }
+
+    private static WorkspaceState copyOf(WorkspaceState source,
+                                         boolean shareExactTransport,
+                                         boolean shareHistoryPayload) {
         WorkspaceState copy = new WorkspaceState();
         if (source == null) {
             return copy;
@@ -105,7 +119,7 @@ public class WorkspaceState {
         copy.checkedRequestIdentityKeys = source.checkedRequestIdentityKeys != null ? new ArrayList<>(source.checkedRequestIdentityKeys) : new ArrayList<>();
         copy.expandedTreePathKeys = source.expandedTreePathKeys != null ? new ArrayList<>(source.expandedTreePathKeys) : new ArrayList<>();
         copy.requestTreePaths = source.requestTreePaths != null ? new LinkedHashMap<>(source.requestTreePaths) : new LinkedHashMap<>();
-        copy.historyEntries = copyHistoryEntries(source.historyEntries);
+        copy.historyEntries = copyHistoryEntries(source.historyEntries, shareHistoryPayload);
         copy.historyRetentionPolicy = HistoryRetentionPolicy.copyOf(source.historyRetentionPolicy);
         copy.historyRetentionPolicyVersion = source.historyRetentionPolicyVersion;
         copy.historyLegacyCompactedEntryCount = Math.max(0, source.historyLegacyCompactedEntryCount);
@@ -247,13 +261,16 @@ public class WorkspaceState {
         return out;
     }
 
-    private static List<HistoryEntry> copyHistoryEntries(List<HistoryEntry> src) {
+    private static List<HistoryEntry> copyHistoryEntries(List<HistoryEntry> src,
+                                                         boolean sharePayload) {
         List<HistoryEntry> out = new ArrayList<>();
         if (src == null) {
             return out;
         }
         for (HistoryEntry entry : src) {
-            HistoryEntry copy = HistoryEntry.copyOf(entry);
+            HistoryEntry copy = sharePayload
+                    ? HistoryEntry.copyForPersistenceSharingPayload(entry)
+                    : HistoryEntry.copyOf(entry);
             if (copy != null) {
                 out.add(copy);
             }

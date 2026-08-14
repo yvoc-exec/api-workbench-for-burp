@@ -10,7 +10,7 @@ import burp.history.HistorySource;
 import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.HistoryRawHttpMessageParser;
-import burp.parser.HistoryRawHttpMessageParser.ParsedRawHttpMessage;
+import burp.parser.HistoryRawHttpMessageParser.RequestLayout;
 import burp.ui.tree.RequestTreeNamingPolicy;
 
 import java.net.URI;
@@ -24,13 +24,19 @@ import java.util.UUID;
 
 public class BurpTrafficImportService {
     private final Clock clock;
+    private final TrafficImportLimits limits;
 
     public BurpTrafficImportService() {
-        this(Clock.systemUTC());
+        this(Clock.systemUTC(), TrafficImportLimits.defaults());
     }
 
     public BurpTrafficImportService(Clock clock) {
+        this(clock, TrafficImportLimits.defaults());
+    }
+
+    public BurpTrafficImportService(Clock clock, TrafficImportLimits limits) {
         this.clock = clock != null ? clock : Clock.systemUTC();
+        this.limits = limits != null ? limits : TrafficImportLimits.defaults();
     }
 
     public BurpTrafficConversionResult convert(List<BurpTrafficSelection> selections) {
@@ -40,41 +46,126 @@ public class BurpTrafficImportService {
     public BurpTrafficConversionResult convert(List<BurpTrafficSelection> selections,
                                                HistoryRetentionPolicy retentionPolicy) {
         BurpTrafficConversionResult result = new BurpTrafficConversionResult();
+        TrafficImportPreflightResult preflight = preflight(selections);
+        result.preflight = preflight;
+        if (!preflight.accepted()) {
+            for (TrafficImportPreflightResult.Rejection rejection : preflight.rejections()) {
+                result.failures.add(new BurpTrafficConversionResult.Failure(
+                        rejection.encounterIndex(), rejection.reasonCode().name(), rejection.safeMessage()));
+            }
+            return result;
+        }
         if (selections == null) {
             return result;
         }
-        List<ApiRequest> convertedRequests = new ArrayList<>();
-        List<HistoryEntry> convertedHistoryByRequest = new ArrayList<>();
         for (BurpTrafficSelection selection : selections) {
             try {
-                ApiRequest request = convertRequest(selection);
-                convertedRequests.add(request);
-                convertedHistoryByRequest.add(convertHistory(selection, request, retentionPolicy));
+                ApiRequest request = convertPreflightedRequest(selection);
+                result.requests.add(request);
+                result.historyEntries.add(convertHistory(selection, request, retentionPolicy));
             } catch (ConversionException e) {
+                result.requests.clear();
+                result.historyEntries.clear();
                 result.failures.add(new BurpTrafficConversionResult.Failure(
                         selection != null ? selection.encounterIndex : -1,
                         e.reasonCode,
                         e.getMessage()));
+                return result;
             }
         }
-        if (!result.failures.isEmpty()) {
-            return result;
-        }
-        result.requests.addAll(convertedRequests);
-        result.historyEntries.addAll(convertedHistoryByRequest);
         return result;
     }
 
+    public TrafficImportPreflightResult preflight(List<BurpTrafficSelection> selections) {
+        List<BurpTrafficSelection> safeSelections = selections != null ? selections : List.of();
+        List<TrafficImportPreflightResult.Rejection> rejections = new ArrayList<>();
+        long totalRequestBytes = 0L;
+        long totalResponseBytes = 0L;
+        int acceptedCount = 0;
+        for (int position = 0; position < safeSelections.size(); position++) {
+            BurpTrafficSelection selection = safeSelections.get(position);
+            int encounterIndex = selection != null ? selection.encounterIndex : position;
+            long requestLength = selection != null ? selection.declaredRequestLength : 0L;
+            long responseLength = selection != null ? selection.declaredResponseLength : 0L;
+            boolean rejected = false;
+            if (selection == null || requestLength <= 0L) {
+                rejections.add(rejection(encounterIndex,
+                        TrafficImportPreflightResult.ReasonCode.MISSING_RAW_REQUEST,
+                        requestLength, limits.maxExactRequestBytes(),
+                        "Item " + encounterIndex + " does not contain a raw HTTP request."));
+                rejected = true;
+            } else if (requestLength > limits.maxExactRequestBytes()) {
+                rejections.add(rejection(encounterIndex,
+                        TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_ITEM_LIMIT,
+                        requestLength, limits.maxExactRequestBytes(),
+                        "Item " + encounterIndex + " contains " + requestLength
+                                + " exact request bytes; configured maximum is "
+                                + limits.maxExactRequestBytes() + " bytes."));
+                rejected = true;
+            }
+
+            if (requestLength > 0L) {
+                if (wouldOverflow(totalRequestBytes, requestLength)) {
+                    rejections.add(rejection(encounterIndex,
+                            TrafficImportPreflightResult.ReasonCode.LENGTH_OVERFLOW,
+                            requestLength, Long.MAX_VALUE,
+                            "Traffic import request length accounting overflowed."));
+                    rejected = true;
+                } else {
+                    totalRequestBytes += requestLength;
+                }
+            }
+            totalResponseBytes = saturatingAdd(totalResponseBytes, responseLength);
+
+            if (!rejected) {
+                byte[] raw = selection.rawRequestBytes;
+                if (raw == null || raw.length == 0) {
+                    rejections.add(rejection(encounterIndex,
+                            TrafficImportPreflightResult.ReasonCode.MISSING_RAW_REQUEST,
+                            requestLength, limits.maxExactRequestBytes(),
+                            "Item " + encounterIndex + " could not be detached safely."));
+                } else {
+                    RequestLayout layout = HistoryRawHttpMessageParser.inspectRequest(raw);
+                    if (!layout.isTrustedRequest()) {
+                        rejections.add(rejection(encounterIndex,
+                                TrafficImportPreflightResult.ReasonCode.MALFORMED_HTTP_REQUEST,
+                                requestLength, limits.maxExactRequestBytes(),
+                                "Item " + encounterIndex + " is not a valid HTTP request."));
+                    } else {
+                        acceptedCount++;
+                    }
+                }
+            }
+        }
+        if (totalRequestBytes > limits.maxAggregateExactRequestBytes()) {
+            rejections.add(rejection(-1,
+                    TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_AGGREGATE_LIMIT,
+                    totalRequestBytes, limits.maxAggregateExactRequestBytes(),
+                    "Selected traffic contains " + totalRequestBytes
+                            + " exact request bytes; configured operation maximum is "
+                            + limits.maxAggregateExactRequestBytes() + " bytes. No requests were imported."));
+        }
+        return new TrafficImportPreflightResult(
+                safeSelections.size(), acceptedCount, totalRequestBytes, totalResponseBytes,
+                limits.maxExactRequestBytes(), limits.maxAggregateExactRequestBytes(), rejections);
+    }
+
     public ApiRequest convertRequest(BurpTrafficSelection selection) {
-        if (selection == null || selection.rawRequestBytes == null || selection.rawRequestBytes.length == 0) {
-            throw new ConversionException("MISSING_RAW_REQUEST", "Traffic import requires a raw HTTP request.");
+        if (selection == null) {
+            throw new ConversionException(
+                    TrafficImportPreflightResult.ReasonCode.MISSING_RAW_REQUEST.name(),
+                    "Traffic selection does not contain a raw HTTP request.");
         }
-        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(selection.rawRequestBytes, null);
-        if (!parsed.isTrustedRequest()) {
-            throw new ConversionException("MALFORMED_HTTP_REQUEST", parsed.parseWarning().isBlank()
-                    ? "Traffic import request is malformed."
-                    : parsed.parseWarning());
+        TrafficImportPreflightResult preflight = preflight(List.of(selection));
+        if (!preflight.accepted()) {
+            TrafficImportPreflightResult.Rejection rejection = preflight.rejections().get(0);
+            throw new ConversionException(rejection.reasonCode().name(), rejection.safeMessage());
         }
+        return convertPreflightedRequest(selection);
+    }
+
+    private ApiRequest convertPreflightedRequest(BurpTrafficSelection selection) {
+        RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(selection.rawRequestBytes);
 
         ApiRequest request = new ApiRequest();
         request.id = UUID.randomUUID().toString();
@@ -87,7 +178,7 @@ public class BurpTrafficImportService {
                 request.headers.add(new ApiRequest.Header(header.name, header.value, false));
             }
         }
-        int bodyOffset = bodyOffset(selection.rawRequestBytes);
+        int bodyOffset = parsed.bodyOffset();
         request.body = buildBody(bodyOffset >= 0
                 ? selection.rawRequestBytes.length - bodyOffset
                 : 0);
@@ -99,7 +190,14 @@ public class BurpTrafficImportService {
         request.scriptBlocks = new ArrayList<>();
         request.variables = new ArrayList<>();
         request.suppressedAutoHeaders = new java.util.LinkedHashSet<>();
-        request.exactHttpRequest = exactSnapshot(selection, request, bodyOffset);
+        request.exactHttpRequest = ExactHttpRequestSnapshot.fromOwnedTrafficBytes(
+                selection.rawRequestBytes,
+                limits.maxExactRequestBytes(),
+                selection.serviceHost,
+                normalizedPort(selection),
+                selection.secure,
+                safeContext(selection.sourceContext),
+                request.computeSemanticFingerprint());
         return request;
     }
 
@@ -142,14 +240,16 @@ public class BurpTrafficImportService {
     private HistoryRequestSnapshot boundedRequestSnapshot(ApiRequest request,
                                                           byte[] rawRequestBytes,
                                                           HistoryRetentionPolicy policy) {
-        HistoryRequestSnapshot snapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
-        int bodyOffset = bodyOffset(rawRequestBytes);
+        HistoryRequestSnapshot snapshot = HistoryRequestSnapshot.fromBorrowingExactTransport(request);
+        int bodyOffset = HistoryRawHttpMessageParser.inspectRequest(rawRequestBytes).bodyOffset();
         int originalBodyLength = bodyOffset >= 0 ? rawRequestBytes.length - bodyOffset : 0;
         int storedBodyLength = (int) Math.min(originalBodyLength, policy.maxRequestBodyBytesPerEntry);
         int storedLength = bodyOffset >= 0
                 ? bodyOffset + storedBodyLength
                 : rawRequestBytes.length;
-        snapshot.rawRequestSent = Arrays.copyOf(rawRequestBytes, storedLength);
+        snapshot.rawRequestSent = storedLength < rawRequestBytes.length
+                ? Arrays.copyOf(rawRequestBytes, storedLength)
+                : rawRequestBytes;
         snapshot.rawRequestSentText = null;
         snapshot.originalRawBodyLength = originalBodyLength;
         snapshot.storedRawBodyLength = storedBodyLength;
@@ -234,24 +334,6 @@ public class BurpTrafficImportService {
         return snapshot;
     }
 
-    private ExactHttpRequestSnapshot exactSnapshot(BurpTrafficSelection selection,
-                                                   ApiRequest request,
-                                                   int bodyOffset) {
-        ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
-        snapshot.rawRequestBytes = selection.rawRequestBytes;
-        snapshot.serviceHost = selection.serviceHost;
-        snapshot.servicePort = normalizedPort(selection);
-        snapshot.secure = selection.secure;
-        snapshot.pristine = true;
-        snapshot.binaryBody = bodyOffset >= 0
-                && bodyOffset < selection.rawRequestBytes.length
-                && !isUtf8Text(selection.rawRequestBytes, bodyOffset);
-        snapshot.sourceContext = safeContext(selection.sourceContext);
-        snapshot.invalidationReason = "";
-        snapshot.semanticFingerprint = request.computeSemanticFingerprint();
-        return snapshot;
-    }
-
     private ApiRequest.Body buildBody(int bodyLength) {
         if (bodyLength <= 0) {
             return null;
@@ -260,22 +342,6 @@ public class BurpTrafficImportService {
         body.mode = "raw";
         body.raw = null;
         return body;
-    }
-
-    private boolean isUtf8Text(byte[] rawRequestBytes, int bodyOffset) {
-        String text = new String(rawRequestBytes, bodyOffset,
-                rawRequestBytes.length - bodyOffset, StandardCharsets.UTF_8);
-        byte[] roundTrip = text.getBytes(StandardCharsets.UTF_8);
-        int bodyLength = rawRequestBytes.length - bodyOffset;
-        if (roundTrip.length != bodyLength) {
-            return false;
-        }
-        for (int i = 0; i < bodyLength; i++) {
-            if (roundTrip[i] != rawRequestBytes[bodyOffset + i]) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private String fallbackMethod(BurpTrafficSelection selection) {
@@ -365,15 +431,22 @@ public class BurpTrafficImportService {
         return selection.servicePort > 0 ? selection.servicePort : (selection.secure ? 443 : 80);
     }
 
-    private int bodyOffset(byte[] messageBytes) {
-        int crlfBoundary = indexOf(messageBytes, new byte[]{'\r', '\n', '\r', '\n'});
-        int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(messageBytes, new byte[]{'\n', '\n'});
-        int boundary = crlfBoundary >= 0 ? crlfBoundary : lfBoundary;
-        int separatorLength = crlfBoundary >= 0 ? 4 : (lfBoundary >= 0 ? 2 : 0);
-        if (boundary < 0 || boundary + separatorLength >= messageBytes.length) {
-            return -1;
-        }
-        return boundary + separatorLength;
+    static boolean wouldOverflow(long total, long increment) {
+        return increment < 0L || total < 0L || Long.MAX_VALUE - total < increment;
+    }
+
+    private static long saturatingAdd(long total, long increment) {
+        return wouldOverflow(total, increment) ? Long.MAX_VALUE : total + increment;
+    }
+
+    private static TrafficImportPreflightResult.Rejection rejection(
+            int encounterIndex,
+            TrafficImportPreflightResult.ReasonCode reason,
+            long offendingBytes,
+            long limit,
+            String message) {
+        return new TrafficImportPreflightResult.Rejection(
+                encounterIndex, reason, Math.max(0L, offendingBytes), Math.max(0L, limit), message);
     }
 
     private static String safeContext(String sourceContext) {

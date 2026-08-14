@@ -745,8 +745,19 @@ public class UniversalImporter {
             return new WorkspaceState();
         }
         return SwingEdt.call(() -> persistRequestEditorState
-                ? ui.getWorkspaceStateSnapshot()
-                : ui.getWorkspaceStateSnapshotFromModel());
+                ? ui.getWorkspaceStateSnapshotForPersistence()
+                : ui.getWorkspaceStateSnapshotFromModelForPersistence());
+    }
+
+    /** Validates a detached candidate without consuming its shared exact transport owners. */
+    public void validateWorkspaceStatePersistable(WorkspaceState candidate) {
+        if (workspaceStateService == null) {
+            return;
+        }
+        WorkspaceState validationCopy = WorkspaceState.copyOfSharingPersistencePayload(candidate);
+        WorkspaceStateJson.normalizeForSave(validationCopy);
+        WorkspaceStateJson.serializeDetachedWithMetadataAndRelease(
+                validationCopy, workspaceStateService.maxSerializedWorkspaceBytes());
     }
 
     boolean isWorkspaceSaveCoordinatorTerminatedForTests() {

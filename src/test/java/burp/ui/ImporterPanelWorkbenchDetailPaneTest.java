@@ -153,13 +153,13 @@ class ImporterPanelWorkbenchDetailPaneTest {
     }
 
     @Test
-    void retainedSnapshotOwnsOnlyBoundedHistoryEvidence() {
+    void retainedSnapshotOwnsNoHistoryPayloadEvidence() {
         TestHarness harness = newHarness();
         ApiRequest request = request("req-heavy", "Heavy Request");
         ApiCollection collection = collection("APIM", request);
         harness.panel.restoreWorkspaceCollections(List.of(collection));
+        harness.panel.openRequestInEditor(request, collection);
         ImporterPanel.WorkbenchSendSnapshot snapshot = snapshot("HEAVY");
-        snapshot.detailEntry.requestSnapshot.rawRequestSent = new byte[2 * 1024 * 1024];
 
         harness.panel.applyWorkbenchSendSnapshot(request, collection, snapshot);
 
@@ -168,10 +168,51 @@ class ImporterPanelWorkbenchDetailPaneTest {
                 .extracting(java.lang.reflect.Field::getType)
                 .doesNotContain(
                         burp.api.montoya.http.message.requests.HttpRequest.class,
-                        burp.api.montoya.http.message.responses.HttpResponse.class);
-        assertThat(retained.detailEntry.requestSnapshot.rawRequestSent)
-                .hasSizeLessThanOrEqualTo(1024 * 1024);
-        assertThat(retained.detailEntry.requestSnapshot.rawBodyTruncated).isTrue();
+                        burp.api.montoya.http.message.responses.HttpResponse.class,
+                        burp.history.HistoryEntry.class,
+                        byte[].class);
+        assertThat(retained.historyEntryId).isNull();
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest())
+                .contains("Payload evidence is no longer retained in History.");
+    }
+
+    @Test
+    void twoHundredFiftySnapshotsRetainOnlyHistoryIdsAndSurviveHistoryClear() {
+        TestHarness harness = newHarness();
+        List<ApiRequest> requests = new ArrayList<>();
+        for (int i = 0; i < 250; i++) {
+            requests.add(request("req-" + i, "Request " + i));
+        }
+        ApiCollection collection = collection("APIM", requests.toArray(ApiRequest[]::new));
+        harness.panel.restoreWorkspaceCollections(List.of(collection));
+
+        for (int i = 0; i < requests.size(); i++) {
+            burp.history.HistoryEntry entry = new burp.history.HistoryEntry();
+            entry.id = "history-" + i;
+            entry.source = burp.history.HistorySource.WORKBENCH;
+            entry.requestId = requests.get(i).id;
+            entry.requestSnapshot = new burp.history.HistoryRequestSnapshot();
+            entry.requestSnapshot.rawRequestSent = new byte[]{1, 2, 3};
+            entry.ensureDefaults();
+            String historyId = harness.panel.getHistoryStoreForTests().admitEntry(entry).storedEntryId();
+            ImporterPanel.WorkbenchSendSnapshot snapshot = new ImporterPanel.WorkbenchSendSnapshot(
+                    historyId, "META " + i, "", "", null, "Send", i);
+            harness.panel.applyWorkbenchSendSnapshot(requests.get(i), collection, snapshot);
+        }
+
+        assertThat(requests).allSatisfy(request -> {
+            ImporterPanel.WorkbenchSendSnapshot snapshot = harness.panel.getWorkbenchSendSnapshot(request);
+            assertThat(snapshot).isNotNull();
+            assertThat(snapshot.historyEntryId).isNotBlank();
+        });
+        assertThat(ImporterPanel.WorkbenchSendSnapshot.class.getDeclaredFields())
+                .extracting(java.lang.reflect.Field::getType)
+                .doesNotContain(burp.history.HistoryEntry.class, byte[].class);
+
+        harness.panel.getHistoryStoreForTests().clear();
+        harness.panel.openRequestInEditor(requests.get(249), collection);
+        assertThat(harness.panel.getWorkbenchDetailMetaTextForTest())
+                .contains("Payload evidence is no longer retained in History.");
     }
 
     private static TestHarness newHarness() {
@@ -214,13 +255,8 @@ class ImporterPanelWorkbenchDetailPaneTest {
     }
 
     private static ImporterPanel.WorkbenchSendSnapshot snapshot(String label) {
-        ImporterPanel.WorkbenchSendSnapshot snapshot = new ImporterPanel.WorkbenchSendSnapshot(
+        return new ImporterPanel.WorkbenchSendSnapshot(
                 "META " + label, null, "Send", 123L);
-        burp.history.HistoryEntry entry = new burp.history.HistoryEntry();
-        entry.requestSnapshot = new burp.history.HistoryRequestSnapshot();
-        entry.responseSnapshot = new burp.history.HistoryResponseSnapshot();
-        snapshot.detailEntry = entry;
-        return snapshot;
     }
 
     private record TestHarness(ImporterPanel panel,

@@ -155,6 +155,51 @@ class ScriptMutationTransactionTest {
     }
 
     @Test
+    void timeoutRestoresCompleteFileAndMultipartMetadata() {
+        ApiCollection collection = collection();
+        ApiRequest request = fileMetadataRequest();
+        collection.scriptBlocks.add(block("""
+                awb.request.body.filePath = 'changed.bin';
+                while (true) {}
+                """));
+
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS, 150);
+        try {
+            ScriptExecutionResult result = runtime.executePreRequest(collection, request, null, "Send", 1);
+
+            assertThat(result.timedOut).isTrue();
+            assertFileMetadata(result.mutatedRequest);
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void cancellationRestoresCompleteFileAndMultipartMetadata() throws Exception {
+        ApiCollection collection = collection();
+        ApiRequest request = fileMetadataRequest();
+        collection.scriptBlocks.add(block("""
+                awb.request.body.filePath = 'changed.bin';
+                while (true) {}
+                """));
+        UnifiedScriptRuntime runtime = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS, 5_000);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<ScriptExecutionResult> future = executor.submit(() ->
+                    runtime.executePreRequest(collection, request, null, "Send", 1));
+            waitForFutureStart(future);
+            runtime.cancelActiveExecutions();
+            ScriptExecutionResult result = future.get(3, TimeUnit.SECONDS);
+
+            assertThat(result.cancelled).isTrue();
+            assertFileMetadata(result.mutatedRequest);
+        } finally {
+            executor.shutdownNow();
+            runtime.close();
+        }
+    }
+
+    @Test
     void failedBlockRestoresRequestAndVariablesButKeepsPriorSuccessfulBlockWhenNotTimeout() {
         ApiCollection collection = collection();
         ApiRequest request = request();
@@ -230,6 +275,49 @@ class ScriptMutationTransactionTest {
         request.exactHttpRequest.invalidationReason = "";
         request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
         return request;
+    }
+
+    private ApiRequest fileMetadataRequest() {
+        ApiRequest request = request();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "formdata";
+        request.body.filePath = "body.bin";
+        request.body.required = true;
+        request.body.description = "body description";
+        request.body.source = "openapi";
+        request.body.sourceMetadata.put("origin", "body");
+        ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("upload", "");
+        field.type = "file";
+        field.fileUpload = true;
+        field.filePath = "upload.txt";
+        field.required = true;
+        field.description = "field description";
+        field.contentType = "text/plain";
+        field.style = "form";
+        field.explode = Boolean.TRUE;
+        field.allowReserved = true;
+        field.source = "openapi";
+        field.sourceMetadata.put("origin", "field");
+        request.body.formdata.add(field);
+        return request;
+    }
+
+    private static void assertFileMetadata(ApiRequest request) {
+        assertThat(request.body.filePath).isEqualTo("body.bin");
+        assertThat(request.body.required).isTrue();
+        assertThat(request.body.description).isEqualTo("body description");
+        assertThat(request.body.source).isEqualTo("openapi");
+        assertThat(request.body.sourceMetadata).containsEntry("origin", "body");
+        ApiRequest.Body.FormField field = request.body.formdata.get(0);
+        assertThat(field.filePath).isEqualTo("upload.txt");
+        assertThat(field.required).isTrue();
+        assertThat(field.description).isEqualTo("field description");
+        assertThat(field.contentType).isEqualTo("text/plain");
+        assertThat(field.style).isEqualTo("form");
+        assertThat(field.explode).isTrue();
+        assertThat(field.allowReserved).isTrue();
+        assertThat(field.source).isEqualTo("openapi");
+        assertThat(field.sourceMetadata).containsEntry("origin", "field");
     }
 
     private EnvironmentProfile environment() {

@@ -809,7 +809,7 @@ class UniversalImporterWorkspaceSaveTest {
     }
 
     @Test
-    void productionCaptureDetachesCollectionsEnvironmentsAndHistoryExactlyAtUiBoundary() throws Exception {
+    void productionCaptureDetachesMetadataAndSharesImmutableHistoryEvidenceAtUiBoundary() throws Exception {
         PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
         UniversalImporter importer = new UniversalImporter(
                 mockApi(), burp.utils.ScriptMode.DISABLED, new WorkspaceStateService(persistedObject));
@@ -865,15 +865,14 @@ class UniversalImporterWorkspaceSaveTest {
             assertThat(captured.historyEntries.get(0)).isNotSameAs(liveHistory.get(0));
             assertThat(captured.historyEntries.get(0).requestSnapshot.rawRequestSent)
                     .isEqualTo(rawRequest)
-                    .isNotSameAs(liveHistory.get(0).requestSnapshot.rawRequestSent);
+                    .isSameAs(liveHistory.get(0).requestSnapshot.rawRequestSent);
             assertThat(captured.historyEntries.get(0).responseSnapshot.body)
                     .isEqualTo(responseBody)
-                    .isNotSameAs(liveHistory.get(0).responseSnapshot.body);
+                    .isSameAs(liveHistory.get(0).responseSnapshot.body);
 
             liveCollections.get(0).requests.get(0).url = "https://capture.example.test/live-mutated";
             liveEnvironments.get(0).variables.put("baseUrl", "https://live-mutated.example.test");
-            liveHistory.get(0).requestSnapshot.rawRequestSent[0] = 'X';
-            liveHistory.get(0).responseSnapshot.body[0] = 9;
+            liveHistory.get(0).requestSnapshot.urlTemplate = "https://live-mutated.example.test/history";
 
             WorkspaceState saved = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(captured));
             assertThat(saved.collections.get(0).requests.get(0).url)
@@ -882,13 +881,16 @@ class UniversalImporterWorkspaceSaveTest {
                     .containsEntry("baseUrl", "https://capture.example.test");
             assertThat(saved.historyEntries.get(0).requestSnapshot.rawRequestSent).isEqualTo(rawRequest);
             assertThat(saved.historyEntries.get(0).responseSnapshot.body).isEqualTo(responseBody);
+            assertThat(saved.historyEntries.get(0).requestSnapshot.urlTemplate)
+                    .isNotEqualTo("https://live-mutated.example.test/history");
 
             captured.collections.get(0).requests.get(0).body.raw = "snapshot-mutated";
             captured.environments.get(0).variables.put("snapshot", "mutated");
-            captured.historyEntries.get(0).responseSnapshot.body[1] = 8;
+            captured.historyEntries.get(0).requestSnapshot.urlTemplate = "snapshot-mutated";
             assertThat(liveCollections.get(0).requests.get(0).body.raw).isEqualTo("original-body");
             assertThat(liveEnvironments.get(0).variables).doesNotContainKey("snapshot");
-            assertThat(liveHistory.get(0).responseSnapshot.body[1]).isEqualTo((byte) 1);
+            assertThat(liveHistory.get(0).requestSnapshot.urlTemplate)
+                    .isEqualTo("https://live-mutated.example.test/history");
         } finally {
             importer.cleanup();
         }

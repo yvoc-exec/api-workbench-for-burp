@@ -21,13 +21,17 @@ public class HistoryResponseSnapshot {
     public String truncationReason = "";
 
     public static HistoryResponseSnapshot from(HttpResponse response) {
+        return from(response, HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public static HistoryResponseSnapshot from(HttpResponse response, HistoryRetentionPolicy retentionPolicy) {
         HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
         if (response == null) {
             return snapshot;
         }
         snapshot.statusCode = response.statusCode();
         snapshot.reasonPhrase = "";
-        snapshot.body = response.body() != null ? response.body().getBytes() : null;
+        byte[] completeBody = response.body() != null ? response.body().getBytes() : null;
         if (response.headers() != null) {
             for (var header : response.headers()) {
                 if (header == null) {
@@ -39,43 +43,65 @@ public class HistoryResponseSnapshot {
                 }
             }
         }
-        if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && snapshot.body != null) {
+        if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && completeBody != null) {
             snapshot.mimeType = "text/plain";
         }
-        snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
-        snapshot.storedBodyLength = snapshot.originalBodyLength;
-        snapshot.fullBodySha256 = snapshot.originalBodyLength > 0
-                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
-                : "";
-        snapshot.bodyTruncated = false;
-        snapshot.truncationReason = "";
+        retainBoundedBody(snapshot, completeBody, retentionPolicy);
         return snapshot;
     }
 
     public static HistoryResponseSnapshot from(RunnerResult result) {
+        return from(result, HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public static HistoryResponseSnapshot from(RunnerResult result, HistoryRetentionPolicy retentionPolicy) {
         HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
         if (result == null) {
             return snapshot;
         }
         snapshot.statusCode = result.statusCode;
         snapshot.reasonPhrase = parseReasonPhrase(result.responseHeaders, result.statusCode);
-        snapshot.body = result.responseBody != null ? result.responseBody.getBytes(StandardCharsets.UTF_8) : null;
+        byte[] completeBody = result.responseBody != null ? result.responseBody.getBytes(StandardCharsets.UTF_8) : null;
         snapshot.headers = parseHeaders(result.responseHeaders);
         snapshot.mimeType = findContentType(snapshot.headers);
-        if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && snapshot.body != null) {
+        if ((snapshot.mimeType == null || snapshot.mimeType.isBlank()) && completeBody != null) {
             snapshot.mimeType = "text/plain";
         }
-        snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
-        snapshot.storedBodyLength = snapshot.originalBodyLength;
-        snapshot.fullBodySha256 = snapshot.originalBodyLength > 0
-                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
-                : "";
-        snapshot.bodyTruncated = false;
-        snapshot.truncationReason = "";
+        retainBoundedBody(snapshot, completeBody, retentionPolicy);
         return snapshot;
     }
 
+    private static void retainBoundedBody(HistoryResponseSnapshot snapshot,
+                                          byte[] completeBody,
+                                          HistoryRetentionPolicy retentionPolicy) {
+        HistoryRetentionPolicy policy = HistoryRetentionPolicy.copyOf(retentionPolicy);
+        policy.normalize();
+        int originalLength = completeBody != null ? completeBody.length : 0;
+        int retainedLength = (int) Math.min(originalLength, policy.maxResponseBodyBytesPerEntry);
+        snapshot.body = completeBody == null
+                ? null
+                : retainedLength < originalLength
+                ? java.util.Arrays.copyOf(completeBody, retainedLength)
+                : completeBody;
+        snapshot.originalBodyLength = originalLength;
+        snapshot.storedBodyLength = retainedLength;
+        snapshot.fullBodySha256 = snapshot.originalBodyLength > 0
+                ? HistoryBodyTruncator.sha256Hex(completeBody)
+                : "";
+        snapshot.bodyTruncated = retainedLength < originalLength;
+        snapshot.truncationReason = snapshot.bodyTruncated
+                ? HistoryBodyTruncator.RESPONSE_BODY_LIMIT_REASON : "";
+    }
+
     public static HistoryResponseSnapshot copyOf(HistoryResponseSnapshot source) {
+        return copyOf(source, false);
+    }
+
+    static HistoryResponseSnapshot copyForPersistenceSharingBody(HistoryResponseSnapshot source) {
+        return copyOf(source, true);
+    }
+
+    private static HistoryResponseSnapshot copyOf(HistoryResponseSnapshot source, boolean shareBody) {
         if (source == null) {
             return null;
         }
@@ -91,7 +117,7 @@ public class HistoryResponseSnapshot {
                 }
             }
         }
-        copy.body = source.body != null ? source.body.clone() : null;
+        copy.body = source.body != null ? (shareBody ? source.body : source.body.clone()) : null;
         copy.mimeType = source.mimeType;
         copy.bodyTruncated = source.bodyTruncated;
         copy.originalBodyLength = source.originalBodyLength;

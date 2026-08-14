@@ -147,6 +147,7 @@ public class BurpExtender implements BurpExtension {
                 trafficWorkflowCoordinator::importTraffic);
         if (!provider.register(api)) {
             provider.close();
+            trafficWorkflowCoordinator.close();
             trafficWorkflowCoordinator = null;
             return false;
         }
@@ -157,10 +158,14 @@ public class BurpExtender implements BurpExtension {
 
     synchronized void closeContextMenuProvider() {
         ApiWorkbenchContextMenuProvider provider = contextMenuProvider;
+        BurpTrafficWorkflowCoordinator coordinator = trafficWorkflowCoordinator;
         contextMenuProvider = null;
         trafficWorkflowCoordinator = null;
         if (provider != null) {
             provider.close();
+        }
+        if (coordinator != null) {
+            coordinator.close();
         }
     }
 

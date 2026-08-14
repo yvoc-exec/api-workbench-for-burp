@@ -8,6 +8,8 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.models.RedirectHop;
 import burp.models.RedirectPolicy;
 import burp.models.RedirectTerminationReason;
+import burp.history.HistoryHeader;
+import burp.parser.HistoryRawHttpMessageParser;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -71,9 +73,9 @@ public class RedirectExecutor {
         HttpRequest currentRequest = result.initialRequest;
         String currentUrl = result.initialUrl;
         byte[] currentRaw = request != null && request.initialRawRequestBytes != null
-                ? request.initialRawRequestBytes.clone()
+                ? request.initialRawRequestBytes
                 : request != null && request.initialRequest != null && request.initialRequest.toByteArray() != null
-                ? request.initialRequest.toByteArray().getBytes().clone()
+                ? request.initialRequest.toByteArray().getBytes()
                 : null;
         String currentCanonicalUrl = canonicalRequestUrl(currentUrl);
         Set<String> visited = new LinkedHashSet<>();
@@ -261,7 +263,7 @@ public class RedirectExecutor {
                 result.redirectHops.add(hop);
 
                 currentRequest = build.request;
-                currentRaw = build.rawBytes != null ? build.rawBytes.clone() : null;
+                currentRaw = build.rawBytes;
                 currentUrl = targetUrl;
                 currentCanonicalUrl = targetCanonical;
                 if (currentCanonicalUrl != null) {
@@ -533,15 +535,15 @@ public class RedirectExecutor {
         hop.targetUrl = targetUrl;
         hop.targetMethod = nextMethod(sourceRequest != null ? sourceRequest.method() : null, statusCode);
         hop.elapsedMs = elapsedMs;
-        byte[] raw = sourceRawRequestBytes != null ? sourceRawRequestBytes.clone() : null;
+        byte[] raw = sourceRawRequestBytes;
         if (raw == null && sourceRequest != null && sourceRequest.toByteArray() != null) {
-            raw = sourceRequest.toByteArray().getBytes().clone();
+            raw = sourceRequest.toByteArray().getBytes();
         }
         hop.rawRequestBytes = raw;
-        hop.rawRequestText = raw != null ? new String(raw, StandardCharsets.UTF_8) : null;
+        hop.rawRequestText = null;
         hop.responseHeadersText = responseHeadersText(sourceResponse);
         hop.responseBody = sourceResponse != null && sourceResponse.response() != null && sourceResponse.response().body() != null
-                ? sourceResponse.response().body().getBytes().clone()
+                ? sourceResponse.response().body().getBytes()
                 : null;
         hop.followed = followed;
         hop.failureReason = failureReason;
@@ -586,8 +588,8 @@ public class RedirectExecutor {
                 (statusCode == 303 && !"HEAD".equalsIgnoreCase(currentMethod))
                         || ((statusCode == 301 || statusCode == 302) && "POST".equalsIgnoreCase(currentMethod));
         boolean preserveBody = !bodyMustBeDropped;
-        byte[] body = preserveBody && message.body != null ? message.body : new byte[0];
-        boolean outgoingHasBody = body != null && body.length > 0;
+        int bodyLength = preserveBody ? message.bodyLength : 0;
+        boolean outgoingHasBody = bodyLength > 0;
         HeaderPolicyResult headerPolicy = applyHeaderPolicy(message.headers, sourceOrigin, targetOrigin, targetUri, policy);
         List<HeaderLine> headers = new ArrayList<>(headerPolicy.headers);
         removeHeaderIgnoreCase(headers, "Host");
@@ -612,7 +614,7 @@ public class RedirectExecutor {
         String hostHeader = hostHeaderValue(targetUri);
         headers.add(0, new HeaderLine("Host", hostHeader));
         if (outgoingHasBody) {
-            headers.add(new HeaderLine("Content-Length", String.valueOf(body.length)));
+            headers.add(new HeaderLine("Content-Length", String.valueOf(bodyLength)));
         } else {
             removeHeaderIgnoreCase(headers, "Content-Length");
             removeHeaderIgnoreCase(headers, "Transfer-Encoding");
@@ -628,9 +630,12 @@ public class RedirectExecutor {
         }
         raw.append("\r\n");
         byte[] headerBytes = raw.toString().getBytes(StandardCharsets.UTF_8);
-        byte[] rawBytes = new byte[headerBytes.length + body.length];
+        byte[] rawBytes = new byte[headerBytes.length + bodyLength];
         System.arraycopy(headerBytes, 0, rawBytes, 0, headerBytes.length);
-        System.arraycopy(body, 0, rawBytes, headerBytes.length, body.length);
+        if (bodyLength > 0) {
+            System.arraycopy(message.sourceBytes, message.bodyOffset,
+                    rawBytes, headerBytes.length, bodyLength);
+        }
 
         HttpService service = HttpService.httpService(targetUri.getHost(), targetUri.getPort() == -1 ? defaultPort(targetUri.getScheme()) : targetUri.getPort(), "https".equalsIgnoreCase(targetUri.getScheme()));
         HttpRequest nextRequest = HttpRequest.httpRequest(service, ByteArray.byteArray(rawBytes));
@@ -850,13 +855,22 @@ public class RedirectExecutor {
         final String method;
         final String target;
         final List<HeaderLine> headers;
-        final byte[] body;
+        final byte[] sourceBytes;
+        final int bodyOffset;
+        final int bodyLength;
 
-        RawMessage(String method, String target, List<HeaderLine> headers, byte[] body) {
+        RawMessage(String method,
+                   String target,
+                   List<HeaderLine> headers,
+                   byte[] sourceBytes,
+                   int bodyOffset,
+                   int bodyLength) {
             this.method = method;
             this.target = target;
             this.headers = headers;
-            this.body = body;
+            this.sourceBytes = sourceBytes;
+            this.bodyOffset = bodyOffset;
+            this.bodyLength = bodyLength;
         }
 
         static RawMessage parse(byte[] rawRequest, HttpRequest request) {
@@ -864,35 +878,21 @@ public class RedirectExecutor {
             if (bytes == null) {
                 bytes = request != null && request.toByteArray() != null ? request.toByteArray().getBytes() : new byte[0];
             }
-            int separator = indexOf(bytes, "\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-            int separatorLength = 4;
-            if (separator < 0) {
-                separator = indexOf(bytes, "\n\n".getBytes(StandardCharsets.UTF_8));
-                separatorLength = 2;
-            }
-            byte[] headBytes = separator >= 0 ? slice(bytes, 0, separator) : bytes;
-            byte[] bodyBytes = separator >= 0 ? slice(bytes, separator + separatorLength, bytes.length) : new byte[0];
-            String head = new String(headBytes, StandardCharsets.UTF_8);
-            String[] lines = head.replace("\r", "").split("\n", -1);
-            String startLine = lines.length > 0 ? lines[0].trim() : "";
-            String[] parts = startLine.split("\\s+", 3);
-            String method = parts.length > 0 ? parts[0] : "GET";
-            String target = parts.length > 1 ? parts[1] : "/";
+            HistoryRawHttpMessageParser.RequestLayout layout =
+                    HistoryRawHttpMessageParser.inspectRequest(bytes);
+            String method = layout.isTrustedRequest() && !layout.method().isBlank()
+                    ? layout.method() : request != null ? request.method() : "GET";
+            String target = layout.isTrustedRequest() && !layout.target().isBlank()
+                    ? layout.target() : "/";
             List<HeaderLine> headers = new ArrayList<>();
-            for (int i = 1; i < lines.length; i++) {
-                String line = lines[i];
-                if (line == null || line.isBlank()) {
-                    continue;
+            for (HistoryHeader header : layout.headers()) {
+                if (header != null) {
+                    headers.add(new HeaderLine(sanitize(header.name), sanitize(header.value)));
                 }
-                int colon = line.indexOf(':');
-                if (colon <= 0) {
-                    continue;
-                }
-                String name = sanitize(line.substring(0, colon));
-                String value = sanitize(line.substring(colon + 1).trim());
-                headers.add(new HeaderLine(name, value));
             }
-            return new RawMessage(method, target, headers, bodyBytes);
+            int bodyOffset = layout.bodyOffset() >= 0 ? layout.bodyOffset() : bytes.length;
+            return new RawMessage(method, target, headers, bytes, bodyOffset,
+                    Math.max(0, bytes.length - bodyOffset));
         }
     }
 
@@ -912,13 +912,4 @@ public class RedirectExecutor {
         return -1;
     }
 
-    private static byte[] slice(byte[] source, int start, int end) {
-        if (source == null || start < 0 || end < start || start > source.length) {
-            return new byte[0];
-        }
-        int safeEnd = Math.min(end, source.length);
-        byte[] out = new byte[Math.max(0, safeEnd - start)];
-        System.arraycopy(source, start, out, 0, out.length);
-        return out;
-    }
 }

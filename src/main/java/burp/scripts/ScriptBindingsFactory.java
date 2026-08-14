@@ -377,6 +377,14 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public String contentType;
         @HostAccess.Export
+        public boolean required;
+        @HostAccess.Export
+        public String description;
+        @HostAccess.Export
+        public String source;
+        @HostAccess.Export
+        public final ScriptMapView sourceMetadata = new ScriptMapView();
+        @HostAccess.Export
         public GraphQLApi graphql;
         @HostAccess.Export
         public List<FormFieldApi> formdata = new ArrayList<>();
@@ -392,6 +400,12 @@ public final class ScriptBindingsFactory {
                         : source.raw;
                 this.filePath = source.filePath;
                 this.contentType = source.contentType;
+                this.required = source.required;
+                this.description = source.description;
+                this.source = source.source;
+                if (source.sourceMetadata != null) {
+                    this.sourceMetadata.putAll(source.sourceMetadata);
+                }
                 if (source.graphql != null) {
                     this.graphql = new GraphQLApi(source.graphql);
                 }
@@ -414,6 +428,7 @@ public final class ScriptBindingsFactory {
             boolean hasFormData = !copiedFormData.isEmpty();
             boolean hasUrlEncoded = !copiedUrlEncoded.isEmpty();
             if (mode == null && raw == null && filePath == null && contentType == null
+                    && !required && description == null && source == null && sourceMetadata.isEmpty()
                     && graphql == null && !hasFormData && !hasUrlEncoded) {
                 return null;
             }
@@ -422,6 +437,10 @@ public final class ScriptBindingsFactory {
             body.raw = raw;
             body.filePath = filePath;
             body.contentType = contentType;
+            body.required = required;
+            body.description = description;
+            body.source = source;
+            body.sourceMetadata = new LinkedHashMap<>(sourceMetadata);
             if (graphql != null) {
                 body.graphql = graphql.toGraphQL();
             }
@@ -457,6 +476,22 @@ public final class ScriptBindingsFactory {
         public String filePath;
         @HostAccess.Export
         public boolean disabled;
+        @HostAccess.Export
+        public boolean required;
+        @HostAccess.Export
+        public String description;
+        @HostAccess.Export
+        public String contentType;
+        @HostAccess.Export
+        public String style;
+        @HostAccess.Export
+        public Boolean explode;
+        @HostAccess.Export
+        public boolean allowReserved;
+        @HostAccess.Export
+        public String source;
+        @HostAccess.Export
+        public final ScriptMapView sourceMetadata = new ScriptMapView();
 
         public FormFieldApi() {
         }
@@ -469,6 +504,16 @@ public final class ScriptBindingsFactory {
                 this.fileUpload = source.fileUpload;
                 this.filePath = source.filePath;
                 this.disabled = source.disabled;
+                this.required = source.required;
+                this.description = source.description;
+                this.contentType = source.contentType;
+                this.style = source.style;
+                this.explode = source.explode;
+                this.allowReserved = source.allowReserved;
+                this.source = source.source;
+                if (source.sourceMetadata != null) {
+                    this.sourceMetadata.putAll(source.sourceMetadata);
+                }
             }
         }
 
@@ -478,6 +523,14 @@ public final class ScriptBindingsFactory {
             field.fileUpload = fileUpload;
             field.filePath = filePath;
             field.disabled = disabled;
+            field.required = required;
+            field.description = description;
+            field.contentType = contentType;
+            field.style = style;
+            field.explode = explode;
+            field.allowReserved = allowReserved;
+            field.source = source;
+            field.sourceMetadata = new LinkedHashMap<>(sourceMetadata);
             return field;
         }
     }

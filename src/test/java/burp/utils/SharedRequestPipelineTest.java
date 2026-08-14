@@ -5,6 +5,7 @@ import burp.api.montoya.http.RequestOptions;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.scripts.ExecutionSource;
 import org.junit.jupiter.api.Test;
 
@@ -469,6 +470,64 @@ class SharedRequestPipelineTest {
         assertThat(exec.requestHeaders).contains("Content-Type: application/x-www-form-urlencoded");
         assertThat(exec.requestHeaders).doesNotContain("a=1&b=2");
         assertThat(exec.requestBody).isEqualTo("a=1&b=2");
+    }
+
+    @Test
+    void largeExactTextRemainsByteAuthoritativeWithBoundedDisplay() throws Exception {
+        SharedRequestPipeline pipeline = pipeline(
+                mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS),
+                ScriptMode.DISABLED, null);
+        byte[] header = "POST /large HTTP/1.1\r\nHost: example.com\r\nX-Token: {{missing}}\r\n\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] raw = new byte[header.length + 2 * 1024 * 1024];
+        System.arraycopy(header, 0, raw, 0, header.length);
+        java.util.Arrays.fill(raw, header.length, raw.length, (byte) 'x');
+        ApiRequest request = exactRequest(raw);
+
+        ExecutionResult result = pipeline.execute(request, new ApiCollection(), false);
+
+        assertThat(result.rawRequestBytes).isSameAs(request.exactHttpRequest.rawRequestBytes);
+        assertThat(result.rawRequestText).isNull();
+        assertThat(result.requestHeaders).contains("X-Token: {{missing}}").doesNotContain("xxxx");
+        assertThat(result.requestBody)
+                .contains("originalLength=2097152")
+                .contains("SHA-256=")
+                .contains("reason=large");
+        assertThat(RequestBuilder.findUnresolvedTokens(result.rawRequestBytes)).containsExactly("missing");
+    }
+
+    @Test
+    void binaryExactBodyNeverUsesLossyCompleteTextAsCanonicalData() throws Exception {
+        SharedRequestPipeline pipeline = pipeline(
+                mock(MontoyaApi.class, org.mockito.Mockito.RETURNS_DEEP_STUBS),
+                ScriptMode.DISABLED, null);
+        byte[] header = "POST /binary HTTP/1.1\r\nHost: example.com\r\nX-Token: {{missing}}\r\n\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] raw = new byte[header.length + 1_024];
+        System.arraycopy(header, 0, raw, 0, header.length);
+        java.util.Arrays.fill(raw, header.length, raw.length, (byte) 0xFF);
+        ApiRequest request = exactRequest(raw);
+
+        ExecutionResult result = pipeline.execute(request, new ApiCollection(), false);
+
+        assertThat(result.rawRequestBytes).isSameAs(raw);
+        assertThat(result.rawRequestText).isNull();
+        assertThat(result.requestHeaders).contains("POST /binary HTTP/1.1");
+        assertThat(result.requestBody).contains("reason=binary").contains("SHA-256=");
+    }
+
+    private static ApiRequest exactRequest(byte[] raw) {
+        ApiRequest request = new ApiRequest();
+        request.name = "Exact";
+        request.method = "POST";
+        request.url = "http://example.com/large";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = raw;
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.serviceHost = "example.com";
+        request.exactHttpRequest.servicePort = 80;
+        return request;
     }
 
     private static boolean containsSubArray(byte[] haystack, byte[] needle) {

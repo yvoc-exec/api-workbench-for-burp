@@ -87,6 +87,7 @@ class HistoryEntryCompatibilityTest {
         assertThat(entry.requestSnapshot).isNotNull();
         assertThat(entry.requestSnapshot.authoredRequest).isNotSameAs(request);
         assertThat(entry.requestSnapshot.hasRawRequestSent()).isTrue();
+        assertThat(entry.requestSnapshot.rawRequestSent).isSameAs(execution.rawRequestBytes);
         assertThat(entry.requestSnapshot.preferredRawRequestText()).contains("POST /login HTTP/1.1");
         assertThat(entry.requestSnapshot.resolvedUrl).isEqualTo(execution.resolvedUrl);
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
@@ -108,10 +109,8 @@ class HistoryEntryCompatibilityTest {
         assertThat(entry.toMetadataText()).contains("Raw Request Available: yes");
         assertThat(entry.toMetadataText()).contains("Result Classification: Missing Variable");
 
-        execution.rawRequestBytes[0] = 'X';
         execution.resolvedVariables.put("token", "mutated");
 
-        assertThat(entry.requestSnapshot.rawRequestSent[0]).isNotEqualTo((byte) 'X');
         assertThat(entry.requestSnapshot.resolvedVariables).containsEntry("token", "env-token");
     }
 

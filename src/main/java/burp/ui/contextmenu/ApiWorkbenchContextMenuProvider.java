@@ -2,6 +2,7 @@ package burp.ui.contextmenu;
 
 import burp.api.montoya.MontoyaApi;
 import burp.importer.BurpTrafficSelection;
+import burp.importer.TrafficImportLimits;
 
 import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
@@ -81,11 +82,14 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
     }
 
     public List<JMenuItem> provideMenuItems(Object event) {
-        List<BurpTrafficSelection> selections = detachSelections(event);
-        if (selections.isEmpty()) {
+        List<Object> requestResponses = selectedRequestResponses(event);
+        requestResponses.removeIf(value -> unwrap(invokeFirst(value, "request")) == null);
+        if (requestResponses.isEmpty()) {
             return List.of();
         }
-        int count = selections.size();
+        List<Object> lightweightReferences = List.copyOf(requestResponses);
+        String context = safeContext(invokeFirst(event, "invocationType", "toolType", "context"));
+        int count = lightweightReferences.size();
         String importLabel = count == 1
                 ? "Send to API Workbench"
                 : "Send " + count + " requests to API Workbench";
@@ -93,9 +97,9 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
                 ? "Send to API Workbench and Queue"
                 : "Send " + count + " requests to API Workbench and Queue";
         JMenuItem importItem = new JMenuItem(importLabel);
-        importItem.addActionListener(ignored -> dispatch(selections, false));
+        importItem.addActionListener(ignored -> dispatch(detachSelections(lightweightReferences, context), false));
         JMenuItem queueItem = new JMenuItem(queueLabel);
-        queueItem.addActionListener(ignored -> dispatch(selections, true));
+        queueItem.addActionListener(ignored -> dispatch(detachSelections(lightweightReferences, context), true));
         return List.of(importItem, queueItem);
     }
 
@@ -105,6 +109,10 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             return List.of();
         }
         String context = safeContext(invokeFirst(event, "invocationType", "toolType", "context"));
+        return detachSelections(requestResponses, context);
+    }
+
+    private List<BurpTrafficSelection> detachSelections(List<Object> requestResponses, String context) {
         List<BurpTrafficSelection> out = new ArrayList<>();
         int index = 0;
         for (Object requestResponse : requestResponses) {
@@ -112,12 +120,23 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             if (request == null) {
                 continue;
             }
-            byte[] requestBytes = bytesFrom(invokeFirst(request, "toByteArray"));
-            if (requestBytes.length == 0) {
+            Object requestByteArray = invokeFirst(request, "toByteArray");
+            long requestLength = byteLength(requestByteArray);
+            Object response = unwrap(invokeFirst(requestResponse, "response"));
+            Object responseByteArray = response != null ? invokeFirst(response, "toByteArray") : null;
+            long responseLength = byteLength(responseByteArray);
+            if (requestLength > TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES) {
+                out.add(BurpTrafficSelection.rejectedMetadata(
+                        requestLength, responseLength, context, index++));
                 continue;
             }
-            Object response = unwrap(invokeFirst(requestResponse, "response"));
-            byte[] responseBytes = response != null ? bytesFrom(invokeFirst(response, "toByteArray")) : new byte[0];
+            byte[] requestBytes = bytesFrom(requestByteArray);
+            if (requestBytes.length == 0) {
+                out.add(BurpTrafficSelection.rejectedMetadata(
+                        Math.max(0L, requestLength), Math.max(0L, responseLength), context, index++));
+                continue;
+            }
+            byte[] responseBytes = response != null ? bytesFrom(responseByteArray) : new byte[0];
             Object service = unwrap(invokeFirst(request, "httpService"));
             if (service == null) {
                 service = unwrap(invokeFirst(requestResponse, "httpService"));
@@ -126,7 +145,7 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             int port = intValue(invokeFirst(service, "port"));
             boolean secure = booleanValue(invokeFirst(service, "secure", "isSecure"));
             String method = stringValue(invokeFirst(request, "method"));
-            out.add(new BurpTrafficSelection(
+            out.add(BurpTrafficSelection.fromOwnedBytes(
                     requestBytes,
                     responseBytes.length > 0 ? responseBytes : null,
                     host,
@@ -260,10 +279,19 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             return new byte[0];
         }
         if (unwrapped instanceof byte[] bytes) {
-            return bytes;
+            return bytes.clone();
         }
         Object bytes = invokeFirst(unwrapped, "getBytes", "toByteArray");
         return bytes instanceof byte[] array ? array : new byte[0];
+    }
+
+    private static long byteLength(Object value) {
+        Object unwrapped = unwrap(value);
+        if (unwrapped instanceof byte[] bytes) {
+            return bytes.length;
+        }
+        Object length = invokeFirst(unwrapped, "length", "size");
+        return length instanceof Number number ? Math.max(0L, number.longValue()) : -1L;
     }
 
     private static String stringValue(Object value) {

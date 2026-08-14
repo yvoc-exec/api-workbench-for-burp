@@ -46,8 +46,12 @@ class ApiWorkbenchContextMenuProviderTest {
 
         assertThat(queue).isTrue();
         assertThat(captured.get()).hasSize(2);
-        assertThat(captured.get().get(0).rawRequestBytes[0]).isEqualTo((byte) 'G');
-        assertThat(captured.get().get(1).rawRequestBytes[0]).isEqualTo((byte) 'P');
+        assertThat(captured.get().get(0).rawRequestBytes[0]).isEqualTo((byte) 'X');
+        assertThat(captured.get().get(1).rawRequestBytes[0]).isEqualTo((byte) 'Y');
+        firstRequest[0] = 'Z';
+        secondRequest[0] = 'Z';
+        assertThat(captured.get().get(0).rawRequestBytes[0]).isEqualTo((byte) 'X');
+        assertThat(captured.get().get(1).rawRequestBytes[0]).isEqualTo((byte) 'Y');
         assertThat(captured.get()).extracting(selection -> selection.encounterIndex)
                 .containsExactly(0, 1);
         assertThat(captured.get().get(0).sourceContext).isEqualTo("PROXY");

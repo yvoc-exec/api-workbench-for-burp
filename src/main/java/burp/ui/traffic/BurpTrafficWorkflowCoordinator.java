@@ -18,19 +18,26 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
 import java.awt.GraphicsEnvironment;
 import java.awt.Window;
-import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Coordinates detached traffic conversion and one-shot workspace replacement.
  * No HTTP operation is available from this class.
  */
-public final class BurpTrafficWorkflowCoordinator {
+public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
     @FunctionalInterface
     public interface DestinationPresenter {
         boolean review(Window owner, TrafficDestinationDialogModel model);
@@ -45,6 +52,9 @@ public final class BurpTrafficWorkflowCoordinator {
     private final BurpTrafficImportService conversionService;
     private final DestinationPresenter destinationPresenter;
     private final MessagePresenter messagePresenter;
+    private final ThreadPoolExecutor worker;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile CompletableFuture<Void> lastImport = CompletableFuture.completedFuture(null);
 
     public BurpTrafficWorkflowCoordinator(UniversalImporter importer) {
         this(importer,
@@ -63,6 +73,15 @@ public final class BurpTrafficWorkflowCoordinator {
                 ? destinationPresenter
                 : (owner, model) -> new TrafficDestinationDialog(owner, model).showDialog();
         this.messagePresenter = messagePresenter != null ? messagePresenter : BurpTrafficWorkflowCoordinator::showMessage;
+        this.worker = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(4),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "awb-traffic-import");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     public void importTraffic(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
@@ -70,49 +89,78 @@ public final class BurpTrafficWorkflowCoordinator {
         if (detached.isEmpty()) {
             return;
         }
-        Runnable action = () -> importOnEdt(detached, queueAfterImport);
-        if (SwingUtilities.isEventDispatchThread()) {
-            action.run();
+        if (closed.get()) {
             return;
         }
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        lastImport = completion;
         try {
-            SwingUtilities.invokeAndWait(action);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        } catch (InvocationTargetException failure) {
-            logSafeError("Burp traffic import failed", failure.getCause());
+            worker.execute(() -> {
+                try {
+                    importInBackground(detached, queueAfterImport);
+                    completion.complete(null);
+                } catch (Throwable failure) {
+                    logSafeError("Burp traffic import failed", failure);
+                    try {
+                        showOnEdt("Traffic Import Failed", "No requests were imported. "
+                                + safeMessage(failure), JOptionPane.ERROR_MESSAGE);
+                    } finally {
+                        completion.complete(null);
+                    }
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            try {
+                showOnEdt("Traffic Import Busy",
+                        "Traffic import capacity is currently in use. No requests were imported.",
+                        JOptionPane.WARNING_MESSAGE);
+            } finally {
+                completion.complete(null);
+            }
+        }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            completion.join();
         }
     }
 
-    private void importOnEdt(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
+    private void importInBackground(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
         ImporterPanel ui = importer.getUI();
         if (ui == null) {
             return;
         }
+        burp.history.HistoryRetentionPolicy retentionPolicy = callOnEdt(
+                ui::getHistoryRetentionPolicySnapshot);
         BurpTrafficConversionResult conversion = conversionService.convert(
-                selections, ui.getHistoryRetentionPolicySnapshot());
+                selections, retentionPolicy);
         if (conversion.hasFailures()) {
             String message = safeFailureSummary(conversion);
-            messagePresenter.show(ui.getPanel(), "Traffic Import Failed", message, JOptionPane.ERROR_MESSAGE);
+            showOnEdt("Traffic Import Failed", message, JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        WorkspaceState before = ui.getWorkspaceStateSnapshotFromModel();
+        WorkspaceState before = callOnEdt(ui::getWorkspaceStateSnapshotFromModelForPersistence);
         List<ApiCollection> collections = before.collections != null ? before.collections : new ArrayList<>();
         boolean responseAvailable = conversion.historyEntries.stream().anyMatch(Objects::nonNull);
         TrafficDestinationDialogModel destination = new TrafficDestinationDialogModel(
                 collections,
                 conversion.requests,
                 responseAvailable,
-                queueAfterImport);
-        Window owner = DialogParentResolver.ownerFor(ui.getPanel());
-        if (!destinationPresenter.review(owner, destination) || destination.isCancelled()) {
+                queueAfterImport,
+                conversion.preflight);
+        boolean reviewed = callOnEdt(() -> {
+            Window owner = DialogParentResolver.ownerFor(ui.getPanel());
+            boolean accepted = destinationPresenter.review(owner, destination);
+            if (accepted) {
+                destination.confirm();
+            }
+            return accepted;
+        });
+        if (!reviewed || destination.isCancelled()) {
             return;
         }
-        destination.confirm();
         if (!destination.isValid()) {
-            messagePresenter.show(ui.getPanel(), "Invalid Destination",
-                    String.join("\n", destination.validationErrors()), JOptionPane.WARNING_MESSAGE);
+            showOnEdt("Invalid Destination", String.join("\n", destination.validationErrors()),
+                    JOptionPane.WARNING_MESSAGE);
             return;
         }
 
@@ -121,27 +169,44 @@ public final class BurpTrafficWorkflowCoordinator {
         try {
             after = applyPlan(before, plan);
         } catch (RuntimeException invalidPlan) {
-            messagePresenter.show(ui.getPanel(), "Traffic Import Failed", safeMessage(invalidPlan), JOptionPane.ERROR_MESSAGE);
+            showOnEdt("Traffic Import Failed", safeMessage(invalidPlan), JOptionPane.ERROR_MESSAGE);
             return;
         }
 
         try {
-            ui.restoreWorkspaceState(after);
+            importer.validateWorkspaceStatePersistable(after);
+        } catch (RuntimeException persistenceFailure) {
+            logSafeError("Traffic import persistence validation failed", persistenceFailure);
+            showOnEdt("Traffic Import Failed",
+                    "Traffic import was not committed because the resulting workspace exceeds "
+                            + "the configured persistence capacity. No workspace data was changed.",
+                    JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try {
+            callOnEdt(() -> {
+                ui.restoreWorkspaceState(after);
+                return null;
+            });
             importer.requestWorkspaceStateSaveNow();
             long queuedCount = plan.queueInRunner
                     ? plan.requests.stream().filter(request -> request != null && !request.disabled).count()
                     : 0L;
             String summary = plan.requestCount() + " requests imported; "
                     + queuedCount + " queued; " + plan.historyCount() + " History entries captured.";
-            messagePresenter.show(ui.getPanel(), "Burp Traffic Imported", summary, JOptionPane.INFORMATION_MESSAGE);
+            showOnEdt("Burp Traffic Imported", summary, JOptionPane.INFORMATION_MESSAGE);
         } catch (RuntimeException commitFailure) {
             try {
-                ui.restoreWorkspaceState(before);
+                callOnEdt(() -> {
+                    ui.restoreWorkspaceState(before);
+                    return null;
+                });
             } catch (RuntimeException rollbackFailure) {
                 commitFailure.addSuppressed(rollbackFailure);
             }
             logSafeError("Burp traffic import transaction failed", commitFailure);
-            messagePresenter.show(ui.getPanel(), "Traffic Import Failed",
+            showOnEdt("Traffic Import Failed",
                     "No traffic was imported. " + safeMessage(commitFailure), JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -201,7 +266,7 @@ public final class BurpTrafficWorkflowCoordinator {
     }
 
     WorkspaceState applyPlan(WorkspaceState before, BurpTrafficImportPlan plan) {
-        WorkspaceState after = WorkspaceState.copyOfSharingExactTransport(before);
+        WorkspaceState after = WorkspaceState.copyOfSharingPersistencePayload(before);
         if (after.collections == null) {
             after.collections = new ArrayList<>();
         }
@@ -333,13 +398,62 @@ public final class BurpTrafficWorkflowCoordinator {
         if (selections == null || selections.isEmpty()) {
             return List.of();
         }
-        List<BurpTrafficSelection> copy = new ArrayList<>();
-        for (BurpTrafficSelection selection : selections) {
-            if (selection != null) {
-                copy.add(selection);
+        return Collections.unmodifiableList(new ArrayList<>(selections));
+    }
+
+    void awaitIdleForTests() {
+        lastImport.join();
+    }
+
+    boolean workerTerminatedForTests() {
+        return worker.isTerminated();
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        worker.shutdownNow();
+        try {
+            worker.awaitTermination(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void showOnEdt(String title, String message, int messageType) {
+        ImporterPanel ui = importer.getUI();
+        callOnEdt(() -> {
+            messagePresenter.show(ui != null ? ui.getPanel() : null, title, message, messageType);
+            return null;
+        });
+    }
+
+    private static <T> T callOnEdt(Callable<T> action) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            try {
+                return action.call();
+            } catch (RuntimeException runtime) {
+                throw runtime;
+            } catch (Exception checked) {
+                throw new IllegalStateException(checked);
             }
         }
-        return Collections.unmodifiableList(copy);
+        FutureTask<T> task = new FutureTask<>(action);
+        SwingUtilities.invokeLater(task);
+        try {
+            return task.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Traffic import interrupted.", interrupted);
+        } catch (java.util.concurrent.ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException(cause);
+        }
     }
 
     private String safeFailureSummary(BurpTrafficConversionResult conversion) {

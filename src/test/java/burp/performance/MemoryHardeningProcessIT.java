@@ -38,7 +38,11 @@ class MemoryHardeningProcessIT {
             "file-binary-repeated-send",
             "multipart-file-repeated-send",
             "exact-traffic-import-ownership",
-            "exact-repeated-send");
+            "exact-traffic-import-aggregate",
+            "exact-traffic-import-item-rejected",
+            "exact-repeated-send",
+            "workspace-large-exact-save",
+            "large-redirect-ownership");
     private static final long TIMEOUT_SECONDS = 90;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String DISCLAIMER =
@@ -376,6 +380,35 @@ class MemoryHardeningProcessIT {
                 .isLessThan(longValue(metrics, "historyRequestOriginalBodyBytes"));
         assertThat(longValue(metrics, "historyResponseStoredBodyBytes"))
                 .isLessThan(longValue(metrics, "historyResponseOriginalBodyBytes"));
+
+        JsonObject aggregate = resultFor(results, "exact-traffic-import-aggregate");
+        JsonObject aggregateMetrics = aggregate.getAsJsonObject("metrics");
+        assertThat(string(aggregate, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(aggregateMetrics, "acceptedRequests")).isEqualTo(8L);
+        assertThat(longValue(aggregateMetrics, "aggregateExactBytes")).isEqualTo(128L * 1024L * 1024L);
+        assertThat(longValue(aggregateMetrics, "canonicalExactOwners")).isEqualTo(8L);
+        assertThat(longValue(aggregateMetrics, "equivalentRawTextOwners")).isZero();
+
+        JsonObject rejected = resultFor(results, "exact-traffic-import-item-rejected");
+        JsonObject rejectedMetrics = rejected.getAsJsonObject("metrics");
+        assertThat(string(rejected, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(rejectedMetrics, "convertedRequests")).isZero();
+        assertThat(longValue(rejectedMetrics, "historyEntries")).isZero();
+        assertThat(longValue(rejectedMetrics, "rejections")).isEqualTo(1L);
+
+        JsonObject workspaceExact = resultFor(results, "workspace-large-exact-save");
+        JsonObject workspaceExactMetrics = workspaceExact.getAsJsonObject("metrics");
+        assertThat(string(workspaceExact, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(workspaceExactMetrics, "sharedExactBackingBeforeSave")).isEqualTo(1L);
+        assertThat(longValue(workspaceExactMetrics, "detachedExactOwnersAfterRelease")).isZero();
+        assertThat(longValue(workspaceExactMetrics, "activeWorkspaceSnapshots")).isZero();
+        assertThat(longValue(workspaceExactMetrics, "pendingWorkspaceSnapshots")).isZero();
+
+        JsonObject redirect = resultFor(results, "large-redirect-ownership");
+        JsonObject redirectMetrics = redirect.getAsJsonObject("metrics");
+        assertThat(string(redirect, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(redirectMetrics, "preservedRedirects")).isEqualTo(2L);
+        assertThat(longValue(redirectMetrics, "redirectHopRawTextOwners")).isZero();
 
         JsonObject workbench = resultFor(results, "workbench-snapshot-owners");
         JsonObject workbenchMetrics = workbench.getAsJsonObject("metrics");

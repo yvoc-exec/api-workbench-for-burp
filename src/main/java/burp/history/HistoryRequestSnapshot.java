@@ -39,14 +39,19 @@ public class HistoryRequestSnapshot {
     public String parseWarning = "";
 
     public static HistoryRequestSnapshot from(ApiRequest request) {
-        return captureFrom(request);
+        return captureFrom(request, false);
     }
 
     public static HistoryRequestSnapshot fromWithoutExactTransport(ApiRequest request) {
-        return captureFrom(request);
+        return captureFrom(request, false);
     }
 
-    private static HistoryRequestSnapshot captureFrom(ApiRequest request) {
+    /** Borrows immutable exact bytes until bounded History capture takes ownership. */
+    public static HistoryRequestSnapshot fromBorrowingExactTransport(ApiRequest request) {
+        return captureFrom(request, true);
+    }
+
+    private static HistoryRequestSnapshot captureFrom(ApiRequest request, boolean borrowExactTransport) {
         HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
         if (request == null) {
             return snapshot;
@@ -54,7 +59,9 @@ public class HistoryRequestSnapshot {
         snapshot.authoredRequest = copyRequestWithoutExactTransport(request);
         snapshot.authoredExactRequestBytes = request.exactHttpRequest != null
                 && request.exactHttpRequest.rawRequestBytes != null
-                ? request.exactHttpRequest.rawRequestBytes.clone()
+                ? borrowExactTransport
+                ? request.exactHttpRequest.rawRequestBytes
+                : request.exactHttpRequest.rawRequestBytes.clone()
                 : null;
         snapshot.method = request.method;
         snapshot.urlTemplate = request.url;
@@ -104,14 +111,19 @@ public class HistoryRequestSnapshot {
     }
 
     public static HistoryRequestSnapshot copyOf(HistoryRequestSnapshot source) {
-        return copyCanonical(source);
+        return copyCanonical(source, false);
     }
 
     static HistoryRequestSnapshot copyOfWithoutExactTransport(HistoryRequestSnapshot source) {
-        return copyCanonical(source);
+        return copyCanonical(source, false);
     }
 
-    private static HistoryRequestSnapshot copyCanonical(HistoryRequestSnapshot source) {
+    static HistoryRequestSnapshot copyForPersistenceSharingPayload(HistoryRequestSnapshot source) {
+        return copyCanonical(source, true);
+    }
+
+    private static HistoryRequestSnapshot copyCanonical(HistoryRequestSnapshot source,
+                                                        boolean sharePayload) {
         if (source == null) {
             return null;
         }
@@ -127,7 +139,8 @@ public class HistoryRequestSnapshot {
                 }
             }
         }
-        copy.bodyAsAuthored = source.bodyAsAuthored != null ? source.bodyAsAuthored.clone() : null;
+        copy.bodyAsAuthored = source.bodyAsAuthored != null
+                ? (sharePayload ? source.bodyAsAuthored : source.bodyAsAuthored.clone()) : null;
         copy.bodyMode = source.bodyMode;
         copy.authType = source.authType;
         copy.buildMode = source.buildMode;
@@ -135,7 +148,8 @@ public class HistoryRequestSnapshot {
                 ? new LinkedHashMap<>(source.requestVariablesAsAuthored)
                 : new LinkedHashMap<>();
         copy.authoredRequest = copyRequestWithoutExactTransport(source.authoredRequest);
-        copy.rawRequestSent = source.rawRequestSent != null ? source.rawRequestSent.clone() : null;
+        copy.rawRequestSent = source.rawRequestSent != null
+                ? (sharePayload ? source.rawRequestSent : source.rawRequestSent.clone()) : null;
         copy.rawRequestSentText = source.rawRequestSentText;
         byte[] sourceAuthoredExact = source.authoredExactRequestBytes;
         if ((sourceAuthoredExact == null || sourceAuthoredExact.length == 0)
@@ -147,7 +161,7 @@ public class HistoryRequestSnapshot {
             copy.authoredExactRequestBytes = sourceAuthoredExact == source.rawRequestSent
                     && copy.rawRequestSent != null
                     ? copy.rawRequestSent
-                    : sourceAuthoredExact.clone();
+                    : sharePayload ? sourceAuthoredExact : sourceAuthoredExact.clone();
         }
         copy.resolvedUrl = source.resolvedUrl;
         copy.resolvedVariables = source.resolvedVariables != null ? new LinkedHashMap<>(source.resolvedVariables) : new LinkedHashMap<>();

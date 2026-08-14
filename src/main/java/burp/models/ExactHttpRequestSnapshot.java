@@ -1,6 +1,7 @@
 package burp.models;
 
 import burp.history.HistoryBodyTruncator;
+import burp.parser.HistoryRawHttpMessageParser;
 
 import java.nio.charset.StandardCharsets;
 
@@ -17,6 +18,45 @@ public final class ExactHttpRequestSnapshot {
     public String sourceContext;
     public String invalidationReason;
     public String semanticFingerprint;
+
+    /**
+     * Transfers ownership of bytes already detached from Burp into the
+     * canonical immutable exact-request owner. Callers must not mutate them.
+     */
+    public static ExactHttpRequestSnapshot fromOwnedTrafficBytes(byte[] ownedRawRequestBytes,
+                                                                 long admittedMaximumBytes,
+                                                                 String serviceHost,
+                                                                 int servicePort,
+                                                                 boolean secure,
+                                                                 String sourceContext,
+                                                                 String semanticFingerprint) {
+        if (ownedRawRequestBytes == null || ownedRawRequestBytes.length == 0) {
+            throw new IllegalArgumentException("Exact traffic requires request bytes.");
+        }
+        if (admittedMaximumBytes <= 0L || ownedRawRequestBytes.length > admittedMaximumBytes) {
+            throw new IllegalArgumentException("Exact traffic exceeds its validated admission limit.");
+        }
+        HistoryRawHttpMessageParser.RequestLayout layout =
+                HistoryRawHttpMessageParser.inspectRequest(ownedRawRequestBytes);
+        if (!layout.isTrustedRequest()) {
+            throw new IllegalArgumentException("Exact traffic request is malformed.");
+        }
+        ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
+        snapshot.rawRequestBytes = ownedRawRequestBytes;
+        snapshot.serviceHost = serviceHost;
+        snapshot.servicePort = servicePort;
+        snapshot.secure = secure;
+        snapshot.httpVersion = layout.httpVersion();
+        snapshot.pristine = true;
+        snapshot.binaryBody = layout.bodyOffset() >= 0
+                && layout.bodyOffset() < ownedRawRequestBytes.length
+                && !isValidUtf8(ownedRawRequestBytes, layout.bodyOffset(),
+                ownedRawRequestBytes.length - layout.bodyOffset());
+        snapshot.sourceContext = sourceContext;
+        snapshot.invalidationReason = "";
+        snapshot.semanticFingerprint = semanticFingerprint;
+        return snapshot;
+    }
 
     public static ExactHttpRequestSnapshot copyOf(ExactHttpRequestSnapshot source) {
         return copyOf(source, true);
@@ -78,34 +118,51 @@ public final class ExactHttpRequestSnapshot {
     }
 
     private static int bodyOffset(byte[] rawRequestBytes) {
-        if (rawRequestBytes == null || rawRequestBytes.length == 0) {
-            return -1;
-        }
-        int separator = indexOf(rawRequestBytes, "\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-        int separatorLength = 4;
-        if (separator < 0) {
-            separator = indexOf(rawRequestBytes, "\n\n".getBytes(StandardCharsets.UTF_8));
-            separatorLength = 2;
-        }
-        if (separator < 0) {
-            return -1;
-        }
-        return separator + separatorLength;
+        return HistoryRawHttpMessageParser.inspectRequest(rawRequestBytes).bodyOffset();
     }
 
-    private static int indexOf(byte[] haystack, byte[] needle) {
-        if (haystack == null || needle == null || haystack.length == 0 || needle.length == 0 || haystack.length < needle.length) {
-            return -1;
+    public static boolean isValidUtf8(byte[] bytes, int offset, int length) {
+        if (bytes == null || offset < 0 || length < 0 || offset > bytes.length - length) {
+            return false;
         }
-        outer:
-        for (int i = 0; i <= haystack.length - needle.length; i++) {
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
-                }
+        int end = offset + Math.max(0, length);
+        for (int i = offset; i < end; i++) {
+            int first = bytes[i] & 0xFF;
+            if (first <= 0x7F) {
+                continue;
             }
-            return i;
+            int needed;
+            int codePoint;
+            if ((first & 0xE0) == 0xC0) {
+                needed = 1;
+                codePoint = first & 0x1F;
+            } else if ((first & 0xF0) == 0xE0) {
+                needed = 2;
+                codePoint = first & 0x0F;
+            } else if ((first & 0xF8) == 0xF0) {
+                needed = 3;
+                codePoint = first & 0x07;
+            } else {
+                return false;
+            }
+            if (i + needed >= end) {
+                return false;
+            }
+            for (int j = 0; j < needed; j++) {
+                int next = bytes[++i] & 0xFF;
+                if ((next & 0xC0) != 0x80) {
+                    return false;
+                }
+                codePoint = (codePoint << 6) | (next & 0x3F);
+            }
+            if ((needed == 1 && codePoint < 0x80)
+                    || (needed == 2 && codePoint < 0x800)
+                    || (needed == 3 && codePoint < 0x10000)
+                    || codePoint > 0x10FFFF
+                    || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
+                return false;
+            }
         }
-        return -1;
+        return true;
     }
 }

@@ -368,6 +368,21 @@ public class HistoryStore {
         return copy;
     }
 
+    /**
+     * Detaches mutable metadata for one-shot workspace serialization while
+     * borrowing immutable evidence arrays owned by this store.
+     */
+    synchronized List<HistoryEntry> snapshotForPersistenceSharingPayload() {
+        List<HistoryEntry> copy = new ArrayList<>(entries.size());
+        for (HistoryEntry entry : entries) {
+            HistoryEntry cloned = HistoryEntry.copyForPersistenceSharingPayload(entry);
+            if (cloned != null) {
+                copy.add(cloned);
+            }
+        }
+        return copy;
+    }
+
     /** Returns newest-first immutable lightweight rows without cloning entries. */
     public synchronized List<HistoryEntrySummary> snapshotSummaries() {
         return snapshotSummaries(null);

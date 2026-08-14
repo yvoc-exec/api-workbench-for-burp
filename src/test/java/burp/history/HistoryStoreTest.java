@@ -152,6 +152,32 @@ class HistoryStoreTest {
     }
 
     @Test
+    void persistenceSnapshotSharesImmutableEvidenceButDetachesMetadata() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        store.addEntry(entry);
+
+        HistoryEntry first = store.snapshotForPersistenceSharingPayload().get(0);
+        HistoryEntry second = store.snapshotForPersistenceSharingPayload().get(0);
+
+        assertThat(first).isNotSameAs(second);
+        assertThat(first.requestSnapshot).isNotSameAs(second.requestSnapshot);
+        assertThat(first.responseSnapshot).isNotSameAs(second.responseSnapshot);
+        assertThat(first.requestSnapshot.rawRequestSent)
+                .isSameAs(second.requestSnapshot.rawRequestSent);
+        assertThat(first.requestSnapshot.bodyAsAuthored)
+                .isSameAs(second.requestSnapshot.bodyAsAuthored);
+        assertThat(first.responseSnapshot.body)
+                .isSameAs(second.responseSnapshot.body);
+
+        first.requestSnapshot.urlTemplate = "changed";
+        first.responseSnapshot.headers.clear();
+        assertThat(second.requestSnapshot.urlTemplate).isNotEqualTo("changed");
+        assertThat(second.responseSnapshot.headers).isNotEmpty();
+        assertThat(store.getById(entry.id).requestSnapshot.rawRequestSent).isNotEmpty();
+    }
+
+    @Test
     void nullBulkOperationsAreSafeNoOps() {
         HistoryStore store = new HistoryStore();
 

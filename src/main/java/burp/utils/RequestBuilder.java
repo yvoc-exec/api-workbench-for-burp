@@ -205,18 +205,52 @@ public class RequestBuilder {
      */
     public static Set<String> findUnresolvedTokens(byte[] rawRequest) {
         Set<String> unresolved = new LinkedHashSet<>();
-        if (rawRequest == null || rawRequest.length == 0) return unresolved;
-        String text = new String(rawRequest, StandardCharsets.UTF_8);
-        Pattern p = Pattern.compile("\\{\\{([^}|]+)(?:\\|([^}]+))?\\}\\}");
-        Matcher m = p.matcher(text);
-        while (m.find()) {
-            String variableName = m.group(1) != null ? m.group(1).trim() : "";
-            String defaultValue = m.group(2);
-            if (!variableName.isEmpty() && defaultValue == null) {
-                unresolved.add(variableName);
+        if (rawRequest == null || rawRequest.length == 0) {
+            return unresolved;
+        }
+        for (int i = 0; i + 3 < rawRequest.length; i++) {
+            if (rawRequest[i] != '{' || rawRequest[i + 1] != '{') {
+                continue;
             }
+            int contentStart = i + 2;
+            int pipe = -1;
+            int close = -1;
+            for (int cursor = contentStart; cursor + 1 < rawRequest.length; cursor++) {
+                if (rawRequest[cursor] == '|' && pipe < 0) {
+                    pipe = cursor;
+                }
+                if (rawRequest[cursor] == '}' && rawRequest[cursor + 1] == '}') {
+                    close = cursor;
+                    break;
+                }
+                if (cursor - contentStart > 8_192) {
+                    break;
+                }
+            }
+            if (close < 0) {
+                continue;
+            }
+            if (pipe < 0) {
+                int nameStart = contentStart;
+                int nameEnd = close;
+                while (nameStart < nameEnd && isAsciiWhitespace(rawRequest[nameStart])) {
+                    nameStart++;
+                }
+                while (nameEnd > nameStart && isAsciiWhitespace(rawRequest[nameEnd - 1])) {
+                    nameEnd--;
+                }
+                if (nameEnd > nameStart) {
+                    unresolved.add(new String(rawRequest, nameStart, nameEnd - nameStart,
+                            StandardCharsets.UTF_8));
+                }
+            }
+            i = close + 1;
         }
         return unresolved;
+    }
+
+    private static boolean isAsciiWhitespace(byte value) {
+        return value == ' ' || value == '\t' || value == '\r' || value == '\n';
     }
 
     /**
@@ -704,6 +738,22 @@ public class RequestBuilder {
         }
         baos.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         return baos.toByteArray();
+    }
+
+    /**
+     * Execution-only path. Exact transport is immutable while pristine, so the
+     * pipeline may borrow its canonical backing until Montoya accepts it.
+     */
+    byte[] buildRequestForExecution(ApiRequest request, VariableResolver resolver) throws Exception {
+        if (request != null
+                && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
+                && request.exactHttpRequest != null
+                && request.exactHttpRequest.pristine
+                && request.exactHttpRequest.rawRequestBytes != null
+                && request.exactHttpRequest.rawRequestBytes.length > 0) {
+            return request.exactHttpRequest.rawRequestBytes;
+        }
+        return buildRequest(request, resolver);
     }
 
     private static void writeMultipartHeader(ByteArrayOutputStream output,

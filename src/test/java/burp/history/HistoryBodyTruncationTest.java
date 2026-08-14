@@ -58,6 +58,21 @@ class HistoryBodyTruncationTest {
     }
 
     @Test
+    void truncationPreservesKnownTransmittedSizes() {
+        HistoryEntry entry = entryWithRequestAndResponse(
+                "preserve-transmitted-sizes", "abcdefghij", "uvwxyz1234", "raw");
+        entry.requestSizeBytes = 12_345L;
+        entry.responseSizeBytes = 67_890L;
+
+        HistoryBodyTruncator.apply(entry, policy(4, 100, 5));
+
+        assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
+        assertThat(entry.responseSnapshot.bodyTruncated).isTrue();
+        assertThat(entry.requestSizeBytes).isEqualTo(12_345L);
+        assertThat(entry.responseSizeBytes).isEqualTo(67_890L);
+    }
+
+    @Test
     void fullBodyHashMatchesOriginal() {
         HistoryEntry entry = entryWithRequestAndResponse("hash", "abcdefghij", "abcdefghij", "abc");
         String expected = HistoryBodyTruncator.sha256Hex("abcdefghij".getBytes(StandardCharsets.UTF_8));

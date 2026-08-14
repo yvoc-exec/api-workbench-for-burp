@@ -7,6 +7,9 @@ import burp.history.HistorySource;
 import burp.importer.BurpTrafficImportPlan;
 import burp.importer.BurpTrafficConversionResult;
 import burp.importer.BurpTrafficImportService;
+import burp.importer.BurpTrafficSelection;
+import burp.importer.TrafficImportLimits;
+import burp.importer.TrafficImportPreflightResult;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
@@ -17,10 +20,16 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 class BurpTrafficWorkflowCoordinatorTest {
 
@@ -157,6 +166,128 @@ class BurpTrafficWorkflowCoordinatorTest {
         copiedExisting.exactHttpRequest.pristine = false;
         assertThat(existing.name).isEqualTo("Existing Request");
         assertThat(existing.exactHttpRequest.pristine).isTrue();
+    }
+
+    @Test
+    void conversionAndPersistenceValidationRunOffEdtWhileCommitRunsOnEdt() {
+        UniversalImporter importer = mock(UniversalImporter.class);
+        burp.ui.ImporterPanel ui = mock(burp.ui.ImporterPanel.class);
+        BurpTrafficImportService service = mock(BurpTrafficImportService.class);
+        WorkspaceState before = workspaceWithExistingCollection();
+        AtomicBoolean conversionOnEdt = new AtomicBoolean(true);
+        AtomicBoolean validationOnEdt = new AtomicBoolean(true);
+        AtomicBoolean commitOnEdt = new AtomicBoolean(false);
+        AtomicBoolean presenterOnEdt = new AtomicBoolean(false);
+        BurpTrafficConversionResult converted = acceptedConversion(importedRequest("imported", "Imported"));
+        when(importer.getUI()).thenReturn(ui);
+        when(ui.getPanel()).thenReturn(new javax.swing.JPanel());
+        when(ui.getHistoryRetentionPolicySnapshot()).thenReturn(burp.history.HistoryRetentionPolicy.defaultPolicy());
+        when(ui.getWorkspaceStateSnapshotFromModelForPersistence()).thenReturn(before);
+        when(service.convert(any(), any())).thenAnswer(invocation -> {
+            conversionOnEdt.set(javax.swing.SwingUtilities.isEventDispatchThread());
+            return converted;
+        });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            validationOnEdt.set(javax.swing.SwingUtilities.isEventDispatchThread());
+            return null;
+        }).when(importer).validateWorkspaceStatePersistable(any());
+        org.mockito.Mockito.doAnswer(invocation -> {
+            commitOnEdt.set(javax.swing.SwingUtilities.isEventDispatchThread());
+            return null;
+        }).when(ui).restoreWorkspaceState(any());
+        BurpTrafficWorkflowCoordinator coordinator = new BurpTrafficWorkflowCoordinator(
+                importer, service,
+                (owner, model) -> {
+                    presenterOnEdt.set(javax.swing.SwingUtilities.isEventDispatchThread());
+                    return true;
+                },
+                (parent, title, message, type) -> { });
+        try {
+            coordinator.importTraffic(List.of(selection()), false);
+
+            assertThat(conversionOnEdt.get()).isFalse();
+            assertThat(validationOnEdt.get()).isFalse();
+            assertThat(commitOnEdt.get()).isTrue();
+            assertThat(presenterOnEdt.get()).isTrue();
+            verify(importer).requestWorkspaceStateSaveNow();
+        } finally {
+            coordinator.close();
+        }
+    }
+
+    @Test
+    void persistenceRejectionLeavesWorkspaceAndSaveUntouched() {
+        UniversalImporter importer = mock(UniversalImporter.class);
+        burp.ui.ImporterPanel ui = mock(burp.ui.ImporterPanel.class);
+        BurpTrafficImportService service = mock(BurpTrafficImportService.class);
+        WorkspaceState before = workspaceWithExistingCollection();
+        BurpTrafficConversionResult converted = acceptedConversion(importedRequest("imported", "Imported"));
+        when(importer.getUI()).thenReturn(ui);
+        when(ui.getPanel()).thenReturn(new javax.swing.JPanel());
+        when(ui.getHistoryRetentionPolicySnapshot()).thenReturn(burp.history.HistoryRetentionPolicy.defaultPolicy());
+        when(ui.getWorkspaceStateSnapshotFromModelForPersistence()).thenReturn(before);
+        when(service.convert(any(), any())).thenReturn(converted);
+        org.mockito.Mockito.doThrow(new IllegalArgumentException("too large: secret body omitted"))
+                .when(importer).validateWorkspaceStatePersistable(any());
+        java.util.concurrent.atomic.AtomicReference<String> shown = new java.util.concurrent.atomic.AtomicReference<>();
+        BurpTrafficWorkflowCoordinator coordinator = new BurpTrafficWorkflowCoordinator(
+                importer, service, (owner, model) -> true,
+                (parent, title, message, type) -> shown.set(message));
+        try {
+            coordinator.importTraffic(List.of(selection()), true);
+
+            verify(ui, never()).restoreWorkspaceState(any());
+            verify(importer, never()).requestWorkspaceStateSaveNow();
+            assertThat(shown.get()).contains("No workspace data was changed").doesNotContain("secret body");
+            assertThat(before.collections.get(0).requests).hasSize(1);
+            assertThat(before.historyEntries).isEmpty();
+            assertThat(before.runnerQueuedRequestIdentityKeys).isEmpty();
+        } finally {
+            coordinator.close();
+        }
+    }
+
+    @Test
+    void handledBackgroundFailureDoesNotEscapeToTheCaller() {
+        UniversalImporter importer = mock(UniversalImporter.class);
+        burp.ui.ImporterPanel ui = mock(burp.ui.ImporterPanel.class);
+        BurpTrafficImportService service = mock(BurpTrafficImportService.class);
+        when(importer.getUI()).thenReturn(ui);
+        when(ui.getPanel()).thenReturn(new javax.swing.JPanel());
+        when(ui.getHistoryRetentionPolicySnapshot())
+                .thenReturn(burp.history.HistoryRetentionPolicy.defaultPolicy());
+        when(service.convert(any(), any())).thenThrow(new IllegalStateException("safe failure"));
+        AtomicBoolean presenterOnEdt = new AtomicBoolean(false);
+        BurpTrafficWorkflowCoordinator coordinator = new BurpTrafficWorkflowCoordinator(
+                importer, service, (owner, model) -> true,
+                (parent, title, message, type) ->
+                        presenterOnEdt.set(javax.swing.SwingUtilities.isEventDispatchThread()));
+        try {
+            assertThatCode(() -> coordinator.importTraffic(List.of(selection()), false))
+                    .doesNotThrowAnyException();
+            assertThat(presenterOnEdt.get()).isTrue();
+            verify(ui, never()).restoreWorkspaceState(any());
+            verify(importer, never()).requestWorkspaceStateSaveNow();
+        } finally {
+            coordinator.close();
+        }
+    }
+
+    private static BurpTrafficConversionResult acceptedConversion(ApiRequest request) {
+        BurpTrafficConversionResult result = new BurpTrafficConversionResult();
+        result.requests.add(request);
+        result.preflight = new TrafficImportPreflightResult(
+                1, 1, request.exactHttpRequest.rawRequestBytes.length, 0,
+                TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES,
+                TrafficImportLimits.DEFAULT_MAX_AGGREGATE_EXACT_REQUEST_BYTES,
+                List.of());
+        return result;
+    }
+
+    private static BurpTrafficSelection selection() {
+        return BurpTrafficSelection.fromOwnedBytes(
+                "GET / HTTP/1.1\r\nHost: example.invalid\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1),
+                null, "example.invalid", 443, true, "Proxy", null, null, 0);
     }
 
     private static BurpTrafficWorkflowCoordinator coordinator() {

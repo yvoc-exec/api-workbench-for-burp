@@ -71,6 +71,16 @@ class ScriptBindingsBodyMutationTest {
         ScriptExecutionResult result = run(request, "console.log('keep');");
         assertThat(result.mutatedRequest.body.formdata).hasSize(2);
         assertThat(result.mutatedRequest.body.formdata.get(0).key).isEqualTo("a");
+        assertCompleteFileMetadata(result.mutatedRequest);
+    }
+
+    @Test
+    void headerOnlyMutationPreservesCompleteMultipartMetadata() {
+        ScriptExecutionResult result = run(requestWithMultipart(),
+                "awb.request.headers.upsert('X-Test', 'one');");
+
+        assertThat(result.success).isTrue();
+        assertCompleteFileMetadata(result.mutatedRequest);
     }
 
     @Test
@@ -179,6 +189,7 @@ class ScriptBindingsBodyMutationTest {
         assertThat(result.mutatedRequest.body.formdata).hasSize(2);
         assertThat(result.mutatedRequest.body.formdata).extracting(field -> field.key).containsExactly("a", "a");
         assertThat(request.body.formdata).hasSize(2);
+        assertCompleteFileMetadata(result.mutatedRequest);
     }
 
     private ScriptExecutionResult run(ApiRequest request, String source) {
@@ -197,6 +208,12 @@ class ScriptBindingsBodyMutationTest {
         ApiRequest request = baseRequest();
         request.body = new ApiRequest.Body();
         request.body.mode = "formdata";
+        request.body.contentType = "multipart/form-data";
+        request.body.required = true;
+        request.body.description = "upload body";
+        request.body.filePath = "body-source.bin";
+        request.body.source = "openapi";
+        request.body.sourceMetadata.put("body-origin", "fixture");
         ApiRequest.Body.FormField one = new ApiRequest.Body.FormField("a", "1");
         one.type = "text";
         ApiRequest.Body.FormField two = new ApiRequest.Body.FormField("a", "2");
@@ -204,6 +221,14 @@ class ScriptBindingsBodyMutationTest {
         two.fileUpload = true;
         two.filePath = "upload.txt";
         two.disabled = true;
+        two.required = true;
+        two.description = "attachment";
+        two.contentType = "text/plain";
+        two.style = "form";
+        two.explode = Boolean.TRUE;
+        two.allowReserved = true;
+        two.source = "openapi";
+        two.sourceMetadata.put("field-origin", "fixture");
         request.body.formdata.add(one);
         request.body.formdata.add(two);
         return request;
@@ -232,5 +257,23 @@ class ScriptBindingsBodyMutationTest {
         request.method = "POST";
         request.url = "https://example.test";
         return request;
+    }
+
+    private static void assertCompleteFileMetadata(ApiRequest request) {
+        assertThat(request.body.required).isTrue();
+        assertThat(request.body.description).isEqualTo("upload body");
+        assertThat(request.body.filePath).isEqualTo("body-source.bin");
+        assertThat(request.body.source).isEqualTo("openapi");
+        assertThat(request.body.sourceMetadata).containsEntry("body-origin", "fixture");
+        ApiRequest.Body.FormField field = request.body.formdata.get(1);
+        assertThat(field.filePath).isEqualTo("upload.txt");
+        assertThat(field.required).isTrue();
+        assertThat(field.description).isEqualTo("attachment");
+        assertThat(field.contentType).isEqualTo("text/plain");
+        assertThat(field.style).isEqualTo("form");
+        assertThat(field.explode).isTrue();
+        assertThat(field.allowReserved).isTrue();
+        assertThat(field.source).isEqualTo("openapi");
+        assertThat(field.sourceMetadata).containsEntry("field-origin", "fixture");
     }
 }

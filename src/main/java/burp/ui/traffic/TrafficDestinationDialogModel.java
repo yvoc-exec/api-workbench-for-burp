@@ -1,5 +1,6 @@
 package burp.ui.traffic;
 
+import burp.importer.TrafficImportPreflightResult;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.ui.tree.RequestTreeNamingPolicy;
@@ -19,6 +20,7 @@ public final class TrafficDestinationDialogModel {
     private final List<ApiRequest> convertedRequests;
     private final boolean responseAvailable;
     private final boolean queueAction;
+    private final TrafficImportPreflightResult preflight;
 
     private ApiCollection destinationCollection;
     private boolean createNewCollection;
@@ -35,10 +37,19 @@ public final class TrafficDestinationDialogModel {
                                          List<ApiRequest> convertedRequests,
                                          boolean responseAvailable,
                                          boolean queueAction) {
+        this(existingCollections, convertedRequests, responseAvailable, queueAction, null);
+    }
+
+    public TrafficDestinationDialogModel(List<ApiCollection> existingCollections,
+                                         List<ApiRequest> convertedRequests,
+                                         boolean responseAvailable,
+                                         boolean queueAction,
+                                         TrafficImportPreflightResult preflight) {
         this.existingCollections = existingCollections != null ? new ArrayList<>(existingCollections) : new ArrayList<>();
         this.convertedRequests = convertedRequests != null ? new ArrayList<>(convertedRequests) : new ArrayList<>();
         this.responseAvailable = responseAvailable;
         this.queueAction = queueAction;
+        this.preflight = preflight;
         this.destinationCollection = this.existingCollections.isEmpty() ? null : this.existingCollections.get(0);
         this.createNewCollection = this.existingCollections.isEmpty();
         this.queueInRunner = queueAction;
@@ -56,7 +67,11 @@ public final class TrafficDestinationDialogModel {
     }
 
     public int selectedCount() {
-        return convertedRequests.size();
+        return preflight != null ? preflight.selectionCount() : convertedRequests.size();
+    }
+
+    public TrafficImportPreflightResult preflight() {
+        return preflight;
     }
 
     public boolean responseAvailable() {
@@ -255,6 +270,12 @@ public final class TrafficDestinationDialogModel {
 
     private void validate() {
         validationErrors.clear();
+        if (preflight != null && !preflight.accepted()) {
+            for (TrafficImportPreflightResult.Rejection rejection : preflight.rejections()) {
+                validationErrors.add(rejection.safeMessage());
+            }
+            validationErrors.add("No requests were imported.");
+        }
         if (convertedRequests.isEmpty()) {
             validationErrors.add("At least one request is required.");
         }

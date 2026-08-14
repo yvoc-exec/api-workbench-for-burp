@@ -160,6 +160,33 @@ class RedirectExecutorTest {
     }
 
     @Test
+    void largeRedirectBodiesPreserveOrDropWithoutEquivalentHopTextOwner() {
+        byte[] largeBody = new byte[2 * 1024 * 1024];
+        Arrays.fill(largeBody, (byte) 0x5A);
+        for (int statusCode : List.of(307, 308, 303)) {
+            Harness harness = execute(
+                    request("POST", "/large", "api.example.test", 443, true, largeBody,
+                            headerLine("Content-Type", "application/octet-stream"),
+                            headerLine("Content-Length", String.valueOf(largeBody.length))),
+                    "https://api.example.test/large",
+                    true,
+                    RedirectPolicy.defaults(),
+                    List.of(
+                            response(statusCode, "Redirect", "/next", null, null),
+                            response(200, "OK", null, "done", "text/plain")));
+
+            assertThat(harness.result.redirectHops).hasSize(1);
+            assertThat(harness.result.redirectHops.get(0).rawRequestText).isNull();
+            assertThat(harness.result.redirectHops.get(0).rawRequestBytes).isNotNull();
+            if (statusCode == 303) {
+                assertThat(bodyBytes(harness.sentRequests.get(1))).isEmpty();
+            } else {
+                assertThat(bodyBytes(harness.sentRequests.get(1))).containsExactly(largeBody);
+            }
+        }
+    }
+
+    @Test
     void bodyPreservingRedirectRetainsEntityMetadataAndRebuildsLength() {
         byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
         Harness harness = execute(
