@@ -3,6 +3,7 @@ package burp.history;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.models.RedirectHop;
 import burp.models.RedirectTerminationReason;
 import burp.models.WorkspaceState;
@@ -24,6 +25,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class HistoryEntryCompatibilityTest {
+
+    @Test
+    void automaticCapturesDoNotRetainAuthoredExactPayloadOwners() {
+        ApiCollection collection = HistoryTestFixtures.sampleCollection();
+        ApiRequest request = HistoryTestFixtures.sampleRequest();
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "POST /login HTTP/1.1\r\nHost: api.example.test\r\n\r\nimportant-payload")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+
+        HistoryEntry workbench = HistoryEntry.fromWorkbenchExecution(
+                collection, request, null, HistoryTestFixtures.sampleWorkbenchExecutionResult(), 1, 1, List.of());
+        RunnerResult runnerResult = new RunnerResult();
+        HistoryEntry runner = HistoryEntry.fromRunnerAttempt(collection, request, null, runnerResult);
+
+        assertThat(workbench.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
+        assertThat(runner.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
+        assertThat(request.exactHttpRequest.rawRequestBytes).isNotNull();
+    }
 
     @Test
     void workbenchCaptureRetainsRawAndAuthoredSnapshotsAlongWithExecutionMetadata() {

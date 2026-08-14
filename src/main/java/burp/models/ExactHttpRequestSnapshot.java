@@ -26,6 +26,14 @@ public final class ExactHttpRequestSnapshot {
         return copyOf(source, false);
     }
 
+    public static ExactHttpRequestSnapshot copyMetadataOnly(ExactHttpRequestSnapshot source) {
+        ExactHttpRequestSnapshot copy = copyOf(source, false);
+        if (copy != null) {
+            copy.rawRequestBytes = null;
+        }
+        return copy;
+    }
+
     private static ExactHttpRequestSnapshot copyOf(ExactHttpRequestSnapshot source, boolean cloneRawBytes) {
         if (source == null) {
             return null;

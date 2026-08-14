@@ -990,7 +990,7 @@ public class ImporterPanel {
             return null;
         }
         if (entry.requestSnapshot == null) {
-            entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+            entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
         }
         if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
             entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();
@@ -1046,7 +1046,7 @@ public class ImporterPanel {
             entry.folderPath = resolveHistoryFolderPath(collection, request, entry);
         }
         if (entry.requestSnapshot == null && request != null) {
-            entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+            entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
         }
         if (entry.requestSizeBytes <= 0 && entry.requestSnapshot != null) {
             entry.requestSizeBytes = entry.requestSnapshot.approximateSizeBytes();

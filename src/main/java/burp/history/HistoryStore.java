@@ -732,7 +732,7 @@ public class HistoryStore {
     private static HistoryEntry normalizeIncomingEntry(HistoryEntry source,
                                                        HistoryRetentionPolicy policy,
                                                        Instant operationTimestamp) {
-        HistoryEntry copy = HistoryEntry.copyOf(source);
+        HistoryEntry copy = HistoryEntry.copyOfWithoutAuthoredExactTransport(source);
         if (copy.timestamp == null) {
             copy.timestamp = operationTimestamp;
         }

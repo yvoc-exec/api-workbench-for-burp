@@ -125,8 +125,9 @@ class HistoryLoadInWorkbenchActionTest {
                 .containsEntry("retained.key", "retained-value");
         assertThat(liveRequest.exactHttpRequest).isNotNull().isNotSameAs(changedRequest.exactHttpRequest);
         assertThat(liveRequest.exactHttpRequest.rawRequestBytes)
-                .containsExactly(changedRequest.exactHttpRequest.rawRequestBytes)
-                .isNotSameAs(changedRequest.exactHttpRequest.rawRequestBytes);
+                .containsExactly(entry.requestSnapshot.rawRequestSent)
+                .isNotSameAs(entry.requestSnapshot.rawRequestSent);
+        assertThat(liveRequest.exactHttpRequest.sourceContext).isEqualTo("HISTORY_CANONICAL_RAW");
         assertThat(liveRequest.id).isEqualTo(liveId);
         assertThat(liveRequest.name).isEqualTo(liveName);
         assertThat(liveRequest.path).isEqualTo(livePath);

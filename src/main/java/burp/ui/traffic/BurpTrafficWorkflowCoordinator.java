@@ -164,6 +164,7 @@ public final class BurpTrafficWorkflowCoordinator {
             request.sourceCollection = destination.effectiveCollectionName();
             request.disabled = false;
             if (!destination.preserveExactTransport()) {
+                request.materializeDerivedExactTextBody();
                 request.invalidateExactTransport("EXACT_TRANSPORT_DISABLED_ON_IMPORT");
             }
             requests.add(request);

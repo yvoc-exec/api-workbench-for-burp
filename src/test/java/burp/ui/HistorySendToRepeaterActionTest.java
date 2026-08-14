@@ -79,7 +79,7 @@ class HistorySendToRepeaterActionTest {
     }
 
     @Test
-    void sendToRepeaterFromHistoryPreservesExactHttpHeaders() throws Exception {
+    void sendToRepeaterFromHistoryUsesCanonicalRawEvidenceForExactReplay() throws Exception {
         ImporterPanelTestSupport.PanelBundle bundle = ImporterPanelTestSupport.newBundle();
         bundle.panel.restoreWorkspaceState(WorkspaceState.fromCollections(List.of(HistoryTestFixtures.sampleCollection())));
         bundle.panel.replaceEnvironmentProfiles(List.of(HistoryTestFixtures.sampleEnvironment()));
@@ -102,7 +102,7 @@ class HistorySendToRepeaterActionTest {
 
         verify(bundle.importer, timeout(10000)).sendToRepeater(captured.capture(), ArgumentMatchers.nullable(String.class));
         HttpRequest replayed = captured.getValue();
-        assertThat(replayed.headerValue("Host")).isEqualTo("alt.example.test");
+        assertThat(replayed.headerValue("Host")).isEqualTo("api.example.test");
         assertThat(replayed.headerValue("User-Agent")).isNull();
         assertThat(replayed.headerValue("Accept")).isNull();
         assertThat(replayed.bodyToString()).contains("username");

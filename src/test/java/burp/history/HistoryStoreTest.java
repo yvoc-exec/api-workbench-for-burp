@@ -1,5 +1,6 @@
 package burp.history;
 
+import burp.models.ExactHttpRequestSnapshot;
 import burp.testsupport.HistoryTestFixtures;
 import org.junit.jupiter.api.Test;
 
@@ -10,6 +11,24 @@ import java.util.ArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HistoryStoreTest {
+
+    @Test
+    void admissionRetainsExactMetadataWithoutCloningAuthoredPayloadBytes() {
+        HistoryStore store = new HistoryStore();
+        HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
+        entry.requestSnapshot.authoredRequest.exactHttpRequest = new ExactHttpRequestSnapshot();
+        entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes = new byte[4096];
+        entry.requestSnapshot.authoredRequest.exactHttpRequest.serviceHost = "api.example.test";
+
+        store.addEntry(entry);
+        HistoryEntry stored = store.getById(entry.id);
+
+        assertThat(stored.requestSnapshot.authoredRequest.exactHttpRequest).isNotNull();
+        assertThat(stored.requestSnapshot.authoredRequest.exactHttpRequest.serviceHost)
+                .isEqualTo("api.example.test");
+        assertThat(stored.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).hasSize(4096);
+    }
 
     @Test
     void addEntryKeepsNewestFirstAndReturnsDefensiveCopies() {

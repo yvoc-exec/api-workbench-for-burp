@@ -381,6 +381,7 @@ class MemoryHardeningProcessIT {
         assertThat(string(workbench, "exitClassification")).isEqualTo("SUCCESS");
         assertThat(longValue(workbenchMetrics, "productionWorkbenchPostSendPath")).isEqualTo(1L);
         assertThat(longValue(workbenchMetrics, "workbenchHeavyPostSendOwners")).isZero();
+        assertThat(longValue(workbenchMetrics, "workbenchNestedAuthoredExactOwners")).isZero();
         assertThat(longValue(workbenchMetrics, "workbenchSnapshotOwners")).isEqualTo(250L);
     }
 

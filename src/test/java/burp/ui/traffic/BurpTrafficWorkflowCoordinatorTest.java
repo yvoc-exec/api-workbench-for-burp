@@ -5,11 +5,13 @@ import burp.history.HistoryEntry;
 import burp.history.HistoryRequestSnapshot;
 import burp.history.HistorySource;
 import burp.importer.BurpTrafficImportPlan;
+import burp.importer.BurpTrafficConversionResult;
 import burp.importer.BurpTrafficImportService;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.ExactHttpRequestSnapshot;
 import burp.models.WorkspaceState;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -21,6 +23,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 class BurpTrafficWorkflowCoordinatorTest {
+
+    @Test
+    void disablingExactTransportMaterializesCapturedTextBodyBeforeSemanticSend() throws Exception {
+        ApiRequest imported = importedTextRequest("body-id", "Body Request", "important-payload");
+        ApiCollection destinationCollection = workspaceWithExistingCollection().collections.get(0);
+        TrafficDestinationDialogModel destination = new TrafficDestinationDialogModel(
+                List.of(destinationCollection), List.of(imported), false, false);
+        destination.setPreserveExactTransport(false);
+        BurpTrafficConversionResult conversion = new BurpTrafficConversionResult();
+        conversion.requests.add(imported);
+
+        BurpTrafficImportPlan plan = coordinator().buildPlan(destination, conversion);
+        ApiRequest planned = plan.requests.get(0);
+        String built = new String(new RequestBuilder(null).buildRequest(planned, null), StandardCharsets.UTF_8);
+
+        assertThat(planned.exactHttpRequest.pristine).isFalse();
+        assertThat(planned.body.raw).isEqualTo("important-payload");
+        assertThat(built).endsWith("\r\n\r\nimportant-payload");
+    }
     @Test
     void appliesExistingCollectionImportToDetachedWorkspaceAndAppendsEnabledRequestsToRunnerQueue() {
         WorkspaceState before = workspaceWithExistingCollection();
@@ -177,6 +198,20 @@ class BurpTrafficWorkflowCoordinatorTest {
         request.exactHttpRequest.servicePort = 443;
         request.exactHttpRequest.secure = true;
         request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+        return request;
+    }
+
+    private static ApiRequest importedTextRequest(String id, String name, String body) {
+        ApiRequest request = importedRequest(id, name);
+        request.method = "POST";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = null;
+        request.exactHttpRequest.rawRequestBytes = (
+                "POST /captured HTTP/1.1\r\nHost: example.invalid\r\nContent-Type: text/plain\r\n\r\n" + body)
+                .getBytes(StandardCharsets.UTF_8);
+        request.exactHttpRequest.binaryBody = false;
         request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
         return request;
     }

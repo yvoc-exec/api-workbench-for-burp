@@ -248,7 +248,7 @@ public final class ScriptBindingsFactory {
             this.sourceCollection = request != null ? request.sourceCollection : null;
             this.originalHasBody = request != null && request.body != null;
             this.headers = new HeaderApi(request != null ? request.headers : null);
-            this.body = new BodyApi(request != null ? request.body : null);
+            this.body = new BodyApi(request);
             this.auth = new AuthApi(request != null ? request.auth : null);
         }
 
@@ -381,10 +381,13 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public List<FormFieldApi> urlencoded = new ArrayList<>();
 
-        BodyApi(ApiRequest.Body source) {
+        BodyApi(ApiRequest request) {
+            ApiRequest.Body source = request != null ? request.body : null;
             if (source != null) {
                 this.mode = source.mode;
-                this.raw = source.raw;
+                this.raw = request.hasDerivedExactTextBody()
+                        ? burp.models.ExactHttpRequestSnapshot.textBody(request.exactHttpRequest.rawRequestBytes)
+                        : source.raw;
                 this.contentType = source.contentType;
                 if (source.graphql != null) {
                     this.graphql = new GraphQLApi(source.graphql);
@@ -1334,6 +1337,7 @@ public final class ScriptBindingsFactory {
         if (context == null || context.request == null || context.requestBinding == null) {
             return;
         }
+        boolean restoreLazyExactBody = context.request.materializeDerivedExactTextBody();
         String beforeFingerprint = context.request.computeSemanticFingerprint();
         context.requestBinding.applyTo(context.request);
         String afterFingerprint = context.request.computeSemanticFingerprint();
@@ -1342,6 +1346,11 @@ public final class ScriptBindingsFactory {
             if (context.request.exactHttpRequest != null && context.request.exactHttpRequest.semanticFingerprint == null) {
                 context.request.exactHttpRequest.semanticFingerprint = beforeFingerprint;
             }
+        } else if (restoreLazyExactBody
+                && context.request.body != null
+                && context.request.exactHttpRequest != null
+                && context.request.exactHttpRequest.pristine) {
+            context.request.body.raw = null;
         }
     }
 

@@ -174,6 +174,14 @@ public class ApiRequest {
         return applyTo(target, false);
     }
 
+    public ApiRequest applyToWithExactTransportMetadata(ApiRequest target) {
+        ApiRequest copy = applyTo(target, false);
+        if (copy != null) {
+            copy.exactHttpRequest = ExactHttpRequestSnapshot.copyMetadataOnly(exactHttpRequest);
+        }
+        return copy;
+    }
+
     public ApiRequest applyToSharingExactTransport(ApiRequest target) {
         ApiRequest copy = applyTo(target, false);
         if (copy != null) {
@@ -224,6 +232,24 @@ public class ApiRequest {
         }
         exactHttpRequest.pristine = false;
         exactHttpRequest.invalidationReason = reason != null ? reason : "";
+    }
+
+    public boolean hasDerivedExactTextBody() {
+        return exactHttpRequest != null
+                && exactHttpRequest.pristine
+                && !exactHttpRequest.binaryBody
+                && body != null
+                && "raw".equalsIgnoreCase(body.mode)
+                && body.raw == null;
+    }
+
+    /** Materializes lazy exact text before switching to semantic transport. */
+    public boolean materializeDerivedExactTextBody() {
+        if (!hasDerivedExactTextBody()) {
+            return false;
+        }
+        body.raw = ExactHttpRequestSnapshot.textBody(exactHttpRequest.rawRequestBytes);
+        return true;
     }
 
     public String computeSemanticFingerprint() {

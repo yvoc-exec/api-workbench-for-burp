@@ -1,7 +1,10 @@
 package burp.history;
 
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
+import burp.parser.HistoryRawHttpMessageParser;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -94,6 +97,14 @@ public class HistoryRequestSnapshot {
     }
 
     public static HistoryRequestSnapshot copyOf(HistoryRequestSnapshot source) {
+        return copyOf(source, true);
+    }
+
+    static HistoryRequestSnapshot copyOfWithoutExactTransport(HistoryRequestSnapshot source) {
+        return copyOf(source, false);
+    }
+
+    private static HistoryRequestSnapshot copyOf(HistoryRequestSnapshot source, boolean includeExactTransport) {
         if (source == null) {
             return null;
         }
@@ -116,7 +127,9 @@ public class HistoryRequestSnapshot {
         copy.requestVariablesAsAuthored = source.requestVariablesAsAuthored != null
                 ? new LinkedHashMap<>(source.requestVariablesAsAuthored)
                 : new LinkedHashMap<>();
-        copy.authoredRequest = copyRequest(source.authoredRequest);
+        copy.authoredRequest = includeExactTransport
+                ? copyRequest(source.authoredRequest)
+                : copyRequestWithoutExactTransport(source.authoredRequest);
         copy.rawRequestSent = source.rawRequestSent != null ? source.rawRequestSent.clone() : null;
         copy.rawRequestSentText = source.rawRequestSentText;
         copy.canonicalizeRawEvidence();
@@ -174,7 +187,7 @@ public class HistoryRequestSnapshot {
 
     public ApiRequest toApiRequest() {
         if (authoredRequest != null) {
-            return copyRequest(authoredRequest);
+            return restoreCanonicalExactTransport(copyRequest(authoredRequest));
         }
         ApiRequest request = new ApiRequest();
         request.method = method;
@@ -211,7 +224,7 @@ public class HistoryRequestSnapshot {
         request.suppressedAutoHeaders = new LinkedHashSet<>();
         request.buildMode = buildMode != null ? buildMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
         request.editorMaterialized = true;
-        return request;
+        return restoreCanonicalExactTransport(request);
     }
 
     public String displayBodyText() {
@@ -319,6 +332,16 @@ public class HistoryRequestSnapshot {
         if (parseWarning != null) {
             size += parseWarning.getBytes(StandardCharsets.UTF_8).length;
         }
+        if (authoredRequest != null && authoredRequest.exactHttpRequest != null) {
+            if (authoredRequest.exactHttpRequest.rawRequestBytes != null) {
+                size += authoredRequest.exactHttpRequest.rawRequestBytes.length;
+            }
+            size += utf8Length(authoredRequest.exactHttpRequest.serviceHost);
+            size += utf8Length(authoredRequest.exactHttpRequest.httpVersion);
+            size += utf8Length(authoredRequest.exactHttpRequest.sourceContext);
+            size += utf8Length(authoredRequest.exactHttpRequest.invalidationReason);
+            size += utf8Length(authoredRequest.exactHttpRequest.semanticFingerprint);
+        }
         return size;
     }
 
@@ -425,5 +448,70 @@ public class HistoryRequestSnapshot {
             return null;
         }
         return request.applyTo(new ApiRequest());
+    }
+
+    private static ApiRequest copyRequestWithoutExactTransport(ApiRequest request) {
+        if (request == null) {
+            return null;
+        }
+        return request.applyToWithExactTransportMetadata(new ApiRequest());
+    }
+
+    private static int utf8Length(String value) {
+        return value != null ? value.getBytes(StandardCharsets.UTF_8).length : 0;
+    }
+
+    private ApiRequest restoreCanonicalExactTransport(ApiRequest request) {
+        if (request == null
+                || (request.resolveBuildMode() != ApiRequest.BuildMode.EXACT_HTTP
+                && request.exactHttpRequest == null)
+                || rawRequestSent == null
+                || rawRequestSent.length == 0
+                || (request.exactHttpRequest != null
+                && request.exactHttpRequest.rawRequestBytes != null
+                && request.exactHttpRequest.rawRequestBytes.length > 0)) {
+            return request;
+        }
+        HistoryRawHttpMessageParser.ParsedRawHttpMessage parsed =
+                HistoryRawHttpMessageParser.parseRequest(rawRequestSent, null);
+        ExactHttpRequestSnapshot exact = request.exactHttpRequest != null
+                ? ExactHttpRequestSnapshot.copyOf(request.exactHttpRequest)
+                : new ExactHttpRequestSnapshot();
+        exact.rawRequestBytes = rawRequestSent.clone();
+        exact.httpVersion = parsed.httpVersion();
+        exact.pristine = true;
+        exact.binaryBody = !roundTripsAsUtf8(parsed.bodyBytes());
+        exact.sourceContext = "HISTORY_CANONICAL_RAW";
+        exact.invalidationReason = "";
+        applyResolvedService(exact);
+        request.exactHttpRequest = exact;
+        exact.semanticFingerprint = request.computeSemanticFingerprint();
+        return request;
+    }
+
+    private void applyResolvedService(ExactHttpRequestSnapshot exact) {
+        String target = resolvedUrl != null && !resolvedUrl.isBlank() ? resolvedUrl : urlTemplate;
+        if (target == null || target.isBlank()) {
+            return;
+        }
+        try {
+            URI uri = URI.create(target);
+            if (uri.getHost() == null || uri.getHost().isBlank()) {
+                return;
+            }
+            exact.serviceHost = uri.getHost();
+            exact.secure = "https".equalsIgnoreCase(uri.getScheme());
+            exact.servicePort = uri.getPort() > 0 ? uri.getPort() : (exact.secure ? 443 : 80);
+        } catch (IllegalArgumentException ignored) {
+            // Authored URL templates can contain unresolved variables.
+        }
+    }
+
+    private static boolean roundTripsAsUtf8(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return true;
+        }
+        String text = new String(bytes, StandardCharsets.UTF_8);
+        return java.util.Arrays.equals(bytes, text.getBytes(StandardCharsets.UTF_8));
     }
 }

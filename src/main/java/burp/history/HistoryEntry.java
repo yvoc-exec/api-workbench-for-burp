@@ -131,7 +131,7 @@ public class HistoryEntry {
                 totalAttempts
         );
         entry.timestamp = Instant.now();
-        entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+        entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
         entry.unresolvedVariables = normalizeStrings(unresolvedVariables);
 
         if (exec != null) {
@@ -264,7 +264,7 @@ public class HistoryEntry {
                 result != null ? Math.max(1, result.attemptNumber) : 1,
                 result != null ? Math.max(1, result.totalAttempts) : 1);
         entry.timestamp = Instant.now();
-        entry.requestSnapshot = HistoryRequestSnapshot.from(request);
+        entry.requestSnapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
         if (result != null) {
             if ((entry.collectionId == null || entry.collectionId.isBlank()) && result.collectionId != null) {
                 entry.collectionId = result.collectionId;
@@ -431,6 +431,14 @@ public class HistoryEntry {
     }
 
     public static HistoryEntry copyOf(HistoryEntry source) {
+        return copyOf(source, true);
+    }
+
+    static HistoryEntry copyOfWithoutAuthoredExactTransport(HistoryEntry source) {
+        return copyOf(source, false);
+    }
+
+    private static HistoryEntry copyOf(HistoryEntry source, boolean includeAuthoredExactTransport) {
         if (source == null) {
             return null;
         }
@@ -460,7 +468,9 @@ public class HistoryEntry {
         copy.requestName = source.requestName;
         copy.environmentId = source.environmentId;
         copy.environmentName = source.environmentName;
-        copy.requestSnapshot = HistoryRequestSnapshot.copyOf(source.requestSnapshot);
+        copy.requestSnapshot = includeAuthoredExactTransport
+                ? HistoryRequestSnapshot.copyOf(source.requestSnapshot)
+                : HistoryRequestSnapshot.copyOfWithoutExactTransport(source.requestSnapshot);
         copy.responseSnapshot = HistoryResponseSnapshot.copyOf(source.responseSnapshot);
         copy.statusCode = source.statusCode;
         copy.durationMillis = source.durationMillis;
@@ -1581,6 +1591,14 @@ public class HistoryEntry {
         });
         size = addApiAuth(size, request.auth);
         size = addApiAuth(size, request.explicitAuth);
+        if (request.exactHttpRequest != null) {
+            size = addBytes(size, request.exactHttpRequest.rawRequestBytes);
+            size = addUtf8(size, request.exactHttpRequest.serviceHost);
+            size = addUtf8(size, request.exactHttpRequest.httpVersion);
+            size = addUtf8(size, request.exactHttpRequest.sourceContext);
+            size = addUtf8(size, request.exactHttpRequest.invalidationReason);
+            size = addUtf8(size, request.exactHttpRequest.semanticFingerprint);
+        }
         return size;
     }
 

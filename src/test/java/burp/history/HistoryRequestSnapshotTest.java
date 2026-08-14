@@ -1,6 +1,7 @@
 package burp.history;
 
 import burp.models.ApiRequest;
+import burp.models.ExactHttpRequestSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -62,6 +63,27 @@ class HistoryRequestSnapshotTest {
         assertThat(snapshot.headersAsAuthored.get(0).value).isEqualTo("alpha");
         assertThat(snapshot.requestVariablesAsAuthored).containsEntry("token", "abc123");
         assertThat(snapshot.displayBodyText()).isEqualTo("{\"message\":\"hello\"}");
+    }
+
+    @Test
+    void accountingIncludesAuthoredExactPayloadAndGenericCopyPreservesReplayFidelity() {
+        ApiRequest request = request("POST", "https://api.example.test/exact");
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = new byte[4096];
+        request.exactHttpRequest.serviceHost = "api.example.test";
+        HistoryRequestSnapshot source = HistoryRequestSnapshot.from(request);
+
+        assertThat(source.approximateSizeBytes()).isGreaterThanOrEqualTo(4096L);
+
+        HistoryRequestSnapshot copy = HistoryRequestSnapshot.copyOf(source);
+
+        assertThat(copy.authoredRequest.exactHttpRequest).isNotNull();
+        assertThat(copy.authoredRequest.exactHttpRequest.rawRequestBytes)
+                .containsExactly(source.authoredRequest.exactHttpRequest.rawRequestBytes)
+                .isNotSameAs(source.authoredRequest.exactHttpRequest.rawRequestBytes);
+        assertThat(HistoryRequestSnapshot.copyOfWithoutExactTransport(source)
+                .authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(source.authoredRequest.exactHttpRequest.rawRequestBytes).hasSize(4096);
     }
 
     @Test

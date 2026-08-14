@@ -886,6 +886,10 @@ public final class MemoryHardeningScenarioMain {
             for (int i = 0; i < 250; i++) {
                 ApiRequest request = MemoryHardeningFixtureFactory.fidelityRequest("workbench-" + i, 256);
                 request.sourceCollection = collection.name;
+                request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+                request.body.raw = null;
+                request.exactHttpRequest = MemoryHardeningFixtureFactory.exactSnapshot(64 * 1024);
+                request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
                 collection.requests.add(request);
             }
             SwingUtilities.invokeAndWait(() -> panel.restoreWorkspaceCollections(List.of(collection)));
@@ -924,6 +928,7 @@ public final class MemoryHardeningScenarioMain {
             IdentityHashMap<?, ?> snapshots = workbenchSnapshotMap(panel);
             long retainedEvidenceBytes = workbenchRetainedEvidenceBytes(snapshots);
             int heavyOwners = workbenchHeavySnapshotOwnerFields(snapshots);
+            int nestedExactOwners = workbenchNestedAuthoredExactOwners(snapshots);
             ScenarioResult result = new ScenarioResult(name);
             result.operationCount = snapshots.size();
             result.payloadBytes = 2L * 1024 * 1024;
@@ -931,6 +936,7 @@ public final class MemoryHardeningScenarioMain {
             result.retainedOwners = snapshots.size();
             result.metrics.put("workbenchSnapshotOwners", snapshots.size());
             result.metrics.put("workbenchHeavyPostSendOwners", heavyOwners);
+            result.metrics.put("workbenchNestedAuthoredExactOwners", nestedExactOwners);
             result.metrics.put("boundedHistoryEvidenceBytes", retainedEvidenceBytes);
             result.metrics.put("productionWorkbenchPostSendPath", 1);
             return retain(result, importer, importer::cleanup);
@@ -978,6 +984,27 @@ public final class MemoryHardeningScenarioMain {
             }
         }
         return total;
+    }
+
+    private static int workbenchNestedAuthoredExactOwners(IdentityHashMap<?, ?> snapshots) {
+        int owners = 0;
+        for (Object snapshot : snapshots.values()) {
+            try {
+                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
+                detail.setAccessible(true);
+                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
+                if (entry != null
+                        && entry.requestSnapshot != null
+                        && entry.requestSnapshot.authoredRequest != null
+                        && entry.requestSnapshot.authoredRequest.exactHttpRequest != null
+                        && entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes != null) {
+                    owners++;
+                }
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException("Workbench nested History evidence unavailable", failure);
+            }
+        }
+        return owners;
     }
 
     private static ScenarioExecution oauthStatus(String name, long[] peak) {

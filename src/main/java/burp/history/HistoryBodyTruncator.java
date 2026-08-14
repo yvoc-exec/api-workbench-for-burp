@@ -323,6 +323,11 @@ public final class HistoryBodyTruncator {
         }
 
         ensureRequestDefaults(snapshot);
+        if (snapshot.authoredRequest != null) {
+            snapshot.authoredRequest.exactHttpRequest =
+                    burp.models.ExactHttpRequestSnapshot.copyMetadataOnly(
+                            snapshot.authoredRequest.exactHttpRequest);
+        }
 
         byte[] authoredOriginal = snapshot.bodyAsAuthored != null ? snapshot.bodyAsAuthored.clone() : new byte[0];
         if (snapshot.bodyTruncated) {
@@ -580,7 +585,7 @@ public final class HistoryBodyTruncator {
     }
 
     private static ApiRequest sanitizeAuthoredRequest(ApiRequest request, byte[] storedBody) {
-        ApiRequest copy = request.applyTo(new ApiRequest());
+        ApiRequest copy = request.applyToWithExactTransportMetadata(new ApiRequest());
         if (copy.body == null) {
             copy.body = new ApiRequest.Body();
         }

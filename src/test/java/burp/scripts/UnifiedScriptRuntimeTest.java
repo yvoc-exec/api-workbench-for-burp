@@ -5,6 +5,7 @@ import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.RunnerResult;
 import burp.utils.ScriptMode;
+import burp.utils.RequestBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -239,6 +240,47 @@ class UnifiedScriptRuntimeTest {
     }
 
     @Test
+    void postmanBindingExposesLazyExactTextBodyAndHeaderMutationPreservesIt() throws Exception {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = lazyExactTextRequest("important-payload");
+        request.scriptBlocks = new ArrayList<>(List.of(scriptBlock(
+                "request-pre", ScriptDialect.POSTMAN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST,
+                "pm.request.headers.upsert('X-Body-Seen', pm.request.body.raw);", 1)));
+
+        ScriptExecutionResult result = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS)
+                .executePreRequest(collection, request, null, "Send", 1);
+        String built = new String(
+                new RequestBuilder(null).buildRequest(result.mutatedRequest, null), StandardCharsets.UTF_8);
+
+        assertThat(result.success).isTrue();
+        assertThat(result.mutatedRequest.headers).anySatisfy(header -> {
+            assertThat(header.key).isEqualToIgnoringCase("X-Body-Seen");
+            assertThat(header.value).isEqualTo("important-payload");
+        });
+        assertThat(result.mutatedRequest.exactHttpRequest.pristine).isFalse();
+        assertThat(result.mutatedRequest.body.raw).isEqualTo("important-payload");
+        assertThat(built).endsWith("\r\n\r\nimportant-payload");
+    }
+
+    @Test
+    void readOnlyScriptRestoresLazyExactBodyWithoutInvalidatingTransport() {
+        ApiCollection collection = new ApiCollection();
+        collection.name = "APIM";
+        ApiRequest request = lazyExactTextRequest("important-payload");
+        request.scriptBlocks = new ArrayList<>(List.of(scriptBlock(
+                "request-pre", ScriptDialect.POSTMAN, ScriptPhase.PRE_REQUEST, ScriptScope.REQUEST,
+                "console.log(pm.request.body.raw);", 1)));
+
+        ScriptExecutionResult result = new UnifiedScriptRuntime(null, ScriptMode.FULL_JS)
+                .executePreRequest(collection, request, null, "Send", 1);
+
+        assertThat(result.success).isTrue();
+        assertThat(result.mutatedRequest.exactHttpRequest.pristine).isTrue();
+        assertThat(result.mutatedRequest.body.raw).isNull();
+    }
+
+    @Test
     void consoleErrorIsCapturedAsErrorLevelLogAndScriptError() {
         ApiCollection collection = new ApiCollection();
         collection.name = "APIM";
@@ -403,6 +445,27 @@ class UnifiedScriptRuntimeTest {
                 ScriptScope.REQUEST,
                 "awb.test('status is 201', function () { awb.expect(awb.response.code).to.equal(201); }); awb.environment.set('response_token', awb.response.json().get('token')); awb.environment.set('native_token', awb.response.json().get('token')); console.log('post-response');",
                 4));
+        return request;
+    }
+
+    private static ApiRequest lazyExactTextRequest(String body) {
+        ApiRequest request = new ApiRequest();
+        request.id = "req-lazy-exact";
+        request.name = "Lazy Exact";
+        request.sourceCollection = "APIM";
+        request.method = "POST";
+        request.url = "https://example.test/captured";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = null;
+        request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "POST /captured HTTP/1.1\r\nHost: example.test\r\nContent-Type: text/plain\r\n\r\n" + body)
+                .getBytes(StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.binaryBody = false;
+        request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
         return request;
     }
 
