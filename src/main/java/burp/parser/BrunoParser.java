@@ -2057,7 +2057,7 @@ public class BrunoParser implements CollectionParser {
                                boolean legacyQuotedValues) {
         req.body = new ApiRequest.Body();
         req.body.mode = "file";
-        req.body.raw = "";
+        req.body.raw = null;
         if (fileBlock == null) {
             recordImportWarning(collection, displayPath,
                     "Selected Bruno body mode 'file' was not found; imported an empty file body.", false);
@@ -2080,7 +2080,7 @@ public class BrunoParser implements CollectionParser {
         int contentTypeStart = declaration.lastIndexOf(" @contentType(");
         int fileEnd = contentTypeStart >= 0 ? contentTypeStart - 1 : declaration.lastIndexOf(')');
         if (fileStart == 0 && fileEnd >= "@file(".length()) {
-            req.body.raw = declaration.substring("@file(".length(), fileEnd);
+            req.body.filePath = declaration.substring("@file(".length(), fileEnd);
         }
         if (contentTypeStart >= 0 && declaration.endsWith(")")) {
             req.body.contentType = declaration.substring(

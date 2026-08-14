@@ -300,9 +300,17 @@ public final class HistoryBodyTruncator {
         if (data == null || data.length == 0) {
             return "";
         }
+        return sha256Hex(data, 0, data.length);
+    }
+
+    public static String sha256Hex(byte[] data, int offset, int length) {
+        if (data == null || length <= 0 || offset < 0 || offset > data.length - length) {
+            return "";
+        }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(data);
+            digest.update(data, offset, length);
+            byte[] hash = digest.digest();
             return java.util.HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException e) {
             return "";

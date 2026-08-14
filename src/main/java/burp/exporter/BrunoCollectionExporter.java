@@ -415,7 +415,10 @@ public final class BrunoCollectionExporter {
     private static void appendFileBody(StringBuilder out, ApiRequest request,
                                        VariableResolver resolver, boolean resolve,
                                        List<String> warnings) throws IOException {
-        String path = CollectionExportSupport.resolve(request.body.raw, resolver, resolve);
+        String authoredPath = request.body.filePath != null && !request.body.filePath.isBlank()
+                ? request.body.filePath
+                : request.body.raw;
+        String path = CollectionExportSupport.resolve(authoredPath, resolver, resolve);
         if (!BrunoFormatSupport.isSafeFilePath(path != null ? path : "")) {
             throw new IOException("Bruno export cannot represent the file body path for request '"
                     + ExportWarningSupport.label(request.name) + "'.");

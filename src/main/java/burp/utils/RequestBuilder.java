@@ -689,7 +689,7 @@ public class RequestBuilder {
                         + multipartQuoted(resolvedKey) + "\"; filename=\"" + multipartQuoted(filename) + "\"");
                 writeMultipartHeader(baos, "Content-Type", safeMultipartContentType(field.contentType, file));
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
-                baos.write(java.nio.file.Files.readAllBytes(file.toPath()));
+                java.nio.file.Files.copy(file.toPath(), baos);
                 baos.write("\r\n".getBytes(StandardCharsets.UTF_8));
             } else {
                 writeMultipartHeader(baos, "Content-Disposition", "form-data; name=\""

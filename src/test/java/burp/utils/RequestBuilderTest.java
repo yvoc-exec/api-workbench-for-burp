@@ -138,6 +138,25 @@ class RequestBuilderTest {
     }
 
     @Test
+    void wholeBodyFileKeepsLegacyRawPathSendCompatibility() throws Exception {
+        Path file = Files.createTempFile(Path.of("target"), "legacy-file-body-", ".bin");
+        byte[] expected = new byte[]{9, 8, 7, 0, (byte) 255};
+        Files.write(file, expected);
+        ApiRequest req = new ApiRequest();
+        req.method = "POST";
+        req.url = "https://example.test/upload";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "file";
+        req.body.raw = file.toString();
+
+        RawRequestParser parsed = RawRequestParser.parse(builder.buildRequest(req, resolver));
+
+        assertThat(parsed.body).containsExactly(expected);
+        assertThat(req.body.filePath).isNull();
+        assertThat(req.body.raw).isEqualTo(file.toString());
+    }
+
+    @Test
     void multipartUsesImportedPerPartContentType() throws Exception {
         ApiRequest req = new ApiRequest();
         req.method = "POST"; req.url = "https://example.test/upload";

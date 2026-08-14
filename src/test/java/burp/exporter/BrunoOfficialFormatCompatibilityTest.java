@@ -36,7 +36,7 @@ class BrunoOfficialFormatCompatibilityTest {
         AuthInheritanceResolver.markRequestExplicitAuth(standard, bearer);
         ApiRequest custom = request("Custom", "PROPFIND", "https://example.test/custom", "none");
         ApiRequest file = request("File", "POST", "https://example.test/upload", "file");
-        file.body.raw = "C:\\Program Files\\upload.bin";
+        file.body.filePath = "C:\\Program Files\\upload.bin";
         file.body.contentType = "application/octet-stream";
         collection.requests.add(standard); collection.requests.add(custom); collection.requests.add(file);
         ApiRequest emptyFile = request("EmptyFile", "POST", "https://example.test/empty", "file");
@@ -61,11 +61,13 @@ class BrunoOfficialFormatCompatibilityTest {
         assertThat(imported.requests).extracting(r -> r.method).contains("GET", "PROPFIND", "POST");
         ApiRequest importedFile = imported.requests.stream().filter(r -> "File".equals(r.name)).findFirst().orElseThrow();
         assertThat(importedFile.body.mode).isEqualTo("file");
-        assertThat(importedFile.body.raw).isEqualTo("C:\\Program Files\\upload.bin");
+        assertThat(importedFile.body.filePath).isEqualTo("C:\\Program Files\\upload.bin");
+        assertThat(importedFile.body.raw).isNull();
         assertThat(importedFile.body.contentType).isEqualTo("application/octet-stream");
         ApiRequest importedEmpty = imported.requests.stream().filter(r -> "EmptyFile".equals(r.name)).findFirst().orElseThrow();
         assertThat(importedEmpty.body.mode).isEqualTo("file");
-        assertThat(importedEmpty.body.raw).isEmpty();
+        assertThat(importedEmpty.body.filePath).isEmpty();
+        assertThat(importedEmpty.body.raw).isNull();
         assertThat(imported.variables.get(0).type).isEqualTo("number");
     }
 

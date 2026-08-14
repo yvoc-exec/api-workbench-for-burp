@@ -455,6 +455,69 @@ class RequestEditorExactTransportModeTest {
     }
 
     @Test
+    void textualExactBodyIsDerivedWithoutMaterializingUnchangedAuthoredState() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.body.raw = null;
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = (
+                "POST /text HTTP/1.1\r\nHost: example.test\r\n\r\nderived body")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.binaryBody = false;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+
+        panel.loadRequest(req);
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo("derived body");
+        assertThat(built.body.raw).isNull();
+        assertThat(built.exactHttpRequest.pristine).isTrue();
+    }
+
+    @Test
+    void editingDerivedExactTextMaterializesBodyAndInvalidatesExactTransport() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = (
+                "POST /text HTTP/1.1\r\nHost: example.test\r\n\r\noriginal")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+        panel.loadRequest(req);
+
+        panel.getBodyRawAreaForTests().setText("edited");
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.body.raw).isEqualTo("edited");
+        assertThat(built.exactHttpRequest.pristine).isFalse();
+        assertThat(built.exactHttpRequest.invalidationReason)
+                .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+    }
+
+    @Test
+    void standaloneFilePathSurvivesWorkbenchRoundTripWithoutUsingRaw() {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.MANUAL_PRESERVE);
+        req.body = new ApiRequest.Body();
+        req.body.mode = "file";
+        req.body.filePath = "C:/payloads/{{name}}.bin";
+        req.body.raw = null;
+
+        panel.loadRequest(req);
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(panel.getBodyRawAreaForTests().getText()).isEqualTo(req.body.filePath);
+        assertThat(built.body.filePath).isEqualTo(req.body.filePath);
+        assertThat(built.body.raw).isNull();
+    }
+
+    @Test
     void untouchedLegacyExactQueryKeepsPristineSnapshotAndEmptyParameterList() throws Exception {
         ApiRequest request = legacyExactQueryRequest();
         byte[] originalRaw = request.exactHttpRequest.rawRequestBytes.clone();

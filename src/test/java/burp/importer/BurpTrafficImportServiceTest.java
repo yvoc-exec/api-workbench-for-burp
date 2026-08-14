@@ -1,6 +1,9 @@
 package burp.importer;
 
 import burp.models.ApiRequest;
+import burp.history.HistoryBodyTruncator;
+import burp.history.HistoryEntry;
+import burp.history.HistoryRetentionPolicy;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -23,6 +26,51 @@ class BurpTrafficImportServiceTest {
         ApiRequest request = service.convertRequest(selection(raw, null, "api.example.test", 443, true, "Proxy"));
 
         assertThat(request.exactHttpRequest.rawRequestBytes).isEqualTo(raw);
+    }
+
+    @Test
+    void textualExactBodyUsesRawBytesAsItsOnlyLongLivedBodyOwner() {
+        byte[] source = requestBytes("POST /text HTTP/1.1\r\nHost: api.example.test\r\n\r\nlarge textual body");
+        BurpTrafficSelection selection = selection(source, null, "api.example.test", 443, true, "Proxy");
+
+        ApiRequest request = service.convertRequest(selection);
+
+        assertThat(request.body.raw).isNull();
+        assertThat(request.exactHttpRequest.binaryBody).isFalse();
+        assertThat(request.exactHttpRequest.rawRequestBytes).isSameAs(selection.rawRequestBytes);
+        assertThat(selection.rawRequestBytes).isNotSameAs(source).isEqualTo(source);
+    }
+
+    @Test
+    void trafficHistoryIsBoundedDuringConversionAndRetainsFullEvidenceMetadata() {
+        byte[] requestBody = "0123456789".getBytes(StandardCharsets.UTF_8);
+        byte[] responseBody = "abcdefghij".getBytes(StandardCharsets.UTF_8);
+        byte[] rawRequest = concat(
+                "POST /bounded HTTP/1.1\r\nHost: api.example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8),
+                requestBody);
+        byte[] rawResponse = concat(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".getBytes(StandardCharsets.UTF_8),
+                responseBody);
+        BurpTrafficSelection selection = selection(
+                rawRequest, rawResponse, "api.example.test", 443, true, "Proxy");
+        ApiRequest request = service.convertRequest(selection);
+        HistoryRetentionPolicy policy = new HistoryRetentionPolicy(100, 1024 * 1024, 4, 3, true);
+
+        HistoryEntry entry = service.convertHistory(selection, request, policy);
+
+        assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
+        assertThat(entry.requestSnapshot.originalRawBodyLength).isEqualTo(10);
+        assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
+        assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();
+        assertThat(entry.requestSnapshot.fullRawBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(requestBody));
+        assertThat(entry.responseSnapshot.body).containsExactly((byte) 'a', (byte) 'b', (byte) 'c');
+        assertThat(entry.responseSnapshot.originalBodyLength).isEqualTo(10);
+        assertThat(entry.responseSnapshot.storedBodyLength).isEqualTo(3);
+        assertThat(entry.responseSnapshot.bodyTruncated).isTrue();
+        assertThat(entry.responseSnapshot.fullBodySha256)
+                .isEqualTo(HistoryBodyTruncator.sha256Hex(responseBody));
     }
 
     @Test

@@ -167,6 +167,22 @@ public class ApiRequest {
     }
 
     public ApiRequest applyTo(ApiRequest target) {
+        return applyTo(target, true);
+    }
+
+    public ApiRequest applyToWithoutExactTransport(ApiRequest target) {
+        return applyTo(target, false);
+    }
+
+    public ApiRequest applyToSharingExactTransport(ApiRequest target) {
+        ApiRequest copy = applyTo(target, false);
+        if (copy != null) {
+            copy.exactHttpRequest = ExactHttpRequestSnapshot.copySharingRawBytes(exactHttpRequest);
+        }
+        return copy;
+    }
+
+    private ApiRequest applyTo(ApiRequest target, boolean includeExactTransport) {
         if (target == null) {
             return null;
         }
@@ -182,7 +198,9 @@ public class ApiRequest {
         target.headers = copyHeaders(headers);
         target.body = copyBody(body);
         target.auth = copyAuth(auth);
-        target.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(exactHttpRequest);
+        target.exactHttpRequest = includeExactTransport
+                ? ExactHttpRequestSnapshot.copyOf(exactHttpRequest)
+                : null;
         target.editorMaterialized = editorMaterialized;
         target.buildMode = buildMode;
         target.suppressedAutoHeaders = suppressedAutoHeaders != null ? new LinkedHashSet<>(suppressedAutoHeaders) : new LinkedHashSet<>();

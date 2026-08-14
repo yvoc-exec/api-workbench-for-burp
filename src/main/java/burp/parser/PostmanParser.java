@@ -466,6 +466,12 @@ public class PostmanParser implements CollectionParser {
                     body.contentType = "application/json";
                 }
                 break;
+            case "file":
+                if (bodyObj.has("file") && bodyObj.get("file").isJsonObject()) {
+                    body.filePath = extractFormDataFilePath(bodyObj.getAsJsonObject("file"));
+                }
+                body.raw = null;
+                break;
         }
         return body;
     }

@@ -20,6 +20,7 @@ public final class BurpTrafficSelection {
                                 String suggestedDisplayName,
                                 String fallbackMethod,
                                 int encounterIndex) {
+        // This constructor is the ownership boundary for mutable Burp-provided bytes.
         this.rawRequestBytes = rawRequestBytes != null ? rawRequestBytes.clone() : new byte[0];
         this.rawResponseBytes = rawResponseBytes != null ? rawResponseBytes.clone() : new byte[0];
         this.serviceHost = serviceHost;

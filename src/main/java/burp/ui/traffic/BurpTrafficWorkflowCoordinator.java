@@ -66,7 +66,7 @@ public final class BurpTrafficWorkflowCoordinator {
     }
 
     public void importTraffic(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
-        List<BurpTrafficSelection> detached = copySelections(selections);
+        List<BurpTrafficSelection> detached = immutableSelectionList(selections);
         if (detached.isEmpty()) {
             return;
         }
@@ -89,7 +89,8 @@ public final class BurpTrafficWorkflowCoordinator {
         if (ui == null) {
             return;
         }
-        BurpTrafficConversionResult conversion = conversionService.convert(selections);
+        BurpTrafficConversionResult conversion = conversionService.convert(
+                selections, ui.getHistoryRetentionPolicySnapshot());
         if (conversion.hasFailures()) {
             String message = safeFailureSummary(conversion);
             messagePresenter.show(ui.getPanel(), "Traffic Import Failed", message, JOptionPane.ERROR_MESSAGE);
@@ -151,7 +152,9 @@ public final class BurpTrafficWorkflowCoordinator {
         List<String> names = destination.generatedNames();
         for (int i = 0; i < conversion.requests.size(); i++) {
             ApiRequest source = conversion.requests.get(i);
-            ApiRequest request = source != null ? source.applyTo(new ApiRequest()) : null;
+            ApiRequest request = source != null
+                    ? source.applyToSharingExactTransport(new ApiRequest())
+                    : null;
             if (request == null) {
                 throw new IllegalArgumentException("Traffic conversion produced an empty request.");
             }
@@ -169,7 +172,7 @@ public final class BurpTrafficWorkflowCoordinator {
         List<HistoryEntry> history = new ArrayList<>();
         if (destination.captureResponses()) {
             for (int i = 0; i < conversion.historyEntries.size() && i < requests.size(); i++) {
-                HistoryEntry entry = HistoryEntry.copyOf(conversion.historyEntries.get(i));
+                HistoryEntry entry = conversion.historyEntries.get(i);
                 ApiRequest request = requests.get(i);
                 if (entry == null || request == null) {
                     continue;
@@ -179,7 +182,7 @@ public final class BurpTrafficWorkflowCoordinator {
                 entry.requestName = request.name;
                 entry.folderPath = request.path;
                 if (entry.requestSnapshot != null && entry.requestSnapshot.authoredRequest != null) {
-                    request.applyTo(entry.requestSnapshot.authoredRequest);
+                    request.applyToWithoutExactTransport(entry.requestSnapshot.authoredRequest);
                 }
                 history.add(entry);
             }
@@ -230,7 +233,7 @@ public final class BurpTrafficWorkflowCoordinator {
             if (request == null) {
                 throw new IllegalArgumentException("The import plan contains an empty request.");
             }
-            ApiRequest copy = request.applyTo(new ApiRequest());
+            ApiRequest copy = request.applyToSharingExactTransport(new ApiRequest());
             copy.sourceCollection = destination.name;
             copy.path = folder;
             destination.requests.add(copy);
@@ -325,14 +328,14 @@ public final class BurpTrafficWorkflowCoordinator {
                 + (request != null && request.id != null ? request.id.trim() : "");
     }
 
-    private List<BurpTrafficSelection> copySelections(List<BurpTrafficSelection> selections) {
+    private List<BurpTrafficSelection> immutableSelectionList(List<BurpTrafficSelection> selections) {
         if (selections == null || selections.isEmpty()) {
             return List.of();
         }
         List<BurpTrafficSelection> copy = new ArrayList<>();
         for (BurpTrafficSelection selection : selections) {
             if (selection != null) {
-                copy.add(selection.copy());
+                copy.add(selection);
             }
         }
         return Collections.unmodifiableList(copy);

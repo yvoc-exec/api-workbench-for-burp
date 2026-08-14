@@ -16,6 +16,53 @@ import static org.assertj.core.api.Assertions.*;
 
 class PostmanParserTest {
 
+    @Test
+    void standaloneFileBodyRetainsOnlyAuthoredPathWithoutReadingIt() throws Exception {
+        String missingPath = "Z:/definitely-missing/{{payload}}.bin";
+        ApiCollection collection = parsePostman("""
+                {
+                  "info": {"name": "Files"},
+                  "item": [{
+                    "name": "Upload",
+                    "request": {
+                      "method": "POST",
+                      "url": "https://example.test/upload",
+                      "body": {"mode": "file", "file": {"src": ["", "%s", "ignored.bin"]}}
+                    }
+                  }]
+                }
+                """.formatted(missingPath));
+
+        ApiRequest.Body body = collection.requests.get(0).body;
+        assertThat(body.mode).isEqualTo("file");
+        assertThat(body.filePath).isEqualTo(missingPath);
+        assertThat(body.raw).isNull();
+    }
+
+    @Test
+    void multipartFileSourceRemainsCanonicalFileMetadata() throws Exception {
+        ApiCollection collection = parsePostman("""
+                {
+                  "info": {"name": "Files"},
+                  "item": [{
+                    "name": "Upload",
+                    "request": {
+                      "method": "POST",
+                      "url": "https://example.test/upload",
+                      "body": {"mode": "formdata", "formdata": [
+                        {"key": "payload", "type": "file", "src": "C:/payload.bin"}
+                      ]}
+                    }
+                  }]
+                }
+                """);
+
+        ApiRequest.Body.FormField field = collection.requests.get(0).body.formdata.get(0);
+        assertThat(field.fileUpload).isTrue();
+        assertThat(field.filePath).isEqualTo("C:/payload.bin");
+        assertThat(field.value).isEmpty();
+    }
+
     private ApiCollection parsePostman(String json) throws Exception {
         File file = File.createTempFile("postman-auth", ".json");
         Files.writeString(file.toPath(), json, StandardCharsets.UTF_8);

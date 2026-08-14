@@ -34,7 +34,11 @@ class MemoryHardeningProcessIT {
             "workspace-ten-slow-saves",
             "runner-sitemap-traffic",
             "workbench-snapshot-owners",
-            "oauth2-status-growth");
+            "oauth2-status-growth",
+            "file-binary-repeated-send",
+            "multipart-file-repeated-send",
+            "exact-traffic-import-ownership",
+            "exact-repeated-send");
     private static final long TIMEOUT_SECONDS = 90;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String DISCLAIMER =
@@ -69,7 +73,7 @@ class MemoryHardeningProcessIT {
         root.addProperty("generatedAtUtc", Instant.now().toString());
         root.addProperty("repository", "api-workbench-for-burp");
         root.addProperty("branch", "main");
-        root.addProperty("startingSha", "0af88191751eaac925d6b4fa038b407f0058fa2a");
+        root.addProperty("startingSha", "009fbbefee8957fc8af38a90048c82b5ee74bc3e");
         root.addProperty("javaVersion", System.getProperty("java.version"));
         root.addProperty("mavenVersion", System.getProperty("memory.hardening.maven.version", "3.9.9"));
         root.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
@@ -85,7 +89,7 @@ class MemoryHardeningProcessIT {
         notes.add("maximumSampledHeapBytes is sparse sampled heap, not a continuously observed JVM peak.");
         root.add("notes", notes);
         String reportStatus = unclassified.isEmpty()
-                ? "R6_WORKSPACE_SAVE_COALESCING_AND_COMPACT_SERIALIZATION_ENFORCED"
+                ? "R7_FILE_REFERENCE_AND_EXACT_TRAFFIC_OWNERSHIP_ENFORCED"
                 : "INCOMPLETE";
         root.addProperty("reportStatus", reportStatus);
 
@@ -101,9 +105,10 @@ class MemoryHardeningProcessIT {
         assertHistoryHardBounds(results);
         assertRunnerCanonicalOwnership(results);
         assertWorkspaceHistoryProductionOwnership(results);
+        assertR7Ownership(results);
         assertDeclaredClassifications(results);
         assertThat(root.get("reportStatus").getAsString())
-                .isEqualTo("R6_WORKSPACE_SAVE_COALESCING_AND_COMPACT_SERIALIZATION_ENFORCED");
+                .isEqualTo("R7_FILE_REFERENCE_AND_EXACT_TRAFFIC_OWNERSHIP_ENFORCED");
     }
 
     private static JsonObject executeChild(String scenario, Path output) throws Exception {
@@ -338,6 +343,39 @@ class MemoryHardeningProcessIT {
         assertThat(longValue(metrics, "actualStoreWrites")).isEqualTo(1L);
         assertThat(longValue(workspace, "logicalRetainedBytes")).isPositive();
         assertThat(longValue(workspace, "serializedWorkspaceBytes")).isPositive();
+    }
+
+    private static void assertR7Ownership(JsonArray results) {
+        for (String name : List.of(
+                "file-binary-repeated-send",
+                "multipart-file-repeated-send",
+                "exact-repeated-send")) {
+            JsonObject scenario = resultFor(results, name);
+            JsonObject metrics = scenario.getAsJsonObject("metrics");
+            assertThat(string(scenario, "exitClassification")).isEqualTo("SUCCESS");
+            assertThat(longValue(metrics, "monotonicRetainedGrowth")).isZero();
+            assertThat(longValue(metrics, "settledHeapAfterSend50"))
+                    .isLessThanOrEqualTo(Math.max(
+                            longValue(metrics, "settledHeapAfterSend1"),
+                            longValue(metrics, "settledHeapAfterSend10")) + 16L * 1024L * 1024L);
+        }
+        for (String name : List.of("file-binary-repeated-send", "multipart-file-repeated-send")) {
+            JsonObject metrics = resultFor(results, name).getAsJsonObject("metrics");
+            assertThat(longValue(metrics, "persistentFileContentOwners")).isZero();
+            assertThat(longValue(metrics, "persistentRawBodyCharacters")).isZero();
+        }
+
+        JsonObject traffic = resultFor(results, "exact-traffic-import-ownership");
+        JsonObject metrics = traffic.getAsJsonObject("metrics");
+        assertThat(string(traffic, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(metrics, "canonicalExactOwners")).isEqualTo(1L);
+        assertThat(longValue(metrics, "selectionAndExactSharePayload")).isEqualTo(1L);
+        assertThat(longValue(metrics, "equivalentRawTextOwners")).isZero();
+        assertThat(longValue(metrics, "authoredExactOwnersInHistory")).isZero();
+        assertThat(longValue(metrics, "historyRequestStoredBodyBytes"))
+                .isLessThan(longValue(metrics, "historyRequestOriginalBodyBytes"));
+        assertThat(longValue(metrics, "historyResponseStoredBodyBytes"))
+                .isLessThan(longValue(metrics, "historyResponseOriginalBodyBytes"));
     }
 
     private static JsonObject resultFor(JsonArray results, String name) {

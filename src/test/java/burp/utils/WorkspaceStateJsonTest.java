@@ -38,6 +38,31 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class WorkspaceStateJsonTest {
 
     @Test
+    void fileBodyWorkspaceRoundTripRetainsPathWithoutEmbeddingFileContents() throws Exception {
+        java.nio.file.Path file = java.nio.file.Files.createTempFile(
+                java.nio.file.Path.of("target"), "workspace-file-reference-", ".bin");
+        java.nio.file.Files.writeString(file, "UNIQUE-FILE-CONTENT-SENTINEL");
+        ApiRequest request = new ApiRequest();
+        request.id = "file-request";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "file";
+        request.body.filePath = file.toString();
+        request.body.raw = null;
+        ApiCollection collection = new ApiCollection();
+        collection.id = "collection";
+        collection.requests.add(request);
+        WorkspaceState state = new WorkspaceState();
+        state.collections.add(collection);
+
+        String json = WorkspaceStateJson.toJsonCopying(state);
+        ApiRequest restored = WorkspaceStateJson.fromJson(json).collections.get(0).requests.get(0);
+
+        assertThat(json).doesNotContain("UNIQUE-FILE-CONTENT-SENTINEL");
+        assertThat(restored.body.filePath).isEqualTo(file.toString());
+        assertThat(restored.body.raw).isNull();
+    }
+
+    @Test
     void productionJsonIsCompactBase64AndPreservesAllWorkspaceEvidenceBytes() {
         byte[] exact = new byte[]{0, 1, -1, 42};
         byte[] authored = "authored".getBytes(StandardCharsets.UTF_8);

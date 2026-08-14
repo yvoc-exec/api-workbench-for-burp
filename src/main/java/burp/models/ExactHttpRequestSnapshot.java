@@ -19,11 +19,21 @@ public final class ExactHttpRequestSnapshot {
     public String semanticFingerprint;
 
     public static ExactHttpRequestSnapshot copyOf(ExactHttpRequestSnapshot source) {
+        return copyOf(source, true);
+    }
+
+    public static ExactHttpRequestSnapshot copySharingRawBytes(ExactHttpRequestSnapshot source) {
+        return copyOf(source, false);
+    }
+
+    private static ExactHttpRequestSnapshot copyOf(ExactHttpRequestSnapshot source, boolean cloneRawBytes) {
         if (source == null) {
             return null;
         }
         ExactHttpRequestSnapshot copy = new ExactHttpRequestSnapshot();
-        copy.rawRequestBytes = source.rawRequestBytes != null ? source.rawRequestBytes.clone() : null;
+        copy.rawRequestBytes = source.rawRequestBytes != null && cloneRawBytes
+                ? source.rawRequestBytes.clone()
+                : source.rawRequestBytes;
         copy.serviceHost = source.serviceHost;
         copy.servicePort = source.servicePort;
         copy.secure = source.secure;
@@ -37,20 +47,31 @@ public final class ExactHttpRequestSnapshot {
     }
 
     public static String binaryBodyPlaceholder(byte[] rawRequestBytes) {
-        byte[] body = extractBody(rawRequestBytes);
-        long length = body.length;
-        String hash = length > 0 ? HistoryBodyTruncator.sha256Hex(body) : "";
+        int bodyOffset = bodyOffset(rawRequestBytes);
+        long length = bodyOffset >= 0 ? rawRequestBytes.length - bodyOffset : 0L;
+        String hash = length > 0
+                ? HistoryBodyTruncator.sha256Hex(rawRequestBytes, bodyOffset, (int) length)
+                : "";
         return BINARY_BODY_PLACEHOLDER_PREFIX
                 + ": " + length + " bytes; SHA-256=" + hash + "]";
+    }
+
+    public static String textBody(byte[] rawRequestBytes) {
+        int bodyOffset = bodyOffset(rawRequestBytes);
+        if (bodyOffset < 0 || bodyOffset >= rawRequestBytes.length) {
+            return "";
+        }
+        return new String(rawRequestBytes, bodyOffset,
+                rawRequestBytes.length - bodyOffset, StandardCharsets.UTF_8);
     }
 
     public static boolean isBinaryBodyPlaceholder(String text) {
         return text != null && text.startsWith(BINARY_BODY_PLACEHOLDER_PREFIX);
     }
 
-    private static byte[] extractBody(byte[] rawRequestBytes) {
+    private static int bodyOffset(byte[] rawRequestBytes) {
         if (rawRequestBytes == null || rawRequestBytes.length == 0) {
-            return new byte[0];
+            return -1;
         }
         int separator = indexOf(rawRequestBytes, "\r\n\r\n".getBytes(StandardCharsets.UTF_8));
         int separatorLength = 4;
@@ -59,13 +80,9 @@ public final class ExactHttpRequestSnapshot {
             separatorLength = 2;
         }
         if (separator < 0) {
-            return new byte[0];
+            return -1;
         }
-        int start = separator + separatorLength;
-        int bodyLength = Math.max(0, rawRequestBytes.length - start);
-        byte[] body = new byte[bodyLength];
-        System.arraycopy(rawRequestBytes, start, body, 0, bodyLength);
-        return body;
+        return separator + separatorLength;
     }
 
     private static int indexOf(byte[] haystack, byte[] needle) {

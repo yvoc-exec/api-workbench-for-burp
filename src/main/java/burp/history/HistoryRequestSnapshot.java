@@ -38,11 +38,21 @@ public class HistoryRequestSnapshot {
     public String parseWarning = "";
 
     public static HistoryRequestSnapshot from(ApiRequest request) {
+        return from(request, true);
+    }
+
+    public static HistoryRequestSnapshot fromWithoutExactTransport(ApiRequest request) {
+        return from(request, false);
+    }
+
+    private static HistoryRequestSnapshot from(ApiRequest request, boolean includeExactTransport) {
         HistoryRequestSnapshot snapshot = new HistoryRequestSnapshot();
         if (request == null) {
             return snapshot;
         }
-        snapshot.authoredRequest = copyRequest(request);
+        snapshot.authoredRequest = includeExactTransport
+                ? copyRequest(request)
+                : request.applyToWithoutExactTransport(new ApiRequest());
         snapshot.method = request.method;
         snapshot.urlTemplate = request.url;
         snapshot.bodyMode = request.body != null ? request.body.mode : null;

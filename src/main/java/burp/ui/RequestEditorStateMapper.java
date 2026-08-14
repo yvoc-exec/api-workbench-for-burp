@@ -191,6 +191,8 @@ final class RequestEditorStateMapper {
                     ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
                 } else if (req.body.raw != null) {
                     ctx.bodyRawArea.setText(req.body.raw);
+                } else if (req.exactHttpRequest != null && req.exactHttpRequest.pristine) {
+                    ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.textBody(req.exactHttpRequest.rawRequestBytes));
                 }
             }
             if ("graphql".equals(req.body.mode) && req.body.graphql != null) {
@@ -199,6 +201,8 @@ final class RequestEditorStateMapper {
             if ("file".equals(req.body.mode)) {
                 if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
                     ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
+                } else if (req.body.filePath != null) {
+                    ctx.bodyRawArea.setText(req.body.filePath);
                 } else if (req.body.raw != null) {
                     ctx.bodyRawArea.setText(req.body.raw);
                 }
@@ -303,7 +307,7 @@ final class RequestEditorStateMapper {
                 }
             }
             if ("raw".equals(bodyMode)) {
-                req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
+                req.body.raw = buildRawBody(currentRequest, ctx.bodyRawArea.getText());
             } else if ("graphql".equals(bodyMode)) {
                 ApiRequest.Body.GraphQL graphQL = existingBody != null
                         ? copyGraphQL(existingBody.graphql)
@@ -314,7 +318,9 @@ final class RequestEditorStateMapper {
                 graphQL.query = ctx.bodyRawArea.getText();
                 req.body.graphql = graphQL;
             } else if ("file".equals(bodyMode)) {
-                req.body.raw = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
+                String filePath = preserveBinaryPlaceholderBody(currentRequest, ctx.bodyRawArea.getText());
+                req.body.filePath = filePath != null && !filePath.isBlank() ? filePath : null;
+                req.body.raw = null;
             } else if ("urlencoded".equals(bodyMode) || "formdata".equals(bodyMode)) {
                 if ("urlencoded".equals(bodyMode)) {
                     req.body.urlencoded = formFieldsFromTable(ctx.bodyFormModel, false);
@@ -852,6 +858,20 @@ final class RequestEditorStateMapper {
             fields.add(field);
         }
         return fields;
+    }
+
+    private static String buildRawBody(ApiRequest currentRequest, String bodyText) {
+        if (currentRequest != null
+                && currentRequest.exactHttpRequest != null
+                && currentRequest.exactHttpRequest.pristine
+                && !currentRequest.exactHttpRequest.binaryBody
+                && currentRequest.body != null
+                && currentRequest.body.raw == null
+                && Objects.equals(bodyText,
+                ExactHttpRequestSnapshot.textBody(currentRequest.exactHttpRequest.rawRequestBytes))) {
+            return null;
+        }
+        return preserveBinaryPlaceholderBody(currentRequest, bodyText);
     }
 
     static BodyFieldState resolveBodyFieldState(

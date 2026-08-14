@@ -11,6 +11,7 @@ import burp.UniversalImporter;
 import burp.history.HistoryEntry;
 import burp.history.HistoryAdmissionResult;
 import burp.history.HistoryRetentionStats;
+import burp.history.HistoryRetentionPolicy;
 import burp.history.HistoryExportService;
 import burp.history.HistoryPersistenceService;
 import burp.history.HistoryStore;
@@ -7591,6 +7592,10 @@ public class ImporterPanel {
 
     public WorkspaceState getWorkspaceStateSnapshotFromModel() {
         return copyWorkspaceStateFromModel();
+    }
+
+    public HistoryRetentionPolicy getHistoryRetentionPolicySnapshot() {
+        return historyStore.getRetentionPolicy();
     }
 
     private void stabilizeLiveWorkspaceIdentities() {

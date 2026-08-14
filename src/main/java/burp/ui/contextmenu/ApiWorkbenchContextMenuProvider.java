@@ -147,7 +147,7 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         List<BurpTrafficSelection> detached = new ArrayList<>();
         for (BurpTrafficSelection selection : selections) {
             if (selection != null) {
-                detached.add(selection.copy());
+                detached.add(selection);
             }
         }
         if (detached.isEmpty()) {

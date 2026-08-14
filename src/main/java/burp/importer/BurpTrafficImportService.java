@@ -4,6 +4,7 @@ import burp.history.HistoryBodyTruncator;
 import burp.history.HistoryEntry;
 import burp.history.HistoryHeader;
 import burp.history.HistoryRequestSnapshot;
+import burp.history.HistoryRetentionPolicy;
 import burp.history.HistoryResponseSnapshot;
 import burp.history.HistorySource;
 import burp.models.ApiRequest;
@@ -33,6 +34,11 @@ public class BurpTrafficImportService {
     }
 
     public BurpTrafficConversionResult convert(List<BurpTrafficSelection> selections) {
+        return convert(selections, HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public BurpTrafficConversionResult convert(List<BurpTrafficSelection> selections,
+                                               HistoryRetentionPolicy retentionPolicy) {
         BurpTrafficConversionResult result = new BurpTrafficConversionResult();
         if (selections == null) {
             return result;
@@ -43,7 +49,7 @@ public class BurpTrafficImportService {
             try {
                 ApiRequest request = convertRequest(selection);
                 convertedRequests.add(request);
-                convertedHistoryByRequest.add(convertHistory(selection, request));
+                convertedHistoryByRequest.add(convertHistory(selection, request, retentionPolicy));
             } catch (ConversionException e) {
                 result.failures.add(new BurpTrafficConversionResult.Failure(
                         selection != null ? selection.encounterIndex : -1,
@@ -81,7 +87,10 @@ public class BurpTrafficImportService {
                 request.headers.add(new ApiRequest.Header(header.name, header.value, false));
             }
         }
-        request.body = buildBody(parsed.bodyBytes());
+        int bodyOffset = bodyOffset(selection.rawRequestBytes);
+        request.body = buildBody(bodyOffset >= 0
+                ? selection.rawRequestBytes.length - bodyOffset
+                : 0);
         request.editorMaterialized = true;
         request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
         request.disabled = false;
@@ -90,14 +99,22 @@ public class BurpTrafficImportService {
         request.scriptBlocks = new ArrayList<>();
         request.variables = new ArrayList<>();
         request.suppressedAutoHeaders = new java.util.LinkedHashSet<>();
-        request.exactHttpRequest = exactSnapshot(selection, request);
+        request.exactHttpRequest = exactSnapshot(selection, request, bodyOffset);
         return request;
     }
 
     public HistoryEntry convertHistory(BurpTrafficSelection selection, ApiRequest request) {
+        return convertHistory(selection, request, HistoryRetentionPolicy.defaultPolicy());
+    }
+
+    public HistoryEntry convertHistory(BurpTrafficSelection selection,
+                                       ApiRequest request,
+                                       HistoryRetentionPolicy retentionPolicy) {
         if (selection == null || selection.rawResponseBytes == null || selection.rawResponseBytes.length == 0 || request == null) {
             return null;
         }
+        HistoryRetentionPolicy policy = HistoryRetentionPolicy.copyOf(retentionPolicy);
+        policy.normalize();
         HistoryEntry entry = new HistoryEntry();
         entry.id = UUID.randomUUID().toString();
         entry.timestamp = clock.instant();
@@ -106,17 +123,7 @@ public class BurpTrafficImportService {
         entry.collectionName = request.sourceCollection;
         entry.requestId = request.id;
         entry.requestName = request.name;
-        entry.requestSnapshot = HistoryRequestSnapshot.from(request);
-        entry.requestSnapshot.rawRequestSent = selection.rawRequestBytes.clone();
-        String rawRequestText = new String(selection.rawRequestBytes, StandardCharsets.UTF_8);
-        entry.requestSnapshot.rawRequestSentText = Arrays.equals(selection.rawRequestBytes,
-                rawRequestText.getBytes(StandardCharsets.UTF_8)) ? rawRequestText : null;
-        entry.requestSnapshot.originalRawBodyLength = parsedBodyLength(selection.rawRequestBytes);
-        entry.requestSnapshot.storedRawBodyLength = entry.requestSnapshot.originalRawBodyLength;
-        byte[] rawRequestBody = bodyBytes(selection.rawRequestBytes);
-        entry.requestSnapshot.fullRawBodySha256 = rawRequestBody.length > 0
-                ? HistoryBodyTruncator.sha256Hex(rawRequestBody)
-                : "";
+        entry.requestSnapshot = boundedRequestSnapshot(request, selection.rawRequestBytes, policy);
         entry.requestSizeBytes = selection.rawRequestBytes.length;
         entry.requestSent = false;
         entry.preflightStatus = "RECORDED_ONLY";
@@ -124,7 +131,7 @@ public class BurpTrafficImportService {
                 + "\nRequest representation: EXACT_RAW"
                 + "\nResponse representation: STORED_RAW_COMPONENTS";
 
-        HistoryResponseSnapshot snapshot = parseResponse(selection.rawResponseBytes);
+        HistoryResponseSnapshot snapshot = parseResponse(selection.rawResponseBytes, policy);
         entry.responseSnapshot = snapshot;
         entry.responseSizeBytes = selection.rawResponseBytes.length;
         entry.statusCode = snapshot.statusCode;
@@ -132,7 +139,32 @@ public class BurpTrafficImportService {
         return entry;
     }
 
-    private HistoryResponseSnapshot parseResponse(byte[] rawResponseBytes) {
+    private HistoryRequestSnapshot boundedRequestSnapshot(ApiRequest request,
+                                                          byte[] rawRequestBytes,
+                                                          HistoryRetentionPolicy policy) {
+        HistoryRequestSnapshot snapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
+        int bodyOffset = bodyOffset(rawRequestBytes);
+        int originalBodyLength = bodyOffset >= 0 ? rawRequestBytes.length - bodyOffset : 0;
+        int storedBodyLength = (int) Math.min(originalBodyLength, policy.maxRequestBodyBytesPerEntry);
+        int storedLength = bodyOffset >= 0
+                ? bodyOffset + storedBodyLength
+                : rawRequestBytes.length;
+        snapshot.rawRequestSent = Arrays.copyOf(rawRequestBytes, storedLength);
+        snapshot.rawRequestSentText = null;
+        snapshot.originalRawBodyLength = originalBodyLength;
+        snapshot.storedRawBodyLength = storedBodyLength;
+        snapshot.fullRawBodySha256 = originalBodyLength > 0
+                ? HistoryBodyTruncator.sha256Hex(rawRequestBytes, bodyOffset, originalBodyLength)
+                : "";
+        snapshot.rawBodyTruncated = storedBodyLength < originalBodyLength;
+        snapshot.rawTruncationReason = snapshot.rawBodyTruncated
+                ? HistoryBodyTruncator.RAW_REQUEST_BODY_LIMIT_REASON
+                : "";
+        return snapshot;
+    }
+
+    private HistoryResponseSnapshot parseResponse(byte[] rawResponseBytes,
+                                                  HistoryRetentionPolicy policy) {
         HistoryResponseSnapshot snapshot = new HistoryResponseSnapshot();
         int boundary = indexOf(rawResponseBytes, new byte[]{'\r', '\n', '\r', '\n'});
         int separatorLength = 4;
@@ -172,49 +204,74 @@ public class BurpTrafficImportService {
         if (boundary >= 0) {
             int bodyOffset = boundary + separatorLength;
             if (bodyOffset < rawResponseBytes.length) {
-                snapshot.body = Arrays.copyOfRange(rawResponseBytes, bodyOffset, rawResponseBytes.length);
+                int originalBodyLength = rawResponseBytes.length - bodyOffset;
+                int storedBodyLength = (int) Math.min(
+                        originalBodyLength, policy.maxResponseBodyBytesPerEntry);
+                snapshot.body = Arrays.copyOfRange(
+                        rawResponseBytes, bodyOffset, bodyOffset + storedBodyLength);
+                snapshot.originalBodyLength = originalBodyLength;
+                snapshot.storedBodyLength = storedBodyLength;
+                snapshot.fullBodySha256 = HistoryBodyTruncator.sha256Hex(
+                        rawResponseBytes, bodyOffset, originalBodyLength);
+                snapshot.bodyTruncated = storedBodyLength < originalBodyLength;
+                snapshot.truncationReason = snapshot.bodyTruncated
+                        ? HistoryBodyTruncator.RESPONSE_BODY_LIMIT_REASON
+                        : "";
             }
         }
-        snapshot.originalBodyLength = snapshot.body != null ? snapshot.body.length : 0L;
-        snapshot.storedBodyLength = snapshot.originalBodyLength;
-        snapshot.fullBodySha256 = snapshot.body != null && snapshot.body.length > 0
-                ? HistoryBodyTruncator.sha256Hex(snapshot.body)
-                : "";
-        snapshot.bodyTruncated = false;
-        snapshot.truncationReason = "";
+        if (snapshot.body == null) {
+            snapshot.body = new byte[0];
+            snapshot.originalBodyLength = 0L;
+            snapshot.storedBodyLength = 0L;
+            snapshot.fullBodySha256 = "";
+            snapshot.bodyTruncated = false;
+            snapshot.truncationReason = "";
+        }
         return snapshot;
     }
 
-    private ExactHttpRequestSnapshot exactSnapshot(BurpTrafficSelection selection, ApiRequest request) {
+    private ExactHttpRequestSnapshot exactSnapshot(BurpTrafficSelection selection,
+                                                   ApiRequest request,
+                                                   int bodyOffset) {
         ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
-        snapshot.rawRequestBytes = selection.rawRequestBytes.clone();
+        snapshot.rawRequestBytes = selection.rawRequestBytes;
         snapshot.serviceHost = selection.serviceHost;
         snapshot.servicePort = normalizedPort(selection);
         snapshot.secure = selection.secure;
         snapshot.pristine = true;
-        snapshot.binaryBody = request.body != null
-                && "raw".equalsIgnoreCase(request.body.mode)
-                && request.body.raw == null
-                && hasBody(selection.rawRequestBytes);
+        snapshot.binaryBody = bodyOffset >= 0
+                && bodyOffset < selection.rawRequestBytes.length
+                && !isUtf8Text(selection.rawRequestBytes, bodyOffset);
         snapshot.sourceContext = safeContext(selection.sourceContext);
         snapshot.invalidationReason = "";
         snapshot.semanticFingerprint = request.computeSemanticFingerprint();
         return snapshot;
     }
 
-    private ApiRequest.Body buildBody(byte[] bodyBytes) {
-        if (bodyBytes == null || bodyBytes.length == 0) {
+    private ApiRequest.Body buildBody(int bodyLength) {
+        if (bodyLength <= 0) {
             return null;
         }
         ApiRequest.Body body = new ApiRequest.Body();
         body.mode = "raw";
-        String asText = new String(bodyBytes, StandardCharsets.UTF_8);
-        if (Arrays.equals(bodyBytes, asText.getBytes(StandardCharsets.UTF_8))) {
-            body.raw = asText;
-        } else {
-            body.raw = null;
-        }
+        body.raw = null;
         return body;
+    }
+
+    private boolean isUtf8Text(byte[] rawRequestBytes, int bodyOffset) {
+        String text = new String(rawRequestBytes, bodyOffset,
+                rawRequestBytes.length - bodyOffset, StandardCharsets.UTF_8);
+        byte[] roundTrip = text.getBytes(StandardCharsets.UTF_8);
+        int bodyLength = rawRequestBytes.length - bodyOffset;
+        if (roundTrip.length != bodyLength) {
+            return false;
+        }
+        for (int i = 0; i < bodyLength; i++) {
+            if (roundTrip[i] != rawRequestBytes[bodyOffset + i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String fallbackMethod(BurpTrafficSelection selection) {
@@ -304,23 +361,15 @@ public class BurpTrafficImportService {
         return selection.servicePort > 0 ? selection.servicePort : (selection.secure ? 443 : 80);
     }
 
-    private boolean hasBody(byte[] rawRequestBytes) {
-        return bodyBytes(rawRequestBytes).length > 0;
-    }
-
-    private long parsedBodyLength(byte[] rawRequestBytes) {
-        return bodyBytes(rawRequestBytes).length;
-    }
-
-    private byte[] bodyBytes(byte[] messageBytes) {
+    private int bodyOffset(byte[] messageBytes) {
         int crlfBoundary = indexOf(messageBytes, new byte[]{'\r', '\n', '\r', '\n'});
         int lfBoundary = crlfBoundary >= 0 ? -1 : indexOf(messageBytes, new byte[]{'\n', '\n'});
         int boundary = crlfBoundary >= 0 ? crlfBoundary : lfBoundary;
         int separatorLength = crlfBoundary >= 0 ? 4 : (lfBoundary >= 0 ? 2 : 0);
         if (boundary < 0 || boundary + separatorLength >= messageBytes.length) {
-            return new byte[0];
+            return -1;
         }
-        return Arrays.copyOfRange(messageBytes, boundary + separatorLength, messageBytes.length);
+        return boundary + separatorLength;
     }
 
     private static String safeContext(String sourceContext) {

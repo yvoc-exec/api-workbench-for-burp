@@ -23,6 +23,34 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BrunoParserTest {
 
     @Test
+    void fileBodyRetainsPathVariablesAndContentTypeWithoutReadingFile() throws Exception {
+        Path root = Files.createTempDirectory("bruno-file-body");
+        Files.writeString(root.resolve("upload.bru"), """
+                meta {
+                  name: Upload
+                  type: http
+                  seq: 1
+                }
+
+                post {
+                  url: https://example.test/upload
+                  body: file
+                }
+
+                body:file {
+                  file: @file({{payloadDir}}/missing.bin) @contentType(application/octet-stream)
+                }
+                """);
+
+        ApiRequest.Body body = new BrunoParser().parse(root.toFile()).requests.get(0).body;
+
+        assertThat(body.mode).isEqualTo("file");
+        assertThat(body.filePath).isEqualTo("{{payloadDir}}/missing.bin");
+        assertThat(body.raw).isNull();
+        assertThat(body.contentType).isEqualTo("application/octet-stream");
+    }
+
+    @Test
     void parseKeepsNestedBracesInBodyAndPostResponseScript() throws Exception {
         Path tempBru = Files.createTempFile(Path.of("target"), "bruno-", ".bru").toAbsolutePath().normalize();
         String bru = """

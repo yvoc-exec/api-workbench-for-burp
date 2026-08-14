@@ -7,6 +7,9 @@ import burp.history.HistoryJsonSupport;
 import burp.history.HistoryRetentionPolicy;
 import burp.history.HistoryRetentionStats;
 import burp.history.HistoryStore;
+import burp.importer.BurpTrafficConversionResult;
+import burp.importer.BurpTrafficImportService;
+import burp.importer.BurpTrafficSelection;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -24,6 +27,7 @@ import burp.utils.Base64ByteArrayTypeAdapter;
 import burp.utils.WorkspaceSaveResult;
 import burp.utils.WorkspaceStateService;
 import burp.utils.WorkspaceStateJson;
+import burp.utils.RequestBuilder;
 import burp.ui.RunnerExecutionTableModel;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
@@ -136,8 +140,171 @@ public final class MemoryHardeningScenarioMain {
             case "runner-sitemap-traffic" -> runnerSiteMap(name, peak);
             case "workbench-snapshot-owners" -> workbenchOwners(name, peak);
             case "oauth2-status-growth" -> oauthStatus(name, peak);
+            case "file-binary-repeated-send" -> fileRepeatedSend(name, false, peak);
+            case "multipart-file-repeated-send" -> fileRepeatedSend(name, true, peak);
+            case "exact-traffic-import-ownership" -> exactTrafficImportOwnership(name, peak);
+            case "exact-repeated-send" -> exactRepeatedSend(name, peak);
             default -> throw new IllegalArgumentException("unknown scenario " + name);
         };
+    }
+
+    private static ScenarioExecution fileRepeatedSend(String name, boolean multipart, long[] peak) {
+        Path fixture = null;
+        try {
+            fixture = Files.createTempFile(Path.of("target"), "r7-file-body-", ".bin");
+            byte[] contents = MemoryHardeningFixtureFactory.binaryBytes(2 * 1024 * 1024);
+            Files.write(fixture, contents);
+            ApiRequest request = new ApiRequest();
+            request.id = name;
+            request.method = "POST";
+            request.url = "https://example.test/upload";
+            request.body = new ApiRequest.Body();
+            if (multipart) {
+                request.body.mode = "formdata";
+                ApiRequest.Body.FormField field = new ApiRequest.Body.FormField("payload", "");
+                field.type = "file";
+                field.fileUpload = true;
+                field.filePath = fixture.toString();
+                field.contentType = "application/octet-stream";
+                request.body.formdata.add(field);
+            } else {
+                request.body.mode = "file";
+                request.body.filePath = fixture.toString();
+                request.body.raw = null;
+            }
+
+            long[] settled = repeatedBuildCheckpoints(new RequestBuilder(null), request, peak);
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = 50;
+            result.payloadBytes = contents.length;
+            result.retainedOwners = 1;
+            result.logicalRetainedBytes = MemoryHardeningFixtureFactory.utf8Length(fixture.toString());
+            WorkspaceState state = new WorkspaceState();
+            ApiCollection collection = new ApiCollection();
+            collection.id = "r7-files";
+            collection.requests.add(request);
+            state.collections.add(collection);
+            String workspace = WorkspaceStateJson.toJsonCopying(state);
+            result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(workspace);
+            result.metrics.put("settledHeapAfterSend1", settled[0]);
+            result.metrics.put("settledHeapAfterSend10", settled[1]);
+            result.metrics.put("settledHeapAfterSend50", settled[2]);
+            result.metrics.put("monotonicRetainedGrowth", monotonicGrowth(settled) ? 1 : 0);
+            result.metrics.put("persistentFileContentOwners", 0);
+            result.metrics.put("persistentRawBodyCharacters", request.body.raw != null ? request.body.raw.length() : 0);
+            Path ownedFixture = fixture;
+            return retain(result, request, () -> deleteQuietly(ownedFixture));
+        } catch (Exception failure) {
+            deleteQuietly(fixture);
+            throw new IllegalStateException("R7 file repeated-send scenario failed", failure);
+        }
+    }
+
+    private static ScenarioExecution exactRepeatedSend(String name, long[] peak) {
+        try {
+            ApiRequest request = new ApiRequest();
+            request.id = name;
+            request.method = "POST";
+            request.url = "https://example.test/memory";
+            request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+            request.body = new ApiRequest.Body();
+            request.body.mode = "raw";
+            request.exactHttpRequest = MemoryHardeningFixtureFactory.exactSnapshot(4 * 1024 * 1024);
+            request.exactHttpRequest.semanticFingerprint = request.computeSemanticFingerprint();
+
+            long[] settled = repeatedBuildCheckpoints(new RequestBuilder(null), request, peak);
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = 50;
+            result.payloadBytes = request.exactHttpRequest.rawRequestBytes.length;
+            result.retainedOwners = 1;
+            result.logicalRetainedBytes = result.payloadBytes;
+            result.metrics.put("settledHeapAfterSend1", settled[0]);
+            result.metrics.put("settledHeapAfterSend10", settled[1]);
+            result.metrics.put("settledHeapAfterSend50", settled[2]);
+            result.metrics.put("monotonicRetainedGrowth", monotonicGrowth(settled) ? 1 : 0);
+            result.metrics.put("canonicalExactOwners", 1);
+            result.metrics.put("authoredRawBodyCharacters", 0);
+            return retain(result, request);
+        } catch (Exception failure) {
+            throw new IllegalStateException("R7 exact repeated-send scenario failed", failure);
+        }
+    }
+
+    private static ScenarioExecution exactTrafficImportOwnership(String name, long[] peak) {
+        int exactBytes = 8 * 1024 * 1024;
+        byte[] rawRequest = MemoryHardeningFixtureFactory.rawHttpRequest(exactBytes);
+        byte[] responseBody = MemoryHardeningFixtureFactory.binaryBytes(4 * 1024 * 1024);
+        byte[] responsePrefix = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n"
+                .getBytes(StandardCharsets.US_ASCII);
+        byte[] rawResponse = new byte[responsePrefix.length + responseBody.length];
+        System.arraycopy(responsePrefix, 0, rawResponse, 0, responsePrefix.length);
+        System.arraycopy(responseBody, 0, rawResponse, responsePrefix.length, responseBody.length);
+        BurpTrafficSelection selection = new BurpTrafficSelection(
+                rawRequest, rawResponse, "example.test", 443, true,
+                "memory-hardening", "R7 exact", "POST", 1);
+        HistoryRetentionPolicy policy = HistoryRetentionPolicy.defaultPolicy();
+        BurpTrafficConversionResult conversion = new BurpTrafficImportService().convert(List.of(selection), policy);
+        sample(peak);
+        ApiRequest request = conversion.requests.get(0);
+        HistoryEntry history = conversion.historyEntries.get(0);
+        ScenarioResult result = new ScenarioResult(name);
+        result.operationCount = 1;
+        result.payloadBytes = exactBytes;
+        result.retainedOwners = 1;
+        result.logicalRetainedBytes = request.exactHttpRequest.rawRequestBytes.length
+                + history.estimatedStoredBytes();
+        result.metrics.put("canonicalExactOwners", 1);
+        result.metrics.put("exactRetainedBytes", request.exactHttpRequest.rawRequestBytes.length);
+        result.metrics.put("selectionAndExactSharePayload", request.exactHttpRequest.rawRequestBytes == selection.rawRequestBytes ? 1 : 0);
+        result.metrics.put("equivalentRawTextOwners", history.requestSnapshot.rawRequestSentText == null ? 0 : 1);
+        result.metrics.put("authoredExactOwnersInHistory",
+                history.requestSnapshot.authoredRequest != null
+                        && history.requestSnapshot.authoredRequest.exactHttpRequest != null ? 1 : 0);
+        result.metrics.put("historyRequestStoredBodyBytes", history.requestSnapshot.storedRawBodyLength);
+        result.metrics.put("historyRequestOriginalBodyBytes", history.requestSnapshot.originalRawBodyLength);
+        result.metrics.put("historyResponseStoredBodyBytes", history.responseSnapshot.storedBodyLength);
+        result.metrics.put("historyResponseOriginalBodyBytes", history.responseSnapshot.originalBodyLength);
+        result.metrics.put("historyLogicalBytes", history.estimatedStoredBytes());
+        return retain(result, conversion);
+    }
+
+    private static long[] repeatedBuildCheckpoints(RequestBuilder builder,
+                                                   ApiRequest request,
+                                                   long[] peak) throws Exception {
+        long[] settled = new long[3];
+        int checkpoint = 0;
+        for (int i = 1; i <= 50; i++) {
+            buildAndDiscard(builder, request);
+            sample(peak);
+            if (i == 1 || i == 10 || i == 50) {
+                settle();
+                settled[checkpoint++] = usedHeap(Runtime.getRuntime());
+            }
+        }
+        return settled;
+    }
+
+    private static int buildAndDiscard(RequestBuilder builder, ApiRequest request) throws Exception {
+        byte[] built = builder.buildRequest(request, null);
+        return built.length;
+    }
+
+    private static boolean monotonicGrowth(long[] settled) {
+        long tolerance = 16L * 1024L * 1024L;
+        return settled[0] < settled[1]
+                && settled[1] < settled[2]
+                && settled[2] - settled[0] > tolerance;
+    }
+
+    private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (Exception ignored) {
+            // Temporary fixture cleanup must not obscure ownership measurements.
+        }
     }
 
     private static ScenarioExecution history(String name, int count, int responseBytes, long[] peak) {
@@ -784,6 +951,8 @@ public final class MemoryHardeningScenarioMain {
             case "runner-sitemap-traffic" -> { result.operationCount = 100; result.payloadBytes = 64 * 1024; }
             case "workbench-snapshot-owners" -> { result.operationCount = 250; result.payloadBytes = 32 * 1024; }
             case "oauth2-status-growth" -> result.operationCount = 10_000;
+            case "file-binary-repeated-send", "multipart-file-repeated-send", "exact-repeated-send" -> result.operationCount = 50;
+            case "exact-traffic-import-ownership" -> result.operationCount = 1;
             default -> { }
         }
     }
