@@ -373,6 +373,8 @@ public final class ScriptBindingsFactory {
         @HostAccess.Export
         public String raw;
         @HostAccess.Export
+        public String filePath;
+        @HostAccess.Export
         public String contentType;
         @HostAccess.Export
         public GraphQLApi graphql;
@@ -388,6 +390,7 @@ public final class ScriptBindingsFactory {
                 this.raw = request.hasDerivedExactTextBody()
                         ? burp.models.ExactHttpRequestSnapshot.textBody(request.exactHttpRequest.rawRequestBytes)
                         : source.raw;
+                this.filePath = source.filePath;
                 this.contentType = source.contentType;
                 if (source.graphql != null) {
                     this.graphql = new GraphQLApi(source.graphql);
@@ -410,12 +413,14 @@ public final class ScriptBindingsFactory {
             List<ApiRequest.Body.FormField> copiedUrlEncoded = copyFields(urlencoded);
             boolean hasFormData = !copiedFormData.isEmpty();
             boolean hasUrlEncoded = !copiedUrlEncoded.isEmpty();
-            if (mode == null && raw == null && contentType == null && graphql == null && !hasFormData && !hasUrlEncoded) {
+            if (mode == null && raw == null && filePath == null && contentType == null
+                    && graphql == null && !hasFormData && !hasUrlEncoded) {
                 return null;
             }
             ApiRequest.Body body = new ApiRequest.Body();
             body.mode = mode;
             body.raw = raw;
+            body.filePath = filePath;
             body.contentType = contentType;
             if (graphql != null) {
                 body.graphql = graphql.toGraphQL();

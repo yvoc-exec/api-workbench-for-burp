@@ -112,6 +112,15 @@ public final class HistoryBodyTruncator {
         if (entry.estimatedStoredBytes() > target) {
             changed |= compactLegacyAuthoredRequest(entry.requestSnapshot, previewLimit);
         }
+        if (entry.estimatedStoredBytes() > target
+                && entry.requestSnapshot != null
+                && entry.requestSnapshot.authoredExactRequestBytes != null) {
+            entry.requestSnapshot.discardAuthoredExactTransport(LEGACY_HISTORY_BUDGET_COMPACTION);
+            entry.requestSnapshot.parseWarning = firstNonBlank(
+                    entry.requestSnapshot.parseWarning,
+                    "Authored exact transport omitted by legacy History budget compaction; semantic authored state retained.");
+            changed = true;
+        }
 
         if (changed) {
             entry.legacyBudgetCompacted = true;
@@ -323,11 +332,7 @@ public final class HistoryBodyTruncator {
         }
 
         ensureRequestDefaults(snapshot);
-        if (snapshot.authoredRequest != null) {
-            snapshot.authoredRequest.exactHttpRequest =
-                    burp.models.ExactHttpRequestSnapshot.copyMetadataOnly(
-                            snapshot.authoredRequest.exactHttpRequest);
-        }
+        snapshot.canonicalizeExactTransportOwnership();
 
         byte[] authoredOriginal = snapshot.bodyAsAuthored != null ? snapshot.bodyAsAuthored.clone() : new byte[0];
         if (snapshot.bodyTruncated) {
@@ -354,7 +359,24 @@ public final class HistoryBodyTruncator {
             snapshot.authoredRequest = sanitizeAuthoredRequest(snapshot.authoredRequest, snapshot.bodyAsAuthored);
         }
 
+        boundAuthoredExactTransport(snapshot, policy.maxRequestBodyBytesPerEntry);
         truncateRawRequest(snapshot, policy);
+        snapshot.canonicalizeExactTransportOwnership();
+    }
+
+    private static void boundAuthoredExactTransport(HistoryRequestSnapshot snapshot, long maxBodyBytes) {
+        byte[] exact = snapshot.authoredExactRequestBytes;
+        if (exact == null || exact.length == 0) {
+            return;
+        }
+        ParsedRawHttpMessage parsed = HistoryRawHttpMessageParser.parseRequest(exact, null);
+        long retainedPayloadBytes = parsed.bodyOffset() >= 0 ? exact.length - parsed.bodyOffset() : exact.length;
+        if (retainedPayloadBytes <= maxBodyBytes) {
+            return;
+        }
+        snapshot.discardAuthoredExactTransport("HISTORY_RETENTION_LIMIT");
+        snapshot.parseWarning = firstNonBlank(snapshot.parseWarning,
+                "Authored exact transport omitted by the History retention limit; semantic authored state retained.");
     }
 
     private static void truncateRawRequest(HistoryRequestSnapshot snapshot, HistoryRetentionPolicy policy) {

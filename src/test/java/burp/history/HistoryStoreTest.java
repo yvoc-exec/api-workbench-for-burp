@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HistoryStoreTest {
 
     @Test
-    void admissionRetainsExactMetadataWithoutCloningAuthoredPayloadBytes() {
+    void admissionRetainsExactMetadataWithCanonicalPayloadOutsideNestedRequest() {
         HistoryStore store = new HistoryStore();
         HistoryEntry entry = HistoryTestFixtures.sampleWorkbenchEntry();
         entry.requestSnapshot.authoredRequest.exactHttpRequest = new ExactHttpRequestSnapshot();
@@ -27,6 +27,9 @@ class HistoryStoreTest {
         assertThat(stored.requestSnapshot.authoredRequest.exactHttpRequest.serviceHost)
                 .isEqualTo("api.example.test");
         assertThat(stored.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(stored.requestSnapshot.authoredExactRequestBytes).hasSize(4096);
+        assertThat(stored.requestSnapshot.toAuthoredApiRequest().exactHttpRequest.rawRequestBytes)
+                .hasSize(4096);
         assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).hasSize(4096);
     }
 

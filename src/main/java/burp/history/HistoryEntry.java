@@ -185,6 +185,7 @@ public class HistoryEntry {
                 entry.requestSnapshot.resolvedVariables = exec.resolvedVariables != null
                         ? new LinkedHashMap<>(exec.resolvedVariables)
                         : new LinkedHashMap<>();
+                entry.requestSnapshot.canonicalizeExactTransportOwnership();
             }
             entry.result = HistoryResult.from(
                     exec,
@@ -342,6 +343,7 @@ public class HistoryEntry {
                 entry.requestSnapshot.resolvedVariables = result.resolvedVariables != null
                         ? new LinkedHashMap<>(result.resolvedVariables)
                         : new LinkedHashMap<>();
+                entry.requestSnapshot.canonicalizeExactTransportOwnership();
             }
             entry.result = HistoryResult.from(result, hasFailedAssertion(result.assertions), !entry.unresolvedVariables.isEmpty());
             if (entry.statusCode >= 400 && entry.result == HistoryResult.SUCCESS) {

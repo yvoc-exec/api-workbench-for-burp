@@ -371,6 +371,7 @@ class MemoryHardeningProcessIT {
         assertThat(longValue(metrics, "selectionAndExactSharePayload")).isEqualTo(1L);
         assertThat(longValue(metrics, "equivalentRawTextOwners")).isZero();
         assertThat(longValue(metrics, "authoredExactOwnersInHistory")).isZero();
+        assertThat(longValue(metrics, "historyExactDuplicateOwners")).isZero();
         assertThat(longValue(metrics, "historyRequestStoredBodyBytes"))
                 .isLessThan(longValue(metrics, "historyRequestOriginalBodyBytes"));
         assertThat(longValue(metrics, "historyResponseStoredBodyBytes"))
@@ -382,6 +383,7 @@ class MemoryHardeningProcessIT {
         assertThat(longValue(workbenchMetrics, "productionWorkbenchPostSendPath")).isEqualTo(1L);
         assertThat(longValue(workbenchMetrics, "workbenchHeavyPostSendOwners")).isZero();
         assertThat(longValue(workbenchMetrics, "workbenchNestedAuthoredExactOwners")).isZero();
+        assertThat(longValue(workbenchMetrics, "historyExactDuplicateOwners")).isZero();
         assertThat(longValue(workbenchMetrics, "workbenchSnapshotOwners")).isEqualTo(250L);
     }
 

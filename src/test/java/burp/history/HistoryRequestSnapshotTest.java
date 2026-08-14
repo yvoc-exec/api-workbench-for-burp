@@ -66,7 +66,7 @@ class HistoryRequestSnapshotTest {
     }
 
     @Test
-    void accountingIncludesAuthoredExactPayloadAndGenericCopyPreservesReplayFidelity() {
+    void accountingIncludesCanonicalAuthoredExactPayloadAndCopiesPreserveReplayFidelity() {
         ApiRequest request = request("POST", "https://api.example.test/exact");
         request.exactHttpRequest = new ExactHttpRequestSnapshot();
         request.exactHttpRequest.rawRequestBytes = new byte[4096];
@@ -78,16 +78,21 @@ class HistoryRequestSnapshotTest {
         HistoryRequestSnapshot copy = HistoryRequestSnapshot.copyOf(source);
 
         assertThat(copy.authoredRequest.exactHttpRequest).isNotNull();
-        assertThat(copy.authoredRequest.exactHttpRequest.rawRequestBytes)
-                .containsExactly(source.authoredRequest.exactHttpRequest.rawRequestBytes)
-                .isNotSameAs(source.authoredRequest.exactHttpRequest.rawRequestBytes);
+        assertThat(source.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(source.authoredExactRequestBytes).hasSize(4096);
+        assertThat(copy.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(copy.authoredExactRequestBytes)
+                .containsExactly(source.authoredExactRequestBytes)
+                .isNotSameAs(source.authoredExactRequestBytes);
         assertThat(HistoryRequestSnapshot.copyOfWithoutExactTransport(source)
-                .authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
-        assertThat(source.authoredRequest.exactHttpRequest.rawRequestBytes).hasSize(4096);
+                .authoredExactRequestBytes).containsExactly(source.authoredExactRequestBytes);
+        assertThat(copy.toAuthoredApiRequest().exactHttpRequest.rawRequestBytes)
+                .containsExactly(source.authoredExactRequestBytes)
+                .isNotSameAs(copy.authoredExactRequestBytes);
     }
 
     @Test
-    void automaticSnapshotRetainsLazyAuthoredTextWithoutOwningExactTransport() {
+    void automaticSnapshotRetainsLazyAuthoredTextAndKeepsRuntimeEvidenceSeparate() {
         ApiRequest request = request("POST", "https://api.example.test/authored");
         request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
         request.body = new ApiRequest.Body();
@@ -109,7 +114,13 @@ class HistoryRequestSnapshotTest {
         ApiRequest authored = snapshot.toAuthoredApiRequest();
         assertThat(snapshot.displayBodyText()).isEqualTo("important-payload");
         assertThat(authored.body.raw).isEqualTo("important-payload");
-        assertThat(authored.exactHttpRequest).isNull();
+        assertThat(authored.exactHttpRequest).isNotNull();
+        assertThat(authored.exactHttpRequest.rawRequestBytes)
+                .containsExactly(request.exactHttpRequest.rawRequestBytes);
+        assertThat(new String(authored.exactHttpRequest.rawRequestBytes, StandardCharsets.UTF_8))
+                .doesNotContain("DELETE /runtime");
+        assertThat(snapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(snapshot.authoredExactRequestBytes).isNotSameAs(snapshot.rawRequestSent);
         assertThat(authored.url).isEqualTo("https://api.example.test/authored");
         assertThat(snapshot.rawRequestSent).containsSequence("DELETE /runtime".getBytes(StandardCharsets.UTF_8));
         assertThat(request.body.raw).isNull();

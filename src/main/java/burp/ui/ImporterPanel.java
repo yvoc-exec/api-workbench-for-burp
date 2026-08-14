@@ -1152,7 +1152,7 @@ public class ImporterPanel {
         }
         HistoryRequestContext existingContext = resolveExistingHistoryRequestContext(entry);
         if (existingContext != null && existingContext.originalRequestExists && existingContext.collection != null && existingContext.request != null) {
-            ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
+            ApiRequest snapshotRequest = entry.requestSnapshot.toWorkbenchApiRequest();
             applyHistorySnapshotToLiveRequest(existingContext.collection, existingContext.request, snapshotRequest);
             openRequestInEditor(existingContext.request, existingContext.collection);
             if (requestEditor != null) {
@@ -1184,7 +1184,7 @@ public class ImporterPanel {
         if (fallbackContext == null || fallbackContext.collection == null || fallbackContext.request == null) {
             return;
         }
-        ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
+        ApiRequest snapshotRequest = entry.requestSnapshot.toWorkbenchApiRequest();
         snapshotRequest.path = resolveHistoryFolderPath(fallbackContext.collection, fallbackContext.request, entry);
         if (entry.requestName != null && !entry.requestName.isBlank()) {
             snapshotRequest.name = entry.requestName;
@@ -1561,7 +1561,7 @@ public class ImporterPanel {
             request.name = entry.requestName;
         }
         request.path = resolveHistoryFolderPath(entry);
-        ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
+        ApiRequest snapshotRequest = entry.requestSnapshot.toWorkbenchApiRequest();
         applyHistorySnapshotToLiveRequest(collection, request, snapshotRequest);
         return new HistoryRequestContext(collection, request, false, false, null);
     }

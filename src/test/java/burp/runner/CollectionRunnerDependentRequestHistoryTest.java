@@ -143,8 +143,8 @@ class CollectionRunnerDependentRequestHistoryTest {
         assertThat(childHistory.source.name()).isEqualTo("RUNNER");
         assertThat(childHistory.result).isEqualTo(HistoryResult.SUCCESS);
         assertThat(childHistory.requestSnapshot.hasRawRequestSent()).isTrue();
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer child-value");
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("?history=1");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer child-value");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("?history=1");
         assertThat(childHistory.requestSnapshot.authoredRequest).isNotNull();
         assertThat(childHistory.requestSnapshot.resolvedUrl).isEqualTo("https://api.example.test/history-child?history=1");
         assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("history child pre"));

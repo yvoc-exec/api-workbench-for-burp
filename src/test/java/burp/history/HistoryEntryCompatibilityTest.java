@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 class HistoryEntryCompatibilityTest {
 
     @Test
-    void automaticCapturesDoNotRetainAuthoredExactPayloadOwners() {
+    void automaticCapturesRetainMetadataOnlyNestedExactStateAndCanonicalReplayBytes() {
         ApiCollection collection = HistoryTestFixtures.sampleCollection();
         ApiRequest request = HistoryTestFixtures.sampleRequest();
         request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
@@ -42,8 +42,12 @@ class HistoryEntryCompatibilityTest {
         RunnerResult runnerResult = new RunnerResult();
         HistoryEntry runner = HistoryEntry.fromRunnerAttempt(collection, request, null, runnerResult);
 
-        assertThat(workbench.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
-        assertThat(runner.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
+        assertThat(workbench.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(runner.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(workbench.requestSnapshot.authoredExactRequestBytes)
+                .containsExactly(request.exactHttpRequest.rawRequestBytes);
+        assertThat(runner.requestSnapshot.authoredExactRequestBytes)
+                .containsExactly(request.exactHttpRequest.rawRequestBytes);
         assertThat(request.exactHttpRequest.rawRequestBytes).isNotNull();
     }
 

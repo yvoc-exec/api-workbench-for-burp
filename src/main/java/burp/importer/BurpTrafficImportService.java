@@ -160,6 +160,10 @@ public class BurpTrafficImportService {
         snapshot.rawTruncationReason = snapshot.rawBodyTruncated
                 ? HistoryBodyTruncator.RAW_REQUEST_BODY_LIMIT_REASON
                 : "";
+        if (originalBodyLength > policy.maxRequestBodyBytesPerEntry) {
+            snapshot.discardAuthoredExactTransport("HISTORY_RETENTION_LIMIT");
+        }
+        snapshot.canonicalizeExactTransportOwnership();
         return snapshot;
     }
 

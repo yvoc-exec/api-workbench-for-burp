@@ -262,7 +262,9 @@ public final class MemoryHardeningScenarioMain {
         result.metrics.put("equivalentRawTextOwners", history.requestSnapshot.rawRequestSentText == null ? 0 : 1);
         result.metrics.put("authoredExactOwnersInHistory",
                 history.requestSnapshot.authoredRequest != null
-                        && history.requestSnapshot.authoredRequest.exactHttpRequest != null ? 1 : 0);
+                        && history.requestSnapshot.authoredRequest.exactHttpRequest != null
+                        && history.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes != null ? 1 : 0);
+        result.metrics.put("historyExactDuplicateOwners", duplicateExactOwner(history.requestSnapshot));
         result.metrics.put("historyRequestStoredBodyBytes", history.requestSnapshot.storedRawBodyLength);
         result.metrics.put("historyRequestOriginalBodyBytes", history.requestSnapshot.originalRawBodyLength);
         result.metrics.put("historyResponseStoredBodyBytes", history.responseSnapshot.storedBodyLength);
@@ -929,6 +931,7 @@ public final class MemoryHardeningScenarioMain {
             long retainedEvidenceBytes = workbenchRetainedEvidenceBytes(snapshots);
             int heavyOwners = workbenchHeavySnapshotOwnerFields(snapshots);
             int nestedExactOwners = workbenchNestedAuthoredExactOwners(snapshots);
+            int duplicateExactOwners = workbenchDuplicateHistoryExactOwners(snapshots);
             ScenarioResult result = new ScenarioResult(name);
             result.operationCount = snapshots.size();
             result.payloadBytes = 2L * 1024 * 1024;
@@ -937,6 +940,7 @@ public final class MemoryHardeningScenarioMain {
             result.metrics.put("workbenchSnapshotOwners", snapshots.size());
             result.metrics.put("workbenchHeavyPostSendOwners", heavyOwners);
             result.metrics.put("workbenchNestedAuthoredExactOwners", nestedExactOwners);
+            result.metrics.put("historyExactDuplicateOwners", duplicateExactOwners);
             result.metrics.put("boundedHistoryEvidenceBytes", retainedEvidenceBytes);
             result.metrics.put("productionWorkbenchPostSendPath", 1);
             return retain(result, importer, importer::cleanup);
@@ -1005,6 +1009,31 @@ public final class MemoryHardeningScenarioMain {
             }
         }
         return owners;
+    }
+
+    private static int workbenchDuplicateHistoryExactOwners(IdentityHashMap<?, ?> snapshots) {
+        int owners = 0;
+        for (Object snapshot : snapshots.values()) {
+            try {
+                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
+                detail.setAccessible(true);
+                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
+                owners += entry != null ? duplicateExactOwner(entry.requestSnapshot) : 0;
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException("Workbench canonical History evidence unavailable", failure);
+            }
+        }
+        return owners;
+    }
+
+    private static int duplicateExactOwner(burp.history.HistoryRequestSnapshot snapshot) {
+        if (snapshot == null
+                || snapshot.authoredExactRequestBytes == null
+                || snapshot.rawRequestSent == null
+                || snapshot.authoredExactRequestBytes == snapshot.rawRequestSent) {
+            return 0;
+        }
+        return java.util.Arrays.equals(snapshot.authoredExactRequestBytes, snapshot.rawRequestSent) ? 1 : 0;
     }
 
     private static ScenarioExecution oauthStatus(String name, long[] peak) {

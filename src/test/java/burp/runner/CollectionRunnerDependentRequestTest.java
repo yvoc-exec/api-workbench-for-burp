@@ -126,20 +126,20 @@ class CollectionRunnerDependentRequestTest {
         assertThat(childHistory.get(0).scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child post"));
         assertThat(firstChild.assertions).hasSize(1);
         assertThat(firstChild.assertions.get(0).passed).isTrue();
-        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
-        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("?child=1");
-        assertThat(childHistory.get(0).requestSnapshot.rawRequestSentText).contains("HTTP/1.1");
+        assertThat(childHistory.get(0).requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer runner-token");
+        assertThat(childHistory.get(0).requestSnapshot.preferredRawRequestText()).contains("?child=1");
+        assertThat(childHistory.get(0).requestSnapshot.preferredRawRequestText()).contains("HTTP/1.1");
         assertThat(firstChild.requestUrl).isEqualTo("https://api.example.test/child?child=1");
         assertThat(firstChild.displayStatusLabel()).isEqualTo("201 (dependent)");
 
-        assertThat(childHistory.get(1).requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
+        assertThat(childHistory.get(1).requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer runner-token");
         assertThat(secondChild.requestUrl).isEqualTo("https://api.example.test/child?child=1");
         assertThat(secondChild.displayStatusLabel()).isEqualTo("201 (dependent)");
 
         HistoryEntry firstChildHistory = childHistory.get(0);
         assertThat(firstChildHistory.result).isEqualTo(HistoryResult.SUCCESS);
-        assertThat(firstChildHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer runner-token");
-        assertThat(firstChildHistory.requestSnapshot.rawRequestSentText).contains("?child=1");
+        assertThat(firstChildHistory.requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer runner-token");
+        assertThat(firstChildHistory.requestSnapshot.preferredRawRequestText()).contains("?child=1");
         assertThat(firstChildHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("child pre"));
         assertThat(firstChildHistory.scriptWarnings).isEmpty();
         assertThat(firstChildHistory.scriptErrors).isEmpty();
@@ -205,7 +205,7 @@ class CollectionRunnerDependentRequestTest {
         assertThat(runner.getResults()).hasSize(2);
         assertThat(listener.timelineRows).hasSize(2);
         assertThat(runner.getResults().get(0).requestId).isEqualTo("child-two");
-        assertThat(historiesFor(capturedHistory, "child-two").get(0).requestSnapshot.rawRequestSentText)
+        assertThat(historiesFor(capturedHistory, "child-two").get(0).requestSnapshot.preferredRawRequestText())
                 .contains("X-Target: second");
         assertThat(runner.getResults().get(0).requestUrl).isEqualTo("https://api.example.test/child-two");
         assertThat(runner.getResults().get(0).parentRequestId).isEqualTo("parent-dup");
@@ -295,8 +295,8 @@ class CollectionRunnerDependentRequestTest {
         assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child pre"));
         assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("bruno child post"));
         assertThat(childResult.assertions).hasSize(1);
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer bruno-runner");
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("dialect=bruno");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer bruno-runner");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("dialect=bruno");
         assertThat(childResult.displayStatusLabel()).isEqualTo("201 (dependent)");
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);
         assertThat(parentResult.dependentRequestCount).isEqualTo(1);
@@ -360,9 +360,9 @@ class CollectionRunnerDependentRequestTest {
         assertThat(childResult.requestId).isEqualTo("native-child");
         assertThat(childResult.dependentExecution).isTrue();
         assertThat(childResult.triggeredByScript).isTrue();
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Authorization: Bearer native-runner");
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("PUT /native-child?native=1 HTTP/1.1");
-        assertThat(childHistory.requestSnapshot.rawRequestSentText).contains("Host: api.example.test");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("Authorization: Bearer native-runner");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("PUT /native-child?native=1 HTTP/1.1");
+        assertThat(childHistory.requestSnapshot.preferredRawRequestText()).contains("Host: api.example.test");
         assertThat(childHistory.scriptLogs).anySatisfy(log -> assertThat(log.message).contains("native child pre"));
         assertThat(childResult.displayStatusLabel()).isEqualTo("200 (dependent)");
         assertThat(parentResult.scriptDependentRequestResults).hasSize(1);

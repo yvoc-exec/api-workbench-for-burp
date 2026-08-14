@@ -59,7 +59,10 @@ class BurpTrafficImportServiceTest {
         HistoryEntry entry = service.convertHistory(selection, request, policy);
 
         assertThat(entry.requestSnapshot.rawRequestSentText).isNull();
-        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest).isNull();
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest).isNotNull();
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(entry.requestSnapshot.authoredExactRequestBytes).isNull();
+        assertThat(entry.requestSnapshot.authoredRequest.exactHttpRequest.pristine).isFalse();
         assertThat(entry.requestSnapshot.originalRawBodyLength).isEqualTo(10);
         assertThat(entry.requestSnapshot.storedRawBodyLength).isEqualTo(4);
         assertThat(entry.requestSnapshot.rawBodyTruncated).isTrue();

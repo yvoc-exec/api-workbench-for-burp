@@ -418,7 +418,7 @@ public final class WorkspaceStateJson {
                 continue;
             }
             if (entry.requestSnapshot != null) {
-                entry.requestSnapshot.canonicalizeRawEvidence();
+                entry.requestSnapshot.canonicalizeExactTransportOwnership();
             }
             if (entry.redirectHops != null) {
                 for (RedirectHop hop : entry.redirectHops) {

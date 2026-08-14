@@ -2,14 +2,69 @@ package burp.scripts;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.utils.RawRequestParser;
+import burp.utils.RequestBuilder;
 import burp.utils.ScriptMode;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ScriptBindingsBodyMutationTest {
+    @Test
+    void canonicalFilePathSurvivesNoOpScript() {
+        ApiRequest request = requestWithFileBody("payload.bin", null);
+
+        ScriptExecutionResult result = run(request, "console.log('keep');");
+
+        assertThat(result.success).isTrue();
+        assertThat(result.mutatedRequest.body.filePath).isEqualTo("payload.bin");
+        assertThat(result.mutatedRequest.body.raw).isNull();
+    }
+
+    @Test
+    void headerOnlyScriptPreservesCanonicalFileAndRequestBuilderSendsReferencedBytes() throws Exception {
+        byte[] payload = new byte[]{0x00, (byte) 0xFF, 0x41, 0x42};
+        Path file = Files.createTempFile(Path.of("target"), "header-file-", ".bin");
+        Files.write(file, payload);
+        ApiRequest request = requestWithFileBody(file.toString(), null);
+
+        ScriptExecutionResult result = run(request, "awb.request.headers.upsert('X-Test', 'one');");
+        byte[] built = new RequestBuilder(null).buildRequest(result.mutatedRequest, null);
+
+        assertThat(result.mutatedRequest.body.filePath).isEqualTo(file.toString());
+        assertThat(result.mutatedRequest.body.raw).isNull();
+        assertThat(RawRequestParser.parse(built).body).containsExactly(payload);
+    }
+
+    @Test
+    void variableOnlyScriptPreservesCanonicalFilePath() {
+        ApiRequest request = requestWithFileBody("variable.bin", null);
+
+        ScriptExecutionResult result = run(request, "awb.variables.set('token', 'value');");
+
+        assertThat(result.success).isTrue();
+        assertThat(result.mutatedRequest.body.filePath).isEqualTo("variable.bin");
+        assertThat(result.mutatedRequest.body.raw).isNull();
+    }
+
+    @Test
+    void legacyRawFilePathStillBuildsAfterScript() throws Exception {
+        byte[] payload = "legacy-file".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Path file = Files.createTempFile(Path.of("target"), "legacy-file-", ".txt");
+        Files.write(file, payload);
+        ApiRequest request = requestWithFileBody(null, file.toString());
+
+        ScriptExecutionResult result = run(request, "console.log('legacy');");
+        byte[] built = new RequestBuilder(null).buildRequest(result.mutatedRequest, null);
+
+        assertThat(result.mutatedRequest.body.filePath).isNull();
+        assertThat(result.mutatedRequest.body.raw).isEqualTo(file.toString());
+        assertThat(RawRequestParser.parse(built).body).containsExactly(payload);
+    }
     @Test
     void loggingScriptPreservesMultipartFields() {
         ApiRequest request = requestWithMultipart();
@@ -160,6 +215,15 @@ class ScriptBindingsBodyMutationTest {
         request.body.mode = "urlencoded";
         request.body.urlencoded.add(new ApiRequest.Body.FormField("a", "1"));
         request.body.urlencoded.add(new ApiRequest.Body.FormField("a", "2"));
+        return request;
+    }
+
+    private ApiRequest requestWithFileBody(String filePath, String legacyRawPath) {
+        ApiRequest request = baseRequest();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "file";
+        request.body.filePath = filePath;
+        request.body.raw = legacyRawPath;
         return request;
     }
 
