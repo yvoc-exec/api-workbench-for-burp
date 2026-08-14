@@ -325,7 +325,7 @@ public final class InsomniaCollectionExporter {
             if (!headers.isEmpty()) {
                 resource.add("headers", headers);
             }
-            JsonObject body = CollectionExportSupport.bodyToInsomnia(request.body, resolver, resolve);
+            JsonObject body = CollectionExportSupport.bodyToInsomnia(request, resolver, resolve);
             if (body != null && !body.entrySet().isEmpty()) {
                 resource.add("body", body);
                 addBodyWarnings(request, warnings);
@@ -553,7 +553,8 @@ public final class InsomniaCollectionExporter {
                                                      boolean resolve, List<String> warnings) {
         if (request == null || request.body == null || request.body.mode == null) return;
         if ("file".equalsIgnoreCase(request.body.mode)) {
-            String path = CollectionExportSupport.resolve(request.body.raw, resolver, resolve);
+            String path = CollectionExportSupport.resolve(
+                    CollectionExportSupport.filePathForExport(request.body), resolver, resolve);
             if (path == null || path.isEmpty()) {
                 addWarning(warnings, "Insomnia export represented empty file body for request '"
                         + safeRequestName(request) + "' as file metadata; runtime file transport requires validation.");

@@ -116,6 +116,28 @@ class BurpTrafficWorkflowCoordinatorTest {
         assertThat(before.historyEntries).isEmpty();
     }
 
+    @Test
+    void transactionCopySharesExactBackingButIsolatesMutableMetadata() {
+        WorkspaceState before = workspaceWithExistingCollection();
+        ApiRequest existing = before.collections.get(0).requests.get(0);
+        existing.exactHttpRequest = importedRequest("backing", "Backing").exactHttpRequest;
+        byte[] backing = existing.exactHttpRequest.rawRequestBytes;
+        BurpTrafficImportPlan plan = new BurpTrafficImportPlan(
+                before.collections.get(0), "", "Captured",
+                List.of(importedRequest("new", "New")), List.of(), true, false, false);
+
+        WorkspaceState after = coordinator().applyPlan(before, plan);
+        ApiRequest copiedExisting = after.collections.get(0).requests.get(0);
+
+        assertThat(copiedExisting).isNotSameAs(existing);
+        assertThat(copiedExisting.exactHttpRequest).isNotSameAs(existing.exactHttpRequest);
+        assertThat(copiedExisting.exactHttpRequest.rawRequestBytes).isSameAs(backing);
+        copiedExisting.name = "changed";
+        copiedExisting.exactHttpRequest.pristine = false;
+        assertThat(existing.name).isEqualTo("Existing Request");
+        assertThat(existing.exactHttpRequest.pristine).isTrue();
+    }
+
     private static BurpTrafficWorkflowCoordinator coordinator() {
         return new BurpTrafficWorkflowCoordinator(
                 mock(UniversalImporter.class),

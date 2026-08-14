@@ -278,8 +278,6 @@ public class ImporterPanel {
     }
 
     static final class WorkbenchSendSnapshot {
-        final HttpRequest builtRequest;
-        final HttpResponse response;
         final String metaText;
         final String scriptOutputText;
         final String assertionsText;
@@ -288,25 +286,19 @@ public class ImporterPanel {
         final long timestampMillis;
         HistoryEntry detailEntry;
 
-        WorkbenchSendSnapshot(HttpRequest builtRequest,
-                              HttpResponse response,
-                              String metaText,
+        WorkbenchSendSnapshot(String metaText,
                               String failureReason,
                               String sendModeLabel,
                               long timestampMillis) {
-            this(builtRequest, response, metaText, "", "", failureReason, sendModeLabel, timestampMillis);
+            this(metaText, "", "", failureReason, sendModeLabel, timestampMillis);
         }
 
-        WorkbenchSendSnapshot(HttpRequest builtRequest,
-                              HttpResponse response,
-                              String metaText,
+        WorkbenchSendSnapshot(String metaText,
                               String scriptOutputText,
                               String assertionsText,
                               String failureReason,
                               String sendModeLabel,
                               long timestampMillis) {
-            this.builtRequest = builtRequest;
-            this.response = response;
             this.metaText = metaText;
             this.scriptOutputText = scriptOutputText;
             this.assertionsText = assertionsText;
@@ -2247,8 +2239,6 @@ public class ImporterPanel {
                 ? storedEntry
                 : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
-                result != null ? result.builtRequest : null,
-                result != null && result.response != null ? result.response.response() : null,
                 buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, null, activeEnvironment),
                 buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
                 buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
@@ -2278,8 +2268,6 @@ public class ImporterPanel {
                 ? storedEntry
                 : buildWorkbenchExecutionEntry(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment);
         WorkbenchSendSnapshot snapshot = new WorkbenchSendSnapshot(
-                result != null ? result.builtRequest : null,
-                result != null && result.response != null ? result.response.response() : null,
                 buildWorkbenchMetaText(sentCollection, sentRequest, result, sendModeLabel, reason, activeEnvironment),
                 buildWorkbenchScriptOutputText(result != null ? result.executionResult : null),
                 buildWorkbenchAssertionsText(result != null ? result.executionResult : null),
@@ -2297,6 +2285,7 @@ public class ImporterPanel {
         if (findCollectionByRequest(sentRequest) == null) {
             return;
         }
+        snapshot.detailEntry = boundedWorkbenchDetailEntry(snapshot.detailEntry);
         workbenchSendSnapshots.put(sentRequest, snapshot);
         if (isWorkbenchRequestSelection(sentRequest, sentCollection)) {
             displayWorkbenchSendSnapshot(snapshot);
@@ -2390,13 +2379,14 @@ public class ImporterPanel {
             }
             workbenchDetailPanel.showEntry(detailEntry);
             setDetailEvidenceEditability(workbenchDetailPanel, detailEntry);
-            if (snapshot.builtRequest != null) {
-                workbenchDetailPanel.setRequestMessage(snapshot.builtRequest);
-            }
-            if (snapshot.response != null) {
-                workbenchDetailPanel.setResponseMessage(snapshot.response);
-            }
         }
+    }
+
+    private HistoryEntry boundedWorkbenchDetailEntry(HistoryEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        return burp.history.HistoryBodyTruncator.apply(entry, historyStore.getRetentionPolicy());
     }
 
     private void clearWorkbenchDetailPane() {

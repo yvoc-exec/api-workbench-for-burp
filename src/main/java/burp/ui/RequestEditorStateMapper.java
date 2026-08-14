@@ -362,9 +362,37 @@ final class RequestEditorStateMapper {
             return;
         }
         builtRequest.exactHttpRequest.semanticFingerprint = expectedFingerprint;
-        if (!expectedFingerprint.equals(actualFingerprint)) {
+        boolean exactInvalidated = derivedExactBodyWasEdited(currentRequest, builtRequest)
+                || !expectedFingerprint.equals(actualFingerprint);
+        if (exactInvalidated) {
             builtRequest.invalidateExactTransport("REQUEST_EDITOR_SEMANTIC_CHANGE");
+            materializeDerivedExactBody(currentRequest, builtRequest);
         }
+    }
+
+    private static boolean derivedExactBodyWasEdited(ApiRequest currentRequest, ApiRequest builtRequest) {
+        return currentRequest.exactHttpRequest != null
+                && currentRequest.exactHttpRequest.pristine
+                && !currentRequest.exactHttpRequest.binaryBody
+                && currentRequest.body != null
+                && currentRequest.body.raw == null
+                && builtRequest.body != null
+                && "raw".equalsIgnoreCase(builtRequest.body.mode)
+                && builtRequest.body.raw != null;
+    }
+
+    private static void materializeDerivedExactBody(ApiRequest currentRequest, ApiRequest builtRequest) {
+        if (currentRequest.exactHttpRequest == null
+                || currentRequest.exactHttpRequest.binaryBody
+                || currentRequest.body == null
+                || currentRequest.body.raw != null
+                || builtRequest.body == null
+                || !"raw".equalsIgnoreCase(builtRequest.body.mode)
+                || builtRequest.body.raw != null) {
+            return;
+        }
+        builtRequest.body.raw = ExactHttpRequestSnapshot.textBody(
+                currentRequest.exactHttpRequest.rawRequestBytes);
     }
 
     static void clearEditor(Context ctx) {

@@ -415,7 +415,8 @@ public final class OpenApiCollectionExporter {
             schema.put("required", List.of("query"));
             media.put("schema", schema);
         } else {
-            String raw = resolve ? CollectionExportSupport.resolve(request.body.raw, resolver, true) : request.body.raw;
+            String authoredRaw = CollectionExportSupport.rawBodyForExport(request);
+            String raw = resolve ? CollectionExportSupport.resolve(authoredRaw, resolver, true) : authoredRaw;
             if (!media.containsKey("schema")) media.put("schema", schemaFromRaw(raw, selectedMedia));
             media.put("example", typedRawValue(raw, selectedMedia));
         }

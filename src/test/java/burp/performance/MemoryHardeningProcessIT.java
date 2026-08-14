@@ -253,8 +253,7 @@ class MemoryHardeningProcessIT {
     }
 
     private static void assertRetainedOwnershipMeasurements(JsonArray results) {
-        for (String scenario : List.of("history-1000x64k", "history-100x2m", "exact-250x256k",
-                "workbench-snapshot-owners")) {
+        for (String scenario : List.of("history-1000x64k", "history-100x2m", "exact-250x256k")) {
             JsonObject result = resultFor(results, scenario);
             if ("SUCCESS".equals(string(result, "exitClassification"))) {
                 assertThat(longValue(result, "heapAfterRetainedSettle"))
@@ -376,6 +375,13 @@ class MemoryHardeningProcessIT {
                 .isLessThan(longValue(metrics, "historyRequestOriginalBodyBytes"));
         assertThat(longValue(metrics, "historyResponseStoredBodyBytes"))
                 .isLessThan(longValue(metrics, "historyResponseOriginalBodyBytes"));
+
+        JsonObject workbench = resultFor(results, "workbench-snapshot-owners");
+        JsonObject workbenchMetrics = workbench.getAsJsonObject("metrics");
+        assertThat(string(workbench, "exitClassification")).isEqualTo("SUCCESS");
+        assertThat(longValue(workbenchMetrics, "productionWorkbenchPostSendPath")).isEqualTo(1L);
+        assertThat(longValue(workbenchMetrics, "workbenchHeavyPostSendOwners")).isZero();
+        assertThat(longValue(workbenchMetrics, "workbenchSnapshotOwners")).isEqualTo(250L);
     }
 
     private static JsonObject resultFor(JsonArray results, String name) {

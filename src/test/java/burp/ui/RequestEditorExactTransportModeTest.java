@@ -458,6 +458,7 @@ class RequestEditorExactTransportModeTest {
     void textualExactBodyIsDerivedWithoutMaterializingUnchangedAuthoredState() {
         RequestEditorPanel panel = panel();
         ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.method = "POST";
         req.body = new ApiRequest.Body();
         req.body.mode = "raw";
         req.body.raw = null;
@@ -498,6 +499,59 @@ class RequestEditorExactTransportModeTest {
         assertThat(built.exactHttpRequest.pristine).isFalse();
         assertThat(built.exactHttpRequest.invalidationReason)
                 .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+    }
+
+    @Test
+    void deletingDerivedExactTextToEmptyInvalidatesExactTransportAndSendsNoOriginalBody() throws Exception {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.method = "POST";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = (
+                "POST /text HTTP/1.1\r\nHost: example.test\r\n\r\noriginal")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+        panel.loadRequest(req);
+
+        panel.getBodyRawAreaForTests().setText("");
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.body.raw).isEmpty();
+        assertThat(built.exactHttpRequest.pristine).isFalse();
+        assertThat(built.exactHttpRequest.invalidationReason)
+                .isEqualTo("REQUEST_EDITOR_SEMANTIC_CHANGE");
+        String raw = new String(new RequestBuilder(null).buildRequest(
+                built, new burp.parser.VariableResolver()), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(raw).doesNotContain("original");
+        assertThat(raw.substring(raw.indexOf("\r\n\r\n") + 4)).isEmpty();
+    }
+
+    @Test
+    void editingExactMetadataMaterializesTheUntouchedDerivedBodyForSemanticSend() throws Exception {
+        RequestEditorPanel panel = panel();
+        ApiRequest req = request(ApiRequest.BuildMode.EXACT_HTTP);
+        req.method = "POST";
+        req.body = new ApiRequest.Body();
+        req.body.mode = "raw";
+        req.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
+        req.exactHttpRequest.rawRequestBytes = (
+                "POST /text HTTP/1.1\r\nHost: example.test\r\n\r\noriginal")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        req.exactHttpRequest.pristine = true;
+        req.exactHttpRequest.semanticFingerprint = req.computeSemanticFingerprint();
+        panel.loadRequest(req);
+
+        panel.getUrlField().setText("https://example.com/changed");
+        ApiRequest built = panel.buildRequestFromUI();
+
+        assertThat(built.exactHttpRequest.pristine).isFalse();
+        assertThat(built.body.raw).isEqualTo("original");
+        String raw = new String(new RequestBuilder(null).buildRequest(
+                built, new burp.parser.VariableResolver()), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(raw).contains("POST /changed HTTP/1.1").endsWith("\r\n\r\noriginal");
     }
 
     @Test

@@ -148,7 +148,7 @@ public final class PostmanCollectionExporter {
         if (!headers.isEmpty()) {
             req.add("header", headers);
         }
-        JsonObject body = CollectionExportSupport.bodyToPostman(request.body, resolver, resolve);
+        JsonObject body = CollectionExportSupport.bodyToPostman(request, resolver, resolve);
         if (body != null && !body.entrySet().isEmpty()) {
             req.add("body", body);
         }

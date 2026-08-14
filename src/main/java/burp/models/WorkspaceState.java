@@ -77,12 +77,21 @@ public class WorkspaceState {
     }
 
     public static WorkspaceState copyOf(WorkspaceState source) {
+        return copyOf(source, false);
+    }
+
+    /** Detaches mutable workspace metadata while sharing immutable exact-request byte backing. */
+    public static WorkspaceState copyOfSharingExactTransport(WorkspaceState source) {
+        return copyOf(source, true);
+    }
+
+    private static WorkspaceState copyOf(WorkspaceState source, boolean shareExactTransport) {
         WorkspaceState copy = new WorkspaceState();
         if (source == null) {
             return copy;
         }
         copy.version = source.version > 0 ? source.version : CURRENT_VERSION;
-        copy.collections = copyCollections(source.collections);
+        copy.collections = copyCollections(source.collections, shareExactTransport);
         copy.environments = copyEnvironments(source.environments);
         copy.activeEnvironmentId = source.activeEnvironmentId;
         copy.selectedTabIndex = source.selectedTabIndex;
@@ -170,19 +179,23 @@ public class WorkspaceState {
     }
 
     private static List<ApiCollection> copyCollections(List<ApiCollection> source) {
+        return copyCollections(source, false);
+    }
+
+    private static List<ApiCollection> copyCollections(List<ApiCollection> source, boolean shareExactTransport) {
         List<ApiCollection> out = new ArrayList<>();
         if (source == null) {
             return out;
         }
         for (ApiCollection collection : source) {
             if (collection != null) {
-                out.add(copyCollection(collection));
+                out.add(copyCollection(collection, shareExactTransport));
             }
         }
         return out;
     }
 
-    private static ApiCollection copyCollection(ApiCollection src) {
+    private static ApiCollection copyCollection(ApiCollection src, boolean shareExactTransport) {
         ApiCollection copy = new ApiCollection();
         if (src == null) {
             return copy;
@@ -201,7 +214,7 @@ public class WorkspaceState {
         copy.folderAuth = copyAuthMap(src.folderAuth);
         copy.scriptBlocks = copyScriptBlocks(src.scriptBlocks);
         copy.folderScriptBlocks = copyFolderScriptBlocks(src.folderScriptBlocks);
-        copy.requests = copyRequests(src.requests);
+        copy.requests = copyRequests(src.requests, shareExactTransport);
         copy.variables = copyVariables(src.variables);
         copy.folderVars = copyNestedStringMap(src.folderVars);
         copy.environment = src.environment != null ? new LinkedHashMap<>(src.environment) : new LinkedHashMap<>();
@@ -223,13 +236,13 @@ public class WorkspaceState {
         return copy;
     }
 
-    private static List<ApiRequest> copyRequests(List<ApiRequest> src) {
+    private static List<ApiRequest> copyRequests(List<ApiRequest> src, boolean shareExactTransport) {
         List<ApiRequest> out = new ArrayList<>();
         if (src == null) {
             return out;
         }
         for (ApiRequest req : src) {
-            out.add(copyRequest(req));
+            out.add(copyRequest(req, shareExactTransport));
         }
         return out;
     }
@@ -248,11 +261,13 @@ public class WorkspaceState {
         return out;
     }
 
-    private static ApiRequest copyRequest(ApiRequest src) {
+    private static ApiRequest copyRequest(ApiRequest src, boolean shareExactTransport) {
         if (src == null) {
             return null;
         }
-        return src.applyTo(new ApiRequest());
+        return shareExactTransport
+                ? src.applyToSharingExactTransport(new ApiRequest())
+                : src.applyTo(new ApiRequest());
     }
 
     private static List<ScriptBlock> copyScriptBlocks(List<ScriptBlock> src) {

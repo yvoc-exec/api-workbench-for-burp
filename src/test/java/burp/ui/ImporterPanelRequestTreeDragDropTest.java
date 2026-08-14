@@ -142,8 +142,6 @@ class ImporterPanelRequestTreeDragDropTest {
         drainEdt();
 
         ImporterPanel.WorkbenchSendSnapshot snapshot = new ImporterPanel.WorkbenchSendSnapshot(
-                mockRequest(),
-                mockResponse(),
                 "META REQUEST",
                 null,
                 "Send",
@@ -194,8 +192,6 @@ class ImporterPanelRequestTreeDragDropTest {
         drainEdt();
 
         ImporterPanel.WorkbenchSendSnapshot snapshot = new ImporterPanel.WorkbenchSendSnapshot(
-                mockRequest(),
-                mockResponse(),
                 "META FOLDER",
                 null,
                 "Send",

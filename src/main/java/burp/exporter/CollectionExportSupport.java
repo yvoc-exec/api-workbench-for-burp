@@ -3,6 +3,7 @@ package burp.exporter;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
+import burp.models.ExactHttpRequestSnapshot;
 import burp.parser.VariableResolver;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
@@ -332,7 +333,8 @@ final class CollectionExportSupport {
         return scheme;
     }
 
-    static JsonObject bodyToPostman(ApiRequest.Body body, VariableResolver resolver, boolean resolve) {
+    static JsonObject bodyToPostman(ApiRequest request, VariableResolver resolver, boolean resolve) {
+        ApiRequest.Body body = request != null ? request.body : null;
         if (body == null || body.mode == null || body.mode.isBlank() || "none".equalsIgnoreCase(body.mode)) {
             return null;
         }
@@ -340,7 +342,8 @@ final class CollectionExportSupport {
         String mode = body.mode.toLowerCase(Locale.ROOT);
         if ("raw".equals(mode)) {
             out.addProperty("mode", "raw");
-            out.addProperty("raw", resolve(body.raw, resolver, resolve) != null ? resolve(body.raw, resolver, resolve) : "");
+            String rawBody = rawBodyForExport(request);
+            out.addProperty("raw", resolve(rawBody, resolver, resolve) != null ? resolve(rawBody, resolver, resolve) : "");
             JsonObject options = new JsonObject();
             JsonObject raw = new JsonObject();
             raw.addProperty("language", postmanLanguageForContentType(body.contentType));
@@ -396,13 +399,20 @@ final class CollectionExportSupport {
             gql.addProperty("query", resolve(body.graphql != null ? body.graphql.query : "", resolver, resolve) != null ? resolve(body.graphql != null ? body.graphql.query : "", resolver, resolve) : "");
             gql.addProperty("variables", resolve(body.graphql != null ? body.graphql.variables : "", resolver, resolve) != null ? resolve(body.graphql != null ? body.graphql.variables : "", resolver, resolve) : "{}");
             out.add("graphql", gql);
+        } else if ("file".equals(mode)) {
+            out.addProperty("mode", "file");
+            JsonObject file = new JsonObject();
+            String path = resolve(filePathForExport(body), resolver, resolve);
+            file.addProperty("src", path != null ? path : "");
+            out.add("file", file);
         } else {
             out.addProperty("mode", mode);
         }
         return out;
     }
 
-    static JsonObject bodyToInsomnia(ApiRequest.Body body, VariableResolver resolver, boolean resolve) {
+    static JsonObject bodyToInsomnia(ApiRequest request, VariableResolver resolver, boolean resolve) {
+        ApiRequest.Body body = request != null ? request.body : null;
         if (body == null || body.mode == null || body.mode.isBlank() || "none".equalsIgnoreCase(body.mode)) {
             return null;
         }
@@ -411,8 +421,9 @@ final class CollectionExportSupport {
         switch (mode) {
             case "raw" -> {
                 out.addProperty("mimeType", contentTypeForRaw(body));
-                out.addProperty("text", resolve(body.raw, resolver, resolve) != null
-                        ? resolve(body.raw, resolver, resolve) : "");
+                String rawBody = rawBodyForExport(request);
+                out.addProperty("text", resolve(rawBody, resolver, resolve) != null
+                        ? resolve(rawBody, resolver, resolve) : "");
             }
             case "graphql" -> {
                 out.addProperty("mimeType", "application/json");
@@ -435,7 +446,7 @@ final class CollectionExportSupport {
                 if (body.contentType != null && !body.contentType.isBlank()) {
                     out.addProperty("mimeType", body.contentType);
                 }
-                String path = resolve(body.raw, resolver, resolve);
+                String path = resolve(filePathForExport(body), resolver, resolve);
                 out.addProperty("fileName", path != null ? path : "");
             }
             case "urlencoded" -> {
@@ -488,13 +499,15 @@ final class CollectionExportSupport {
             }
             default -> {
                 out.addProperty("mimeType", contentTypeForRaw(body));
-                out.addProperty("text", resolve(body.raw, resolver, resolve) != null ? resolve(body.raw, resolver, resolve) : "");
+                String rawBody = rawBodyForExport(request);
+                out.addProperty("text", resolve(rawBody, resolver, resolve) != null ? resolve(rawBody, resolver, resolve) : "");
             }
         }
         return out;
     }
 
-    static JsonObject bodyToHar(ApiRequest.Body body, VariableResolver resolver, boolean resolve) {
+    static JsonObject bodyToHar(ApiRequest request, VariableResolver resolver, boolean resolve) {
+        ApiRequest.Body body = request != null ? request.body : null;
         if (body == null || body.mode == null || body.mode.isBlank() || "none".equalsIgnoreCase(body.mode)) {
             return null;
         }
@@ -549,10 +562,34 @@ final class CollectionExportSupport {
             }
             default -> {
                 out.addProperty("mimeType", contentTypeForRaw(body));
-                out.addProperty("text", resolve(body.raw, resolver, resolve) != null ? resolve(body.raw, resolver, resolve) : "");
+                String rawBody = rawBodyForExport(request);
+                out.addProperty("text", resolve(rawBody, resolver, resolve) != null ? resolve(rawBody, resolver, resolve) : "");
             }
         }
         return out;
+    }
+
+    static String rawBodyForExport(ApiRequest request) {
+        if (request == null || request.body == null) {
+            return null;
+        }
+        if (request.body.raw != null) {
+            return request.body.raw;
+        }
+        if (request.exactHttpRequest == null
+                || !request.exactHttpRequest.pristine
+                || request.exactHttpRequest.binaryBody
+                || !"raw".equalsIgnoreCase(request.body.mode)) {
+            return null;
+        }
+        return ExactHttpRequestSnapshot.textBody(request.exactHttpRequest.rawRequestBytes);
+    }
+
+    static String filePathForExport(ApiRequest.Body body) {
+        if (body == null) {
+            return null;
+        }
+        return body.filePath != null && !body.filePath.isBlank() ? body.filePath : body.raw;
     }
 
     static JsonArray scriptsToPostmanEvents(List<ApiRequest.Script> scripts, String listen, VariableResolver resolver, boolean resolve) {

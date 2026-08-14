@@ -260,10 +260,10 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
             return new byte[0];
         }
         if (unwrapped instanceof byte[] bytes) {
-            return bytes.clone();
+            return bytes;
         }
         Object bytes = invokeFirst(unwrapped, "getBytes", "toByteArray");
-        return bytes instanceof byte[] array ? array.clone() : new byte[0];
+        return bytes instanceof byte[] array ? array : new byte[0];
     }
 
     private static String stringValue(Object value) {

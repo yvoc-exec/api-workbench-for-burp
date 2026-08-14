@@ -475,8 +475,9 @@ public final class HarCollectionExporter {
             default -> {
                 out.addProperty("mimeType", body.contentType != null && !body.contentType.isBlank()
                         ? body.contentType : "text/plain");
-                out.addProperty("text", resolve(body.raw, resolver, resolve) != null
-                        ? resolve(body.raw, resolver, resolve) : "");
+                String rawBody = CollectionExportSupport.rawBodyForExport(request);
+                out.addProperty("text", resolve(rawBody, resolver, resolve) != null
+                        ? resolve(rawBody, resolver, resolve) : "");
                 out.remove("params");
             }
         }

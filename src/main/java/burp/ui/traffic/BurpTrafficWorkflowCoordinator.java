@@ -97,7 +97,7 @@ public final class BurpTrafficWorkflowCoordinator {
             return;
         }
 
-        WorkspaceState before = WorkspaceState.copyOf(ui.getWorkspaceStateSnapshotFromModel());
+        WorkspaceState before = ui.getWorkspaceStateSnapshotFromModel();
         List<ApiCollection> collections = before.collections != null ? before.collections : new ArrayList<>();
         boolean responseAvailable = conversion.historyEntries.stream().anyMatch(Objects::nonNull);
         TrafficDestinationDialogModel destination = new TrafficDestinationDialogModel(
@@ -200,7 +200,7 @@ public final class BurpTrafficWorkflowCoordinator {
     }
 
     WorkspaceState applyPlan(WorkspaceState before, BurpTrafficImportPlan plan) {
-        WorkspaceState after = WorkspaceState.copyOf(before);
+        WorkspaceState after = WorkspaceState.copyOfSharingExactTransport(before);
         if (after.collections == null) {
             after.collections = new ArrayList<>();
         }

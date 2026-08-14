@@ -29,12 +29,14 @@ import burp.utils.WorkspaceStateService;
 import burp.utils.WorkspaceStateJson;
 import burp.utils.RequestBuilder;
 import burp.ui.RunnerExecutionTableModel;
+import burp.ui.ImporterPanel;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.HighlightColor;
 import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.sitemap.SiteMap;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -44,6 +46,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import java.lang.ref.Reference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -874,20 +877,107 @@ public final class MemoryHardeningScenarioMain {
     }
 
     private static ScenarioExecution workbenchOwners(String name, long[] peak) {
-        IdentityHashMap<ApiRequest, byte[]> owners = new IdentityHashMap<>();
-        for (int i = 0; i < 250; i++) {
-            owners.put(MemoryHardeningFixtureFactory.fidelityRequest("workbench-" + i, 256),
-                    MemoryHardeningFixtureFactory.rawHttpRequest(32 * 1024));
-            sample(peak);
+        UniversalImporter importer = new UniversalImporter(
+                mockImporterApi(), ScriptMode.DISABLED, new WorkspaceStateService(mock(PersistedObject.class)));
+        try {
+            ImporterPanel panel = importer.getUI();
+            ApiCollection collection = new ApiCollection();
+            collection.name = "Workbench ownership";
+            for (int i = 0; i < 250; i++) {
+                ApiRequest request = MemoryHardeningFixtureFactory.fidelityRequest("workbench-" + i, 256);
+                request.sourceCollection = collection.name;
+                collection.requests.add(request);
+            }
+            SwingUtilities.invokeAndWait(() -> panel.restoreWorkspaceCollections(List.of(collection)));
+
+            java.lang.reflect.Method update = ImporterPanel.class.getDeclaredMethod(
+                    "updateWorkbenchDetailPaneSuccess",
+                    ApiRequest.class, ApiCollection.class, UniversalImporter.SingleSendResult.class, String.class);
+            update.setAccessible(true);
+            AtomicReference<byte[]> currentPayload = new AtomicReference<>();
+            ByteArray nativeBytes = mock(ByteArray.class);
+            when(nativeBytes.getBytes()).thenAnswer(ignored -> currentPayload.get());
+            HttpRequest builtRequest = mock(HttpRequest.class);
+            when(builtRequest.toByteArray()).thenReturn(nativeBytes);
+            HttpResponse nativeResponse = mock(HttpResponse.class);
+            when(nativeResponse.statusCode()).thenReturn((short) 200);
+            when(nativeResponse.body()).thenReturn(nativeBytes);
+            HttpRequestResponse response = mock(HttpRequestResponse.class);
+            when(response.response()).thenReturn(nativeResponse);
+            for (ApiRequest request : collection.requests) {
+                byte[] payload = MemoryHardeningFixtureFactory.rawHttpRequest(2 * 1024 * 1024);
+                currentPayload.set(payload);
+                UniversalImporter.SingleSendResult sendResult = new UniversalImporter.SingleSendResult(
+                        response, builtRequest, null, request.url, 1L, null);
+                SwingUtilities.invokeAndWait(() -> {
+                    try {
+                        update.invoke(panel, request, collection, sendResult, "Send");
+                    } catch (ReflectiveOperationException failure) {
+                        throw new IllegalStateException(failure);
+                    }
+                });
+                org.mockito.Mockito.clearInvocations(nativeBytes, builtRequest, nativeResponse, response);
+                sample(peak);
+            }
+            currentPayload.set(new byte[0]);
+
+            IdentityHashMap<?, ?> snapshots = workbenchSnapshotMap(panel);
+            long retainedEvidenceBytes = workbenchRetainedEvidenceBytes(snapshots);
+            int heavyOwners = workbenchHeavySnapshotOwnerFields(snapshots);
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = snapshots.size();
+            result.payloadBytes = 2L * 1024 * 1024;
+            result.logicalRetainedBytes = retainedEvidenceBytes;
+            result.retainedOwners = snapshots.size();
+            result.metrics.put("workbenchSnapshotOwners", snapshots.size());
+            result.metrics.put("workbenchHeavyPostSendOwners", heavyOwners);
+            result.metrics.put("boundedHistoryEvidenceBytes", retainedEvidenceBytes);
+            result.metrics.put("productionWorkbenchPostSendPath", 1);
+            return retain(result, importer, importer::cleanup);
+        } catch (Exception failure) {
+            importer.cleanup();
+            throw new IllegalStateException("production Workbench ownership measurement failed", failure);
         }
-        ScenarioResult result = new ScenarioResult(name);
-        result.operationCount = owners.size();
-        result.payloadBytes = 32 * 1024;
-        result.logicalRetainedBytes = (long) owners.size() * 32 * 1024;
-        result.retainedOwners = owners.size();
-        result.metrics.put("workbenchSnapshotOwners", owners.size());
-        result.warnings.add("Workbench owner count is a deterministic identity-map proxy; no live Swing send was performed.");
-        return retain(result, owners);
+    }
+
+    private static IdentityHashMap<?, ?> workbenchSnapshotMap(ImporterPanel panel) {
+        try {
+            java.lang.reflect.Field field = ImporterPanel.class.getDeclaredField("workbenchSendSnapshots");
+            field.setAccessible(true);
+            return (IdentityHashMap<?, ?>) field.get(panel);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("Workbench snapshot store unavailable", failure);
+        }
+    }
+
+    private static int workbenchHeavySnapshotOwnerFields(IdentityHashMap<?, ?> snapshots) {
+        int owners = 0;
+        for (Object snapshot : snapshots.values()) {
+            for (java.lang.reflect.Field field : snapshot.getClass().getDeclaredFields()) {
+                if (HttpRequest.class.isAssignableFrom(field.getType())
+                        || HttpResponse.class.isAssignableFrom(field.getType())
+                        || HttpRequestResponse.class.isAssignableFrom(field.getType())) {
+                    owners++;
+                }
+            }
+        }
+        return owners;
+    }
+
+    private static long workbenchRetainedEvidenceBytes(IdentityHashMap<?, ?> snapshots) {
+        long total = 0L;
+        for (Object snapshot : snapshots.values()) {
+            try {
+                java.lang.reflect.Field detail = snapshot.getClass().getDeclaredField("detailEntry");
+                detail.setAccessible(true);
+                HistoryEntry entry = (HistoryEntry) detail.get(snapshot);
+                total = MemoryHardeningFixtureFactory.safeAdd(
+                        total, entry != null ? entry.estimatedStoredBytes() : 0L);
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException("Workbench bounded detail unavailable", failure);
+            }
+        }
+        return total;
     }
 
     private static ScenarioExecution oauthStatus(String name, long[] peak) {
@@ -949,7 +1039,7 @@ public final class MemoryHardeningScenarioMain {
             case "workspace-history-80m" -> { result.operationCount = 80; result.payloadBytes = 1024 * 1024; }
             case "workspace-ten-slow-saves" -> result.operationCount = 10;
             case "runner-sitemap-traffic" -> { result.operationCount = 100; result.payloadBytes = 64 * 1024; }
-            case "workbench-snapshot-owners" -> { result.operationCount = 250; result.payloadBytes = 32 * 1024; }
+            case "workbench-snapshot-owners" -> { result.operationCount = 250; result.payloadBytes = 2L * 1024 * 1024; }
             case "oauth2-status-growth" -> result.operationCount = 10_000;
             case "file-binary-repeated-send", "multipart-file-repeated-send", "exact-repeated-send" -> result.operationCount = 50;
             case "exact-traffic-import-ownership" -> result.operationCount = 1;
