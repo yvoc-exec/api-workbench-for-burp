@@ -87,6 +87,35 @@ class HistoryRequestSnapshotTest {
     }
 
     @Test
+    void automaticSnapshotRetainsLazyAuthoredTextWithoutOwningExactTransport() {
+        ApiRequest request = request("POST", "https://api.example.test/authored");
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        request.body.raw = null;
+        request.exactHttpRequest = new ExactHttpRequestSnapshot();
+        request.exactHttpRequest.rawRequestBytes = (
+                "POST /authored HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 17\r\n\r\nimportant-payload")
+                .getBytes(StandardCharsets.UTF_8);
+        request.exactHttpRequest.pristine = true;
+        request.exactHttpRequest.binaryBody = false;
+
+        HistoryRequestSnapshot snapshot = HistoryRequestSnapshot.fromWithoutExactTransport(request);
+        snapshot.rawRequestSent = (
+                "DELETE /runtime HTTP/1.1\r\nHost: runtime.invalid\r\nContent-Length: 7\r\n\r\nruntime")
+                .getBytes(StandardCharsets.UTF_8);
+        snapshot.rawBodyTruncated = true;
+
+        ApiRequest authored = snapshot.toAuthoredApiRequest();
+        assertThat(snapshot.displayBodyText()).isEqualTo("important-payload");
+        assertThat(authored.body.raw).isEqualTo("important-payload");
+        assertThat(authored.exactHttpRequest).isNull();
+        assertThat(authored.url).isEqualTo("https://api.example.test/authored");
+        assertThat(snapshot.rawRequestSent).containsSequence("DELETE /runtime".getBytes(StandardCharsets.UTF_8));
+        assertThat(request.body.raw).isNull();
+    }
+
+    @Test
     void exactSnapshotRoundTripPreservesMetadataDuplicatesTransportRowsAndBodyState() {
         ApiRequest request = request("POST", "https://api.example.test/exact");
         request.description = "history exact";

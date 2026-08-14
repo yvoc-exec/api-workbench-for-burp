@@ -92,6 +92,7 @@ class HistoryLoadInWorkbenchActionTest {
                         .getBytes(StandardCharsets.UTF_8);
         entry.requestSnapshot.rawRequestSentText =
                 "DELETE /raw-evidence HTTP/1.1\r\nHost: evidence.invalid\r\n\r\n";
+        entry.requestSnapshot.rawBodyTruncated = true;
         entry.collectionName = HistoryTestFixtures.COLLECTION_NAME;
         entry.requestId = liveRequest.id;
         entry.requestName = HistoryTestFixtures.REQUEST_NAME;
@@ -123,11 +124,9 @@ class HistoryLoadInWorkbenchActionTest {
                 .containsEntry("history.body.metadata", "retained-body-value");
         assertThat(liveRequest.parameters.get(0).sourceMetadata)
                 .containsEntry("retained.key", "retained-value");
-        assertThat(liveRequest.exactHttpRequest).isNotNull().isNotSameAs(changedRequest.exactHttpRequest);
-        assertThat(liveRequest.exactHttpRequest.rawRequestBytes)
-                .containsExactly(entry.requestSnapshot.rawRequestSent)
-                .isNotSameAs(entry.requestSnapshot.rawRequestSent);
-        assertThat(liveRequest.exactHttpRequest.sourceContext).isEqualTo("HISTORY_CANONICAL_RAW");
+        assertThat(liveRequest.exactHttpRequest).isNotNull();
+        assertThat(liveRequest.exactHttpRequest.rawRequestBytes).isNull();
+        assertThat(liveRequest.exactHttpRequest.sourceContext).isNotEqualTo("HISTORY_CANONICAL_RAW");
         assertThat(liveRequest.id).isEqualTo(liveId);
         assertThat(liveRequest.name).isEqualTo(liveName);
         assertThat(liveRequest.path).isEqualTo(livePath);

@@ -1152,7 +1152,7 @@ public class ImporterPanel {
         }
         HistoryRequestContext existingContext = resolveExistingHistoryRequestContext(entry);
         if (existingContext != null && existingContext.originalRequestExists && existingContext.collection != null && existingContext.request != null) {
-            ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+            ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
             applyHistorySnapshotToLiveRequest(existingContext.collection, existingContext.request, snapshotRequest);
             openRequestInEditor(existingContext.request, existingContext.collection);
             if (requestEditor != null) {
@@ -1184,7 +1184,7 @@ public class ImporterPanel {
         if (fallbackContext == null || fallbackContext.collection == null || fallbackContext.request == null) {
             return;
         }
-        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+        ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
         snapshotRequest.path = resolveHistoryFolderPath(fallbackContext.collection, fallbackContext.request, entry);
         if (entry.requestName != null && !entry.requestName.isBlank()) {
             snapshotRequest.name = entry.requestName;
@@ -1211,7 +1211,7 @@ public class ImporterPanel {
             return;
         }
         HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
-        ApiRequest request = entry.requestSnapshot.toApiRequest();
+        ApiRequest request = entry.requestSnapshot.toAuthoredApiRequest();
         EnvironmentProfile activeEnvironment = getActiveEnvironment();
         recordReplayDiagnostic(
                 DiagnosticSeverity.INFO,
@@ -1337,7 +1337,7 @@ public class ImporterPanel {
             return;
         }
         HistoryRequestContext context = resolveExistingHistoryRequestContext(entry);
-        ApiRequest replayRequest = entry.requestSnapshot.toApiRequest();
+        ApiRequest replayRequest = entry.requestSnapshot.toAuthoredApiRequest();
         List<ApiCollection> collectionsForAnalysis = context != null && context.collection != null
                 ? List.of(context.collection)
                 : Collections.emptyList();
@@ -1561,7 +1561,7 @@ public class ImporterPanel {
             request.name = entry.requestName;
         }
         request.path = resolveHistoryFolderPath(entry);
-        ApiRequest snapshotRequest = entry.requestSnapshot.toApiRequest();
+        ApiRequest snapshotRequest = entry.requestSnapshot.toAuthoredApiRequest();
         applyHistorySnapshotToLiveRequest(collection, request, snapshotRequest);
         return new HistoryRequestContext(collection, request, false, false, null);
     }

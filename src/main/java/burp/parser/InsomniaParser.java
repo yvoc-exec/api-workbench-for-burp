@@ -381,7 +381,8 @@ public class InsomniaParser implements CollectionParser {
         String filePath = firstNonNullString(body, "fileName", "filePath", "src", "file");
         if (filePath != null) {
             request.body.mode = "file";
-            request.body.raw = filePath;
+            request.body.filePath = filePath;
+            request.body.raw = null;
             warn(collection, label, "File-only body metadata was retained; file-mode transport requires later validation.");
             return;
         }

@@ -1,10 +1,7 @@
 package burp.history;
 
 import burp.models.ApiRequest;
-import burp.models.ExactHttpRequestSnapshot;
-import burp.parser.HistoryRawHttpMessageParser;
 
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -12,7 +9,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 
 public class HistoryRequestSnapshot {
     public String method;
@@ -79,7 +75,13 @@ public class HistoryRequestSnapshot {
                 snapshot.requestVariablesAsAuthored.put(variable.key, variable.value);
             }
         }
-        snapshot.bodyAsAuthored = serializeBodyText(request).getBytes(StandardCharsets.UTF_8);
+        String authoredBodyText = serializeBodyText(request);
+        snapshot.bodyAsAuthored = authoredBodyText.getBytes(StandardCharsets.UTF_8);
+        if (request.hasDerivedExactTextBody()
+                && snapshot.authoredRequest != null
+                && snapshot.authoredRequest.body != null) {
+            snapshot.authoredRequest.body.raw = authoredBodyText;
+        }
         snapshot.originalBodyLength = snapshot.bodyAsAuthored.length;
         snapshot.storedBodyLength = snapshot.bodyAsAuthored.length;
         snapshot.fullBodySha256 = snapshot.bodyAsAuthored.length > 0
@@ -185,9 +187,9 @@ public class HistoryRequestSnapshot {
         return (rawRequestSentText != null && !rawRequestSentText.isBlank()) || (rawRequestSent != null && rawRequestSent.length > 0);
     }
 
-    public ApiRequest toApiRequest() {
+    public ApiRequest toAuthoredApiRequest() {
         if (authoredRequest != null) {
-            return restoreCanonicalExactTransport(copyRequest(authoredRequest));
+            return copyRequest(authoredRequest);
         }
         ApiRequest request = new ApiRequest();
         request.method = method;
@@ -224,7 +226,15 @@ public class HistoryRequestSnapshot {
         request.suppressedAutoHeaders = new LinkedHashSet<>();
         request.buildMode = buildMode != null ? buildMode : ApiRequest.BuildMode.MANUAL_PRESERVE;
         request.editorMaterialized = true;
-        return restoreCanonicalExactTransport(request);
+        return request;
+    }
+
+    /**
+     * Compatibility alias for persisted callers. History actions should use
+     * {@link #toAuthoredApiRequest()} to make replay ownership explicit.
+     */
+    public ApiRequest toApiRequest() {
+        return toAuthoredApiRequest();
     }
 
     public String displayBodyText() {
@@ -256,7 +266,7 @@ public class HistoryRequestSnapshot {
     }
 
     public String toCurlCommand() {
-        ApiRequest request = toApiRequest();
+        ApiRequest request = toAuthoredApiRequest();
         StringBuilder out = new StringBuilder();
         String methodValue = request.method != null && !request.method.isBlank() ? request.method.toUpperCase(Locale.ROOT) : "GET";
         out.append("curl -X ").append(methodValue);
@@ -400,7 +410,14 @@ public class HistoryRequestSnapshot {
         }
         String mode = request.body.mode.toLowerCase(Locale.ROOT);
         if ("raw".equals(mode)) {
-            return request.body.raw != null ? request.body.raw : "";
+            if (request.body.raw != null) {
+                return request.body.raw;
+            }
+            if (request.hasDerivedExactTextBody()) {
+                return burp.models.ExactHttpRequestSnapshot.textBody(
+                        request.exactHttpRequest.rawRequestBytes);
+            }
+            return "";
         }
         if ("graphql".equals(mode)) {
             String query = request.body.graphql != null ? request.body.graphql.query : null;
@@ -461,57 +478,4 @@ public class HistoryRequestSnapshot {
         return value != null ? value.getBytes(StandardCharsets.UTF_8).length : 0;
     }
 
-    private ApiRequest restoreCanonicalExactTransport(ApiRequest request) {
-        if (request == null
-                || (request.resolveBuildMode() != ApiRequest.BuildMode.EXACT_HTTP
-                && request.exactHttpRequest == null)
-                || rawRequestSent == null
-                || rawRequestSent.length == 0
-                || (request.exactHttpRequest != null
-                && request.exactHttpRequest.rawRequestBytes != null
-                && request.exactHttpRequest.rawRequestBytes.length > 0)) {
-            return request;
-        }
-        HistoryRawHttpMessageParser.ParsedRawHttpMessage parsed =
-                HistoryRawHttpMessageParser.parseRequest(rawRequestSent, null);
-        ExactHttpRequestSnapshot exact = request.exactHttpRequest != null
-                ? ExactHttpRequestSnapshot.copyOf(request.exactHttpRequest)
-                : new ExactHttpRequestSnapshot();
-        exact.rawRequestBytes = rawRequestSent.clone();
-        exact.httpVersion = parsed.httpVersion();
-        exact.pristine = true;
-        exact.binaryBody = !roundTripsAsUtf8(parsed.bodyBytes());
-        exact.sourceContext = "HISTORY_CANONICAL_RAW";
-        exact.invalidationReason = "";
-        applyResolvedService(exact);
-        request.exactHttpRequest = exact;
-        exact.semanticFingerprint = request.computeSemanticFingerprint();
-        return request;
-    }
-
-    private void applyResolvedService(ExactHttpRequestSnapshot exact) {
-        String target = resolvedUrl != null && !resolvedUrl.isBlank() ? resolvedUrl : urlTemplate;
-        if (target == null || target.isBlank()) {
-            return;
-        }
-        try {
-            URI uri = URI.create(target);
-            if (uri.getHost() == null || uri.getHost().isBlank()) {
-                return;
-            }
-            exact.serviceHost = uri.getHost();
-            exact.secure = "https".equalsIgnoreCase(uri.getScheme());
-            exact.servicePort = uri.getPort() > 0 ? uri.getPort() : (exact.secure ? 443 : 80);
-        } catch (IllegalArgumentException ignored) {
-            // Authored URL templates can contain unresolved variables.
-        }
-    }
-
-    private static boolean roundTripsAsUtf8(byte[] bytes) {
-        if (bytes == null || bytes.length == 0) {
-            return true;
-        }
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        return java.util.Arrays.equals(bytes, text.getBytes(StandardCharsets.UTF_8));
-    }
 }

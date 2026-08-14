@@ -79,10 +79,12 @@ class InsomniaExportClosureTest {
         assertThat(emptyBody.has("fileName")).isTrue(); assertThat(emptyBody.get("fileName").getAsString()).isEmpty();
         ApiCollection imported = parse(root);
         assertThat(byName(imported, "Request").body.mode).isEqualTo("file");
-        assertThat(byName(imported, "Request").body.raw).isEqualTo("/tmp/file.bin");
+        assertThat(byName(imported, "Request").body.filePath).isEqualTo("/tmp/file.bin");
+        assertThat(byName(imported, "Request").body.raw).isNull();
         assertThat(byName(imported, "Request").body.contentType).isEqualTo("application/octet-stream");
         assertThat(byName(imported, "Empty").body.mode).isEqualTo("file");
-        assertThat(byName(imported, "Empty").body.raw).isEmpty();
+        assertThat(byName(imported, "Empty").body.filePath).isEmpty();
+        assertThat(byName(imported, "Empty").body.raw).isNull();
         assertThat(warnings).anyMatch(w -> w.contains("empty file body") && !w.contains("/tmp"));
     }
 

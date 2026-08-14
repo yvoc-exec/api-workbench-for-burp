@@ -100,6 +100,17 @@ class InsomniaImportFidelityTest {
     }
 
     @Test
+    void standaloneFileBodyUsesCanonicalFilePathOwnership() throws Exception {
+        ApiRequest request = onlyRequest("""
+                {"url":"https://e.test/upload","body":{"mimeType":"application/octet-stream","fileName":"payload.bin"}}
+                """);
+
+        assertThat(request.body.mode).isEqualTo("file");
+        assertThat(request.body.filePath).isEqualTo("payload.bin");
+        assertThat(request.body.raw).isNull();
+    }
+
+    @Test
     void emptyAuthenticationObjectInheritsFolderAuth() throws Exception {
         ApiCollection collection = parse("""
                 {"__type":"export","resources":[
