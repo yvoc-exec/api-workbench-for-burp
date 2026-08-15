@@ -201,75 +201,52 @@ class BurpTrafficImportServiceTest {
     }
 
     @Test
-    void defaultItemBudgetAcceptsExactBoundaryAndRejectsPlusOneAtomically() {
-        byte[] atLimit = validRequestOfSize((int) TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES);
+    void historicalDefaultItemBudgetDoesNotRejectPlusOne() {
+        byte[] atLimit = validRequestOfSize(1024 * 1024);
         byte[] overLimit = validRequestOfSize(atLimit.length + 1);
 
         BurpTrafficConversionResult accepted = service.convert(List.of(ownedSelection(atLimit, 1)));
-        BurpTrafficConversionResult rejected = service.convert(List.of(ownedSelection(overLimit, 1)));
+        BurpTrafficConversionResult formerlyRejected = service.convert(List.of(ownedSelection(overLimit, 1)));
 
         assertThat(accepted.preflight.accepted()).isTrue();
         assertThat(accepted.requests).hasSize(1);
-        assertThat(rejected.preflight.accepted()).isFalse();
-        assertThat(rejected.preflight.rejections()).extracting(r -> r.reasonCode())
-                .contains(TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_ITEM_LIMIT);
-        assertThat(rejected.requests).isEmpty();
-        assertThat(rejected.historyEntries).isEmpty();
+        assertThat(formerlyRejected.preflight.accepted()).isTrue();
+        assertThat(formerlyRejected.requests).hasSize(1);
     }
 
     @Test
-    void configuredItemBudgetClampsAndEnforcesOneAndSixtyFourMibBoundaries() {
+    void configuredHistoricalItemBudgetIsNonEnforcing() {
         BurpTrafficImportService oneMib = new BurpTrafficImportService(
                 Clock.systemUTC(), new TrafficImportLimits(TrafficImportLimits.MIB, 128L * TrafficImportLimits.MIB));
         assertThat(oneMib.preflight(List.of(ownedSelection(
                 validRequestOfSize((int) TrafficImportLimits.MIB), 1))).accepted()).isTrue();
         assertThat(oneMib.preflight(List.of(ownedSelection(
-                validRequestOfSize((int) TrafficImportLimits.MIB + 1), 1))).accepted()).isFalse();
+                validRequestOfSize((int) TrafficImportLimits.MIB + 1), 1))).accepted()).isTrue();
 
         TrafficImportLimits clamped = new TrafficImportLimits(Long.MAX_VALUE, Long.MAX_VALUE);
         assertThat(clamped.maxExactRequestBytes()).isEqualTo(64L * TrafficImportLimits.MIB);
         assertThat(clamped.maxAggregateExactRequestBytes()).isEqualTo(512L * TrafficImportLimits.MIB);
-        BurpTrafficImportService sixtyFourMib = new BurpTrafficImportService(Clock.systemUTC(), clamped);
-        assertThat(sixtyFourMib.preflight(List.of(ownedSelection(
-                validRequestOfSize((int) clamped.maxExactRequestBytes()), 1))).accepted()).isTrue();
+        assertThat(new BurpTrafficImportService(Clock.systemUTC(), clamped).preflight(List.of(
+                ownedSelection(validRequestOfSize(1024 * 1024), 1))).accepted()).isTrue();
     }
 
     @Test
-    void aggregateBudgetAcceptsBoundaryAndRejectsPlusOneWithoutConversion() {
-        int itemSize = (int) TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES;
-        byte[] fullItem = validRequestOfSize(itemSize);
-        List<BurpTrafficSelection> atLimit = new java.util.ArrayList<>();
-        for (int i = 0; i < 8; i++) {
-            atLimit.add(ownedSelection(fullItem, i));
-        }
-        assertThat(service.preflight(atLimit).accepted()).isTrue();
+    void legacyLimitConfigurationDoesNotRejectExactTraffic() {
+        BurpTrafficImportService limited = new BurpTrafficImportService(
+                java.time.Clock.systemUTC(), new TrafficImportLimits(1, 1));
+        BurpTrafficSelection selection = ownedSelection(validRequestOfSize(2 * 1024 * 1024), 0);
 
-        byte[] minimum = validRequestOfSize(64);
-        List<BurpTrafficSelection> overLimit = new java.util.ArrayList<>();
-        for (int i = 0; i < 7; i++) {
-            overLimit.add(ownedSelection(fullItem, i));
-        }
-        overLimit.add(ownedSelection(validRequestOfSize(itemSize - minimum.length + 1), 7));
-        overLimit.add(ownedSelection(minimum, 8));
-        BurpTrafficConversionResult rejected = service.convert(overLimit);
+        TrafficImportPreflightResult preflight = limited.preflight(List.of(selection));
 
-        assertThat(rejected.preflight.totalExactRequestBytes())
-                .isEqualTo(TrafficImportLimits.DEFAULT_MAX_AGGREGATE_EXACT_REQUEST_BYTES + 1);
-        assertThat(rejected.preflight.rejections()).extracting(r -> r.reasonCode())
-                .contains(TrafficImportPreflightResult.ReasonCode.EXACT_REQUEST_AGGREGATE_LIMIT);
-        assertThat(rejected.requests).isEmpty();
-        assertThat(rejected.historyEntries).isEmpty();
+        assertThat(preflight.accepted()).isTrue();
+        assertThat(preflight.configuredPerItemLimit()).isZero();
+        assertThat(preflight.configuredAggregateLimit()).isZero();
     }
 
     @Test
-    void aggregateLengthOverflowFailsClosed() {
-        TrafficImportPreflightResult preflight = service.preflight(List.of(
-                BurpTrafficSelection.rejectedMetadata(Long.MAX_VALUE, 0L, "Proxy", 1),
-                BurpTrafficSelection.rejectedMetadata(1L, 0L, "Proxy", 2)));
-
-        assertThat(preflight.accepted()).isFalse();
-        assertThat(preflight.rejections()).extracting(r -> r.reasonCode())
-                .contains(TrafficImportPreflightResult.ReasonCode.LENGTH_OVERFLOW);
+    void aggregateLengthAccountingSaturatesWithoutBecomingCapabilityPolicy() {
+        assertThat(BurpTrafficImportService.wouldOverflow(Long.MAX_VALUE, 1L)).isTrue();
+        assertThat(BurpTrafficImportService.wouldOverflow(10L, 20L)).isFalse();
     }
 
     @Test

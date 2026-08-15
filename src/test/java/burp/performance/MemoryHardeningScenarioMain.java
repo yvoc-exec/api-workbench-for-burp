@@ -10,7 +10,13 @@ import burp.history.HistoryStore;
 import burp.importer.BurpTrafficConversionResult;
 import burp.importer.BurpTrafficImportService;
 import burp.importer.BurpTrafficSelection;
+import burp.importer.BurpTrafficCaptureService;
+import burp.importer.BurpTrafficSourceSelection;
 import burp.importer.TrafficImportLimits;
+import burp.payload.FileManagedPayloadStore;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.ManagedPayloadStage;
+import burp.payload.PayloadSliceRef;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
@@ -150,11 +156,11 @@ public final class MemoryHardeningScenarioMain {
             case "oauth2-status-growth" -> oauthStatus(name, peak);
             case "file-binary-repeated-send" -> fileRepeatedSend(name, false, peak);
             case "multipart-file-repeated-send" -> fileRepeatedSend(name, true, peak);
-            case "exact-traffic-import-ownership" -> exactTrafficImportOwnership(name, peak);
-            case "exact-traffic-import-aggregate" -> exactTrafficImportAggregate(name, peak);
-            case "exact-traffic-import-item-rejected" -> exactTrafficImportItemRejected(name, peak);
-            case "exact-repeated-send" -> exactRepeatedSend(name, peak);
-            case "workspace-large-exact-save" -> workspaceLargeExactSave(name, peak);
+            case "exact-ref-import-128m", "exact-ref-import-256m", "exact-ref-repeated-send",
+                    "exact-ref-dedup",
+                    "exact-ref-workspace-save", "exact-ref-header-edit", "exact-ref-history",
+                    "exact-ref-delete-cleanup" -> exactRef(name, peak);
+            case "montoya-background-stage" -> montoyaBackgroundStage(name, peak);
             case "large-redirect-ownership" -> largeRedirectOwnership(name, peak);
             default -> throw new IllegalArgumentException("unknown scenario " + name);
         };
@@ -280,6 +286,267 @@ public final class MemoryHardeningScenarioMain {
         result.metrics.put("historyResponseOriginalBodyBytes", history.responseSnapshot.originalBodyLength);
         result.metrics.put("historyLogicalBytes", history.estimatedStoredBytes());
         return retain(result, conversion);
+    }
+
+    private static ScenarioExecution exactRef(String name, long[] peak) {
+        Path root = null;
+        FileManagedPayloadStore store = null;
+        try {
+            root = Files.createTempDirectory(Path.of("target"), "r7-ref-");
+            store = new FileManagedPayloadStore(root);
+            long payloadBytes = switch (name) {
+                case "exact-ref-import-256m" -> 256L * 1024L * 1024L;
+                case "exact-ref-import-128m" -> 128L * 1024L * 1024L;
+                case "exact-ref-workspace-save" -> 64L * 1024L * 1024L;
+                default -> 8L * 1024L * 1024L;
+            };
+            byte[] chunk = MemoryHardeningFixtureFactory.binaryBytes(FileManagedPayloadStore.CHUNK_SIZE);
+            ManagedPayloadRef ref = stageRepeated(store, chunk, payloadBytes, peak);
+            if ("exact-ref-dedup".equals(name)) stageRepeated(store, chunk, payloadBytes, peak);
+
+            ApiRequest request = new ApiRequest();
+            request.id = name;
+            request.name = name;
+            request.method = "POST";
+            request.url = "https://example.test/upload";
+            request.body = new ApiRequest.Body();
+            request.body.mode = "raw";
+            request.body.managedPayload = new PayloadSliceRef(ref, 0L, ref.length);
+            request.exactHttpRequest = burp.models.ExactHttpRequestSnapshot.fromManagedPayload(
+                    ref, "example.test", 443, true, "HTTP/1.1", true,
+                    "memory-hardening", request.computeSemanticFingerprint());
+            ApiCollection collection = new ApiCollection();
+            collection.id = "memory";
+            collection.name = "memory";
+            collection.requests.add(request);
+            WorkspaceState workspace = new WorkspaceState();
+            workspace.collections = List.of(collection);
+            if ("exact-ref-history".equals(name)) {
+                HistoryEntry entry = new HistoryEntry();
+                entry.requestSnapshot = burp.history.HistoryRequestSnapshot.fromBorrowingExactTransport(request);
+                burp.history.HistoryBodyTruncator.apply(entry,
+                        new HistoryRetentionPolicy(100, 64L * 1024L * 1024L,
+                                1024L * 1024L, 1024L * 1024L, true));
+                workspace.historyEntries = List.of(entry);
+            }
+            long[] settled = null;
+            if ("exact-ref-repeated-send".equals(name)) {
+                settled = repeatedBuildCheckpoints(new RequestBuilder(null, store), request, peak);
+            } else if ("exact-ref-header-edit".equals(name)) {
+                request.headers.add(new ApiRequest.Header("X-Edited", "true", false));
+                request.exactHttpRequest.pristine = false;
+                byte[] built = new RequestBuilder(null, store).buildRequest(request, null);
+                burp.parser.HistoryRawHttpMessageParser.RequestLayout layout =
+                        burp.parser.HistoryRawHttpMessageParser.inspectRequest(built);
+                if (layout.bodyOffset() < 0 || built.length - layout.bodyOffset() != ref.length) {
+                    throw new IllegalStateException("Managed body slice was not preserved by a header edit");
+                }
+                built = null;
+            }
+            String json = WorkspaceStateJson.toJson(workspace);
+            if (json.contains(java.util.Base64.getEncoder().encodeToString(chunk))) {
+                throw new IllegalStateException("Managed payload leaked into workspace JSON");
+            }
+            if ("exact-ref-delete-cleanup".equals(name)) {
+                store.updateManifest(1L, java.util.Set.of(ref.payloadId));
+                store.updateManifest(2L, java.util.Set.of());
+                store.sweepUnreferenced(java.util.Set.of(), java.util.Set.of());
+            }
+            sample(peak);
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = "exact-ref-dedup".equals(name) ? 2 : 1;
+            result.payloadBytes = payloadBytes;
+            result.serializedWorkspaceBytes = MemoryHardeningFixtureFactory.utf8Length(json);
+            result.logicalRetainedBytes = result.serializedWorkspaceBytes;
+            result.retainedOwners = 1;
+            result.metrics.put("logicalPayloadBytes", payloadBytes);
+            result.metrics.put("physicalManagedBlobBytes", store.physicalBlobBytes());
+            result.metrics.put("uniquePayloadBlobCount", store.uniqueBlobCount());
+            result.metrics.put("payloadRefCount", "exact-ref-dedup".equals(name) ? 2 : 1);
+            result.metrics.put("activePayloadLeases", store.activeLeasePayloadIds().size());
+            result.metrics.put("stagingBytes", directoryBytes(root.resolve("staging")));
+            result.metrics.put("workspaceSerializedBytes", result.serializedWorkspaceBytes);
+            result.metrics.put("workspaceContainsPayloadBytes", 0);
+            result.metrics.put("monotonicRetainedGrowth", 0);
+            if (settled != null) {
+                result.metrics.put("settledHeapAfterSend1", settled[0]);
+                result.metrics.put("settledHeapAfterSend10", settled[1]);
+                result.metrics.put("settledHeapAfterSend50", settled[2]);
+                result.metrics.put("monotonicRetainedGrowth", monotonicGrowth(settled) ? 1 : 0);
+            }
+            result.metrics.put("historyPayloadRefCount",
+                    workspace.historyEntries != null && !workspace.historyEntries.isEmpty()
+                            && workspace.historyEntries.get(0).requestSnapshot.authoredExactPayloadRef != null ? 1 : 0);
+            FileManagedPayloadStore ownedStore = store;
+            Path ownedRoot = root;
+            return retain(result, List.of(workspace, ref, ownedStore), () -> {
+                try { ownedStore.close(); } catch (Exception ignored) { }
+                deleteTreeQuietly(ownedRoot);
+            });
+        } catch (Exception failure) {
+            if (store != null) try { store.close(); } catch (Exception ignored) { }
+            deleteTreeQuietly(root);
+            throw new IllegalStateException("R7 managed payload scenario failed", failure);
+        }
+    }
+
+    private static ScenarioExecution montoyaBackgroundStage(String name, long[] peak) {
+        Path root = null;
+        FileManagedPayloadStore store = null;
+        try {
+            root = Files.createTempDirectory(Path.of("target"), "r7-montoya-");
+            store = new FileManagedPayloadStore(root);
+            int payloadBytes = 64 * 1024 * 1024;
+            GeneratedExchange exchange = new GeneratedExchange(payloadBytes);
+            List<BurpTrafficSelection> captured = new BurpTrafficCaptureService(store).stage(
+                    List.of(new BurpTrafficSourceSelection(exchange, "PROXY", 0)),
+                    HistoryRetentionPolicy.defaultPolicy());
+            BurpTrafficSelection selection = captured.get(0);
+            ApiRequest request = new BurpTrafficImportService().convertRequest(selection);
+            selection.commit(store);
+            selection.close();
+            sample(peak);
+
+            ScenarioResult result = new ScenarioResult(name);
+            result.operationCount = 1;
+            result.payloadBytes = payloadBytes;
+            result.retainedOwners = 1;
+            result.logicalRetainedBytes = 512L;
+            result.metrics.put("logicalPayloadBytes", payloadBytes);
+            result.metrics.put("physicalManagedBlobBytes", store.physicalBlobBytes());
+            result.metrics.put("uniquePayloadBlobCount", store.uniqueBlobCount());
+            result.metrics.put("payloadRefCount", request.exactHttpRequest.payloadRef != null ? 1 : 0);
+            result.metrics.put("activePayloadLeases", store.activeLeasePayloadIds().size());
+            result.metrics.put("stagingBytes", directoryBytes(root.resolve("staging")));
+            result.metrics.put("workspaceContainsPayloadBytes", 0);
+            result.metrics.put("largestMontoyaChunkBytes", exchange.request.bytes.largestChunk);
+            result.metrics.put("wholeMontoyaGetBytesCalls", exchange.request.bytes.wholeGetBytesCalls);
+            FileManagedPayloadStore ownedStore = store;
+            Path ownedRoot = root;
+            return retain(result, List.of(request, ownedStore), () -> {
+                try { ownedStore.close(); } catch (Exception ignored) { }
+                deleteTreeQuietly(ownedRoot);
+            });
+        } catch (Exception failure) {
+            if (store != null) try { store.close(); } catch (Exception ignored) { }
+            deleteTreeQuietly(root);
+            throw new IllegalStateException("R7 Montoya background stage scenario failed", failure);
+        }
+    }
+
+    private static ManagedPayloadRef stageRepeated(FileManagedPayloadStore store, byte[] chunk,
+                                                   long bytes, long[] peak) throws Exception {
+        try (ManagedPayloadStage stage = store.beginStage("memory-hardening")) {
+            for (long written = 0L; written < bytes; ) {
+                int count = (int) Math.min(chunk.length, bytes - written);
+                stage.write(chunk, 0, count);
+                written += count;
+                if ((written & ((16L * 1024L * 1024L) - 1L)) == 0L) sample(peak);
+            }
+            return store.commit(stage);
+        }
+    }
+
+    private static long directoryBytes(Path directory) throws Exception {
+        if (directory == null || !Files.isDirectory(directory)) return 0L;
+        try (java.util.stream.Stream<Path> files = Files.walk(directory)) {
+            long total = 0L;
+            for (Path file : files.filter(Files::isRegularFile).toList()) total += Files.size(file);
+            return total;
+        }
+    }
+
+    public static final class GeneratedExchange {
+        final GeneratedRequest request;
+
+        GeneratedExchange(int length) {
+            this.request = new GeneratedRequest(length);
+        }
+
+        public GeneratedRequest request() {
+            return request;
+        }
+
+        public Object response() {
+            return null;
+        }
+    }
+
+    public static final class GeneratedRequest {
+        private static final byte[] HEADER =
+                "POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Type: application/octet-stream\r\n\r\n"
+                        .getBytes(StandardCharsets.ISO_8859_1);
+        final GeneratedByteArray bytes;
+
+        GeneratedRequest(int length) {
+            this.bytes = new GeneratedByteArray(length, 0, length, true, null);
+        }
+
+        public GeneratedByteArray toByteArray() { return bytes; }
+        public int bodyOffset() { return HEADER.length; }
+        public String method() { return "POST"; }
+        public String url() { return "https://example.test/upload"; }
+        public String path() { return "/upload"; }
+        public String httpVersion() { return "HTTP/1.1"; }
+        public GeneratedService httpService() { return new GeneratedService(); }
+        public List<GeneratedHeader> headers() {
+            return List.of(new GeneratedHeader("Host", "example.test"),
+                    new GeneratedHeader("Content-Type", "application/octet-stream"));
+        }
+    }
+
+    public record GeneratedHeader(String name, String value) { }
+
+    public static final class GeneratedService {
+        public String host() { return "example.test"; }
+        public int port() { return 443; }
+        public boolean secure() { return true; }
+    }
+
+    public static final class GeneratedByteArray {
+        private final int totalLength;
+        private final int start;
+        private final int end;
+        private final boolean whole;
+        private final GeneratedByteArray owner;
+        int largestChunk;
+        int wholeGetBytesCalls;
+
+        GeneratedByteArray(int totalLength, int start, int end, boolean whole, GeneratedByteArray owner) {
+            this.totalLength = totalLength;
+            this.start = start;
+            this.end = end;
+            this.whole = whole;
+            this.owner = owner != null ? owner : this;
+        }
+
+        public int length() { return end - start; }
+        public GeneratedByteArray copyToTempFile() { return this; }
+        public GeneratedByteArray subArray(int from, int to) {
+            return new GeneratedByteArray(totalLength, start + from, start + to, false, owner);
+        }
+        public byte[] getBytes() {
+            if (whole) {
+                owner.wholeGetBytesCalls++;
+                throw new AssertionError("Whole Montoya payload materialization is forbidden during capture.");
+            }
+            int length = length();
+            owner.largestChunk = Math.max(owner.largestChunk, length);
+            byte[] bytes = new byte[length];
+            byte[] header = GeneratedRequest.HEADER;
+            for (int i = 0; i < length; i++) {
+                int absolute = start + i;
+                bytes[i] = absolute < header.length ? header[absolute] : (byte) 0xff;
+            }
+            return bytes;
+        }
+    }
+
+    private static void deleteTreeQuietly(Path root) {
+        if (root == null || !Files.exists(root)) return;
+        try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        } catch (Exception ignored) { }
     }
 
     private static ScenarioExecution exactTrafficImportAggregate(String name, long[] peak) {
@@ -1318,10 +1585,11 @@ public final class MemoryHardeningScenarioMain {
             case "runner-sitemap-traffic" -> { result.operationCount = 100; result.payloadBytes = 64 * 1024; }
             case "workbench-snapshot-owners" -> { result.operationCount = 250; result.payloadBytes = 2L * 1024 * 1024; }
             case "oauth2-status-growth" -> result.operationCount = 10_000;
-            case "file-binary-repeated-send", "multipart-file-repeated-send", "exact-repeated-send" -> result.operationCount = 50;
-            case "exact-traffic-import-ownership" -> result.operationCount = 1;
-            case "exact-traffic-import-aggregate" -> result.operationCount = 8;
-            case "exact-traffic-import-item-rejected", "workspace-large-exact-save" -> result.operationCount = 1;
+            case "file-binary-repeated-send", "multipart-file-repeated-send", "exact-ref-repeated-send" -> result.operationCount = 50;
+            case "exact-ref-import-128m", "exact-ref-import-256m", "exact-ref-workspace-save",
+                    "exact-ref-header-edit", "exact-ref-history", "exact-ref-delete-cleanup",
+                    "montoya-background-stage" -> result.operationCount = 1;
+            case "exact-ref-dedup" -> result.operationCount = 2;
             case "large-redirect-ownership" -> result.operationCount = 2;
             default -> { }
         }

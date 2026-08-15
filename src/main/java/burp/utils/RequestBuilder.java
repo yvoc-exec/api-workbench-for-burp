@@ -1,6 +1,9 @@
 package burp.utils;
 
 import burp.models.ApiRequest;
+import burp.payload.ManagedPayloadLease;
+import burp.payload.ManagedPayloadReader;
+import burp.payload.PayloadSliceRef;
 import burp.parser.VariableResolver;
 import burp.api.montoya.MontoyaApi;
 import burp.auth.OAuth2Manager;
@@ -10,6 +13,8 @@ import java.util.*;
 import java.util.Base64;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -24,17 +29,42 @@ public class RequestBuilder {
             "keep-alive", "te", "trailer", "upgrade", "http2-settings", "proxy-authorization"
     );
     private final MontoyaApi api;
+    private final ManagedPayloadReader payloadReader;
     private final boolean debugMode = false;
 
     public RequestBuilder(MontoyaApi api) {
-        this(api, null);
+        this(api, null, null);
     }
 
     public RequestBuilder(MontoyaApi api, OAuth2Manager oauth2Manager) {
+        this(api, oauth2Manager, null);
+    }
+
+    public RequestBuilder(MontoyaApi api, ManagedPayloadReader payloadReader) {
+        this(api, null, payloadReader);
+    }
+
+    public RequestBuilder(MontoyaApi api,
+                          OAuth2Manager oauth2Manager,
+                          ManagedPayloadReader payloadReader) {
         this.api = api;
+        this.payloadReader = payloadReader;
     }
 
     public byte[] buildRequest(ApiRequest request, VariableResolver resolver) throws Exception {
+        if (request != null
+                && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
+                && request.exactHttpRequest != null
+                && request.exactHttpRequest.pristine
+                && request.exactHttpRequest.hasManagedPayload()) {
+            if (request.exactHttpRequest.payloadUnavailable) {
+                throw new IOException("Exact payload is unavailable in the local managed payload store.");
+            }
+            requirePayloadReader();
+            try (ManagedPayloadLease lease = payloadReader.materialize(request.exactHttpRequest.payloadRef)) {
+                return lease.bytes();
+            }
+        }
         if (request != null
                 && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
                 && request.exactHttpRequest != null
@@ -55,21 +85,25 @@ public class RequestBuilder {
                 String lower = h.toLowerCase();
                 return lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:");
             });
-            boolean shouldSendContentLength = body.length > 0
+            boolean shouldSendContentLength = ctx.bodyLength > 0
                     || ctx.method.equals("POST")
                     || ctx.method.equals("PUT")
                     || ctx.method.equals("PATCH");
             if (shouldSendContentLength) {
-                rawHeaders.add("Content-Length: " + body.length);
+                rawHeaders.add("Content-Length: " + ctx.bodyLength);
             }
         }
 
         // Build raw request bytes preserving CRLF line endings
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.write(String.join("\r\n", rawHeaders).getBytes(StandardCharsets.UTF_8));
-        baos.write("\r\n\r\n".getBytes(StandardCharsets.UTF_8));
-        baos.write(body);
-        return baos.toByteArray();
+        byte[] headerBytes = (String.join("\r\n", rawHeaders) + "\r\n\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+        if (ctx.managedBody != null) {
+            return assembleManagedRequest(headerBytes, ctx.managedBody);
+        }
+        byte[] requestBytes = new byte[Math.addExact(headerBytes.length, body.length)];
+        System.arraycopy(headerBytes, 0, requestBytes, 0, headerBytes.length);
+        System.arraycopy(body, 0, requestBytes, headerBytes.length, body.length);
+        return requestBytes;
     }
 
     /**
@@ -164,7 +198,11 @@ public class RequestBuilder {
             rawHeaders.add(entry.getKey() + ": " + entry.getValue());
         }
 
-        return new BuildContext(rawHeaders, body, method, resolvedUrl);
+        PayloadSliceRef managedBody = request.body != null
+                && request.body.managedPayload != null
+                && request.body.raw == null
+                ? request.body.managedPayload : null;
+        return new BuildContext(rawHeaders, body, managedBody, method, resolvedUrl);
     }
 
     private static String effectiveHttpVersion(ApiRequest request,
@@ -188,12 +226,20 @@ public class RequestBuilder {
     private static final class BuildContext {
         final List<String> rawHeaders;
         final byte[] body;
+        final PayloadSliceRef managedBody;
+        final long bodyLength;
         final String method;
         final String resolvedUrl;
 
-        BuildContext(List<String> rawHeaders, byte[] body, String method, String resolvedUrl) {
+        BuildContext(List<String> rawHeaders,
+                     byte[] body,
+                     PayloadSliceRef managedBody,
+                     String method,
+                     String resolvedUrl) {
             this.rawHeaders = rawHeaders;
             this.body = body;
+            this.managedBody = managedBody;
+            this.bodyLength = managedBody != null ? managedBody.length : body.length;
             this.method = method;
             this.resolvedUrl = resolvedUrl;
         }
@@ -566,6 +612,15 @@ public class RequestBuilder {
             return new byte[0];
         }
 
+        if (body.managedPayload != null && body.raw == null) {
+            body.managedPayload.validate();
+            if (synthesizeHeaders && allowContentTypeHeader
+                    && body.contentType != null && !body.contentType.isBlank()) {
+                enforceContentType(hs, body.contentType, requestName);
+            }
+            return new byte[0];
+        }
+
         byte[] result;
         switch (body.mode) {
             case "raw":
@@ -749,11 +804,49 @@ public class RequestBuilder {
                 && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
                 && request.exactHttpRequest != null
                 && request.exactHttpRequest.pristine
+                && request.exactHttpRequest.hasManagedPayload()) {
+            return buildRequest(request, resolver);
+        }
+        if (request != null
+                && request.resolveBuildMode() == ApiRequest.BuildMode.EXACT_HTTP
+                && request.exactHttpRequest != null
+                && request.exactHttpRequest.pristine
                 && request.exactHttpRequest.rawRequestBytes != null
                 && request.exactHttpRequest.rawRequestBytes.length > 0) {
             return request.exactHttpRequest.rawRequestBytes;
         }
         return buildRequest(request, resolver);
+    }
+
+    private byte[] assembleManagedRequest(byte[] headerBytes, PayloadSliceRef body) throws Exception {
+        requirePayloadReader();
+        body.validate();
+        long total = Math.addExact(headerBytes.length, body.length);
+        if (total > Integer.MAX_VALUE) {
+            throw new IOException("Request exceeds the Java transport representation limit.");
+        }
+        byte[] request = new byte[(int) total];
+        System.arraycopy(headerBytes, 0, request, 0, headerBytes.length);
+        int position = headerBytes.length;
+        try (InputStream input = payloadReader.openSlice(body)) {
+            byte[] chunk = new byte[(int) Math.max(1L, Math.min(1024L * 1024L, body.length))];
+            int count;
+            while ((count = input.read(chunk)) >= 0) {
+                if (count == 0) continue;
+                System.arraycopy(chunk, 0, request, position, count);
+                position += count;
+            }
+        }
+        if (position != request.length) {
+            throw new IOException("Managed body ended before its declared length.");
+        }
+        return request;
+    }
+
+    private void requirePayloadReader() throws IOException {
+        if (payloadReader == null) {
+            throw new IOException("Exact payload is unavailable in the local managed payload store.");
+        }
     }
 
     private static void writeMultipartHeader(ByteArrayOutputStream output,

@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 public class WorkspaceState {
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     public int version = CURRENT_VERSION;
     public List<ApiCollection> collections = new ArrayList<>();

@@ -13,6 +13,10 @@ import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.EnvironmentProfile;
 import burp.models.WorkspaceState;
+import burp.models.ExactHttpRequestSnapshot;
+import burp.payload.FileManagedPayloadStore;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.ManagedPayloadStage;
 import burp.utils.DebouncedSwingAction;
 import burp.utils.WorkspaceStateJson;
 import burp.utils.WorkspaceStateService;
@@ -24,6 +28,7 @@ import burp.testsupport.ImporterPanelTestSupport;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
 import javax.swing.*;
@@ -51,6 +56,50 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class UniversalImporterWorkspaceSaveTest {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+    @TempDir Path tempDir;
+
+    @Test
+    void successfulWorkspaceSaveSweepsOnlyUnreachableManagedPayloads() throws Exception {
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+        FileManagedPayloadStore store = new FileManagedPayloadStore(tempDir.resolve("successful-store"));
+        ManagedPayloadRef retained = commitPayload(store, exactRequestBytes("retained"));
+        ManagedPayloadRef orphan = commitPayload(store, exactRequestBytes("orphan"));
+        UniversalImporter importer = new UniversalImporter(
+                mockApi(), burp.utils.ScriptMode.DISABLED, service, store);
+        try {
+            WorkspaceState state = managedWorkspace(retained);
+            assertThat(importer.submitWorkspaceStateSaveForTests(state).join().successful()).isTrue();
+            assertThat(store.exists(retained)).isTrue();
+            assertThat(store.exists(orphan)).isFalse();
+
+            assertThat(importer.submitWorkspaceStateSaveForTests(new WorkspaceState()).join().successful()).isTrue();
+            assertThat(store.exists(retained)).isFalse();
+        } finally {
+            importer.cleanup();
+        }
+    }
+
+    @Test
+    void failedWorkspaceSaveNeverSweepsManagedPayloads() throws Exception {
+        PersistedObject persistedObject = Mockito.mock(PersistedObject.class);
+        Mockito.doThrow(new IllegalStateException("store failed"))
+                .when(persistedObject).setString(Mockito.anyString(), Mockito.anyString());
+        WorkspaceStateService service = new WorkspaceStateService(persistedObject);
+        FileManagedPayloadStore store = new FileManagedPayloadStore(tempDir.resolve("failed-store"));
+        ManagedPayloadRef retained = commitPayload(store, exactRequestBytes("retained"));
+        ManagedPayloadRef unrelated = commitPayload(store, exactRequestBytes("unrelated"));
+        UniversalImporter importer = new UniversalImporter(
+                mockApi(), burp.utils.ScriptMode.DISABLED, service, store);
+        try {
+            assertThat(importer.submitWorkspaceStateSaveForTests(managedWorkspace(retained)).join().successful())
+                    .isFalse();
+            assertThat(store.exists(retained)).isTrue();
+            assertThat(store.exists(unrelated)).isTrue();
+        } finally {
+            importer.cleanup();
+        }
+    }
 
     @Test
     void rapidWorkspaceChangeRequestsCollapseIntoSingleWrite() throws Exception {
@@ -1457,6 +1506,35 @@ class UniversalImporterWorkspaceSaveTest {
         state.environments = new ArrayList<>(List.of(environment));
         state.activeEnvironmentId = environment.id;
         return state;
+    }
+
+    private static WorkspaceState managedWorkspace(ManagedPayloadRef ref) {
+        ApiRequest request = new ApiRequest();
+        request.id = "managed-request";
+        request.name = "Managed request";
+        request.method = "POST";
+        request.url = "https://example.test/upload";
+        request.buildMode = ApiRequest.BuildMode.EXACT_HTTP;
+        request.exactHttpRequest = ExactHttpRequestSnapshot.fromManagedPayload(
+                ref, "example.test", 443, true, "HTTP/1.1", false,
+                "test", request.computeSemanticFingerprint());
+        ApiCollection collection = new ApiCollection();
+        collection.id = "managed-collection";
+        collection.name = "Managed";
+        collection.requests.add(request);
+        return WorkspaceState.fromCollections(List.of(collection));
+    }
+
+    private static ManagedPayloadRef commitPayload(FileManagedPayloadStore store, byte[] bytes) throws Exception {
+        try (ManagedPayloadStage stage = store.beginStage("workspace-save-test")) {
+            stage.write(bytes);
+            return store.commit(stage);
+        }
+    }
+
+    private static byte[] exactRequestBytes(String body) {
+        return ("POST /upload HTTP/1.1\r\nHost: example.test\r\n\r\n" + body)
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     private static void applyWorkspaceState(UniversalImporter importer, WorkspaceState state) throws Exception {

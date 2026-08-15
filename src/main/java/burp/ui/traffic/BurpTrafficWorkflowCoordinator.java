@@ -6,6 +6,8 @@ import burp.importer.BurpTrafficConversionResult;
 import burp.importer.BurpTrafficImportPlan;
 import burp.importer.BurpTrafficImportService;
 import burp.importer.BurpTrafficSelection;
+import burp.importer.BurpTrafficSourceSelection;
+import burp.importer.BurpTrafficCaptureService;
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
 import burp.models.WorkspaceState;
@@ -50,6 +52,7 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
 
     private final UniversalImporter importer;
     private final BurpTrafficImportService conversionService;
+    private final BurpTrafficCaptureService captureService;
     private final DestinationPresenter destinationPresenter;
     private final MessagePresenter messagePresenter;
     private final ThreadPoolExecutor worker;
@@ -69,6 +72,7 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
                                           MessagePresenter messagePresenter) {
         this.importer = Objects.requireNonNull(importer, "importer");
         this.conversionService = conversionService != null ? conversionService : new BurpTrafficImportService();
+        this.captureService = new BurpTrafficCaptureService(importer.getPayloadStore());
         this.destinationPresenter = destinationPresenter != null
                 ? destinationPresenter
                 : (owner, model) -> new TrafficDestinationDialog(owner, model).showDialog();
@@ -84,8 +88,8 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
-    public void importTraffic(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
-        List<BurpTrafficSelection> detached = immutableSelectionList(selections);
+    public void importTraffic(List<?> selections, boolean queueAfterImport) {
+        List<?> detached = immutableSelectionList(selections);
         if (detached.isEmpty()) {
             return;
         }
@@ -123,15 +127,31 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
         }
     }
 
-    private void importInBackground(List<BurpTrafficSelection> selections, boolean queueAfterImport) {
+    private void importInBackground(List<?> incoming, boolean queueAfterImport) {
         ImporterPanel ui = importer.getUI();
         if (ui == null) {
             return;
         }
         burp.history.HistoryRetentionPolicy retentionPolicy = callOnEdt(
                 ui::getHistoryRetentionPolicySnapshot);
-        BurpTrafficConversionResult conversion = conversionService.convert(
-                selections, retentionPolicy);
+        List<BurpTrafficSelection> selections;
+        try {
+            selections = stageIncoming(incoming, retentionPolicy);
+        } catch (java.io.IOException stagingFailure) {
+            throw new IllegalStateException("Burp traffic could not be staged.", stagingFailure);
+        }
+        try {
+            importStagedInBackground(selections, queueAfterImport, ui, retentionPolicy);
+        } finally {
+            closeSelections(selections);
+        }
+    }
+
+    private void importStagedInBackground(List<BurpTrafficSelection> selections,
+                                          boolean queueAfterImport,
+                                          ImporterPanel ui,
+                                          burp.history.HistoryRetentionPolicy retentionPolicy) {
+        BurpTrafficConversionResult conversion = conversionService.convert(selections, retentionPolicy);
         if (conversion.hasFailures()) {
             String message = safeFailureSummary(conversion);
             showOnEdt("Traffic Import Failed", message, JOptionPane.ERROR_MESSAGE);
@@ -180,6 +200,17 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
             showOnEdt("Traffic Import Failed",
                     "Traffic import was not committed because the resulting workspace exceeds "
                             + "the configured persistence capacity. No workspace data was changed.",
+                    JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try {
+            for (BurpTrafficSelection selection : selections) {
+                selection.commit(importer.getPayloadStore());
+            }
+        } catch (java.io.IOException promotionFailure) {
+            logSafeError("Traffic import payload promotion failed", promotionFailure);
+            showOnEdt("Traffic Import Failed", "Managed request payloads could not be committed. No workspace data was changed.",
                     JOptionPane.ERROR_MESSAGE);
             return;
         }
@@ -394,11 +425,35 @@ public final class BurpTrafficWorkflowCoordinator implements AutoCloseable {
                 + (request != null && request.id != null ? request.id.trim() : "");
     }
 
-    private List<BurpTrafficSelection> immutableSelectionList(List<BurpTrafficSelection> selections) {
+    private List<?> immutableSelectionList(List<?> selections) {
         if (selections == null || selections.isEmpty()) {
             return List.of();
         }
         return Collections.unmodifiableList(new ArrayList<>(selections));
+    }
+
+    private List<BurpTrafficSelection> stageIncoming(
+            List<?> incoming, burp.history.HistoryRetentionPolicy retentionPolicy) throws java.io.IOException {
+        if (incoming == null || incoming.isEmpty()) return List.of();
+        if (incoming.stream().allMatch(BurpTrafficSelection.class::isInstance)) {
+            List<BurpTrafficSelection> selections = new ArrayList<>();
+            for (Object item : incoming) selections.add((BurpTrafficSelection) item);
+            return selections;
+        }
+        List<BurpTrafficSourceSelection> sources = new ArrayList<>();
+        for (Object item : incoming) {
+            if (!(item instanceof BurpTrafficSourceSelection source)) {
+                throw new java.io.IOException("Traffic import contained an unsupported source reference.");
+            }
+            sources.add(source);
+        }
+        return captureService.stage(sources, retentionPolicy);
+    }
+
+    private static void closeSelections(List<BurpTrafficSelection> selections) {
+        for (BurpTrafficSelection selection : selections) {
+            try { selection.close(); } catch (java.io.IOException ignored) { }
+        }
     }
 
     void awaitIdleForTests() {

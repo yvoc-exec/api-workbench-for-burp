@@ -19,7 +19,7 @@ class WorkspaceCompatibilityFixtureTest {
     void currentWorkspaceFixtureRestoresCollectionsEnvironmentsHistoryAndUIState() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/workspace/current-workspace.json"));
 
-        assertThat(state.version).isEqualTo(2);
+        assertThat(state.version).isEqualTo(burp.models.WorkspaceState.CURRENT_VERSION);
         assertThat(state.activeEnvironmentId).isEqualTo("env-dev");
         assertThat(state.collections).hasSize(1);
         assertThat(state.collections.get(0).name).isEqualTo("APIM");
@@ -50,7 +50,7 @@ class WorkspaceCompatibilityFixtureTest {
     void legacyWorkspaceFixtureDefaultsMissingStateSafely() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/workspace/legacy-workspace.json"));
 
-        assertThat(state.version).isEqualTo(2);
+        assertThat(state.version).isEqualTo(burp.models.WorkspaceState.CURRENT_VERSION);
         assertThat(state.collections).hasSize(1);
         assertThat(state.environments).isEmpty();
         assertThat(state.activeEnvironmentId).isNull();

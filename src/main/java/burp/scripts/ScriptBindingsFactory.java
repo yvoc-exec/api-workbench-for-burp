@@ -368,6 +368,7 @@ public final class ScriptBindingsFactory {
     }
 
     public static final class BodyApi {
+        private burp.payload.PayloadSliceRef managedPayload;
         @HostAccess.Export
         public String mode;
         @HostAccess.Export
@@ -394,6 +395,7 @@ public final class ScriptBindingsFactory {
         BodyApi(ApiRequest request) {
             ApiRequest.Body source = request != null ? request.body : null;
             if (source != null) {
+                this.managedPayload = source.managedPayload != null ? source.managedPayload.copy() : null;
                 this.mode = source.mode;
                 this.raw = request.hasDerivedExactTextBody()
                         ? burp.models.ExactHttpRequestSnapshot.textBody(request.exactHttpRequest.rawRequestBytes)
@@ -435,6 +437,8 @@ public final class ScriptBindingsFactory {
             ApiRequest.Body body = new ApiRequest.Body();
             body.mode = mode;
             body.raw = raw;
+            body.managedPayload = managedPayload != null && raw == null
+                    ? managedPayload.copy() : null;
             body.filePath = filePath;
             body.contentType = contentType;
             body.required = required;

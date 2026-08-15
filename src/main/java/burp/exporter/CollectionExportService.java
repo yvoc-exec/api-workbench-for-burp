@@ -1,6 +1,12 @@
 package burp.exporter;
 
 import burp.models.ApiCollection;
+import burp.models.ApiRequest;
+import burp.models.WorkspaceState;
+import burp.payload.ManagedPayloadLease;
+import burp.payload.ManagedPayloadReader;
+import burp.parser.VariableResolver;
+import burp.utils.RequestBuilder;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
@@ -15,6 +21,15 @@ import java.util.List;
 
 public final class CollectionExportService {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create();
+    private final ManagedPayloadReader payloadReader;
+
+    public CollectionExportService() {
+        this(null);
+    }
+
+    public CollectionExportService(ManagedPayloadReader payloadReader) {
+        this.payloadReader = payloadReader;
+    }
 
     public ExportResult exportCollection(ApiCollection collection, CollectionExportOptions options) throws ExportException {
         if (collection == null) {
@@ -28,28 +43,29 @@ public final class CollectionExportService {
         }
 
         List<String> warnings = new ArrayList<>();
-        CollectionExportSupport.addScriptExportWarnings(collection, options.format, warnings);
         try {
+            ApiCollection exportCollection = materializeExactPayloads(collection);
+            CollectionExportSupport.addScriptExportWarnings(exportCollection, options.format, warnings);
             Path output = ExportSupport.prepareOutputPath(options.outputPath);
             ExportSupport.writeAtomically(output, temp -> {
                 switch (options.format) {
-                    case API_WORKBENCH_JSON -> writeText(temp, GSON.toJson(ApiWorkbenchCollectionExporter.build(collection, options, warnings)));
-                    case POSTMAN_JSON -> writeText(temp, GSON.toJson(PostmanCollectionExporter.build(collection, options, warnings)));
+                    case API_WORKBENCH_JSON -> writeText(temp, GSON.toJson(ApiWorkbenchCollectionExporter.build(exportCollection, options, warnings)));
+                    case POSTMAN_JSON -> writeText(temp, GSON.toJson(PostmanCollectionExporter.build(exportCollection, options, warnings)));
                     case OPENAPI_JSON -> {
                         try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
-                            OpenApiCollectionExporter.writeJson(collection, options, writer, warnings);
+                            OpenApiCollectionExporter.writeJson(exportCollection, options, writer, warnings);
                         }
                     }
                     case OPENAPI_YAML -> {
                         try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
-                            OpenApiCollectionExporter.writeYaml(collection, options, writer, warnings);
+                            OpenApiCollectionExporter.writeYaml(exportCollection, options, writer, warnings);
                         }
                     }
-                    case INSOMNIA_JSON -> writeText(temp, GSON.toJson(InsomniaCollectionExporter.build(collection, options, warnings)));
-                    case HAR_JSON -> writeText(temp, GSON.toJson(HarCollectionExporter.build(collection, options, warnings)));
+                    case INSOMNIA_JSON -> writeText(temp, GSON.toJson(InsomniaCollectionExporter.build(exportCollection, options, warnings)));
+                    case HAR_JSON -> writeText(temp, GSON.toJson(HarCollectionExporter.build(exportCollection, options, warnings)));
                     case BRUNO_ZIP -> {
                         try (OutputStream out = Files.newOutputStream(temp)) {
-                            BrunoCollectionExporter.write(collection, options, out, warnings);
+                            BrunoCollectionExporter.write(exportCollection, options, out, warnings);
                         }
                     }
                     default -> throw new IOException("Unsupported collection export format: " + options.format);
@@ -69,6 +85,34 @@ public final class CollectionExportService {
         } catch (IOException e) {
             throw new ExportException("Collection export failed: " + e.getMessage(), e);
         }
+    }
+
+    private ApiCollection materializeExactPayloads(ApiCollection source) throws IOException {
+        WorkspaceState wrapper = new WorkspaceState();
+        wrapper.collections = List.of(source);
+        WorkspaceState detached = WorkspaceState.copyOfSharingPersistencePayload(wrapper);
+        ApiCollection copy = detached.collections.get(0);
+        for (ApiRequest request : copy.requests != null ? copy.requests : List.<ApiRequest>of()) {
+            if (request == null || request.exactHttpRequest == null
+                    || !request.exactHttpRequest.hasManagedPayload()) continue;
+            if (payloadReader == null) {
+                throw new IOException("Exact payload is unavailable for export.");
+            }
+            if (request.exactHttpRequest.pristine) {
+                try (ManagedPayloadLease lease = payloadReader.materialize(request.exactHttpRequest.payloadRef)) {
+                    request.exactHttpRequest.rawRequestBytes = lease.bytes();
+                }
+            } else {
+                try {
+                    request.exactHttpRequest.rawRequestBytes =
+                            new RequestBuilder(null, payloadReader).buildRequest(request, new VariableResolver());
+                    request.exactHttpRequest.pristine = true;
+                } catch (Exception failure) {
+                    throw new IOException("Managed exact payload could not be materialized for export.", failure);
+                }
+            }
+        }
+        return copy;
     }
 
     private static void writeText(Path output, String text) throws IOException {

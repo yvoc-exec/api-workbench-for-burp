@@ -13,6 +13,11 @@ import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
 import burp.ui.history.HistoryNativeHttpMessageFactory;
+import burp.payload.ExactPayloadMigrationService;
+import burp.payload.FileManagedPayloadStore;
+import burp.payload.ManagedPayloadStore;
+import burp.payload.ManagedPayloadStorePaths;
+import burp.payload.WorkspacePayloadReferenceCollector;
 
 import javax.swing.*;
 import java.io.*;
@@ -39,6 +44,7 @@ public class UniversalImporter {
     private final WorkspaceStateService workspaceStateService;
     private final DebouncedSwingAction debouncedWorkspaceSave;
     private final WorkspaceSaveCoordinator workspaceSaveCoordinator;
+    private final ManagedPayloadStore payloadStore;
     private final AtomicLong workspaceRevisionCounter = new AtomicLong();
     private final AtomicBoolean workspaceSaveClosed = new AtomicBoolean();
     private final AtomicBoolean cleanupStarted = new AtomicBoolean();
@@ -54,11 +60,18 @@ public class UniversalImporter {
     }
 
     public UniversalImporter(MontoyaApi api, ScriptMode scriptMode, WorkspaceStateService workspaceStateService) {
+        this(api, scriptMode, workspaceStateService, createPayloadStore(api));
+    }
+
+    public UniversalImporter(MontoyaApi api, ScriptMode scriptMode,
+                             WorkspaceStateService workspaceStateService,
+                             ManagedPayloadStore payloadStore) {
         this.api = api;
         this.workspaceStateService = workspaceStateService;
+        this.payloadStore = payloadStore;
         this.resolver = new VariableResolver();
         OAuth2Manager oauth2Manager = new OAuth2Manager(api);
-        this.requestBuilder = new RequestBuilder(api, oauth2Manager);
+        this.requestBuilder = new RequestBuilder(api, oauth2Manager, payloadStore);
         ScriptEngine scriptEngine = new ScriptEngine(api, scriptMode);
         this.pipeline = createSharedRequestPipeline(api, requestBuilder, scriptEngine, oauth2Manager);
         burp.runner.CollectionRunner runner = createCollectionRunner(api, pipeline, oauth2Manager);
@@ -95,6 +108,19 @@ public class UniversalImporter {
 
     public MontoyaApi getApi() {
         return api;
+    }
+
+    public ManagedPayloadStore getPayloadStore() {
+        return payloadStore;
+    }
+
+    private static ManagedPayloadStore createPayloadStore(MontoyaApi api) {
+        if (api == null) return null;
+        try {
+            return new FileManagedPayloadStore(ManagedPayloadStorePaths.forProject(api));
+        } catch (IOException failure) {
+            throw new IllegalStateException("Managed payload storage could not be initialized.", failure);
+        }
     }
 
     public void setFollowRedirects(boolean followRedirects) {
@@ -652,7 +678,13 @@ public class UniversalImporter {
                 if (pipeline != null) {
                     pipeline.close();
                 }
-                clearVariables();
+                try {
+                    if (payloadStore != null) payloadStore.close();
+                } catch (IOException failure) {
+                    logWorkspaceStateError("payload cleanup", failure);
+                } finally {
+                    clearVariables();
+                }
             }
         }
     }
@@ -669,6 +701,10 @@ public class UniversalImporter {
             long loadedLength = WorkspaceStateService.utf8Length(json);
             String loadedSha256 = WorkspaceStateService.sha256(json);
             WorkspaceState state = WorkspaceStateJson.fromJson(json);
+            if (payloadStore != null) {
+                new ExactPayloadMigrationService(payloadStore).migrateDetached(state);
+                markUnavailablePayloads(state);
+            }
             lastSavedWorkspaceLength = loadedLength;
             lastSavedWorkspaceSha256 = loadedSha256;
             lastSuccessfulWorkspaceRevision = 0L;
@@ -690,6 +726,7 @@ public class UniversalImporter {
                         return;
                     }
                     ui.restoreWorkspaceState(state);
+                    requestWorkspaceStateSaveNowFromModel();
                 } catch (Exception e) {
                     logWorkspaceStateError("restore", e);
                 }
@@ -747,6 +784,40 @@ public class UniversalImporter {
         return SwingEdt.call(() -> persistRequestEditorState
                 ? ui.getWorkspaceStateSnapshotForPersistence()
                 : ui.getWorkspaceStateSnapshotFromModelForPersistence());
+    }
+
+    private void markUnavailablePayloads(WorkspaceState state) {
+        if (state == null || payloadStore == null) return;
+        if (state.collections != null) {
+            for (ApiCollection collection : state.collections) {
+                if (collection == null || collection.requests == null) continue;
+                for (ApiRequest request : collection.requests) {
+                    if (request != null && request.exactHttpRequest != null
+                            && request.exactHttpRequest.payloadRef != null) {
+                        request.exactHttpRequest.payloadUnavailable =
+                                !isPayloadAvailable(request.exactHttpRequest.payloadRef);
+                    }
+                }
+            }
+        }
+        if (state.historyEntries != null) {
+            for (burp.history.HistoryEntry entry : state.historyEntries) {
+                if (entry != null && entry.requestSnapshot != null
+                        && entry.requestSnapshot.authoredExactPayloadRef != null) {
+                    entry.requestSnapshot.authoredExactPayloadUnavailable =
+                            !isPayloadAvailable(entry.requestSnapshot.authoredExactPayloadRef);
+                }
+            }
+        }
+    }
+
+    private boolean isPayloadAvailable(burp.payload.ManagedPayloadRef ref) {
+        try {
+            payloadStore.verify(ref);
+            return true;
+        } catch (IOException | RuntimeException failure) {
+            return false;
+        }
     }
 
     /** Validates a detached candidate without consuming its shared exact transport owners. */
@@ -883,7 +954,11 @@ public class UniversalImporter {
 
     private WorkspaceSaveResult persistDetachedWorkspaceState(long revision, WorkspaceState detached) {
         try {
+            if (payloadStore != null) {
+                new ExactPayloadMigrationService(payloadStore).migrateDetached(detached);
+            }
             WorkspaceStateJson.normalizeForSave(detached);
+            Set<String> livePayloadIds = WorkspacePayloadReferenceCollector.collect(detached);
             WorkspaceStateJson.SerializedWorkspace serialized =
                     WorkspaceStateJson.serializeDetachedWithMetadataAndRelease(
                             detached,
@@ -892,18 +967,20 @@ public class UniversalImporter {
             String sha256 = serialized.sha256();
             if (length == lastSavedWorkspaceLength && Objects.equals(sha256, lastSavedWorkspaceSha256)) {
                 lastSuccessfulWorkspaceRevision = revision;
+                updatePayloadReachability(revision, livePayloadIds);
                 return new WorkspaceSaveResult(
                         revision, WorkspaceSaveResult.Status.UNCHANGED, length, sha256, null);
             }
             WorkspaceSaveResult result = workspaceStateService.saveSerialized(
                     revision, serialized);
             if (result.status() == WorkspaceSaveResult.Status.SAVED) {
+                updatePayloadReachability(revision, livePayloadIds);
                 lastSavedWorkspaceLength = length;
                 lastSavedWorkspaceSha256 = sha256;
                 lastSuccessfulWorkspaceRevision = revision;
             }
             return result;
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
             return new WorkspaceSaveResult(
                     revision,
                     WorkspaceSaveResult.Status.FAILED,
@@ -912,6 +989,12 @@ public class UniversalImporter {
                     "Workspace normalization or serialization failed ("
                             + e.getClass().getSimpleName() + ").");
         }
+    }
+
+    private void updatePayloadReachability(long revision, Set<String> livePayloadIds) throws IOException {
+        if (payloadStore == null) return;
+        payloadStore.updateManifest(revision, livePayloadIds);
+        payloadStore.sweepUnreferenced(livePayloadIds, payloadStore.activeLeasePayloadIds());
     }
 
     private Exception unwrapWorkspaceStateSaveException(Exception exception) {

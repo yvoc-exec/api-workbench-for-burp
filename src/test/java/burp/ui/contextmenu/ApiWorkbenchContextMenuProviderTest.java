@@ -1,6 +1,6 @@
 package burp.ui.contextmenu;
 
-import burp.importer.BurpTrafficSelection;
+import burp.importer.BurpTrafficSourceSelection;
 import org.junit.jupiter.api.Test;
 
 import javax.swing.JMenuItem;
@@ -26,7 +26,7 @@ class ApiWorkbenchContextMenuProviderTest {
                 new FakeRequestResponse(
                         new FakeRequest(secondRequest, "POST", new FakeService("example.invalid", 8443, true)),
                         null)));
-        AtomicReference<List<BurpTrafficSelection>> captured = new AtomicReference<>();
+        AtomicReference<List<BurpTrafficSourceSelection>> captured = new AtomicReference<>();
         AtomicBoolean queue = new AtomicBoolean();
         ApiWorkbenchContextMenuProvider provider = new ApiWorkbenchContextMenuProvider((selections, queueAfterImport) -> {
             assertThat(SwingUtilities.isEventDispatchThread()).isTrue();
@@ -46,19 +46,12 @@ class ApiWorkbenchContextMenuProviderTest {
 
         assertThat(queue).isTrue();
         assertThat(captured.get()).hasSize(2);
-        assertThat(captured.get().get(0).rawRequestBytes[0]).isEqualTo((byte) 'X');
-        assertThat(captured.get().get(1).rawRequestBytes[0]).isEqualTo((byte) 'Y');
-        firstRequest[0] = 'Z';
-        secondRequest[0] = 'Z';
-        assertThat(captured.get().get(0).rawRequestBytes[0]).isEqualTo((byte) 'X');
-        assertThat(captured.get().get(1).rawRequestBytes[0]).isEqualTo((byte) 'Y');
         assertThat(captured.get()).extracting(selection -> selection.encounterIndex)
                 .containsExactly(0, 1);
         assertThat(captured.get().get(0).sourceContext).isEqualTo("PROXY");
-        assertThat(captured.get().get(0).servicePort).isEqualTo(443);
-        assertThat(captured.get().get(1).servicePort).isEqualTo(8443);
-        assertThat(captured.get().get(0).rawResponseBytes).isNotEmpty();
-        assertThat(captured.get().get(1).rawResponseBytes).isEmpty();
+        assertThat(captured.get().get(0).requestResponse).isSameAs(event.requestResponses.get(0));
+        assertThat(event.requestResponses).allSatisfy(exchange ->
+                assertThat(exchange.request.byteAccessCount).isZero());
     }
 
     @Test
@@ -106,6 +99,7 @@ class ApiWorkbenchContextMenuProviderTest {
         private final byte[] bytes;
         private final String method;
         private final FakeService service;
+        private int byteAccessCount;
 
         public FakeRequest(byte[] bytes, String method, FakeService service) {
             this.bytes = bytes;
@@ -114,6 +108,7 @@ class ApiWorkbenchContextMenuProviderTest {
         }
 
         public byte[] toByteArray() {
+            byteAccessCount++;
             return bytes;
         }
 

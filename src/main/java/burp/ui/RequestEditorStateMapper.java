@@ -187,7 +187,11 @@ final class RequestEditorStateMapper {
         if (req.body != null) {
             ctx.setBodyModeInternal.accept(req.body.mode != null ? req.body.mode : "none");
             if ("raw".equals(req.body.mode)) {
-                if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
+                if (req.body.managedPayload != null) {
+                    ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.managedBodyPlaceholder(
+                            req.body.managedPayload,
+                            req.exactHttpRequest != null && req.exactHttpRequest.payloadUnavailable));
+                } else if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
                     ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
                 } else if (req.body.raw != null) {
                     ctx.bodyRawArea.setText(req.body.raw);
@@ -199,7 +203,11 @@ final class RequestEditorStateMapper {
                 ctx.bodyRawArea.setText(req.body.graphql.query != null ? req.body.graphql.query : "");
             }
             if ("file".equals(req.body.mode)) {
-                if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
+                if (req.body.managedPayload != null) {
+                    ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.managedBodyPlaceholder(
+                            req.body.managedPayload,
+                            req.exactHttpRequest != null && req.exactHttpRequest.payloadUnavailable));
+                } else if (req.exactHttpRequest != null && req.exactHttpRequest.binaryBody) {
                     ctx.bodyRawArea.setText(ExactHttpRequestSnapshot.binaryBodyPlaceholder(req.exactHttpRequest.rawRequestBytes));
                 } else if (req.body.filePath != null) {
                     ctx.bodyRawArea.setText(req.body.filePath);
@@ -303,11 +311,14 @@ final class RequestEditorStateMapper {
                     req.body.description = existingBody.description;
                     req.body.filePath = existingBody.filePath;
                     req.body.source = existingBody.source;
+                    req.body.managedPayload = existingBody.managedPayload != null
+                            ? existingBody.managedPayload.copy() : null;
                     req.body.sourceMetadata = OpenApiMetadataSupport.copy(existingBody.sourceMetadata);
                 }
             }
             if ("raw".equals(bodyMode)) {
                 req.body.raw = buildRawBody(currentRequest, ctx.bodyRawArea.getText());
+                if (req.body.raw != null) req.body.managedPayload = null;
             } else if ("graphql".equals(bodyMode)) {
                 ApiRequest.Body.GraphQL graphQL = existingBody != null
                         ? copyGraphQL(existingBody.graphql)
@@ -344,7 +355,8 @@ final class RequestEditorStateMapper {
     private static String preserveBinaryPlaceholderBody(ApiRequest currentRequest, String bodyText) {
         if (currentRequest == null
                 || currentRequest.exactHttpRequest == null
-                || !currentRequest.exactHttpRequest.binaryBody
+                || (!currentRequest.exactHttpRequest.binaryBody
+                    && (currentRequest.body == null || currentRequest.body.managedPayload == null))
                 || !ExactHttpRequestSnapshot.isBinaryBodyPlaceholder(bodyText)) {
             return bodyText;
         }
@@ -388,7 +400,8 @@ final class RequestEditorStateMapper {
                 || currentRequest.body.raw != null
                 || builtRequest.body == null
                 || !"raw".equalsIgnoreCase(builtRequest.body.mode)
-                || builtRequest.body.raw != null) {
+                || builtRequest.body.raw != null
+                || currentRequest.body.managedPayload != null) {
             return;
         }
         builtRequest.body.raw = ExactHttpRequestSnapshot.textBody(
@@ -889,6 +902,11 @@ final class RequestEditorStateMapper {
     }
 
     private static String buildRawBody(ApiRequest currentRequest, String bodyText) {
+        if (currentRequest != null && currentRequest.body != null
+                && currentRequest.body.managedPayload != null
+                && ExactHttpRequestSnapshot.isBinaryBodyPlaceholder(bodyText)) {
+            return null;
+        }
         if (currentRequest != null
                 && currentRequest.exactHttpRequest != null
                 && currentRequest.exactHttpRequest.pristine

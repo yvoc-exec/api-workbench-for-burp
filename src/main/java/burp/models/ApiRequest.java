@@ -1,5 +1,7 @@
 package burp.models;
 
+import burp.payload.PayloadSliceRef;
+
 import burp.history.HistoryBodyTruncator;
 import burp.scripts.ScriptBlock;
 
@@ -110,6 +112,8 @@ public class ApiRequest {
         public boolean required;
         public String description;
         public String filePath;
+        /** AWB-managed body content; distinct from a user-owned filePath. */
+        public PayloadSliceRef managedPayload;
         public String source;
         public Map<String, String> sourceMetadata = new LinkedHashMap<>();
         public List<FormField> formdata = new ArrayList<>();
@@ -240,7 +244,8 @@ public class ApiRequest {
                 && !exactHttpRequest.binaryBody
                 && body != null
                 && "raw".equalsIgnoreCase(body.mode)
-                && body.raw == null;
+                && body.raw == null
+                && exactHttpRequest.rawRequestBytes != null;
     }
 
     /** Materializes lazy exact text before switching to semantic transport. */
@@ -405,6 +410,12 @@ public class ApiRequest {
         canonical.append(source.raw != null ? source.raw : "").append('\n');
         canonical.append(source.contentType != null ? source.contentType : "").append('\n');
         canonical.append(source.filePath != null ? source.filePath : "").append('\n');
+        if (source.managedPayload != null && source.managedPayload.payload != null) {
+            canonical.append("managed:")
+                    .append(source.managedPayload.payload.payloadId).append('|')
+                    .append(source.managedPayload.offset).append('|')
+                    .append(source.managedPayload.length).append('\n');
+        }
         if (source.graphql != null) {
             canonical.append(source.graphql.query != null ? source.graphql.query : "").append('\n');
             canonical.append(source.graphql.variables != null ? source.graphql.variables : "").append('\n');
@@ -528,6 +539,7 @@ public class ApiRequest {
         copy.required = source.required;
         copy.description = source.description;
         copy.filePath = source.filePath;
+        copy.managedPayload = source.managedPayload != null ? source.managedPayload.copy() : null;
         copy.source = source.source;
         copy.sourceMetadata = source.sourceMetadata != null
                 ? new LinkedHashMap<>(source.sourceMetadata) : new LinkedHashMap<>();

@@ -1,6 +1,8 @@
 package burp.models;
 
 import burp.history.HistoryBodyTruncator;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.PayloadSliceRef;
 import burp.parser.HistoryRawHttpMessageParser;
 
 import java.nio.charset.StandardCharsets;
@@ -8,6 +10,9 @@ import java.nio.charset.StandardCharsets;
 public final class ExactHttpRequestSnapshot {
     public static final String BINARY_BODY_PLACEHOLDER_PREFIX = "[Binary exact body preserved";
 
+    public ManagedPayloadRef payloadRef;
+    public transient boolean payloadUnavailable;
+    /** Legacy workspace/import compatibility only. New exact traffic is reference-backed. */
     public byte[] rawRequestBytes;
     public String serviceHost;
     public int servicePort;
@@ -33,9 +38,6 @@ public final class ExactHttpRequestSnapshot {
         if (ownedRawRequestBytes == null || ownedRawRequestBytes.length == 0) {
             throw new IllegalArgumentException("Exact traffic requires request bytes.");
         }
-        if (admittedMaximumBytes <= 0L || ownedRawRequestBytes.length > admittedMaximumBytes) {
-            throw new IllegalArgumentException("Exact traffic exceeds its validated admission limit.");
-        }
         HistoryRawHttpMessageParser.RequestLayout layout =
                 HistoryRawHttpMessageParser.inspectRequest(ownedRawRequestBytes);
         if (!layout.isTrustedRequest()) {
@@ -52,6 +54,33 @@ public final class ExactHttpRequestSnapshot {
                 && layout.bodyOffset() < ownedRawRequestBytes.length
                 && !isValidUtf8(ownedRawRequestBytes, layout.bodyOffset(),
                 ownedRawRequestBytes.length - layout.bodyOffset());
+        snapshot.sourceContext = sourceContext;
+        snapshot.invalidationReason = "";
+        snapshot.semanticFingerprint = semanticFingerprint;
+        return snapshot;
+    }
+
+    public static ExactHttpRequestSnapshot fromManagedPayload(ManagedPayloadRef payloadRef,
+                                                               String serviceHost,
+                                                               int servicePort,
+                                                               boolean secure,
+                                                               String httpVersion,
+                                                               boolean binaryBody,
+                                                               String sourceContext,
+                                                               String semanticFingerprint) {
+        if (payloadRef == null) {
+            throw new IllegalArgumentException("Exact traffic requires a managed payload reference.");
+        }
+        payloadRef.validate();
+        ExactHttpRequestSnapshot snapshot = new ExactHttpRequestSnapshot();
+        snapshot.payloadRef = payloadRef.copy();
+        snapshot.rawRequestBytes = null;
+        snapshot.serviceHost = serviceHost;
+        snapshot.servicePort = servicePort;
+        snapshot.secure = secure;
+        snapshot.httpVersion = httpVersion;
+        snapshot.pristine = true;
+        snapshot.binaryBody = binaryBody;
         snapshot.sourceContext = sourceContext;
         snapshot.invalidationReason = "";
         snapshot.semanticFingerprint = semanticFingerprint;
@@ -79,6 +108,8 @@ public final class ExactHttpRequestSnapshot {
             return null;
         }
         ExactHttpRequestSnapshot copy = new ExactHttpRequestSnapshot();
+        copy.payloadRef = source.payloadRef != null ? source.payloadRef.copy() : null;
+        copy.payloadUnavailable = source.payloadUnavailable;
         copy.rawRequestBytes = source.rawRequestBytes != null && cloneRawBytes
                 ? source.rawRequestBytes.clone()
                 : source.rawRequestBytes;
@@ -92,6 +123,35 @@ public final class ExactHttpRequestSnapshot {
         copy.invalidationReason = source.invalidationReason;
         copy.semanticFingerprint = source.semanticFingerprint;
         return copy;
+    }
+
+    public boolean hasManagedPayload() {
+        return payloadRef != null && ManagedPayloadRef.isSha256(payloadRef.payloadId);
+    }
+
+    public boolean hasLegacyInlinePayload() {
+        return rawRequestBytes != null && rawRequestBytes.length > 0;
+    }
+
+    public long payloadLength() {
+        return hasManagedPayload() ? payloadRef.length
+                : rawRequestBytes != null ? rawRequestBytes.length : 0L;
+    }
+
+    public String payloadSha256() {
+        return hasManagedPayload() ? payloadRef.sha256
+                : rawRequestBytes != null ? HistoryBodyTruncator.sha256Hex(rawRequestBytes) : "";
+    }
+
+    public static String managedBodyPlaceholder(PayloadSliceRef slice) {
+        return managedBodyPlaceholder(slice, false);
+    }
+
+    public static String managedBodyPlaceholder(PayloadSliceRef slice, boolean unavailable) {
+        if (slice == null || slice.payload == null) return "";
+        return BINARY_BODY_PLACEHOLDER_PREFIX + ": " + slice.length
+                + " bytes; SHA-256=" + slice.payload.sha256 + "; file-backed"
+                + (unavailable ? "; unavailable" : "") + "]";
     }
 
     public static String binaryBodyPlaceholder(byte[] rawRequestBytes) {

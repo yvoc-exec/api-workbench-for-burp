@@ -120,7 +120,7 @@ public final class ApiWorkbenchCollectionExporter {
                 if (request == null) {
                     continue;
                 }
-                ApiRequest copy = request.applyTo(new ApiRequest());
+                ApiRequest copy = request.applyToSharingExactTransport(new ApiRequest());
                 copy.name = nonBlankOr(copy.name, "Unnamed Request");
                 copy.path = RequestPathResolver.normalizeFolderPath(copy.path);
                 copy.sourceCollection = nonBlankOr(copy.sourceCollection, canonical.name);
@@ -138,7 +138,7 @@ public final class ApiWorkbenchCollectionExporter {
                 canonicalizeParameters(copy.parameters);
                 canonicalizeScripts(copy.preRequestScripts);
                 canonicalizeScripts(copy.postResponseScripts);
-                copy.exactHttpRequest = ExactHttpRequestSnapshot.copyOf(copy.exactHttpRequest);
+                copy.exactHttpRequest = ExactHttpRequestSnapshot.copySharingRawBytes(copy.exactHttpRequest);
                 ExactHttpRequestSnapshotMigrationSupport.migrateLegacySemanticFingerprint(copy);
                 retainedAuthSources.put(copy, request.authSource);
                 canonical.requests.add(copy);

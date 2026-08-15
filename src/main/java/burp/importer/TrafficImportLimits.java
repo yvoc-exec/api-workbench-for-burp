@@ -2,7 +2,8 @@ package burp.importer;
 
 import burp.utils.Base64ByteArrayTypeAdapter;
 
-/** Hard limits for retaining exact Burp traffic in the workspace. */
+/** Legacy configuration shape retained for workspace/test compatibility; no longer admission policy. */
+@Deprecated
 public final class TrafficImportLimits {
     public static final long MIB = 1024L * 1024L;
     public static final long DEFAULT_MAX_EXACT_REQUEST_BYTES = 16L * MIB;

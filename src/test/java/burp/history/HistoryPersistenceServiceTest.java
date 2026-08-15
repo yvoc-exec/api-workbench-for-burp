@@ -130,7 +130,7 @@ class HistoryPersistenceServiceTest {
         assertThat(restored.redirectHops.get(0).storedResponseBodyLength).isEqualTo(5L);
         assertThat(restored.redirectHops.get(0).fullRawRequestBodySha256)
                 .isEqualTo(entry.redirectHops.get(0).fullRawRequestBodySha256);
-        assertThat(restoredState.version).isEqualTo(2);
+        assertThat(restoredState.version).isEqualTo(burp.models.WorkspaceState.CURRENT_VERSION);
     }
 
     @Test

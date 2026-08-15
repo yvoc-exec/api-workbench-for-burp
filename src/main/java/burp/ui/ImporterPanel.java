@@ -167,7 +167,7 @@ public class ImporterPanel {
         }
     };
     private final RequestTreeMutationService requestTreeMutationService = new RequestTreeMutationService();
-    private final CollectionExportService collectionExportService = new CollectionExportService();
+    private final CollectionExportService collectionExportService;
     private final EnvironmentExportService environmentExportService = new EnvironmentExportService();
     private final HistoryStore historyStore = new HistoryStore();
     private final HistoryExportService historyExportService = new HistoryExportService();
@@ -415,7 +415,8 @@ public class ImporterPanel {
     public ImporterPanel(UniversalImporter importer, CollectionRunner runner, OAuth2Manager oauth2Manager, burp.utils.ScriptMode scriptMode) {
         this.scriptMode = scriptMode;
         this.oauth2Manager = oauth2Manager;
-        this.requestBuilder = new burp.utils.RequestBuilder(importer.getApi(), oauth2Manager);
+        this.requestBuilder = new burp.utils.RequestBuilder(importer.getApi(), oauth2Manager, importer.getPayloadStore());
+        this.collectionExportService = new CollectionExportService(importer.getPayloadStore());
         this.oauth2Panel = new OAuth2Panel(oauth2Manager);
         this.oauth2Panel.setTokenAcquiredCollectionSupplier(() -> null);
         this.oauth2Panel.setTokenAcquiredListener(this::handleOAuth2TokenAcquired);

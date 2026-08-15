@@ -2,6 +2,8 @@ package burp.scripts;
 
 import burp.models.ApiCollection;
 import burp.models.ApiRequest;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.PayloadSliceRef;
 import burp.utils.RawRequestParser;
 import burp.utils.RequestBuilder;
 import burp.utils.ScriptMode;
@@ -49,6 +51,31 @@ class ScriptBindingsBodyMutationTest {
         assertThat(result.success).isTrue();
         assertThat(result.mutatedRequest.body.filePath).isEqualTo("variable.bin");
         assertThat(result.mutatedRequest.body.raw).isNull();
+    }
+
+    @Test
+    void noOpAndHeaderOnlyScriptsPreserveManagedBodySlice() {
+        ApiRequest request = requestWithManagedBody();
+
+        ScriptExecutionResult noOp = run(request, "console.log('keep');");
+        ScriptExecutionResult headerOnly = run(request,
+                "awb.request.headers.upsert('X-Test', 'one');");
+
+        assertThat(noOp.mutatedRequest.body.managedPayload).isEqualTo(request.body.managedPayload);
+        assertThat(headerOnly.mutatedRequest.body.managedPayload).isEqualTo(request.body.managedPayload);
+        assertThat(noOp.mutatedRequest.body.raw).isNull();
+        assertThat(headerOnly.mutatedRequest.body.raw).isNull();
+    }
+
+    @Test
+    void scriptBodyReplacementReleasesManagedBodySlice() {
+        ApiRequest request = requestWithManagedBody();
+
+        ScriptExecutionResult result = run(request, "awb.request.body.raw='replacement';");
+
+        assertThat(result.mutatedRequest.body.raw).isEqualTo("replacement");
+        assertThat(result.mutatedRequest.body.managedPayload).isNull();
+        assertThat(request.body.managedPayload).isNotNull();
     }
 
     @Test
@@ -249,6 +276,15 @@ class ScriptBindingsBodyMutationTest {
         request.body.mode = "file";
         request.body.filePath = filePath;
         request.body.raw = legacyRawPath;
+        return request;
+    }
+
+    private ApiRequest requestWithManagedBody() {
+        ApiRequest request = baseRequest();
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        ManagedPayloadRef payload = new ManagedPayloadRef("a".repeat(64), 32L, "a".repeat(64));
+        request.body.managedPayload = new PayloadSliceRef(payload, 8L, 24L);
         return request;
     }
 

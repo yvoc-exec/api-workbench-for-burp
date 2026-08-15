@@ -1,6 +1,8 @@
 package burp.models;
 
 import burp.history.HistoryBodyTruncator;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.PayloadSliceRef;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -31,6 +33,16 @@ class ExactHttpRequestSnapshotTest {
         assertThat(ExactHttpRequestSnapshot.binaryBodyPlaceholder(
                 "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n".getBytes(StandardCharsets.UTF_8)))
                 .isEqualTo("[Binary exact body preserved: 0 bytes; SHA-256=]");
+    }
+
+    @Test
+    void managedPlaceholderReportsUnavailableWithoutBecomingEditableBodyText() {
+        ManagedPayloadRef payload = new ManagedPayloadRef("b".repeat(64), 20L, "b".repeat(64));
+        String placeholder = ExactHttpRequestSnapshot.managedBodyPlaceholder(
+                new PayloadSliceRef(payload, 5L, 15L), true);
+
+        assertThat(placeholder).contains("15 bytes", "file-backed", "unavailable");
+        assertThat(ExactHttpRequestSnapshot.isBinaryBodyPlaceholder(placeholder)).isTrue();
     }
 
     private static byte[] concat(byte[] left, byte[] right) {

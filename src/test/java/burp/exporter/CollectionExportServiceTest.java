@@ -7,6 +7,10 @@ import burp.models.UnresolvedVariableIssue;
 import burp.parser.ApiWorkbenchCollectionParser;
 import burp.parser.CollectionParser;
 import burp.parser.ParserRegistry;
+import burp.payload.FileManagedPayloadStore;
+import burp.payload.ManagedPayloadRef;
+import burp.payload.ManagedPayloadStage;
+import burp.payload.PayloadSliceRef;
 import burp.scripts.ScriptBlock;
 import burp.scripts.ScriptDialect;
 import burp.scripts.ScriptPhase;
@@ -218,6 +222,43 @@ class CollectionExportServiceTest {
         assertThat(restored.body.contentType).isEqualTo("text/plain");
         assertThat(restored.body.formdata.get(0).fileUpload).isTrue();
         assertThat(restored.body.formdata.get(0).filePath).isEqualTo("payload.bin");
+    }
+
+    @Test
+    void managedExactExportMaterializesOnlyTheDetachedArtifact() throws Exception {
+        byte[] raw = "POST /managed HTTP/1.1\r\nHost: example.test\r\n\r\nbinary\0body"
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        int bodyOffset = "POST /managed HTTP/1.1\r\nHost: example.test\r\n\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1).length;
+        ApiCollection collection = new ApiCollection();
+        collection.name = "Managed";
+        ApiRequest request = new ApiRequest();
+        request.name = "Managed exact";
+        request.method = "POST";
+        request.url = "https://example.test/managed";
+        request.body = new ApiRequest.Body();
+        request.body.mode = "raw";
+        try (FileManagedPayloadStore store = new FileManagedPayloadStore(tempDir.resolve("managed-store"));
+             ManagedPayloadStage stage = store.beginStage("export-test")) {
+            stage.write(raw);
+            ManagedPayloadRef ref = store.commit(stage);
+            request.body.managedPayload = new PayloadSliceRef(ref, bodyOffset, raw.length - bodyOffset);
+            request.exactHttpRequest = burp.models.ExactHttpRequestSnapshot.fromManagedPayload(
+                    ref, "example.test", 443, true, "HTTP/1.1", true,
+                    "test", request.computeSemanticFingerprint());
+            collection.requests.add(request);
+            Path output = tempDir.resolve("managed.api-workbench.collection.json");
+
+            new CollectionExportService(store).exportCollection(collection,
+                    new CollectionExportOptions(CollectionExportFormat.API_WORKBENCH_JSON,
+                            output, false, null, Map.of()));
+
+            String exported = Files.readString(output);
+            assertThat(exported).contains(java.util.Base64.getEncoder().encodeToString(raw));
+            assertThat(request.exactHttpRequest.rawRequestBytes).isNull();
+            assertThat(request.exactHttpRequest.payloadRef).isEqualTo(ref);
+            assertThat(request.body.managedPayload.payload).isEqualTo(ref);
+        }
     }
 
     @Test

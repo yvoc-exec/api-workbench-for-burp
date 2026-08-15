@@ -1,8 +1,7 @@
 package burp.ui.contextmenu;
 
 import burp.api.montoya.MontoyaApi;
-import burp.importer.BurpTrafficSelection;
-import burp.importer.TrafficImportLimits;
+import burp.importer.BurpTrafficSourceSelection;
 
 import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
@@ -23,12 +22,12 @@ import java.util.function.BiConsumer;
 public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
     private static final String PROVIDER_CLASS = "burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider";
 
-    private final BiConsumer<List<BurpTrafficSelection>, Boolean> importAction;
+    private final BiConsumer<List<BurpTrafficSourceSelection>, Boolean> importAction;
     private final AtomicBoolean registered = new AtomicBoolean();
     private volatile Object registration;
     private volatile Object providerProxy;
 
-    public ApiWorkbenchContextMenuProvider(BiConsumer<List<BurpTrafficSelection>, Boolean> importAction) {
+    public ApiWorkbenchContextMenuProvider(BiConsumer<List<BurpTrafficSourceSelection>, Boolean> importAction) {
         this.importAction = importAction;
     }
 
@@ -97,74 +96,38 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
                 ? "Send to API Workbench and Queue"
                 : "Send " + count + " requests to API Workbench and Queue";
         JMenuItem importItem = new JMenuItem(importLabel);
-        importItem.addActionListener(ignored -> dispatch(detachSelections(lightweightReferences, context), false));
+        importItem.addActionListener(ignored -> dispatch(sourceSelections(lightweightReferences, context), false));
         JMenuItem queueItem = new JMenuItem(queueLabel);
-        queueItem.addActionListener(ignored -> dispatch(detachSelections(lightweightReferences, context), true));
+        queueItem.addActionListener(ignored -> dispatch(sourceSelections(lightweightReferences, context), true));
         return List.of(importItem, queueItem);
     }
 
-    public List<BurpTrafficSelection> detachSelections(Object event) {
+    public List<BurpTrafficSourceSelection> sourceSelections(Object event) {
         List<Object> requestResponses = selectedRequestResponses(event);
         if (requestResponses.isEmpty()) {
             return List.of();
         }
         String context = safeContext(invokeFirst(event, "invocationType", "toolType", "context"));
-        return detachSelections(requestResponses, context);
+        return sourceSelections(requestResponses, context);
     }
 
-    private List<BurpTrafficSelection> detachSelections(List<Object> requestResponses, String context) {
-        List<BurpTrafficSelection> out = new ArrayList<>();
+    private List<BurpTrafficSourceSelection> sourceSelections(List<Object> requestResponses, String context) {
+        List<BurpTrafficSourceSelection> out = new ArrayList<>();
         int index = 0;
         for (Object requestResponse : requestResponses) {
-            Object request = unwrap(invokeFirst(requestResponse, "request"));
-            if (request == null) {
-                continue;
+            if (unwrap(invokeFirst(requestResponse, "request")) != null) {
+                out.add(new BurpTrafficSourceSelection(requestResponse, context, index++));
             }
-            Object requestByteArray = invokeFirst(request, "toByteArray");
-            long requestLength = byteLength(requestByteArray);
-            Object response = unwrap(invokeFirst(requestResponse, "response"));
-            Object responseByteArray = response != null ? invokeFirst(response, "toByteArray") : null;
-            long responseLength = byteLength(responseByteArray);
-            if (requestLength > TrafficImportLimits.DEFAULT_MAX_EXACT_REQUEST_BYTES) {
-                out.add(BurpTrafficSelection.rejectedMetadata(
-                        requestLength, responseLength, context, index++));
-                continue;
-            }
-            byte[] requestBytes = bytesFrom(requestByteArray);
-            if (requestBytes.length == 0) {
-                out.add(BurpTrafficSelection.rejectedMetadata(
-                        Math.max(0L, requestLength), Math.max(0L, responseLength), context, index++));
-                continue;
-            }
-            byte[] responseBytes = response != null ? bytesFrom(responseByteArray) : new byte[0];
-            Object service = unwrap(invokeFirst(request, "httpService"));
-            if (service == null) {
-                service = unwrap(invokeFirst(requestResponse, "httpService"));
-            }
-            String host = stringValue(invokeFirst(service, "host"));
-            int port = intValue(invokeFirst(service, "port"));
-            boolean secure = booleanValue(invokeFirst(service, "secure", "isSecure"));
-            String method = stringValue(invokeFirst(request, "method"));
-            out.add(BurpTrafficSelection.fromOwnedBytes(
-                    requestBytes,
-                    responseBytes.length > 0 ? responseBytes : null,
-                    host,
-                    port,
-                    secure,
-                    context,
-                    method,
-                    method,
-                    index++));
         }
         return List.copyOf(out);
     }
 
-    private void dispatch(List<BurpTrafficSelection> selections, boolean queue) {
+    private void dispatch(List<BurpTrafficSourceSelection> selections, boolean queue) {
         if (importAction == null || selections == null || selections.isEmpty()) {
             return;
         }
-        List<BurpTrafficSelection> detached = new ArrayList<>();
-        for (BurpTrafficSelection selection : selections) {
+        List<BurpTrafficSourceSelection> detached = new ArrayList<>();
+        for (BurpTrafficSourceSelection selection : selections) {
             if (selection != null) {
                 detached.add(selection);
             }
@@ -273,40 +236,9 @@ public final class ApiWorkbenchContextMenuProvider implements AutoCloseable {
         return null;
     }
 
-    private static byte[] bytesFrom(Object value) {
-        Object unwrapped = unwrap(value);
-        if (unwrapped == null) {
-            return new byte[0];
-        }
-        if (unwrapped instanceof byte[] bytes) {
-            return bytes.clone();
-        }
-        Object bytes = invokeFirst(unwrapped, "getBytes", "toByteArray");
-        return bytes instanceof byte[] array ? array : new byte[0];
-    }
-
-    private static long byteLength(Object value) {
-        Object unwrapped = unwrap(value);
-        if (unwrapped instanceof byte[] bytes) {
-            return bytes.length;
-        }
-        Object length = invokeFirst(unwrapped, "length", "size");
-        return length instanceof Number number ? Math.max(0L, number.longValue()) : -1L;
-    }
-
     private static String stringValue(Object value) {
         Object unwrapped = unwrap(value);
         return unwrapped != null ? unwrapped.toString() : "";
-    }
-
-    private static int intValue(Object value) {
-        Object unwrapped = unwrap(value);
-        return unwrapped instanceof Number number ? number.intValue() : 0;
-    }
-
-    private static boolean booleanValue(Object value) {
-        Object unwrapped = unwrap(value);
-        return unwrapped instanceof Boolean flag && flag;
     }
 
     private static String safeContext(Object value) {

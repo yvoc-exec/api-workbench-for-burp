@@ -20,7 +20,7 @@ class HistoryPersistenceCompatibilityTest {
     void oldHistoryJsonRestoresDefaults() {
         WorkspaceState state = WorkspaceStateJson.fromJson(TestResourceLoader.read("fixtures/history/legacy-history.json"));
 
-        assertThat(state.version).isEqualTo(2);
+        assertThat(state.version).isEqualTo(burp.models.WorkspaceState.CURRENT_VERSION);
         assertThat(state.historyRetentionPolicy).isNotNull();
         assertThat(state.historyRetentionPolicy.maxEntries).isEqualTo(1000);
         assertThat(state.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(100L * 1024L * 1024L);
@@ -205,7 +205,7 @@ class HistoryPersistenceCompatibilityTest {
         assertThat(reloaded.redirectHops.get(0).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
         assertThat(reloaded.redirectHops.get(1).forwardedSensitiveHeaderNames).containsExactly("Cookie");
         assertThat(reloaded.redirectHops.get(1).strippedSensitiveHeaderNames).containsExactly("Proxy-Authorization");
-        assertThat(restored.version).isEqualTo(2);
+        assertThat(restored.version).isEqualTo(burp.models.WorkspaceState.CURRENT_VERSION);
     }
 
     @Test

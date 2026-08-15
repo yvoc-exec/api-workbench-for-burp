@@ -1,6 +1,7 @@
 package burp.history;
 
 import burp.models.ApiRequest;
+import burp.payload.ManagedPayloadRef;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -21,6 +22,10 @@ public class HistoryRequestSnapshot {
     public ApiRequest.BuildMode buildMode;
     public Map<String, String> requestVariablesAsAuthored = new LinkedHashMap<>();
     public ApiRequest authoredRequest;
+    public ManagedPayloadRef authoredExactPayloadRef;
+    public transient boolean authoredExactPayloadUnavailable;
+    public boolean rawRequestSentUsesAuthoredExactPayload;
+    /** Legacy workspace compatibility and bounded distinct evidence only. */
     public byte[] authoredExactRequestBytes;
     public byte[] rawRequestSent;
     public String rawRequestSentText;
@@ -57,6 +62,9 @@ public class HistoryRequestSnapshot {
             return snapshot;
         }
         snapshot.authoredRequest = copyRequestWithoutExactTransport(request);
+        snapshot.authoredExactPayloadRef = request.exactHttpRequest != null
+                && request.exactHttpRequest.payloadRef != null
+                ? request.exactHttpRequest.payloadRef.copy() : null;
         snapshot.authoredExactRequestBytes = request.exactHttpRequest != null
                 && request.exactHttpRequest.rawRequestBytes != null
                 ? borrowExactTransport
@@ -148,6 +156,10 @@ public class HistoryRequestSnapshot {
                 ? new LinkedHashMap<>(source.requestVariablesAsAuthored)
                 : new LinkedHashMap<>();
         copy.authoredRequest = copyRequestWithoutExactTransport(source.authoredRequest);
+        copy.authoredExactPayloadRef = source.authoredExactPayloadRef != null
+                ? source.authoredExactPayloadRef.copy() : null;
+        copy.authoredExactPayloadUnavailable = source.authoredExactPayloadUnavailable;
+        copy.rawRequestSentUsesAuthoredExactPayload = source.rawRequestSentUsesAuthoredExactPayload;
         copy.rawRequestSent = source.rawRequestSent != null
                 ? (sharePayload ? source.rawRequestSent : source.rawRequestSent.clone()) : null;
         copy.rawRequestSentText = source.rawRequestSentText;
@@ -219,6 +231,9 @@ public class HistoryRequestSnapshot {
     public void canonicalizeExactTransportOwnership() {
         canonicalizeRawEvidence();
         if (authoredRequest != null && authoredRequest.exactHttpRequest != null) {
+            if (authoredExactPayloadRef == null && authoredRequest.exactHttpRequest.payloadRef != null) {
+                authoredExactPayloadRef = authoredRequest.exactHttpRequest.payloadRef.copy();
+            }
             byte[] nested = authoredRequest.exactHttpRequest.rawRequestBytes;
             if ((authoredExactRequestBytes == null || authoredExactRequestBytes.length == 0)
                     && nested != null && nested.length > 0) {
@@ -226,6 +241,7 @@ public class HistoryRequestSnapshot {
             }
             authoredRequest.exactHttpRequest =
                     burp.models.ExactHttpRequestSnapshot.copyMetadataOnly(authoredRequest.exactHttpRequest);
+            authoredRequest.exactHttpRequest.payloadRef = null;
         }
         if (authoredExactRequestBytes != null && authoredExactRequestBytes.length == 0) {
             authoredExactRequestBytes = null;
@@ -238,19 +254,32 @@ public class HistoryRequestSnapshot {
                 || Arrays.equals(authoredExactRequestBytes, rawRequestSent))) {
             authoredExactRequestBytes = rawRequestSent;
         }
+        if (rawRequestSentUsesAuthoredExactPayload && authoredExactPayloadRef == null) {
+            rawRequestSentUsesAuthoredExactPayload = false;
+        }
     }
 
     public void discardAuthoredExactTransport(String reason) {
+        authoredExactPayloadRef = null;
+        rawRequestSentUsesAuthoredExactPayload = false;
         authoredExactRequestBytes = null;
-        if (authoredRequest != null && authoredRequest.exactHttpRequest != null) {
-            authoredRequest.exactHttpRequest.rawRequestBytes = null;
-            authoredRequest.exactHttpRequest.pristine = false;
-            authoredRequest.exactHttpRequest.invalidationReason = reason != null ? reason : "";
+        if (authoredRequest != null) {
+            if (authoredRequest.body != null) {
+                authoredRequest.body.managedPayload = null;
+            }
+            if (authoredRequest.exactHttpRequest != null) {
+                authoredRequest.exactHttpRequest.payloadRef = null;
+                authoredRequest.exactHttpRequest.rawRequestBytes = null;
+                authoredRequest.exactHttpRequest.pristine = false;
+                authoredRequest.exactHttpRequest.invalidationReason = reason != null ? reason : "";
+            }
         }
     }
 
     public boolean hasRawRequestSent() {
-        return (rawRequestSentText != null && !rawRequestSentText.isBlank()) || (rawRequestSent != null && rawRequestSent.length > 0);
+        return rawRequestSentUsesAuthoredExactPayload
+                || (rawRequestSentText != null && !rawRequestSentText.isBlank())
+                || (rawRequestSent != null && rawRequestSent.length > 0);
     }
 
     public ApiRequest toAuthoredApiRequest() {
@@ -438,7 +467,10 @@ public class HistoryRequestSnapshot {
                 && authoredRequest.exactHttpRequest != null
                 && authoredRequest.exactHttpRequest.rawRequestBytes != null
                 && authoredRequest.exactHttpRequest.rawRequestBytes != rawRequestSent) {
-            size += authoredRequest.exactHttpRequest.rawRequestBytes.length;
+                size += authoredRequest.exactHttpRequest.rawRequestBytes.length;
+        }
+        if (authoredExactPayloadRef != null) {
+            size += 160L;
         }
         return size;
     }
@@ -556,13 +588,18 @@ public class HistoryRequestSnapshot {
     }
 
     private void restoreAuthoredExactTransport(ApiRequest request) {
-        if (request == null || authoredExactRequestBytes == null || authoredExactRequestBytes.length == 0) {
+        if (request == null || (authoredExactPayloadRef == null
+                && (authoredExactRequestBytes == null || authoredExactRequestBytes.length == 0))) {
             return;
         }
         if (request.exactHttpRequest == null) {
             request.exactHttpRequest = new burp.models.ExactHttpRequestSnapshot();
         }
-        request.exactHttpRequest.rawRequestBytes = authoredExactRequestBytes.clone();
+        request.exactHttpRequest.payloadRef = authoredExactPayloadRef != null
+                ? authoredExactPayloadRef.copy() : null;
+        request.exactHttpRequest.payloadUnavailable = authoredExactPayloadUnavailable;
+        request.exactHttpRequest.rawRequestBytes = authoredExactRequestBytes != null
+                ? authoredExactRequestBytes.clone() : null;
     }
 
     private static int utf8Length(String value) {

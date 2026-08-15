@@ -376,6 +376,19 @@ public final class HistoryBodyTruncator {
     }
 
     private static void boundAuthoredExactTransport(HistoryRequestSnapshot snapshot, long maxBodyBytes) {
+        if (snapshot.authoredExactPayloadRef != null) {
+            long retainedPayloadBytes = snapshot.authoredRequest != null
+                    && snapshot.authoredRequest.body != null
+                    && snapshot.authoredRequest.body.managedPayload != null
+                    ? snapshot.authoredRequest.body.managedPayload.length
+                    : snapshot.authoredExactPayloadRef.length;
+            if (retainedPayloadBytes > maxBodyBytes) {
+                snapshot.discardAuthoredExactTransport("HISTORY_RETENTION_LIMIT");
+                snapshot.parseWarning = firstNonBlank(snapshot.parseWarning,
+                        "Authored exact transport omitted by the History retention limit; semantic authored state retained.");
+            }
+            return;
+        }
         byte[] exact = snapshot.authoredExactRequestBytes;
         if (exact == null || exact.length == 0) {
             return;
@@ -392,6 +405,14 @@ public final class HistoryBodyTruncator {
 
     private static void truncateRawRequest(HistoryRequestSnapshot snapshot, HistoryRetentionPolicy policy) {
         snapshot.canonicalizeRawEvidence();
+        if (snapshot.rawRequestSentUsesAuthoredExactPayload
+                && snapshot.authoredExactPayloadRef != null) {
+            snapshot.rawRequestSent = null;
+            snapshot.rawRequestSentText = null;
+            snapshot.storedRawBodyLength = 0L;
+            if (snapshot.fullRawBodySha256 == null) snapshot.fullRawBodySha256 = "";
+            return;
+        }
         boolean hasRawEvidence = (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
                 || (snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank());
         if (!hasRawEvidence) {
@@ -660,7 +681,8 @@ public final class HistoryBodyTruncator {
         }
 
         snapshot.canonicalizeRawEvidence();
-        boolean hasRawEvidence = (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
+        boolean hasRawEvidence = snapshot.rawRequestSentUsesAuthoredExactPayload
+                || (snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0)
                 || (snapshot.rawRequestSentText != null && !snapshot.rawRequestSentText.isBlank());
         if (hasRawEvidence && snapshot.rawRequestSent != null && snapshot.rawRequestSent.length > 0) {
             RequestLayout parsed = HistoryRawHttpMessageParser.inspectRequest(snapshot.rawRequestSent);

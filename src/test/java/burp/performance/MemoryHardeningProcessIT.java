@@ -37,11 +37,15 @@ class MemoryHardeningProcessIT {
             "oauth2-status-growth",
             "file-binary-repeated-send",
             "multipart-file-repeated-send",
-            "exact-traffic-import-ownership",
-            "exact-traffic-import-aggregate",
-            "exact-traffic-import-item-rejected",
-            "exact-repeated-send",
-            "workspace-large-exact-save",
+            "exact-ref-import-128m",
+            "exact-ref-import-256m",
+            "exact-ref-repeated-send",
+            "exact-ref-dedup",
+            "exact-ref-workspace-save",
+            "exact-ref-header-edit",
+            "exact-ref-history",
+            "exact-ref-delete-cleanup",
+            "montoya-background-stage",
             "large-redirect-ownership");
     private static final long TIMEOUT_SECONDS = 90;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -352,7 +356,7 @@ class MemoryHardeningProcessIT {
         for (String name : List.of(
                 "file-binary-repeated-send",
                 "multipart-file-repeated-send",
-                "exact-repeated-send")) {
+                "exact-ref-repeated-send")) {
             JsonObject scenario = resultFor(results, name);
             JsonObject metrics = scenario.getAsJsonObject("metrics");
             assertThat(string(scenario, "exitClassification")).isEqualTo("SUCCESS");
@@ -368,41 +372,30 @@ class MemoryHardeningProcessIT {
             assertThat(longValue(metrics, "persistentRawBodyCharacters")).isZero();
         }
 
-        JsonObject traffic = resultFor(results, "exact-traffic-import-ownership");
-        JsonObject metrics = traffic.getAsJsonObject("metrics");
-        assertThat(string(traffic, "exitClassification")).isEqualTo("SUCCESS");
-        assertThat(longValue(metrics, "canonicalExactOwners")).isEqualTo(1L);
-        assertThat(longValue(metrics, "selectionAndExactSharePayload")).isEqualTo(1L);
-        assertThat(longValue(metrics, "equivalentRawTextOwners")).isZero();
-        assertThat(longValue(metrics, "authoredExactOwnersInHistory")).isZero();
-        assertThat(longValue(metrics, "historyExactDuplicateOwners")).isZero();
-        assertThat(longValue(metrics, "historyRequestStoredBodyBytes"))
-                .isLessThan(longValue(metrics, "historyRequestOriginalBodyBytes"));
-        assertThat(longValue(metrics, "historyResponseStoredBodyBytes"))
-                .isLessThan(longValue(metrics, "historyResponseOriginalBodyBytes"));
-
-        JsonObject aggregate = resultFor(results, "exact-traffic-import-aggregate");
-        JsonObject aggregateMetrics = aggregate.getAsJsonObject("metrics");
-        assertThat(string(aggregate, "exitClassification")).isEqualTo("SUCCESS");
-        assertThat(longValue(aggregateMetrics, "acceptedRequests")).isEqualTo(8L);
-        assertThat(longValue(aggregateMetrics, "aggregateExactBytes")).isEqualTo(128L * 1024L * 1024L);
-        assertThat(longValue(aggregateMetrics, "canonicalExactOwners")).isEqualTo(8L);
-        assertThat(longValue(aggregateMetrics, "equivalentRawTextOwners")).isZero();
-
-        JsonObject rejected = resultFor(results, "exact-traffic-import-item-rejected");
-        JsonObject rejectedMetrics = rejected.getAsJsonObject("metrics");
-        assertThat(string(rejected, "exitClassification")).isEqualTo("SUCCESS");
-        assertThat(longValue(rejectedMetrics, "convertedRequests")).isZero();
-        assertThat(longValue(rejectedMetrics, "historyEntries")).isZero();
-        assertThat(longValue(rejectedMetrics, "rejections")).isEqualTo(1L);
-
-        JsonObject workspaceExact = resultFor(results, "workspace-large-exact-save");
-        JsonObject workspaceExactMetrics = workspaceExact.getAsJsonObject("metrics");
-        assertThat(string(workspaceExact, "exitClassification")).isEqualTo("SUCCESS");
-        assertThat(longValue(workspaceExactMetrics, "sharedExactBackingBeforeSave")).isEqualTo(1L);
-        assertThat(longValue(workspaceExactMetrics, "detachedExactOwnersAfterRelease")).isZero();
-        assertThat(longValue(workspaceExactMetrics, "activeWorkspaceSnapshots")).isZero();
-        assertThat(longValue(workspaceExactMetrics, "pendingWorkspaceSnapshots")).isZero();
+        for (String name : List.of("exact-ref-import-128m", "exact-ref-import-256m",
+                "exact-ref-repeated-send",
+                "exact-ref-dedup", "exact-ref-workspace-save", "exact-ref-header-edit",
+                "exact-ref-history", "exact-ref-delete-cleanup", "montoya-background-stage")) {
+            JsonObject scenario = resultFor(results, name);
+            JsonObject metrics = scenario.getAsJsonObject("metrics");
+            assertThat(string(scenario, "exitClassification")).isEqualTo("SUCCESS");
+            assertThat(longValue(metrics, "payloadRefCount")).isGreaterThanOrEqualTo(1L);
+            assertThat(longValue(metrics, "activePayloadLeases")).isZero();
+            assertThat(longValue(metrics, "stagingBytes")).isZero();
+            assertThat(longValue(metrics, "workspaceContainsPayloadBytes")).isZero();
+        }
+        assertThat(longValue(resultFor(results, "exact-ref-import-256m"), "payloadBytes"))
+                .isEqualTo(256L * 1024L * 1024L);
+        assertThat(longValue(resultFor(results, "exact-ref-dedup").getAsJsonObject("metrics"),
+                "uniquePayloadBlobCount")).isEqualTo(1L);
+        assertThat(longValue(resultFor(results, "exact-ref-delete-cleanup").getAsJsonObject("metrics"),
+                "physicalManagedBlobBytes")).isZero();
+        assertThat(longValue(resultFor(results, "exact-ref-history").getAsJsonObject("metrics"),
+                "historyPayloadRefCount")).isZero();
+        JsonObject montoya = resultFor(results, "montoya-background-stage").getAsJsonObject("metrics");
+        assertThat(longValue(montoya, "largestMontoyaChunkBytes"))
+                .isLessThanOrEqualTo(1024L * 1024L);
+        assertThat(longValue(montoya, "wholeMontoyaGetBytesCalls")).isZero();
 
         JsonObject redirect = resultFor(results, "large-redirect-ownership");
         JsonObject redirectMetrics = redirect.getAsJsonObject("metrics");

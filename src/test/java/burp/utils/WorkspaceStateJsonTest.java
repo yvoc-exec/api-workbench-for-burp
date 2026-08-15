@@ -263,7 +263,7 @@ class WorkspaceStateJsonTest {
         assertThat(currentRoundTrip.historyLegacyCompactedEntryCount).isZero();
         assertThat(currentRoundTrip.historyRetentionPolicyVersion)
                 .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
-        assertThat(currentRoundTrip.version).isEqualTo(2);
+        assertThat(currentRoundTrip.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
 
         WorkspaceState future = new WorkspaceState();
         future.historyRetentionPolicyVersion = 7;
@@ -273,7 +273,7 @@ class WorkspaceStateJsonTest {
         WorkspaceState missing = WorkspaceStateJson.fromJson("{\"version\":2,\"collections\":[]}");
         assertThat(missing.historyRetentionPolicyVersion)
                 .isEqualTo(HistoryRetentionPolicy.CURRENT_POLICY_VERSION);
-        assertThat(WorkspaceState.CURRENT_VERSION).isEqualTo(2);
+        assertThat(WorkspaceState.CURRENT_VERSION).isEqualTo(3);
     }
 
     @Test
@@ -389,7 +389,7 @@ class WorkspaceStateJsonTest {
 
         WorkspaceState parsed = WorkspaceStateJson.fromJson(WorkspaceStateJson.toJson(state));
 
-        assertThat(parsed.version).isEqualTo(2);
+        assertThat(parsed.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
         assertThat(parsed.historyRetentionPolicy.maxEntries).isEqualTo(9);
         assertThat(parsed.historyRetentionPolicy.maxTotalStoredBytes).isEqualTo(12_345L);
         assertThat(parsed.historyRetentionPolicy.maxRequestBodyBytesPerEntry).isEqualTo(67L);
@@ -633,7 +633,7 @@ class WorkspaceStateJsonTest {
         String json = WorkspaceStateJson.toJson(state);
         WorkspaceState parsed = WorkspaceStateJson.fromJson(json);
 
-        assertThat(parsed.version).isEqualTo(2);
+        assertThat(parsed.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
         assertThat(parsed.collections).hasSize(1);
         assertThat(parsed.collections.get(0).name).isEqualTo("Demo");
         assertThat(parsed.collections.get(0).id).isEqualTo("col-demo");
@@ -1000,7 +1000,7 @@ class WorkspaceStateJsonTest {
 
         WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
 
-        assertThat(migrated.version).isEqualTo(2);
+        assertThat(migrated.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
         assertThat(migrated.collections.get(0).requests.get(0).buildMode).isEqualTo(ApiRequest.BuildMode.MANUAL_PRESERVE);
         assertThat(migrated.collections.get(0).requests.get(0).suppressedAutoHeaders).containsExactly("authorization");
     }
@@ -1012,7 +1012,7 @@ class WorkspaceStateJsonTest {
 
         WorkspaceState migrated = WorkspaceStateMigrator.migrate(state);
 
-        assertThat(migrated.version).isEqualTo(2);
+        assertThat(migrated.version).isEqualTo(WorkspaceState.CURRENT_VERSION);
     }
 
     @Test
